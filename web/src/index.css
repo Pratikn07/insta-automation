@@ -1,0 +1,85 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme {
+  --font-sans:
+    "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+
+  --radius-lg: 0.75rem;
+  --radius-md: 0.5rem;
+  --radius-sm: 0.375rem;
+
+  --color-background: oklch(0.145 0 0);
+  --color-foreground: oklch(0.985 0 0);
+
+  --color-card: oklch(0.18 0 0);
+  --color-card-foreground: oklch(0.985 0 0);
+
+  --color-popover: oklch(0.18 0 0);
+  --color-popover-foreground: oklch(0.985 0 0);
+
+  --color-primary: oklch(0.985 0 0);
+  --color-primary-foreground: oklch(0.18 0 0);
+
+  --color-secondary: oklch(0.235 0 0);
+  --color-secondary-foreground: oklch(0.985 0 0);
+
+  --color-muted: oklch(0.235 0 0);
+  --color-muted-foreground: oklch(0.708 0 0);
+
+  --color-accent: oklch(0.235 0 0);
+  --color-accent-foreground: oklch(0.985 0 0);
+
+  --color-destructive: oklch(0.577 0.245 27.325);
+  --color-destructive-foreground: oklch(0.985 0 0);
+
+  --color-border: oklch(1 0 0 / 0.1);
+  --color-input: oklch(1 0 0 / 0.15);
+  --color-ring: oklch(0.708 0 0);
+
+  --color-brand-from: oklch(0.7 0.22 12);
+  --color-brand-via: oklch(0.62 0.27 320);
+  --color-brand-to: oklch(0.55 0.27 280);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    margin: 0;
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+}
+
+@utility bg-brand-gradient {
+  background-image: linear-gradient(
+    135deg,
+    var(--color-brand-from),
+    var(--color-brand-via) 50%,
+    var(--color-brand-to)
+  );
+}
+
+@utility text-brand-gradient {
+  background-image: linear-gradient(
+    135deg,
+    var(--color-brand-from),
+    var(--color-brand-via) 50%,
+    var(--color-brand-to)
+  );
+  background-clip: text;
+  color: transparent;
+}
