@@ -40,6 +40,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { MediaUpload } from "@/components/MediaUpload";
 import { PhoneMockup } from "@/components/PhoneMockup";
+import { SaveStatus } from "@/components/SaveStatus";
 import { cn } from "@/lib/utils";
 
 const STEP_TYPES: { value: MessageType; label: string; icon: typeof TypeIcon }[] = [
@@ -85,14 +86,18 @@ export function SequenceEditor() {
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
+  // All editing mutations share this key so <SaveStatus> can reflect their
+  // combined state as one "Saving… / All changes saved" indicator.
+  const saveKey = ["sequence-save", id];
+
   const renameMutation = useMutation({
+    mutationKey: saveKey,
     mutationFn: () =>
       api<Resource>(`/resources/${id}`, {
         method: "PATCH",
         body: JSON.stringify({ name, description: description || null }),
       }),
     onSuccess: () => {
-      toast.success("Saved");
       qc.invalidateQueries({ queryKey: ["resource", id] });
       qc.invalidateQueries({ queryKey: ["resources"] });
     },
@@ -101,6 +106,7 @@ export function SequenceEditor() {
   });
 
   const reorderMutation = useMutation({
+    mutationKey: saveKey,
     mutationFn: (orderedIds: string[]) =>
       api<ResourceMessage[]>(`/messages/reorder/${id}`, {
         method: "POST",
@@ -114,6 +120,7 @@ export function SequenceEditor() {
   });
 
   const addMutation = useMutation({
+    mutationKey: saveKey,
     mutationFn: (type: MessageType) =>
       api<ResourceMessage>("/messages", {
         method: "POST",
@@ -135,9 +142,9 @@ export function SequenceEditor() {
   });
 
   const deleteMutation = useMutation({
+    mutationKey: saveKey,
     mutationFn: (mid: string) => api(`/messages/${mid}`, { method: "DELETE" }),
     onSuccess: () => {
-      toast.success("Step removed");
       qc.invalidateQueries({ queryKey: ["resource-messages", id] });
       qc.invalidateQueries({ queryKey: ["resources"] });
       qc.invalidateQueries({ queryKey: ["resource", id] });
@@ -196,21 +203,24 @@ export function SequenceEditor() {
           </Link>
         </Button>
         <div className="flex-1 space-y-3">
-          <Input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            onBlur={() => {
-              if (
-                name.trim() &&
-                (name !== resourceQ.data?.name ||
-                  (description || null) !== (resourceQ.data?.description ?? null))
-              ) {
-                renameMutation.mutate();
-              }
-            }}
-            className="border-transparent bg-transparent px-0 text-xl font-semibold tracking-tight shadow-none focus-visible:ring-0"
-            placeholder="Sequence name"
-          />
+          <div className="flex items-center justify-between gap-3">
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onBlur={() => {
+                if (
+                  name.trim() &&
+                  (name !== resourceQ.data?.name ||
+                    (description || null) !== (resourceQ.data?.description ?? null))
+                ) {
+                  renameMutation.mutate();
+                }
+              }}
+              className="border-transparent bg-transparent px-0 text-xl font-semibold tracking-tight shadow-none focus-visible:ring-0"
+              placeholder="Sequence name"
+            />
+            {id && <SaveStatus sequenceId={id} />}
+          </div>
           <Textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
@@ -335,6 +345,7 @@ function SortableStep({
   useEffect(() => setMediaUrl(step.mediaUrl), [step.mediaUrl]);
 
   const patchMutation = useMutation({
+    mutationKey: ["sequence-save", step.resourceId],
     mutationFn: (data: Partial<Pick<ResourceMessage, "body" | "mediaUrl">>) =>
       api<ResourceMessage>(`/messages/${step.id}`, {
         method: "PATCH",
