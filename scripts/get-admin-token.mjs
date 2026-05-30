@@ -13,6 +13,12 @@ if (!ADMIN_EMAIL) {
   process.exit(1);
 }
 
+// ADMIN_EMAIL may be a comma-separated allowlist. This script mints a token by
+// (re)setting a password, so default to the LAST entry (the test/admin account)
+// to avoid clobbering the primary user's password. Override with TOKEN_EMAIL.
+const allowlist = ADMIN_EMAIL.split(",").map((e) => e.trim()).filter(Boolean);
+const targetEmail = process.env.TOKEN_EMAIL?.trim() || allowlist[allowlist.length - 1];
+
 const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
   auth: { persistSession: false },
 });
@@ -20,10 +26,10 @@ const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
 const password = crypto.randomBytes(24).toString("base64url");
 
 const { data: existing } = await admin.auth.admin.listUsers();
-const found = existing?.users.find((u) => u.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase());
+const found = existing?.users.find((u) => u.email?.toLowerCase() === targetEmail.toLowerCase());
 
 if (found) {
-  console.error(`User ${ADMIN_EMAIL} already exists; resetting password...`);
+  console.error(`User ${targetEmail} already exists; resetting password...`);
   const { error } = await admin.auth.admin.updateUserById(found.id, {
     password,
     email_confirm: true,
@@ -33,9 +39,9 @@ if (found) {
     process.exit(1);
   }
 } else {
-  console.error(`Creating user ${ADMIN_EMAIL}...`);
+  console.error(`Creating user ${targetEmail}...`);
   const { error } = await admin.auth.admin.createUser({
-    email: ADMIN_EMAIL,
+    email: targetEmail,
     password,
     email_confirm: true,
   });
@@ -50,7 +56,7 @@ const anon = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
 });
 
 const { data: session, error: signInError } = await anon.auth.signInWithPassword({
-  email: ADMIN_EMAIL,
+  email: targetEmail,
   password,
 });
 
