@@ -16,7 +16,22 @@ const envSchema = z.object({
   SUPABASE_SERVICE_KEY: z.string().min(1),
   SUPABASE_BUCKET: z.string().min(1).default("insta-resources"),
 
-  ADMIN_EMAIL: z.string().email().optional(),
+  // Comma-separated allowlist of one or more admin emails. Each entry must be a
+  // valid email so a typo can't silently widen access. Parsed into a list in
+  // requireAdmin (src/api/auth.ts).
+  ADMIN_EMAIL: z
+    .string()
+    .optional()
+    .refine(
+      (v) =>
+        v === undefined ||
+        v
+          .split(",")
+          .map((e) => e.trim())
+          .filter(Boolean)
+          .every((e) => z.string().email().safeParse(e).success),
+      { message: "Must be a comma-separated list of valid emails" },
+    ),
   WEB_ORIGIN: z.string().optional(),
 });
 
