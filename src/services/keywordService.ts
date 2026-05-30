@@ -10,8 +10,25 @@ export function extractKeyword(commentText: string): string | null {
   return normalizeKeyword(tokens[0]!);
 }
 
-export async function findActiveKeyword(keyword: string) {
+/**
+ * Resolve the keyword that should fire for a comment.
+ *
+ * A keyword can be scoped to a specific reel (mediaId) or left global (mediaId
+ * = null). A reel-specific match wins; if none exists for this reel, a global
+ * keyword is the fallback. This keeps every pre-existing global keyword working
+ * while letting the same word mean different things on different reels.
+ */
+export async function findActiveKeyword(keyword: string, mediaId?: string | null) {
+  const norm = normalizeKeyword(keyword);
+
+  if (mediaId) {
+    const scoped = await prisma.keyword.findFirst({
+      where: { keyword: norm, mediaId, active: true },
+    });
+    if (scoped) return scoped;
+  }
+
   return prisma.keyword.findFirst({
-    where: { keyword: normalizeKeyword(keyword), active: true },
+    where: { keyword: norm, mediaId: null, active: true },
   });
 }

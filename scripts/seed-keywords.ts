@@ -26,17 +26,22 @@ async function main() {
     },
   });
 
-  await prisma.keyword.upsert({
-    where: { keyword: "PLAY" },
-    update: {},
-    create: {
-      keyword: "PLAY",
-      resourceId: playResource.id,
-      publicReply: "Check your DMs ❤️",
-      gateMessage:
-        "Hi! ❤️\n\nBefore I send the activity guide, please follow @tinysoho and reply DONE once you've followed.\n\nI share toddler activities, learning ideas, and parenting tips almost every day.",
-    },
+  // Global keyword (mediaId: null). Prisma can't target a nullable field in a
+  // compound-unique `upsert` where-clause, so do an explicit find-or-create.
+  const existing = await prisma.keyword.findFirst({
+    where: { keyword: "PLAY", mediaId: null },
   });
+  if (!existing) {
+    await prisma.keyword.create({
+      data: {
+        keyword: "PLAY",
+        resourceId: playResource.id,
+        publicReply: "Check your DMs ❤️",
+        gateMessage:
+          "Hi! ❤️\n\nBefore I send the activity guide, please follow @tinysoho and reply DONE once you've followed.\n\nI share toddler activities, learning ideas, and parenting tips almost every day.",
+      },
+    });
+  }
 
   console.log("Seeded keyword PLAY");
 }

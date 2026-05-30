@@ -23,13 +23,16 @@ export async function handleComment(comment: CommentValue): Promise<void> {
   const candidate = extractKeyword(comment.text);
   if (!candidate) return;
 
-  const keyword = await findActiveKeyword(candidate);
+  const keyword = await findActiveKeyword(candidate, comment.media?.id);
   if (!keyword) {
-    log.debug({ candidate }, "No matching active keyword");
+    log.debug({ candidate, mediaId: comment.media?.id }, "No matching active keyword");
     return;
   }
 
-  log.info({ keyword: keyword.keyword }, "Keyword matched");
+  log.info(
+    { keyword: keyword.keyword, scope: keyword.mediaId ? "reel" : "global", mediaId: comment.media?.id },
+    "Keyword matched",
+  );
 
   await prisma.eventLog.create({
     data: { kind: "comment_received", payload: comment as object },

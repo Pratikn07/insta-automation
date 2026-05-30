@@ -7,6 +7,7 @@ import { messagesRouter } from "./messages.routes.js";
 import { uploadRouter } from "./upload.routes.js";
 import { conversationsRouter } from "./conversations.routes.js";
 import { statsRouter } from "./stats.routes.js";
+import { mediaRouter } from "./media.routes.js";
 import { logger } from "../lib/logger.js";
 
 export const apiRouter = Router();
@@ -23,6 +24,7 @@ apiRouter.use("/messages", messagesRouter);
 apiRouter.use("/upload", uploadRouter);
 apiRouter.use("/conversations", conversationsRouter);
 apiRouter.use("/stats", statsRouter);
+apiRouter.use("/media", mediaRouter);
 
 apiRouter.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   const code = err && typeof err === "object" && "code" in err ? (err as { code: string }).code : undefined;

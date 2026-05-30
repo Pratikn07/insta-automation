@@ -26,6 +26,9 @@ export interface ResourceWithMessages extends Resource {
 export interface Keyword {
   id: string;
   keyword: string;
+  mediaId: string | null;
+  mediaCaption: string | null;
+  mediaPermalink: string | null;
   resourceId: string;
   publicReply: string;
   gateMessage: string;
@@ -34,6 +37,19 @@ export interface Keyword {
   updatedAt: string;
   resource?: { id: string; name: string; _count: { messages: number } };
   _count?: { conversations: number };
+}
+
+export interface Reel {
+  id: string;
+  caption: string | null;
+  thumbnailUrl: string | null;
+  permalink: string | null;
+  timestamp: string | null;
+}
+
+export interface ReelsPage {
+  items: Reel[];
+  nextCursor: string | null;
 }
 
 export interface Conversation {

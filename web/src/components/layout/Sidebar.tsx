@@ -1,9 +1,10 @@
 import { NavLink } from "react-router-dom";
-import { Home, Tag, Layers, MessageCircle, Sparkles } from "lucide-react";
+import { Home, Tag, Layers, MessageCircle, Film, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const items = [
   { to: "/", label: "Home", icon: Home },
+  { to: "/reels", label: "Reels", icon: Film },
   { to: "/keywords", label: "Keywords", icon: Tag },
   { to: "/sequences", label: "Sequences", icon: Layers },
   { to: "/conversations", label: "Conversations", icon: MessageCircle },
