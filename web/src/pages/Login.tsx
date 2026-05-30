@@ -8,23 +8,26 @@ import { toast } from "sonner";
 
 export function Login() {
   const [email, setEmail] = useState("");
-  const [sending, setSending] = useState(false);
-  const [sent, setSent] = useState(false);
+  const [password, setPassword] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!email) return;
-    setSending(true);
-    const { error } = await supabase.auth.signInWithOtp({
-      email,
-      options: { emailRedirectTo: window.location.origin },
-    });
-    setSending(false);
+    if (!email || !password) return;
+    setSubmitting(true);
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    setSubmitting(false);
     if (error) {
-      toast.error(error.message);
+      // Supabase returns a generic "Invalid login credentials" for both wrong
+      // email and wrong password — keep it friendly without leaking which.
+      toast.error(
+        error.message === "Invalid login credentials"
+          ? "Wrong email or password."
+          : error.message,
+      );
       return;
     }
-    setSent(true);
+    // On success, onAuthStateChange in useAuth swaps to the app automatically.
   }
 
   return (
@@ -47,33 +50,28 @@ export function Login() {
           </div>
         </div>
 
-        {sent ? (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="rounded-lg border bg-card p-6 text-center text-sm"
-          >
-            <p className="font-medium">Check your inbox</p>
-            <p className="mt-1 text-muted-foreground">
-              We sent a magic link to <span className="text-foreground">{email}</span>. Click it to
-              continue.
-            </p>
-          </motion.div>
-        ) : (
-          <form onSubmit={handleSubmit} className="flex flex-col gap-3">
-            <Input
-              type="email"
-              placeholder="you@email.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              autoFocus
-              required
-            />
-            <Button type="submit" variant="brand" size="lg" disabled={sending}>
-              {sending ? "Sending…" : "Send magic link"}
-            </Button>
-          </form>
-        )}
+        <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+          <Input
+            type="email"
+            placeholder="you@email.com"
+            autoComplete="username"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            autoFocus
+            required
+          />
+          <Input
+            type="password"
+            placeholder="Password"
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+          />
+          <Button type="submit" variant="brand" size="lg" disabled={submitting}>
+            {submitting ? "Signing in…" : "Sign in"}
+          </Button>
+        </form>
       </motion.div>
     </div>
   );
