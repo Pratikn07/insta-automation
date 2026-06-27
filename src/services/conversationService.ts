@@ -1,10 +1,27 @@
 import { prisma } from "../lib/prisma.js";
 
-const GATE_WINDOW_HOURS = 24;
+// Window during which we'll accept a DONE reply / keep a gate "open", measured
+// from when the gate was DELIVERED (gatedAt), falling back to createdAt for legacy
+// rows. 48h comfortably covers a prompt reply after a retry delivery; the inbound
+// reply itself proves Instagram's own 24h messaging window is still open.
+const GATE_WINDOW_HOURS = 48;
 
 export async function openConversation(igUserId: string, keywordId: string) {
   return prisma.conversation.create({
     data: { igUserId, keywordId, state: "awaiting_done" },
+  });
+}
+
+/**
+ * Mark a conversation as gated NOW — call this whenever a gate DM is actually
+ * delivered (live send or retry). Re-arms it to awaiting_done and starts the
+ * DONE-window clock from delivery, which is the fix for retry-delivered gates
+ * landing on already-expired conversations.
+ */
+export async function markGated(conversationId: string) {
+  return prisma.conversation.update({
+    where: { id: conversationId },
+    data: { state: "awaiting_done", gatedAt: new Date() },
   });
 }
 
@@ -14,7 +31,11 @@ export async function findActiveAwaitingDone(igUserId: string) {
     where: {
       igUserId,
       state: "awaiting_done",
-      createdAt: { gte: cutoff },
+      // Window measured from gatedAt when present, else createdAt (legacy/live).
+      OR: [
+        { gatedAt: { gte: cutoff } },
+        { gatedAt: null, createdAt: { gte: cutoff } },
+      ],
     },
     orderBy: { createdAt: "desc" },
     include: { keyword: { include: { resource: { include: { messages: true } } } } },
@@ -28,10 +49,33 @@ export async function markCompleted(conversationId: string) {
   });
 }
 
+/**
+ * Has this user already completed this keyword's guide? Guarantees one guide per
+ * (user, keyword): a user who commented the same keyword on several reels, or who
+ * has a stale open gate alongside a prior completion, must not receive the guide a
+ * second time. This is the chokepoint guard against the duplicate-delivery class of
+ * bug (both the live same-keyword repeat and any backfill re-run).
+ */
+export async function hasCompletedKeyword(igUserId: string, keywordId: string): Promise<boolean> {
+  const prior = await prisma.conversation.findFirst({
+    where: { igUserId, keywordId, state: "completed" },
+    select: { id: true },
+  });
+  return prior !== null;
+}
+
 export async function expireOldConversations() {
   const cutoff = new Date(Date.now() - GATE_WINDOW_HOURS * 60 * 60 * 1000);
+  // Expire only conversations whose effective gate time (gatedAt, else createdAt)
+  // is past the window — so a freshly retry-gated conversation is NOT re-expired.
   return prisma.conversation.updateMany({
-    where: { state: "awaiting_done", createdAt: { lt: cutoff } },
+    where: {
+      state: "awaiting_done",
+      OR: [
+        { gatedAt: { lt: cutoff } },
+        { gatedAt: null, createdAt: { lt: cutoff } },
+      ],
+    },
     data: { state: "expired" },
   });
 }

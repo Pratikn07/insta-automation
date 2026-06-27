@@ -32,3 +32,20 @@ export async function findActiveKeyword(keyword: string, mediaId?: string | null
     where: { keyword: norm, mediaId: null, active: true },
   });
 }
+
+/**
+ * Resolve a keyword from an inbound DM.
+ *
+ * Unlike a comment, a DM has no reel context, so only GLOBAL keywords
+ * (mediaId = null) can match. We scan every word in the message — not just the
+ * first — so "sleep", "Sleep", and "DM me sleep" all resolve. Returns the first
+ * active global keyword found, or null.
+ */
+export async function findKeywordInMessage(text: string) {
+  const tokens = [...new Set(text.split(/\s+/).map(normalizeKeyword).filter(Boolean))];
+  if (tokens.length === 0) return null;
+
+  return prisma.keyword.findFirst({
+    where: { keyword: { in: tokens }, mediaId: null, active: true },
+  });
+}

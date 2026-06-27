@@ -33,6 +33,13 @@ const envSchema = z.object({
       { message: "Must be a comma-separated list of valid emails" },
     ),
   WEB_ORIGIN: z.string().optional(),
+
+  // Gate retry worker pacing. Defaults are conservative; can be tuned without a
+  // code change. GATE_RETRY_BATCH = max private replies attempted per worker tick.
+  GATE_RETRY_BATCH: z.coerce.number().int().min(1).max(100).default(8),
+  // Run the standard-DM experiment on aged/exhausted users (measures whether a
+  // cold standard DM is ever accepted). Off by default.
+  GATE_DM_EXPERIMENT: z.coerce.boolean().default(false),
 });
 
 const parsed = envSchema.safeParse(process.env);
