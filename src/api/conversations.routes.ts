@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
+import { getIgUsers } from "../services/igUserService.js";
 
 export const conversationsRouter = Router();
 
@@ -27,18 +28,128 @@ conversationsRouter.get("/", async (req, res) => {
 
   const hasMore = rows.length > limit;
   const items = hasMore ? rows.slice(0, limit) : rows;
+
+  // Attach resolved usernames (one batched query, no N+1).
+  const users = await getIgUsers(items.map((c) => c.igUserId));
+
+  // Derive each awaiting row's *delivery* status so the UI can tell apart "we
+  // DM'd them, waiting on their reply" from "the DM never landed — auto-retrying".
+  // The signal is the gate queue: a row exists ONLY when a comment-gate failed,
+  // and status "pending" means it's still bouncing. (gatedAt is NOT reliable — the
+  // inbound-DM gate path never stamps it.) One batched query, no N+1.
+  const deliveryById = await deliveryStatusFor(
+    items.filter((c) => c.state === "awaiting_done").map((c) => c.id),
+  );
+
+  const withUsers = items.map((c) => ({
+    ...c,
+    username: users[c.igUserId]?.username ?? null,
+    name: users[c.igUserId]?.name ?? null,
+    isFollower: users[c.igUserId]?.isFollower ?? null,
+    followerCount: users[c.igUserId]?.followerCount ?? null,
+    isVerified: users[c.igUserId]?.isVerified ?? null,
+    delivery: c.state === "awaiting_done" ? (deliveryById.get(c.id) ?? "delivered") : null,
+  }));
+
   res.json({
-    items,
+    items: withUsers,
     nextCursor: hasMore ? items[items.length - 1]!.id : null,
   });
 });
+
+export type DeliveryStatus = "delivered" | "retrying";
+
+/**
+ * Map conversationId → delivery status for the given awaiting_done rows.
+ * A conversation has a gate_queue row only if its comment-gate DM failed; while
+ * that row is "pending" the gate hasn't landed yet (worker still retrying), so we
+ * surface "retrying". Anything without a live pending row counts as "delivered"
+ * — either the gate sent first try, or a retry already succeeded (status "sent").
+ * Note: an exhausted gate never appears here — such a conversation has gatedAt
+ * null and is swept to "expired" at the 48h mark, well before the 7-day window
+ * closes, so it leaves the awaiting bucket on its own.
+ */
+async function deliveryStatusFor(ids: string[]): Promise<Map<string, DeliveryStatus>> {
+  const map = new Map<string, DeliveryStatus>();
+  if (ids.length === 0) return map;
+  const pending = await prisma.gateQueue.findMany({
+    where: { conversationId: { in: ids }, status: "pending" },
+    select: { conversationId: true },
+  });
+  for (const g of pending) map.set(g.conversationId, "retrying");
+  return map;
+}
+
+/**
+ * Per-state counts for the tab labels, plus how many of the "waiting" bucket are
+ * actually unreached (gate still retrying) vs genuinely waiting on a reply. Lets
+ * the UI show "Waiting 416 · Delivered 351 · No reply 300" at a glance, and split
+ * the waiting count if we ever want to. One grouped query + one gate count.
+ */
+conversationsRouter.get("/counts", async (_req, res) => {
+  const [grouped, pendingGates] = await Promise.all([
+    prisma.conversation.groupBy({ by: ["state"], _count: { _all: true } }),
+    // Conversations with a still-bouncing gate. GateQueue has no Prisma relation
+    // to Conversation, so we intersect in code rather than via a nested filter.
+    prisma.gateQueue.findMany({
+      where: { status: "pending" },
+      select: { conversationId: true },
+      distinct: ["conversationId"],
+    }),
+  ]);
+
+  const byState = { awaiting_done: 0, completed: 0, expired: 0 };
+  for (const g of grouped) byState[g.state] = g._count._all;
+
+  // Only count pending gates whose conversation is still awaiting (a pending gate
+  // on an already-expired convo must not inflate the waiting bucket).
+  const pendingIds = pendingGates.map((g) => g.conversationId);
+  const retryingCount =
+    pendingIds.length === 0
+      ? 0
+      : await prisma.conversation.count({
+          where: { id: { in: pendingIds }, state: "awaiting_done" },
+        });
+
+  res.json({
+    awaiting_done: byState.awaiting_done,
+    completed: byState.completed,
+    expired: byState.expired,
+    // Subsets of awaiting_done: waitingOnReply + retrying === awaiting_done.
+    retrying: retryingCount,
+    waitingOnReply: Math.max(byState.awaiting_done - retryingCount, 0),
+  });
+});
+
+function strField(payload: unknown, key: string): string | null {
+  if (!payload || typeof payload !== "object") return null;
+  const v = (payload as Record<string, unknown>)[key];
+  return typeof v === "string" ? v : null;
+}
 
 conversationsRouter.get("/:id/events", async (req, res) => {
   const id = req.params.id;
   const convo = await prisma.conversation.findUnique({
     where: { id },
     include: {
-      keyword: { select: { id: true, keyword: true, resource: { select: { id: true, name: true } } } },
+      // Pull the configured copy so the panel can render the ACTUAL messages we
+      // sent (public reply, gate DM, freebie steps) as chat bubbles — these live
+      // on the keyword/resource, never in event payloads.
+      keyword: {
+        select: {
+          id: true,
+          keyword: true,
+          publicReply: true,
+          gateMessage: true,
+          resource: {
+            select: {
+              id: true,
+              name: true,
+              messages: { orderBy: { order: "asc" } },
+            },
+          },
+        },
+      },
     },
   });
   if (!convo) return res.status(404).json({ error: "not_found" });
@@ -48,5 +159,64 @@ conversationsRouter.get("/:id/events", async (req, res) => {
     orderBy: { createdAt: "asc" },
     take: 200,
   });
-  res.json({ conversation: convo, events });
+
+  // Resolve the ORIGINAL inbound message that triggered this conversation. Its
+  // text isn't conversation-scoped: a comment lives on comment_received (joined by
+  // commentId, which keyword_matched records), a DM lives on message_received
+  // (joined by senderId). Either way we surface the user's actual words.
+  const km = events.find((e) => e.kind === "keyword_matched");
+  const commentId = strField(km?.payload, "commentId");
+  const anchor = km?.createdAt ?? convo.createdAt;
+  const entry: "comment" | "dm" = commentId ? "comment" : "dm";
+
+  let inboundText: string | null = null;
+  if (commentId) {
+    const cr = await prisma.eventLog.findFirst({
+      where: { kind: "comment_received", payload: { path: ["commentId"], equals: commentId } },
+      orderBy: { createdAt: "asc" },
+    });
+    inboundText = strField(cr?.payload, "text");
+  } else {
+    const mr = await prisma.eventLog.findFirst({
+      where: {
+        kind: "message_received",
+        payload: { path: ["senderId"], equals: convo.igUserId },
+        createdAt: { lte: anchor },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    inboundText = strField(mr?.payload, "text");
+  }
+
+  // The latest gate-retry row (if the gate DM failed and was queued) so the panel
+  // can reassure: "retrying automatically, attempt N, window open until …".
+  const gate = await prisma.gateQueue.findFirst({
+    where: { conversationId: id },
+    orderBy: { createdAt: "desc" },
+  });
+
+  const users = await getIgUsers([convo.igUserId]);
+  const u = users[convo.igUserId];
+  res.json({
+    conversation: {
+      ...convo,
+      username: u?.username ?? null,
+      name: u?.name ?? null,
+      isFollower: u?.isFollower ?? null,
+      followerCount: u?.followerCount ?? null,
+      isVerified: u?.isVerified ?? null,
+    },
+    events,
+    entry,
+    inboundText,
+    gate: gate
+      ? {
+          status: gate.status,
+          attempts: gate.attempts,
+          nextAttemptAt: gate.nextAttemptAt,
+          commentAt: gate.commentAt,
+          lastError: gate.lastError,
+        }
+      : null,
+  });
 });

@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { getDashboardStats } from "../services/statsService.js";
+import { getIgUsers } from "../services/igUserService.js";
 
 export const statsRouter = Router();
 
@@ -29,8 +30,22 @@ statsRouter.get("/events", async (req, res) => {
   });
   const hasMore = rows.length > limit;
   const items = hasMore ? rows.slice(0, limit) : rows;
+
+  // Events carry the user id inside payload (senderId / fromId). Collect them and
+  // return a users map so the Activity feed can label rows with @handles.
+  const ids: string[] = [];
+  for (const e of items) {
+    const p = e.payload as { senderId?: unknown; fromId?: unknown } | null;
+    if (p && typeof p === "object") {
+      if (typeof p.senderId === "string") ids.push(p.senderId);
+      if (typeof p.fromId === "string") ids.push(p.fromId);
+    }
+  }
+  const users = await getIgUsers(ids);
+
   res.json({
     items,
+    users,
     nextCursor: hasMore ? items[items.length - 1]!.id : null,
   });
 });
