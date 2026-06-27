@@ -76,6 +76,10 @@ model Conversation {
   state       ConversationState @default(awaiting_done)
   createdAt   DateTime          @default(now()) @map("created_at")
   completedAt DateTime?         @map("completed_at")
+  // When the gate DM was actually delivered (live or via retry). The DONE-window
+  // and expiry are measured from this, not createdAt, so a gate delivered days
+  // after the comment (retry) still opens a valid window. Null for legacy rows.
+  gatedAt     DateTime?         @map("gated_at")
 
   keyword     Keyword           @relation(fields: [keywordId], references: [id])
 
@@ -92,4 +96,39 @@ model EventLog {
 
   @@index([kind, createdAt])
   @@map("event_log")
+}
+
+model IgUser {
+  id         String    @id // the Instagram-scoped user ID (IGSID)
+  username   String?
+  name       String?
+  resolvedAt DateTime? @map("resolved_at") // null = never successfully resolved
+  // Follow intel — only readable once the user is in a messaging context (they've
+  // DM'd us). Volatile, so refreshed on each resolve. Null = not yet checked.
+  isFollower      Boolean?  @map("is_follower")
+  followerCount   Int?      @map("follower_count")
+  isVerified      Boolean?  @map("is_verified")
+  followCheckedAt DateTime? @map("follow_checked_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  @@map("ig_users")
+}
+
+model GateQueue {
+  id             String    @id @default(uuid()) @db.Uuid
+  conversationId String    @map("conversation_id") @db.Uuid
+  igUserId       String    @map("ig_user_id")
+  commentId      String    @map("comment_id")
+  gateMessage    String    @map("gate_message")
+  status         String    @default("pending") // pending | sent | exhausted | abandoned
+  attempts       Int       @default(0)
+  lastError      String?   @map("last_error")
+  commentAt      DateTime  @map("comment_at") // enforces the 7-day private-reply window
+  nextAttemptAt  DateTime  @map("next_attempt_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@index([status, nextAttemptAt])
+  @@map("gate_queue")
 }
