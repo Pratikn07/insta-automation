@@ -8,6 +8,8 @@ import { Keywords } from "@/pages/Keywords";
 import { Sequences } from "@/pages/Sequences";
 import { SequenceEditor } from "@/pages/SequenceEditor";
 import { Conversations } from "@/pages/Conversations";
+import { Activity } from "@/pages/Activity";
+import { Users } from "@/pages/Users";
 
 function FullScreenLoader() {
   return (
@@ -33,6 +35,8 @@ export default function App() {
             <Route path="sequences" element={<Sequences />} />
             <Route path="sequences/:id" element={<SequenceEditor />} />
             <Route path="conversations" element={<Conversations />} />
+            <Route path="users" element={<Users />} />
+            <Route path="activity" element={<Activity />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

@@ -1,5 +1,5 @@
 import { NavLink } from "react-router-dom";
-import { Home, Tag, Layers, MessageCircle, Film, Sparkles } from "lucide-react";
+import { Home, Tag, Layers, MessageCircle, Film, Sparkles, Activity, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const items = [
@@ -8,6 +8,8 @@ const items = [
   { to: "/keywords", label: "Keywords", icon: Tag },
   { to: "/sequences", label: "Sequences", icon: Layers },
   { to: "/conversations", label: "Conversations", icon: MessageCircle },
+  { to: "/users", label: "Users", icon: Users },
+  { to: "/activity", label: "Activity", icon: Activity },
 ];
 
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {

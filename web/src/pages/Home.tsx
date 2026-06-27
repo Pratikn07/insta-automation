@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
-import { AlertCircle, Tag, Send, Hourglass, CheckCircle2, ChevronDown } from "lucide-react";
+import { AlertCircle, Tag, Send, Hourglass, CheckCircle2, ChevronDown, RefreshCw } from "lucide-react";
 import { useState } from "react";
 import { api } from "@/lib/api";
 import type { Conversation, Paginated, Stats } from "@/lib/types";
@@ -58,6 +58,17 @@ export function Home() {
           value={`${data.conversationsAwaiting}`}
           sub="people who replied DONE will receive their resource"
           delay={0.1}
+        />
+        <StatCard
+          icon={<RefreshCw className="size-4" />}
+          label="Gate retries queued"
+          value={`${data.gateQueuePending}`}
+          sub={
+            data.gateQueueExhausted > 0
+              ? `${data.gateQueueExhausted} expired past the 7-day window`
+              : "comment DMs waiting to retry under the rate limit"
+          }
+          delay={0.15}
         />
       </div>
 
@@ -156,8 +167,8 @@ function RecentRecipients({
                       <span className="truncate">
                         Sent <span className="font-medium">{c.keyword.keyword}</span>{" "}
                         to{" "}
-                        <span className="font-mono text-xs text-muted-foreground">
-                          {c.igUserId}
+                        <span className={c.username ? "font-medium" : "font-mono text-xs text-muted-foreground"}>
+                          {c.username ? `@${c.username}` : c.igUserId}
                         </span>
                       </span>
                     </div>
