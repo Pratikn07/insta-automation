@@ -1,4 +1,7 @@
-import { graph } from "./graphClient.js";
+// Uses the insights client (v23.0), NOT the v21.0 messaging client: media_audio_type
+// is only returned on newer versions. The reel list is read-only, so the version
+// bump here is safe and unrelated to the gate flow.
+import { insightsGraph } from "./insightsGraphClient.js";
 import { env } from "../config/env.js";
 import { logger } from "../lib/logger.js";
 
@@ -9,6 +12,10 @@ export interface Reel {
   thumbnailUrl: string | null;
   permalink: string | null;
   timestamp: string | null;
+  // Insights-only extras (optional so the existing Reels page is unaffected). The
+  // snapshot worker reads these; mediaUrl is absent when the reel uses licensed audio.
+  mediaUrl?: string | null;
+  mediaAudioType?: string | null; // MUSIC | ORIGINAL_SOUND
 }
 
 interface MediaItem {
@@ -18,6 +25,7 @@ interface MediaItem {
   media_product_type?: string;
   thumbnail_url?: string;
   media_url?: string;
+  media_audio_type?: string;
   permalink?: string;
   timestamp?: string;
 }
@@ -28,7 +36,7 @@ interface MediaResponse {
 }
 
 const MEDIA_FIELDS =
-  "id,caption,media_type,media_product_type,thumbnail_url,media_url,permalink,timestamp";
+  "id,caption,media_type,media_product_type,thumbnail_url,media_url,media_audio_type,permalink,timestamp";
 const PAGE_LIMIT = 50;
 // Safety cap so a runaway/huge account can't spin forever. 40 pages × 50 =
 // 2000 media — far beyond any single creator account.
@@ -47,6 +55,8 @@ function toReel(m: MediaItem): Reel {
     thumbnailUrl: m.thumbnail_url ?? m.media_url ?? null,
     permalink: m.permalink ?? null,
     timestamp: m.timestamp ?? null,
+    mediaUrl: m.media_url ?? null,
+    mediaAudioType: m.media_audio_type ?? null,
   };
 }
 
@@ -71,7 +81,7 @@ export async function fetchAllReels(): Promise<Reel[]> {
     const params: Record<string, string | number> = { fields: MEDIA_FIELDS, limit: PAGE_LIMIT };
     if (after) params.after = after;
 
-    const res = await graph.get<MediaResponse>(`/${env.IG_USER_ID}/media`, { params });
+    const res = await insightsGraph.get<MediaResponse>(`/${env.IG_USER_ID}/media`, { params });
     const batch = res.data.data ?? [];
     totalMedia += batch.length;
 

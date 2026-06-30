@@ -40,6 +40,26 @@ const envSchema = z.object({
   // Run the standard-DM experiment on aged/exhausted users (measures whether a
   // cold standard DM is ever accepted). Off by default.
   GATE_DM_EXPERIMENT: z.coerce.boolean().default(false),
+
+  // --- Insights (reel analysis) ---
+  // Newer Graph version for insights/demographics/media_audio_type calls. Kept
+  // separate from the v21.0 messaging client so the rate-limit-sensitive
+  // comment/gate flow is never disturbed by a version bump.
+  INSIGHTS_GRAPH_VERSION: z.string().default("v23.0"),
+  // Gemini watches each reel and returns a US-cultural-fit content profile.
+  // Optional: when unset, Gemini features degrade (queue worker no-ops, scores
+  // fall back to low-confidence) but the app still boots and serves everything else.
+  GEMINI_API_KEY: z.string().optional(),
+  GEMINI_MODEL: z.string().default("gemini-2.5-flash"),
+  // Max Gemini spend per UTC day (USD). The queue worker stops for the day once
+  // summed cost crosses this — a hard guard against runaway analysis cost.
+  GEMINI_DAILY_BUDGET_USD: z.coerce.number().min(0).default(5),
+  // Reels analyzed per Gemini worker tick.
+  GEMINI_BATCH: z.coerce.number().int().min(1).max(50).default(5),
+  // Worker pacing (ms). Snapshot self-throttles on the newest snapshot age so a
+  // small dev interval can't spam the Graph API.
+  SNAPSHOT_INTERVAL_MS: z.coerce.number().int().min(60_000).default(6 * 60 * 60 * 1000),
+  GEMINI_QUEUE_INTERVAL_MS: z.coerce.number().int().min(10_000).default(2 * 60 * 1000),
 });
 
 const parsed = envSchema.safeParse(process.env);

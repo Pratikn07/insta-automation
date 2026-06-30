@@ -6,6 +6,8 @@ import { captureRawBody, handleVerification, verifyMetaSignature } from "./meta/
 import { dispatchWebhook } from "./handlers/webhookRouter.js";
 import { expireOldConversations } from "./services/conversationService.js";
 import { runGateQueueTick } from "./services/gateQueueWorker.js";
+import { runSnapshotTick } from "./services/snapshotWorker.js";
+import { runGeminiQueueTick } from "./services/geminiQueueWorker.js";
 import { apiRouter } from "./api/router.js";
 
 const app = express();
@@ -61,6 +63,20 @@ const GATE_RETRY_INTERVAL_MS = 5 * 60 * 1000;
 setInterval(() => {
   void runGateQueueTick();
 }, GATE_RETRY_INTERVAL_MS);
+
+// Insights snapshot worker: periodically captures per-reel performance metrics
+// and account-level audience geography, and enqueues new reels for Gemini
+// analysis. Self-throttles on the newest snapshot age, and runSnapshotTick is
+// non-throwing, so a small interval or a Graph failure can't crash the server.
+setInterval(() => {
+  void runSnapshotTick();
+}, env.SNAPSHOT_INTERVAL_MS);
+
+// Gemini analysis worker: drains the queue of reels awaiting a content profile,
+// paced and capped by the daily budget. No-ops when GEMINI_API_KEY is unset.
+setInterval(() => {
+  void runGeminiQueueTick();
+}, env.GEMINI_QUEUE_INTERVAL_MS);
 
 app.listen(env.PORT, () => {
   logger.info({ port: env.PORT, env: env.NODE_ENV }, "insta-automation listening");

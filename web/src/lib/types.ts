@@ -148,3 +148,88 @@ export interface SignedUpload {
   signedUrl: string;
   publicUrl: string;
 }
+
+// --- Insights ---
+export interface ConversionLine {
+  keywordComments: number;
+  gateDelivered: number;
+  completed: number;
+}
+
+export interface LeaderboardRow {
+  mediaId: string;
+  caption: string | null;
+  thumbnailUrl: string | null;
+  permalink: string | null;
+  postedAt: string | null;
+  usFitScore: number | null;
+  confidence: string | null;
+  mediaAudioType: string | null;
+  videoUnavailable: boolean;
+  analyzed: boolean;
+  views: number | null;
+  reach: number | null;
+  skipRate: number | null;
+  conversion: ConversionLine;
+}
+
+export interface ContentProfile {
+  transcript: string;
+  onScreenText: string;
+  onScreenLang: string;
+  speakerAccent: string;
+  accentConfidence: number;
+  visualSetting: string;
+  culturalReferences: Array<{ text: string; region: string }>;
+  hookArchetype: string;
+  audioVibe: string;
+  usCulturalFitRationale: string;
+  accentScore: number;
+  settingScore: number;
+  culturalScore: number;
+}
+
+export interface ReelInsightDetail {
+  mediaId: string;
+  caption: string | null;
+  thumbnailUrl: string | null;
+  permalink: string | null;
+  postedAt: string | null;
+  usFitScore: number | null;
+  confidence: string | null;
+  mediaAudioType: string | null;
+  manualAudioType: string | null;
+  manualLangOverride: string | null;
+  manualNote: string | null;
+  videoUnavailable: boolean;
+  contentProfile:
+    | (ContentProfile & {
+        source: string;
+        promptVersion: string;
+        modelId: string;
+        costUsd: number | null;
+      })
+    | null;
+  latestPerf: {
+    views: number | null;
+    reach: number | null;
+    likes: number | null;
+    comments: number | null;
+    shares: number | null;
+    saved: number | null;
+    totalInteractions: number | null;
+    avgWatchTimeMs: number | null;
+    skipRate: number | null;
+    capturedAt: string;
+  } | null;
+  conversion: ConversionLine;
+}
+
+export interface GeoStageSplit {
+  stage: "follower" | "engaged" | "reached";
+  usPct: number | null;
+  inPct: number | null;
+  totalCounted: number | null;
+  counts: Record<string, number>;
+  capturedAt: string | null;
+}

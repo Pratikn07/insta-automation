@@ -1,5 +1,5 @@
 import { NavLink } from "react-router-dom";
-import { Home, Tag, Layers, MessageCircle, Film, Sparkles, Activity, Users } from "lucide-react";
+import { Home, Tag, Layers, MessageCircle, Film, Sparkles, Activity, Users, BarChart3 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const items = [
@@ -9,6 +9,7 @@ const items = [
   { to: "/sequences", label: "Sequences", icon: Layers },
   { to: "/conversations", label: "Conversations", icon: MessageCircle },
   { to: "/users", label: "Users", icon: Users },
+  { to: "/insights", label: "Insights", icon: BarChart3 },
   { to: "/activity", label: "Activity", icon: Activity },
 ];
 

@@ -132,3 +132,145 @@ model GateQueue {
   @@index([status, nextAttemptAt])
   @@map("gate_queue")
 }
+
+// ── Insights ─────────────────────────────────────────────────────────────────
+// Reels live in the Graph API, not our DB, so everything here joins on the IG
+// media id string (`mediaId`) — exactly like Keyword.mediaId — NOT a uuid FK.
+
+// Anchor row, one per reel. Denormalizes the reel facts the Leaderboard needs so
+// it renders without re-walking the Graph media list, plus the manual overrides
+// and the cached fused US-fit score (sorted on, so kept on this lean row).
+model ReelMeta {
+  mediaId          String   @id @map("media_id")
+  caption          String?
+  permalink        String?
+  thumbnailUrl     String?  @map("thumbnail_url")
+  // The downloadable video. Omitted by Meta when the reel uses copyrighted/
+  // licensed audio — absence is itself a weak "trending licensed audio" signal.
+  mediaUrl         String?  @map("media_url")
+  postedAt         DateTime? @map("posted_at") // IG timestamp; drives post-time-ET analysis
+  mediaAudioType   String?  @map("media_audio_type") // MUSIC | ORIGINAL_SOUND (free Meta field)
+  videoUnavailable Boolean  @default(false) @map("video_unavailable")
+
+  // Manual overrides (drawer-editable). Override > derived when present.
+  manualAudioType   String? @map("manual_audio_type")
+  manualLangOverride String? @map("manual_lang_override")
+  manualNote        String? @map("manual_note")
+
+  // Cached fused result, denormalized for fast Leaderboard sort.
+  usFitScore Int?      @map("us_fit_score") // 0..100
+  confidence String?   // high | low
+  scoredAt   DateTime? @map("scored_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  contentProfile ReelContentProfile?
+  perfSnapshots  ReelPerformanceSnapshot[]
+  geminiJob      GeminiJob?
+
+  @@index([usFitScore])
+  @@map("reel_meta")
+}
+
+// Gemini output, 1:1 with ReelMeta. Written once per (reel, promptVersion) and
+// cached forever. Kept separate so the large immutable JSON blob doesn't bloat
+// the row we sort the Leaderboard by, and re-analysis is a clean row replace.
+model ReelContentProfile {
+  mediaId       String   @id @map("media_id")
+  source        String   // gemini | fallback
+  promptVersion String   @map("prompt_version")
+  modelId       String   @map("model_id")
+  profile       Json     // full structured content profile
+
+  // Sub-scores lifted out of `profile` for querying / scoring.
+  accentScore   Int?     @map("accent_score")
+  settingScore  Int?     @map("setting_score")
+  culturalScore Int?     @map("cultural_score")
+  hookArchetype String?  @map("hook_archetype")
+  onScreenLang  String?  @map("on_screen_lang")
+  audioVibe     String?  @map("audio_vibe")
+  costUsd       Float?   @map("cost_usd")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  reel ReelMeta @relation(fields: [mediaId], references: [mediaId], onDelete: Cascade)
+
+  @@map("reel_content_profile")
+}
+
+// Per-reel Meta performance metrics over time. Time-series (metrics drift; several
+// are "in development" and nullable) so we snapshot rather than overwrite.
+model ReelPerformanceSnapshot {
+  id                 String   @id @default(uuid()) @db.Uuid
+  mediaId            String   @map("media_id")
+  capturedAt         DateTime @default(now()) @map("captured_at")
+  views              Int?
+  reach              Int?
+  likes              Int?
+  comments           Int?
+  shares             Int?
+  saved              Int?
+  totalInteractions  Int?     @map("total_interactions")
+  avgWatchTimeMs     Int?     @map("avg_watch_time_ms")     // ig_reels_avg_watch_time
+  videoViewTotalTime Int?     @map("video_view_total_time") // ig_reels_video_view_total_time
+  skipRate           Float?   @map("skip_rate")             // reels_skip_rate
+  raw                Json?    // full payload incl. which metrics 400'd
+
+  reel ReelMeta @relation(fields: [mediaId], references: [mediaId], onDelete: Cascade)
+
+  @@index([mediaId, capturedAt])
+  @@map("reel_performance_snapshot")
+}
+
+// Account-level country split over time (no mediaId — Meta gives geo only at the
+// account level). One row per (stage, run). Spine of the geo trend + experiments.
+model GeoDemographicSnapshot {
+  id           String   @id @default(uuid()) @db.Uuid
+  stage        String   // follower | engaged | reached
+  capturedAt   DateTime @default(now()) @map("captured_at")
+  timeframe    String   @default("last_90_days")
+  counts       Json     // { US: n, IN: n, ... }
+  usPct        Float?   @map("us_pct")
+  inPct        Float?   @map("in_pct")
+  totalCounted Int?     @map("total_counted")
+
+  @@index([stage, capturedAt])
+  @@map("geo_demographic_snapshot")
+}
+
+// Gemini analysis queue. Queue state kept separate from the result (same reason
+// GateQueue is separate from Conversation). Mirrors GateQueue's shape/backoff.
+model GeminiJob {
+  mediaId       String   @id @map("media_id")
+  status        String   @default("pending") // pending | running | done | failed | skipped
+  attempts      Int      @default(0)
+  lastError     String?  @map("last_error")
+  nextAttemptAt DateTime @default(now()) @map("next_attempt_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  reel ReelMeta @relation(fields: [mediaId], references: [mediaId], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+  @@map("gemini_job")
+}
+
+// Tab 3. Created now so the table ships in one migration; used in Phase 4.
+model Experiment {
+  id            String   @id @default(uuid()) @db.Uuid
+  hypothesis    String
+  variable      String
+  reelMediaIds  String[] @map("reel_media_ids")
+  status        String   @default("running") // running | inconclusive | confirmed | busted
+  baselineUsPct Float?   @map("baseline_us_pct") // reached-US% at creation
+  startedAt     DateTime @default(now()) @map("started_at")
+  postedAt      DateTime? @map("posted_at")
+  measuredUsPct Float?   @map("measured_us_pct")
+  conclusion    String?
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@map("experiment")
+}
