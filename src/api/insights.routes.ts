@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
-import { getLeaderboard, getReelDetail, getLatestGeo } from "../services/insightsService.js";
+import { getLeaderboard, getReelDetail, getLatestGeo, getRecipe } from "../services/insightsService.js";
 import { computeUsFit } from "../services/usFitScore.js";
 import type { ContentProfile } from "../services/geminiAnalysisService.js";
 
@@ -15,6 +15,11 @@ insightsRouter.get("/leaderboard", async (_req, res) => {
 // GET /api/insights/geo — latest account-level country split (3 stages).
 insightsRouter.get("/geo", async (_req, res) => {
   res.json({ stages: await getLatestGeo() });
+});
+
+// GET /api/insights/recipe — top-vs-bottom US-fit contrast + derived checklist.
+insightsRouter.get("/recipe", async (_req, res) => {
+  res.json(await getRecipe());
 });
 
 // GET /api/insights/reels/:mediaId — full drawer detail.

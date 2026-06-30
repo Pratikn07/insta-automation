@@ -233,3 +233,27 @@ export interface GeoStageSplit {
   counts: Record<string, number>;
   capturedAt: string | null;
 }
+
+export interface RecipeReference {
+  text: string;
+  count: number;
+}
+
+export interface RecipeGroup {
+  label: string;
+  reels: LeaderboardRow[];
+  usRefs: RecipeReference[];
+  indiaRefs: RecipeReference[];
+  avgUsFit: number | null;
+  avgSettingScore: number | null;
+  avgCulturalScore: number | null;
+  avgReach: number | null;
+}
+
+export interface RecipeData {
+  ready: boolean;
+  scoredCount: number;
+  top: RecipeGroup | null;
+  bottom: RecipeGroup | null;
+  checklist: string[];
+}

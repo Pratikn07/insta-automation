@@ -1,9 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { BarChart3, Film, ExternalLink, Sparkles, RefreshCw } from "lucide-react";
+import { BarChart3, Film, ExternalLink, Sparkles, RefreshCw, ListChecks } from "lucide-react";
 import { useState } from "react";
 import { api } from "@/lib/api";
-import type { GeoStageSplit, LeaderboardRow, ReelInsightDetail } from "@/lib/types";
+import type { GeoStageSplit, LeaderboardRow, ReelInsightDetail, RecipeData, RecipeGroup } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Drawer } from "@/components/ui/drawer";
@@ -14,7 +14,7 @@ type Tab = "leaderboard" | "recipe" | "experiments";
 
 const TABS: { value: Tab; label: string; ready: boolean }[] = [
   { value: "leaderboard", label: "Leaderboard", ready: true },
-  { value: "recipe", label: "Recipe", ready: false },
+  { value: "recipe", label: "Recipe", ready: true },
   { value: "experiments", label: "Experiments", ready: false },
 ];
 
@@ -55,6 +55,7 @@ export function Insights() {
       </div>
 
       {tab === "leaderboard" && <Leaderboard />}
+      {tab === "recipe" && <Recipe />}
     </div>
   );
 }
@@ -418,4 +419,146 @@ function Funnel({ n, label, tone }: { n: number; label: string; tone?: string })
 
 function fmt(n: number | null): string {
   return n === null ? "—" : n.toLocaleString();
+}
+
+// ── Recipe (Tab 2) ───────────────────────────────────────────────────────────
+function Recipe() {
+  const q = useQuery<RecipeData>({
+    queryKey: ["insights", "recipe"],
+    queryFn: () => api<RecipeData>("/insights/recipe"),
+  });
+
+  if (q.isError) {
+    return (
+      <EmptyState
+        icon={<ListChecks className="size-5" />}
+        title="Couldn't load the recipe"
+        description="Try again shortly."
+        action={
+          <Button variant="outline" onClick={() => q.refetch()}>
+            Retry
+          </Button>
+        }
+      />
+    );
+  }
+  if (q.isLoading) return <Skeleton className="h-72 w-full rounded-lg" />;
+
+  const data = q.data;
+  if (!data || !data.ready || !data.top || !data.bottom) {
+    return (
+      <EmptyState
+        icon={<ListChecks className="size-5" />}
+        title="Not enough analyzed reels yet"
+        description={`The recipe contrasts your top vs bottom US-fit reels. ${
+          data?.scoredCount ?? 0
+        } scored so far — it sharpens as more are analyzed.`}
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      {/* The actionable takeaway, up top */}
+      <div className="rounded-lg border bg-card/40 p-4">
+        <h3 className="mb-2 flex items-center gap-1.5 text-sm font-medium">
+          <ListChecks className="size-4 text-emerald-400" /> To make a more US-resonant reel
+        </h3>
+        {data.checklist.length === 0 ? (
+          <p className="text-xs text-muted-foreground">
+            No clear pattern yet — analyze more reels to surface the recipe.
+          </p>
+        ) : (
+          <ul className="space-y-1.5">
+            {data.checklist.map((c, i) => (
+              <li key={i} className="flex gap-2 text-xs text-muted-foreground">
+                <span className="mt-0.5 text-emerald-400">✓</span>
+                <span>{c}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="mt-3 text-[11px] text-muted-foreground">
+          Derived by contrasting your {data.top.reels.length} highest vs{" "}
+          {data.bottom.reels.length} lowest US-fit reels ({data.scoredCount} analyzed). US-fit is a
+          content proxy from video analysis, not measured per-reel geography.
+        </p>
+      </div>
+
+      {/* Side-by-side contrast */}
+      <div className="grid gap-4 md:grid-cols-2">
+        <RecipeColumn group={data.top} tone="us" />
+        <RecipeColumn group={data.bottom} tone="india" />
+      </div>
+    </div>
+  );
+}
+
+function RecipeColumn({ group, tone }: { group: RecipeGroup; tone: "us" | "india" }) {
+  const accent = tone === "us" ? "text-emerald-400" : "text-muted-foreground";
+  const refs = tone === "us" ? group.usRefs : group.indiaRefs;
+  return (
+    <div className="space-y-3 rounded-lg border bg-card/40 p-4">
+      <div className="flex items-center justify-between">
+        <h3 className={cn("text-sm font-medium", accent)}>{group.label}</h3>
+        <span
+          className={cn(
+            "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold",
+            scoreColor(group.avgUsFit),
+          )}
+        >
+          avg US-fit {group.avgUsFit ?? "—"}
+        </span>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2">
+        <Stat label="Setting" value={group.avgSettingScore !== null ? `${group.avgSettingScore}` : "—"} />
+        <Stat label="Cultural" value={group.avgCulturalScore !== null ? `${group.avgCulturalScore}` : "—"} />
+        <Stat label="Avg reach" value={fmt(group.avgReach)} />
+      </div>
+
+      <div className="space-y-1.5">
+        <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+          {tone === "us" ? "US cultural cues" : "India cultural cues"}
+        </div>
+        {refs.length === 0 ? (
+          <p className="text-xs text-muted-foreground">
+            {tone === "us"
+              ? "No US-specific references — this is the tell of a generic reel."
+              : "No India-specific references."}
+          </p>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {refs.map((r) => (
+              <Chip key={r.text}>
+                {r.text}
+                {r.count > 1 && <span className="ml-1 opacity-60">×{r.count}</span>}
+              </Chip>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* A few thumbnails from this group */}
+      <div className="flex gap-1.5 pt-1">
+        {group.reels.slice(0, 4).map((r) =>
+          r.thumbnailUrl ? (
+            <img
+              key={r.mediaId}
+              src={r.thumbnailUrl}
+              alt=""
+              className="aspect-[9/16] w-12 shrink-0 rounded object-cover"
+            />
+          ) : (
+            <div
+              key={r.mediaId}
+              className="flex aspect-[9/16] w-12 shrink-0 items-center justify-center rounded bg-accent text-muted-foreground"
+            >
+              <Film className="size-4" />
+            </div>
+          ),
+        )}
+      </div>
+    </div>
+  );
 }
