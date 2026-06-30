@@ -2,6 +2,12 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { getLeaderboard, getReelDetail, getLatestGeo, getRecipe } from "../services/insightsService.js";
+import {
+  listExperiments,
+  createExperiment,
+  updateExperiment,
+  getUsReachTrend,
+} from "../services/experimentService.js";
 import { computeUsFit } from "../services/usFitScore.js";
 import type { ContentProfile } from "../services/geminiAnalysisService.js";
 
@@ -20,6 +26,46 @@ insightsRouter.get("/geo", async (_req, res) => {
 // GET /api/insights/recipe — top-vs-bottom US-fit contrast + derived checklist.
 insightsRouter.get("/recipe", async (_req, res) => {
   res.json(await getRecipe());
+});
+
+// ── Experiments (Tab 3) ──────────────────────────────────────────────────────
+
+// GET /api/insights/us-reach-trend — reached-US% time series for the chart.
+insightsRouter.get("/us-reach-trend", async (_req, res) => {
+  res.json({ points: await getUsReachTrend() });
+});
+
+// GET /api/insights/experiments — all experiments, newest first.
+insightsRouter.get("/experiments", async (_req, res) => {
+  res.json({ items: await listExperiments() });
+});
+
+const createExperimentSchema = z.object({
+  hypothesis: z.string().min(1).max(500),
+  variable: z.string().min(1).max(200),
+  reelMediaIds: z.array(z.string()).default([]),
+  postedAt: z.string().datetime().nullable().optional(),
+});
+
+// POST /api/insights/experiments — create one; baselineUsPct captured at creation.
+insightsRouter.post("/experiments", async (req, res) => {
+  const parsed = createExperimentSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  res.json(await createExperiment(parsed.data));
+});
+
+const updateExperimentSchema = z.object({
+  status: z.enum(["running", "inconclusive", "confirmed", "busted"]).optional(),
+  postedAt: z.string().datetime().nullable().optional(),
+  conclusion: z.string().max(1000).nullable().optional(),
+  measure: z.boolean().optional(), // re-read current reached-US% into measuredUsPct
+});
+
+// PATCH /api/insights/experiments/:id — status/conclusion/postedAt or "Measure now".
+insightsRouter.patch("/experiments/:id", async (req, res) => {
+  const parsed = updateExperimentSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  res.json(await updateExperiment(req.params.id, parsed.data));
 });
 
 // GET /api/insights/reels/:mediaId — full drawer detail.

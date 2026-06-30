@@ -1,12 +1,24 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { BarChart3, Film, ExternalLink, Sparkles, RefreshCw, ListChecks } from "lucide-react";
+import { BarChart3, Film, ExternalLink, Sparkles, RefreshCw, ListChecks, FlaskConical } from "lucide-react";
 import { useState } from "react";
+import { toast } from "sonner";
 import { api } from "@/lib/api";
-import type { GeoStageSplit, LeaderboardRow, ReelInsightDetail, RecipeData, RecipeGroup } from "@/lib/types";
+import type {
+  GeoStageSplit,
+  LeaderboardRow,
+  ReelInsightDetail,
+  RecipeData,
+  RecipeGroup,
+  Experiment,
+  UsReachTrendPoint,
+} from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Drawer } from "@/components/ui/drawer";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
 import { EmptyState } from "@/components/EmptyState";
 import { cn } from "@/lib/utils";
 
@@ -15,7 +27,7 @@ type Tab = "leaderboard" | "recipe" | "experiments";
 const TABS: { value: Tab; label: string; ready: boolean }[] = [
   { value: "leaderboard", label: "Leaderboard", ready: true },
   { value: "recipe", label: "Recipe", ready: true },
-  { value: "experiments", label: "Experiments", ready: false },
+  { value: "experiments", label: "Experiments", ready: true },
 ];
 
 export function Insights() {
@@ -56,6 +68,7 @@ export function Insights() {
 
       {tab === "leaderboard" && <Leaderboard />}
       {tab === "recipe" && <Recipe />}
+      {tab === "experiments" && <Experiments />}
     </div>
   );
 }
@@ -557,6 +570,239 @@ function RecipeColumn({ group, tone }: { group: RecipeGroup; tone: "us" | "india
               <Film className="size-4" />
             </div>
           ),
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Experiments (Tab 3) ──────────────────────────────────────────────────────
+const STATUS_TONE: Record<Experiment["status"], string> = {
+  running: "text-sky-400 bg-sky-400/10",
+  confirmed: "text-emerald-400 bg-emerald-400/10",
+  busted: "text-rose-400 bg-rose-400/10",
+  inconclusive: "text-muted-foreground bg-muted/40",
+};
+
+function Experiments() {
+  const qc = useQueryClient();
+  const trendQ = useQuery<{ points: UsReachTrendPoint[] }>({
+    queryKey: ["insights", "us-reach-trend"],
+    queryFn: () => api<{ points: UsReachTrendPoint[] }>("/insights/us-reach-trend"),
+  });
+  const expsQ = useQuery<{ items: Experiment[] }>({
+    queryKey: ["insights", "experiments"],
+    queryFn: () => api<{ items: Experiment[] }>("/insights/experiments"),
+  });
+
+  const points = trendQ.data?.points ?? [];
+  const experiments = expsQ.data?.items ?? [];
+
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ["insights", "experiments"] });
+    qc.invalidateQueries({ queryKey: ["insights", "us-reach-trend"] });
+  };
+
+  return (
+    <div className="space-y-5">
+      {/* Reached-US% trend */}
+      <div className="rounded-lg border bg-card/40 p-4">
+        <h3 className="mb-1 flex items-center gap-1.5 text-sm font-medium">
+          <BarChart3 className="size-4 text-muted-foreground" /> Reached-US% over time
+        </h3>
+        <UsReachChart points={points} />
+        <p className="mt-2 text-[11px] text-muted-foreground">
+          {points.length < 5
+            ? `${points.length} snapshot${points.length === 1 ? "" : "s"} so far — the trend sharpens as data accrues (daily). `
+            : ""}
+          Account-wide reached-US% (90-day window). Correlational, not causal — run one change at a
+          time for a clean read.
+        </p>
+      </div>
+
+      <NewExperimentForm onCreated={invalidate} />
+
+      {/* Experiment list */}
+      {expsQ.isLoading ? (
+        <Skeleton className="h-32 w-full rounded-lg" />
+      ) : experiments.length === 0 ? (
+        <EmptyState
+          icon={<FlaskConical className="size-5" />}
+          title="No experiments yet"
+          description="Log a hypothesis above, post the reel(s) that test it, then watch whether reached-US% moves over the following weeks."
+        />
+      ) : (
+        <div className="space-y-3">
+          {experiments.map((e) => (
+            <ExperimentCard key={e.id} exp={e} onChange={invalidate} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Tiny dependency-free SVG line chart (recharts couldn't be installed in this
+// environment, and a single slow-moving line doesn't justify a 500KB dep).
+function UsReachChart({ points }: { points: UsReachTrendPoint[] }) {
+  const vals = points.map((p) => p.usPct).filter((v): v is number => v !== null);
+  if (vals.length === 0) {
+    return <div className="py-6 text-center text-xs text-muted-foreground">No snapshots yet.</div>;
+  }
+  if (points.length === 1) {
+    return (
+      <div className="py-4 text-center">
+        <span className="text-2xl font-semibold">{vals[0]}%</span>
+        <span className="ml-1 text-xs text-muted-foreground">US (single reading)</span>
+      </div>
+    );
+  }
+  const W = 600, H = 120, pad = 8;
+  const min = Math.min(...vals), max = Math.max(...vals);
+  const range = max - min || 1;
+  const xs = (i: number) => pad + (i / (points.length - 1)) * (W - 2 * pad);
+  const ys = (v: number) => H - pad - ((v - min) / range) * (H - 2 * pad);
+  const path = points
+    .map((p, i) => (p.usPct === null ? null : `${i === 0 ? "M" : "L"}${xs(i)},${ys(p.usPct)}`))
+    .filter(Boolean)
+    .join(" ");
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="h-28 w-full" preserveAspectRatio="none">
+      <path d={path} fill="none" stroke="currentColor" strokeWidth={2} className="text-emerald-400" />
+      {points.map((p, i) =>
+        p.usPct === null ? null : (
+          <circle key={i} cx={xs(i)} cy={ys(p.usPct)} r={2.5} className="fill-emerald-400" />
+        ),
+      )}
+    </svg>
+  );
+}
+
+function NewExperimentForm({ onCreated }: { onCreated: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [hypothesis, setHypothesis] = useState("");
+  const [variable, setVariable] = useState("");
+
+  const createM = useMutation({
+    mutationFn: () =>
+      api("/insights/experiments", {
+        method: "POST",
+        body: JSON.stringify({ hypothesis, variable, reelMediaIds: [] }),
+      }),
+    onSuccess: () => {
+      toast.success("Experiment started — baseline US% captured.");
+      setHypothesis("");
+      setVariable("");
+      setOpen(false);
+      onCreated();
+    },
+    onError: () => toast.error("Couldn't create experiment."),
+  });
+
+  if (!open) {
+    return (
+      <Button variant="brand" size="sm" onClick={() => setOpen(true)}>
+        <FlaskConical className="size-4" /> New experiment
+      </Button>
+    );
+  }
+
+  return (
+    <div className="space-y-3 rounded-lg border bg-card/40 p-4">
+      <div className="space-y-1.5">
+        <Label htmlFor="hyp">Hypothesis</Label>
+        <Textarea
+          id="hyp"
+          value={hypothesis}
+          onChange={(e) => setHypothesis(e.target.value)}
+          placeholder="e.g. Reels using trending US audio lift reached-US%"
+          rows={2}
+        />
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="var">What you're changing (the variable)</Label>
+        <Input
+          id="var"
+          value={variable}
+          onChange={(e) => setVariable(e.target.value)}
+          placeholder="e.g. trending US audio"
+        />
+      </div>
+      <div className="flex gap-2">
+        <Button
+          size="sm"
+          variant="brand"
+          disabled={!hypothesis.trim() || !variable.trim() || createM.isPending}
+          onClick={() => createM.mutate()}
+        >
+          {createM.isPending ? "Starting…" : "Start experiment"}
+        </Button>
+        <Button size="sm" variant="ghost" onClick={() => setOpen(false)}>
+          Cancel
+        </Button>
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Baseline reached-US% is captured now. Post the reel(s) testing this, then check back over the
+        coming weeks.
+      </p>
+    </div>
+  );
+}
+
+function ExperimentCard({ exp, onChange }: { exp: Experiment; onChange: () => void }) {
+  const patchM = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      api(`/insights/experiments/${exp.id}`, { method: "PATCH", body: JSON.stringify(body) }),
+    onSuccess: onChange,
+    onError: () => toast.error("Update failed."),
+  });
+
+  const baseline = exp.baselineUsPct;
+  const current = exp.currentUsPct;
+  const delta = baseline !== null && current !== null ? Math.round((current - baseline) * 10) / 10 : null;
+
+  return (
+    <div className="space-y-3 rounded-lg border bg-card/40 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium">{exp.hypothesis}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">Changing: {exp.variable}</p>
+        </div>
+        <span
+          className={cn(
+            "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide",
+            STATUS_TONE[exp.status],
+          )}
+        >
+          {exp.status}
+        </span>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2">
+        <Stat label="Baseline US%" value={baseline !== null ? `${baseline}%` : "—"} />
+        <Stat label="Current US%" value={current !== null ? `${current}%` : "—"} />
+        <Stat
+          label="Delta"
+          value={delta === null ? "—" : `${delta > 0 ? "+" : ""}${delta} pts`}
+        />
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" variant="outline" disabled={patchM.isPending} onClick={() => patchM.mutate({ measure: true })}>
+          <RefreshCw className="size-3.5" /> Measure now
+        </Button>
+        {exp.status === "running" && (
+          <>
+            <Button size="sm" variant="ghost" onClick={() => patchM.mutate({ status: "confirmed" })}>
+              Mark confirmed
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => patchM.mutate({ status: "busted" })}>
+              Mark busted
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => patchM.mutate({ status: "inconclusive" })}>
+              Inconclusive
+            </Button>
+          </>
         )}
       </div>
     </div>

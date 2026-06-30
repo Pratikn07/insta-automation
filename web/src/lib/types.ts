@@ -257,3 +257,22 @@ export interface RecipeData {
   bottom: RecipeGroup | null;
   checklist: string[];
 }
+
+export interface Experiment {
+  id: string;
+  hypothesis: string;
+  variable: string;
+  reelMediaIds: string[];
+  status: "running" | "inconclusive" | "confirmed" | "busted";
+  baselineUsPct: number | null;
+  measuredUsPct: number | null;
+  currentUsPct: number | null;
+  startedAt: string;
+  postedAt: string | null;
+  conclusion: string | null;
+}
+
+export interface UsReachTrendPoint {
+  capturedAt: string;
+  usPct: number | null;
+}
