@@ -22,6 +22,16 @@ export interface ExperimentDto {
   startedAt: string;
   postedAt: string | null;
   conclusion: string | null;
+  // Auto-experiment fields (null for manual experiments).
+  origin: string;
+  mediaId: string | null;
+  usFitScore: number | null;
+  culturalCues: string[];
+  baselineEngagedUsPct: number | null;
+  measuredEngagedUsPct: number | null;
+  windowReachShare: number | null;
+  suggestedVerdict: string | null;
+  attributionConfidence: string | null;
 }
 
 export interface UsReachTrendPoint {
@@ -56,21 +66,26 @@ async function latestReachedUsPct(): Promise<number | null> {
   return row?.usPct ?? null;
 }
 
-function toDto(
-  e: {
-    id: string;
-    hypothesis: string;
-    variable: string;
-    reelMediaIds: string[];
-    status: string;
-    baselineUsPct: number | null;
-    measuredUsPct: number | null;
-    startedAt: Date;
-    postedAt: Date | null;
-    conclusion: string | null;
-  },
-  currentUsPct: number | null,
-): ExperimentDto {
+/** Latest 14d ENGAGED-US% — the responsive signal auto-experiments track. */
+async function latestEngagedUsPct14d(): Promise<number | null> {
+  const row = await prisma.geoDemographicSnapshot.findFirst({
+    where: { stage: "engaged", timeframe: "last_14_days" },
+    orderBy: { capturedAt: "desc" },
+    select: { usPct: true },
+  });
+  return row?.usPct ?? null;
+}
+
+// A reel must own at least this share of its 14-day window's reach before we'll
+// suggest a verdict — below it, other reels confound the account-level US%, so we
+// stay honest and label it inconclusive.
+const DOMINANCE_THRESHOLD = 0.5;
+// Auto-experiments measure once the reel has had ~2 weeks to accrue its window.
+const MEASURE_AFTER_DAYS = 14;
+
+type ExperimentRow = Awaited<ReturnType<typeof prisma.experiment.findFirst>>;
+
+function toDto(e: NonNullable<ExperimentRow>, currentUsPct: number | null): ExperimentDto {
   return {
     id: e.id,
     hypothesis: e.hypothesis,
@@ -83,6 +98,15 @@ function toDto(
     startedAt: e.startedAt.toISOString(),
     postedAt: e.postedAt?.toISOString() ?? null,
     conclusion: e.conclusion,
+    origin: e.origin,
+    mediaId: e.mediaId,
+    usFitScore: e.usFitScore,
+    culturalCues: e.culturalCues,
+    baselineEngagedUsPct: e.baselineEngagedUsPct,
+    measuredEngagedUsPct: e.measuredEngagedUsPct,
+    windowReachShare: e.windowReachShare,
+    suggestedVerdict: e.suggestedVerdict,
+    attributionConfidence: e.attributionConfidence,
   };
 }
 
@@ -109,6 +133,8 @@ export async function createExperiment(input: {
       baselineUsPct: baseline,
       postedAt: input.postedAt ? new Date(input.postedAt) : null,
       status: "running",
+      origin: "manual",
+      culturalCues: [], // never NULL — the DTO types this field non-null
     },
   });
   return toDto(created, baseline);
@@ -198,4 +224,125 @@ export async function getGeoWindowTrend(): Promise<GeoWindowPoint[]> {
     buckets.set(key, pt);
   }
   return [...buckets.values()];
+}
+
+// ── Auto-experiments ──────────────────────────────────────────────────────────
+// Called by the snapshot worker. Two phases, both idempotent + non-throwing at
+// the caller. Auto-experiments never fabricate a verdict — they only SUGGEST one
+// when a reel demonstrably dominated its window's reach.
+
+/**
+ * For each reel that (a) has a Gemini profile, (b) was posted, and (c) doesn't
+ * already have an auto-experiment, create one — stamping the reel's US-fit score,
+ * its US cultural cues, and the baseline 14d engaged-US% at this moment.
+ * Only reels posted recently qualify, so a baseline is meaningful (we never
+ * backfill fake baselines onto old reels). Returns count created.
+ */
+export async function autoCreateExperimentsForNewReels(): Promise<number> {
+  const cutoff = new Date(Date.now() - MEASURE_AFTER_DAYS * 24 * 3600 * 1000);
+  const reels = await prisma.reelMeta.findMany({
+    where: {
+      postedAt: { gte: cutoff }, // recent enough that a baseline is honest
+      contentProfile: { isNot: null }, // Gemini has scored it → "what changed" is known
+    },
+    include: { contentProfile: true },
+  });
+  if (reels.length === 0) return 0;
+
+  const existing = await prisma.experiment.findMany({
+    where: { origin: "auto", mediaId: { in: reels.map((r) => r.mediaId) } },
+    select: { mediaId: true },
+  });
+  const have = new Set(existing.map((e) => e.mediaId));
+
+  const baseline = await latestEngagedUsPct14d();
+  let created = 0;
+  for (const r of reels) {
+    if (have.has(r.mediaId)) continue;
+    const cues =
+      ((r.contentProfile?.profile as { culturalReferences?: Array<{ text?: string; region?: string }> } | null)
+        ?.culturalReferences ?? [])
+        .filter((c) => c.region === "us" && c.text)
+        .map((c) => c.text as string)
+        .slice(0, 6);
+    await prisma.experiment.create({
+      data: {
+        origin: "auto",
+        mediaId: r.mediaId,
+        hypothesis: `Does "${(r.caption ?? "").slice(0, 60)}" shift engaged-US%?`,
+        variable: r.usFitScore != null ? `US-fit ${r.usFitScore}${cues.length ? `: ${cues.join(", ")}` : ""}` : "content",
+        reelMediaIds: [r.mediaId],
+        usFitScore: r.usFitScore,
+        culturalCues: cues,
+        baselineEngagedUsPct: baseline,
+        baselineUsPct: await latestReachedUsPct(), // keep legacy field populated too
+        postedAt: r.postedAt,
+        status: "running",
+      },
+    });
+    created++;
+  }
+  return created;
+}
+
+/**
+ * For auto-experiments whose reel has now had ~14 days, measure the outcome:
+ * compute the reel's share of its 14-day window's reach (attribution power),
+ * re-read engaged-US%, and set a SUGGESTED verdict — but only mark high
+ * confidence (and thus suggest confirmed/busted) if the reel dominated its
+ * window. Otherwise: inconclusive, low confidence. Never flips status itself.
+ * Returns count measured.
+ */
+export async function autoMeasureDueExperiments(): Promise<number> {
+  const dueBefore = new Date(Date.now() - MEASURE_AFTER_DAYS * 24 * 3600 * 1000);
+  const due = await prisma.experiment.findMany({
+    where: { origin: "auto", measuredAt: null, postedAt: { lte: dueBefore }, mediaId: { not: null } },
+  });
+  if (due.length === 0) return 0;
+
+  const measuredEngaged = await latestEngagedUsPct14d();
+  let measured = 0;
+
+  for (const exp of due) {
+    if (!exp.mediaId || !exp.postedAt) continue;
+
+    // This reel's reach vs the total reach of all reels live in its 14d window.
+    const windowStart = exp.postedAt;
+    const windowEnd = new Date(exp.postedAt.getTime() + MEASURE_AFTER_DAYS * 24 * 3600 * 1000);
+    const windowReels = await prisma.reelMeta.findMany({
+      where: { postedAt: { gte: windowStart, lte: windowEnd } },
+      select: { mediaId: true, perfSnapshots: { orderBy: { capturedAt: "desc" }, take: 1, select: { reach: true } } },
+    });
+    const reachOf = (m: (typeof windowReels)[number]) => m.perfSnapshots[0]?.reach ?? 0;
+    const totalReach = windowReels.reduce((s, m) => s + reachOf(m), 0);
+    const thisReach = reachOf(windowReels.find((m) => m.mediaId === exp.mediaId) ?? ({} as never)) || 0;
+    const share = totalReach > 0 ? thisReach / totalReach : null;
+
+    const base = exp.baselineEngagedUsPct;
+    const delta = base != null && measuredEngaged != null ? measuredEngaged - base : null;
+
+    let suggestedVerdict: string;
+    let confidence: "high" | "low";
+    if (share != null && share >= DOMINANCE_THRESHOLD && delta != null) {
+      // This reel owned the window → the US% move is fairly attributable to it.
+      confidence = "high";
+      suggestedVerdict = delta >= 0 ? "confirmed" : "busted";
+    } else {
+      confidence = "low";
+      suggestedVerdict = "inconclusive"; // overlapping reels — can't isolate
+    }
+
+    await prisma.experiment.update({
+      where: { id: exp.id },
+      data: {
+        measuredEngagedUsPct: measuredEngaged,
+        windowReachShare: share,
+        suggestedVerdict,
+        attributionConfidence: confidence,
+        measuredAt: new Date(),
+      },
+    });
+    measured++;
+  }
+  return measured;
 }

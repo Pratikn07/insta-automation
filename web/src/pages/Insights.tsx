@@ -920,16 +920,33 @@ function ExperimentCard({ exp, onChange }: { exp: Experiment; onChange: () => vo
     onError: () => toast.error("Update failed."),
   });
 
+  const isAuto = exp.origin === "auto";
   const baseline = exp.baselineUsPct;
   const current = exp.currentUsPct;
   const delta = baseline !== null && current !== null ? Math.round((current - baseline) * 10) / 10 : null;
+
+  // Auto-experiments track the responsive 14d ENGAGED-US% before→after.
+  const eBase = exp.baselineEngagedUsPct;
+  const eMeas = exp.measuredEngagedUsPct;
+  const eDelta = eBase !== null && eMeas !== null ? Math.round((eMeas - eBase) * 10) / 10 : null;
+  const sharePct = exp.windowReachShare !== null ? Math.round(exp.windowReachShare * 100) : null;
 
   return (
     <div className="space-y-3 rounded-lg border bg-card/40 p-4">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-sm font-medium">{exp.hypothesis}</p>
-          <p className="mt-0.5 text-xs text-muted-foreground">Changing: {exp.variable}</p>
+          <div className="flex items-center gap-1.5">
+            {isAuto && (
+              <span className="shrink-0 rounded bg-sky-400/15 px-1.5 py-0.5 text-[10px] font-medium text-sky-300">
+                AUTO
+              </span>
+            )}
+            <p className="truncate text-sm font-medium">{exp.hypothesis}</p>
+          </div>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            {isAuto && exp.usFitScore !== null ? `US-fit ${exp.usFitScore}` : `Changing: ${exp.variable}`}
+            {isAuto && exp.culturalCues.length > 0 && ` · ${exp.culturalCues.slice(0, 3).join(", ")}`}
+          </p>
         </div>
         <span
           className={cn(
@@ -941,14 +958,45 @@ function ExperimentCard({ exp, onChange }: { exp: Experiment; onChange: () => vo
         </span>
       </div>
 
-      <div className="grid grid-cols-3 gap-2">
-        <Stat label="Baseline US%" value={baseline !== null ? `${baseline}%` : "—"} />
-        <Stat label="Current US%" value={current !== null ? `${current}%` : "—"} />
-        <Stat
-          label="Delta"
-          value={delta === null ? "—" : `${delta > 0 ? "+" : ""}${delta} pts`}
-        />
-      </div>
+      {/* Auto-experiments lead with the 14d engaged signal; manual with 90d reached. */}
+      {isAuto ? (
+        <div className="grid grid-cols-3 gap-2">
+          <Stat label="Engaged US% at post" value={eBase !== null ? `${eBase}%` : "—"} />
+          <Stat label="Engaged US% now" value={eMeas !== null ? `${eMeas}%` : "measuring…"} />
+          <Stat label="Shift" value={eDelta === null ? "—" : `${eDelta > 0 ? "+" : ""}${eDelta} pts`} />
+        </div>
+      ) : (
+        <div className="grid grid-cols-3 gap-2">
+          <Stat label="Baseline US%" value={baseline !== null ? `${baseline}%` : "—"} />
+          <Stat label="Current US%" value={current !== null ? `${current}%` : "—"} />
+          <Stat label="Delta" value={delta === null ? "—" : `${delta > 0 ? "+" : ""}${delta} pts`} />
+        </div>
+      )}
+
+      {/* Auto suggestion + attribution confidence — a SUGGESTION, you still decide. */}
+      {isAuto && exp.suggestedVerdict && (
+        <div
+          className={cn(
+            "rounded-md border p-2.5 text-[11px]",
+            exp.attributionConfidence === "high"
+              ? "border-emerald-500/30 bg-emerald-500/5 text-emerald-200/90"
+              : "border-amber-500/30 bg-amber-500/5 text-amber-200/90",
+          )}
+        >
+          {exp.attributionConfidence === "high" ? (
+            <>
+              <span className="font-medium">Suggested: {exp.suggestedVerdict}.</span> This reel drove{" "}
+              {sharePct}% of its 14-day window's reach, so the US% shift is fairly attributable to it.
+            </>
+          ) : (
+            <>
+              <span className="font-medium">Inconclusive — overlapping reels.</span> This reel was only{" "}
+              {sharePct ?? "—"}% of its window's reach, so the account-level US% move can't be pinned to it.
+              Correlational only.
+            </>
+          )}
+        </div>
+      )}
 
       <div className="flex flex-wrap gap-2">
         <Button size="sm" variant="outline" disabled={patchM.isPending} onClick={() => patchM.mutate({ measure: true })}>

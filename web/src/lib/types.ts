@@ -286,6 +286,16 @@ export interface Experiment {
   startedAt: string;
   postedAt: string | null;
   conclusion: string | null;
+  // Auto-experiment fields (origin "manual" for hand-created ones).
+  origin: "manual" | "auto";
+  mediaId: string | null;
+  usFitScore: number | null;
+  culturalCues: string[];
+  baselineEngagedUsPct: number | null;
+  measuredEngagedUsPct: number | null;
+  windowReachShare: number | null;
+  suggestedVerdict: "confirmed" | "busted" | "inconclusive" | null;
+  attributionConfidence: "high" | "low" | null;
 }
 
 export interface UsReachTrendPoint {

@@ -4,6 +4,7 @@ import { env } from "../config/env.js";
 import { fetchAllReels } from "../meta/fetchMedia.js";
 import { fetchReelInsights } from "../meta/mediaInsightsFetcher.js";
 import { fetchAllCountrySplits } from "../meta/demographicsFetcher.js";
+import { autoCreateExperimentsForNewReels, autoMeasureDueExperiments } from "./experimentService.js";
 import { logEvent } from "./eventLogger.js";
 
 // Gentle spacing between per-reel insight calls, same spirit as the gate worker's
@@ -122,14 +123,28 @@ export async function runSnapshotTick(): Promise<void> {
       });
     }
 
+    // 4. Auto-experiments: create one per newly-profiled recent reel, and
+    //    measure any that have completed their ~14d window. Non-fatal — a failure
+    //    here must not lose the snapshot we just wrote.
+    let autoCreated = 0;
+    let autoMeasured = 0;
+    try {
+      autoCreated = await autoCreateExperimentsForNewReels();
+      autoMeasured = await autoMeasureDueExperiments();
+    } catch (err) {
+      logger.warn({ err }, "auto-experiment step failed");
+    }
+
     await logEvent("snapshot_run", {
       reels: reels.length,
       enqueued,
       perfWritten,
       geoSplits: splits.map((s) => `${s.stage}@${s.timeframe}`),
+      autoCreated,
+      autoMeasured,
     });
     logger.info(
-      { reels: reels.length, enqueued, perfWritten, geoStages: splits.length },
+      { reels: reels.length, enqueued, perfWritten, geoStages: splits.length, autoCreated, autoMeasured },
       "Snapshot tick complete",
     );
   } catch (err) {

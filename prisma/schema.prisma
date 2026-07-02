@@ -274,14 +274,32 @@ model Experiment {
   variable      String
   reelMediaIds  String[] @map("reel_media_ids")
   status        String   @default("running") // running | inconclusive | confirmed | busted
-  baselineUsPct Float?   @map("baseline_us_pct") // reached-US% at creation
+  baselineUsPct Float?   @map("baseline_us_pct") // reached-US% at creation (90d, legacy)
   startedAt     DateTime @default(now()) @map("started_at")
   postedAt      DateTime? @map("posted_at")
   measuredUsPct Float?   @map("measured_us_pct")
   conclusion    String?
+
+  // ── Auto-experiments (origin="auto") ──────────────────────────────────────
+  // One reel, auto-created by the snapshot worker once the reel has a Gemini
+  // profile. Tracks the responsive 14d ENGAGED-US% before→after. Never
+  // auto-decides a verdict unless the reel dominated its window's reach (else
+  // account-level geo can't isolate it) — see suggestedVerdict/attributionConfidence.
+  origin        String   @default("manual") // manual | auto
+  mediaId       String?  @map("media_id") // the reel this auto-experiment tracks
+  usFitScore    Int?     @map("us_fit_score") // Gemini score at creation ("what changed")
+  culturalCues  String[] @map("cultural_cues") // US cues Gemini saw, snapshotted
+  baselineEngagedUsPct Float? @map("baseline_engaged_us_pct") // 14d engaged-US% at post time
+  measuredEngagedUsPct Float? @map("measured_engaged_us_pct") // 14d engaged-US% after the window
+  windowReachShare     Float? @map("window_reach_share") // this reel's share of its 14d window reach (0..1)
+  suggestedVerdict     String? @map("suggested_verdict") // confirmed | busted | inconclusive (a SUGGESTION)
+  attributionConfidence String? @map("attribution_confidence") // high | low — can we isolate this reel?
+  measuredAt    DateTime? @map("measured_at")
+
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
 
   @@index([status])
+  @@index([origin, mediaId])
   @@map("experiment")
 }
