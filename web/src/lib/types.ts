@@ -261,6 +261,19 @@ export interface RecipeData {
   usFitReachCorr: number | null;
 }
 
+// Per-reel inferred origin of KEYWORD-COMMENTERS (a name-proxy, gate-crowd only).
+export interface ReelOriginRow {
+  mediaId: string;
+  caption: string | null;
+  usFitScore: number | null;
+  total: number;
+  usWestern: number;
+  southAsian: number;
+  other: number;
+  unknown: number;
+  followers: number;
+}
+
 export interface Experiment {
   id: string;
   hypothesis: string;

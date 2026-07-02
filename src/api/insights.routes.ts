@@ -1,7 +1,13 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
-import { getLeaderboard, getReelDetail, getLatestGeo, getRecipe } from "../services/insightsService.js";
+import {
+  getLeaderboard,
+  getReelDetail,
+  getLatestGeo,
+  getRecipe,
+  getReelOriginBreakdown,
+} from "../services/insightsService.js";
 import {
   listExperiments,
   createExperiment,
@@ -27,6 +33,12 @@ insightsRouter.get("/geo", async (_req, res) => {
 // GET /api/insights/recipe — top-vs-bottom US-fit contrast + derived checklist.
 insightsRouter.get("/recipe", async (_req, res) => {
   res.json(await getRecipe());
+});
+
+// GET /api/insights/reel-origin — per-reel inferred origin of keyword-commenters.
+// PROXY + gate-crowd-only; the UI must caveat both.
+insightsRouter.get("/reel-origin", async (_req, res) => {
+  res.json({ items: await getReelOriginBreakdown() });
 });
 
 // ── Experiments (Tab 3) ──────────────────────────────────────────────────────

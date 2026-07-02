@@ -10,6 +10,7 @@ import type {
   ReelInsightDetail,
   RecipeData,
   RecipeGroup,
+  ReelOriginRow,
   Experiment,
   UsReachTrendPoint,
   GeoWindowPoint,
@@ -513,6 +514,70 @@ function Recipe() {
         <RecipeColumn group={data.top} tone="us" />
         <RecipeColumn group={data.bottom} tone="india" />
       </div>
+
+      {/* Per-reel gate-audience origin (proxy + gate-crowd only). */}
+      <GateAudiencePanel />
+    </div>
+  );
+}
+
+// Per-reel inferred origin of the people who COMMENTED A KEYWORD on each reel.
+// Two loud caveats, because this is the most misread panel on the page:
+//   1. Origin is guessed from name/username — a proxy, not real geography.
+//   2. Only keyword-commenters are here; that behavior skews South Asian, and
+//      silent (mostly US) followers leave no trace. NOT "which reel brings US".
+function GateAudiencePanel() {
+  const q = useQuery<{ items: ReelOriginRow[] }>({
+    queryKey: ["insights", "reel-origin"],
+    queryFn: () => api<{ items: ReelOriginRow[] }>("/insights/reel-origin"),
+  });
+  const items = (q.data?.items ?? []).filter((r) => r.total > 0);
+
+  return (
+    <div className="rounded-lg border bg-card/40 p-4">
+      <h3 className="mb-1 flex items-center gap-1.5 text-sm font-medium">
+        <ListChecks className="size-4 text-muted-foreground" /> Gate audience by reel (keyword-commenters)
+      </h3>
+      <div className="mb-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-2.5 text-[11px] text-amber-200/90">
+        Origin is inferred from each person's name/username — a <span className="font-medium">proxy, not real geography</span>.
+        And this counts only people who <span className="font-medium">commented a keyword</span> (a habit that skews South
+        Asian); your silent followers — where most US followers are — aren't here. Read it as "who plays the keyword game
+        on each reel," not "which reel brings Americans."
+      </div>
+      {q.isLoading ? (
+        <Skeleton className="h-24 w-full rounded-md" />
+      ) : items.length === 0 ? (
+        <p className="py-3 text-xs text-muted-foreground">
+          No keyword-commenters mapped yet — run the origin backfill, then this fills in.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {items.map((r) => {
+            const usPct = r.total ? Math.round((r.usWestern / r.total) * 100) : 0;
+            const saPct = r.total ? Math.round((r.southAsian / r.total) * 100) : 0;
+            return (
+              <div key={r.mediaId} className="rounded-md border bg-background/40 p-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate text-xs">{r.caption ?? r.mediaId}</span>
+                  <span className="shrink-0 text-[11px] text-muted-foreground">
+                    {r.total} commenters · {r.followers} followed
+                  </span>
+                </div>
+                {/* Simple US vs SA vs other bar */}
+                <div className="mt-1.5 flex h-2 overflow-hidden rounded-full bg-muted">
+                  <div className="bg-emerald-400" style={{ width: `${usPct}%` }} title={`US/Western ${usPct}%`} />
+                  <div className="bg-amber-500" style={{ width: `${saPct}%` }} title={`South Asian ${saPct}%`} />
+                </div>
+                <div className="mt-1 text-[11px] text-muted-foreground">
+                  <span className="text-emerald-400">US/Western {r.usWestern}</span> ·{" "}
+                  <span className="text-amber-400">S. Asian {r.southAsian}</span>
+                  {r.other + r.unknown > 0 && <span> · other/unknown {r.other + r.unknown}</span>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

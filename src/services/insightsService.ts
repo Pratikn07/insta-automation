@@ -360,3 +360,81 @@ export async function getRecipe(): Promise<RecipeData> {
 
   return { ready: true, scoredCount, top, bottom, checklist, usFitReachCorr };
 }
+
+// ── Per-reel gate-audience origin (Tab: gate-audience breakdown) ──────────────
+// For each reel, the inferred ORIGIN of the people who commented a keyword on it
+// and reached a conversation. HEAVILY caveated in the UI:
+//   1. Origin is a name-based PROXY, not measured geography.
+//   2. This only covers KEYWORD-COMMENTERS — a behavior that skews South Asian.
+//      Silent followers (where most US followers are) are invisible here.
+// So this describes the *gate crowd* per reel, NOT "which reel brings Americans".
+
+export interface ReelOriginRow {
+  mediaId: string;
+  caption: string | null;
+  usFitScore: number | null;
+  total: number;
+  usWestern: number;
+  southAsian: number;
+  other: number;
+  unknown: number;
+  followers: number; // of the above, how many are confirmed followers
+}
+
+export async function getReelOriginBreakdown(): Promise<ReelOriginRow[]> {
+  // keyword_matched carries mediaId + conversationId; conversation carries the
+  // user; ig_users now carries inferred origin. One raw query does the join.
+  const rows = await prisma.$queryRaw<
+    Array<{
+      media_id: string;
+      caption: string | null;
+      us_fit_score: number | null;
+      origin: string | null;
+      is_follower: boolean | null;
+      n: bigint;
+    }>
+  >`
+    with reel_user as (
+      select distinct el.payload->>'mediaId' as media_id, c.ig_user_id
+      from event_log el
+      join conversations c on c.id = (el.payload->>'conversationId')::uuid
+      where el.kind = 'keyword_matched' and el.payload->>'mediaId' is not null
+    )
+    select ru.media_id,
+           rm.caption,
+           rm.us_fit_score,
+           u.inferred_origin as origin,
+           u.is_follower,
+           count(*)::bigint as n
+    from reel_user ru
+    join ig_users u on u.id = ru.ig_user_id
+    left join reel_meta rm on rm.media_id = ru.media_id
+    group by ru.media_id, rm.caption, rm.us_fit_score, u.inferred_origin, u.is_follower
+  `;
+
+  const byReel = new Map<string, ReelOriginRow>();
+  for (const r of rows) {
+    const row =
+      byReel.get(r.media_id) ??
+      ({
+        mediaId: r.media_id,
+        caption: r.caption,
+        usFitScore: r.us_fit_score,
+        total: 0,
+        usWestern: 0,
+        southAsian: 0,
+        other: 0,
+        unknown: 0,
+        followers: 0,
+      } as ReelOriginRow);
+    const n = Number(r.n);
+    row.total += n;
+    if (r.origin === "us_western") row.usWestern += n;
+    else if (r.origin === "south_asian") row.southAsian += n;
+    else if (r.origin === "other") row.other += n;
+    else row.unknown += n;
+    if (r.is_follower) row.followers += n;
+    byReel.set(r.media_id, row);
+  }
+  return [...byReel.values()].sort((a, b) => b.total - a.total);
+}

@@ -109,6 +109,17 @@ model IgUser {
   followerCount   Int?      @map("follower_count")
   isVerified      Boolean?  @map("is_verified")
   followCheckedAt DateTime? @map("follow_checked_at")
+
+  // Inferred audience origin from username/name (and optionally bio). A PROXY,
+  // not measured geography — Meta gives no per-user country. Confidence is low
+  // for Latin-script South Asian names a token match can miss; method records
+  // how it was derived so a later bio pass can upgrade name-only guesses.
+  inferredOrigin   String?   @map("inferred_origin") // us_western | south_asian | other | unknown
+  originConfidence String?   @map("origin_confidence") // high | low
+  originMethod     String?   @map("origin_method") // name | name_bio
+  originEvidence   String?   @map("origin_evidence") // the token/script/bio that drove it
+  originCheckedAt  DateTime? @map("origin_checked_at")
+
   createdAt  DateTime  @default(now()) @map("created_at")
   updatedAt  DateTime  @updatedAt @map("updated_at")
 
