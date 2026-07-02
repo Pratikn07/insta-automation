@@ -247,7 +247,8 @@ export interface RecipeGroup {
   avgUsFit: number | null;
   avgSettingScore: number | null;
   avgCulturalScore: number | null;
-  avgReach: number | null;
+  // Median (not mean) reach — mean is meaningless here due to viral outliers.
+  medianReach: number | null;
 }
 
 export interface RecipeData {
@@ -256,6 +257,8 @@ export interface RecipeData {
   top: RecipeGroup | null;
   bottom: RecipeGroup | null;
   checklist: string[];
+  // usFit↔reach correlation across all scored reels (≈0 → US-fit ≠ reach).
+  usFitReachCorr: number | null;
 }
 
 export interface Experiment {
@@ -275,4 +278,15 @@ export interface Experiment {
 export interface UsReachTrendPoint {
   capturedAt: string;
   usPct: number | null;
+}
+
+// 14d ("recent reels" thermometer) vs 90d (baseline) US%, reached + engaged.
+export interface GeoWindowPoint {
+  capturedAt: string;
+  reachedUs90: number | null;
+  reachedUs14: number | null;
+  engagedUs90: number | null;
+  engagedUs14: number | null;
+  reachedIn14: number | null;
+  engagedIn14: number | null;
 }

@@ -14,8 +14,19 @@ const STAGE_METRIC: Record<GeoStage, string> = {
   reached: "reached_audience_demographics",
 };
 
+// Meta accepts ONLY these two timeframes for demographics (probed: last_30_days
+// returns empty; timeframe IS honored here, unlike the reach metric where it's
+// inert). 90d = stable baseline; 14d = moving "who are my RECENT reels pulling"
+// thermometer — the two diverge (e.g. engaged 38.7% US @90d vs 27.6% @14d).
+export type GeoTimeframe = "last_14_days" | "last_90_days";
+
+// follower_demographics is lifetime-only and ignores timeframe, so windowing
+// applies to engaged + reached only.
+const WINDOWABLE_STAGES: GeoStage[] = ["engaged", "reached"];
+
 export interface CountrySplit {
   stage: GeoStage;
+  timeframe: GeoTimeframe;
   counts: Record<string, number>; // ISO country code -> count
   totalCounted: number;
   usPct: number | null;
@@ -60,13 +71,16 @@ function pct(counts: Record<string, number>, code: string, total: number): numbe
  * (unsupported metric, low volume) returns null rather than throwing, so the
  * caller can still record the stages that did succeed.
  */
-export async function fetchCountrySplit(stage: GeoStage): Promise<CountrySplit | null> {
+export async function fetchCountrySplit(
+  stage: GeoStage,
+  timeframe: GeoTimeframe = "last_90_days",
+): Promise<CountrySplit | null> {
   try {
     const { data } = await insightsGraph.get<DemographicsResponse>(`/${env.IG_USER_ID}/insights`, {
       params: {
         metric: STAGE_METRIC[stage],
         period: "lifetime",
-        timeframe: "last_90_days",
+        timeframe,
         breakdown: "country",
         metric_type: "total_value",
       },
@@ -75,20 +89,34 @@ export async function fetchCountrySplit(stage: GeoStage): Promise<CountrySplit |
     const totalCounted = Object.values(counts).reduce((s, v) => s + v, 0);
     return {
       stage,
+      timeframe,
       counts,
       totalCounted,
       usPct: pct(counts, "US", totalCounted),
       inPct: pct(counts, "IN", totalCounted),
     };
   } catch (err) {
-    logger.warn({ ...describeGraphError(err), stage }, "fetchCountrySplit failed");
+    logger.warn({ ...describeGraphError(err), stage, timeframe }, "fetchCountrySplit failed");
     return null;
   }
 }
 
-/** Fetch all three stages; missing stages are simply omitted from the result. */
+/**
+ * Fetch every geo split we track, per snapshot tick:
+ *   - all 3 stages at 90d (the stable baseline; follower is lifetime-only),
+ *   - engaged + reached ALSO at 14d (the moving "recent reels" thermometer).
+ * Missing/low-volume splits are simply omitted. Deduped so we never double-fetch.
+ */
 export async function fetchAllCountrySplits(): Promise<CountrySplit[]> {
-  const stages: GeoStage[] = ["follower", "engaged", "reached"];
-  const results = await Promise.all(stages.map(fetchCountrySplit));
+  const jobs: Array<Promise<CountrySplit | null>> = [
+    fetchCountrySplit("follower", "last_90_days"),
+    ...(["engaged", "reached"] as const).flatMap((stage) =>
+      (["last_90_days", "last_14_days"] as GeoTimeframe[]).map((tf) => fetchCountrySplit(stage, tf)),
+    ),
+  ];
+  const results = await Promise.all(jobs);
   return results.filter((r): r is CountrySplit => r !== null);
 }
+
+// Exported for callers that want only the windowable stages (engaged, reached).
+export { WINDOWABLE_STAGES };

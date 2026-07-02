@@ -117,9 +117,16 @@ export async function getReelDetail(mediaId: string) {
 /** Latest account-level geo split per stage (the demoted-comments side-note context). */
 export async function getLatestGeo() {
   const stages = ["follower", "engaged", "reached"] as const;
+  // Pin to the 90d baseline. The table now also holds last_14_days rows (the
+  // Experiments "recent reels" thermometer); without this filter the newest
+  // engaged/reached row could be a 14d row, and the header's baseline US% would
+  // silently swap to the 14d value. follower is 90d-only anyway.
   const rows = await Promise.all(
     stages.map((stage) =>
-      prisma.geoDemographicSnapshot.findFirst({ where: { stage }, orderBy: { capturedAt: "desc" } }),
+      prisma.geoDemographicSnapshot.findFirst({
+        where: { stage, timeframe: "last_90_days" },
+        orderBy: { capturedAt: "desc" },
+      }),
     ),
   );
   return stages.map((stage, i) => {
@@ -155,7 +162,10 @@ export interface RecipeGroup {
   avgUsFit: number | null;
   avgSettingScore: number | null;
   avgCulturalScore: number | null;
-  avgReach: number | null;
+  // Median, NOT mean: a single viral outlier makes the group mean meaningless
+  // (top-group mean reach 19.6k is dragged up ~9x by one 142k reel; the typical
+  // top reel reaches ~2.2k). Median is the honest "typical reel" figure.
+  medianReach: number | null;
 }
 
 export interface RecipeData {
@@ -164,6 +174,10 @@ export interface RecipeData {
   top: RecipeGroup | null;
   bottom: RecipeGroup | null;
   checklist: string[];
+  // Pearson correlation between usFitScore and reach across ALL scored reels.
+  // Surfaced so the UI can state plainly that US-fit does NOT predict reach
+  // (measured ≈0 on this account) — the tab describes tone, not performance.
+  usFitReachCorr: number | null;
 }
 
 // Minimum scored reels before a top-vs-bottom contrast is meaningful (else a
@@ -180,6 +194,45 @@ function avg(nums: Array<number | null | undefined>): number | null {
   const vals = nums.filter((n): n is number => typeof n === "number");
   if (vals.length === 0) return null;
   return Math.round(vals.reduce((s, v) => s + v, 0) / vals.length);
+}
+
+// Median — robust to the viral-outlier problem that makes mean reach a lie here.
+function median(nums: Array<number | null | undefined>): number | null {
+  const vals = nums.filter((n): n is number => typeof n === "number").sort((a, b) => a - b);
+  if (vals.length === 0) return null;
+  const mid = Math.floor(vals.length / 2);
+  if (vals.length % 2) return vals[mid] ?? null;
+  const lo = vals[mid - 1] ?? 0;
+  const hi = vals[mid] ?? 0;
+  return Math.round((lo + hi) / 2);
+}
+
+// Pearson correlation of two paired series (ignoring pairs with a null on either
+// side). Returns null if fewer than 3 usable pairs or zero variance.
+function pearson(
+  xs: Array<number | null | undefined>,
+  ys: Array<number | null | undefined>,
+): number | null {
+  const pairs: Array<[number, number]> = [];
+  for (let i = 0; i < xs.length; i++) {
+    const x = xs[i];
+    const y = ys[i];
+    if (typeof x === "number" && typeof y === "number") pairs.push([x, y]);
+  }
+  const n = pairs.length;
+  if (n < 3) return null;
+  const mx = pairs.reduce((s, [x]) => s + x, 0) / n;
+  const my = pairs.reduce((s, [, y]) => s + y, 0) / n;
+  let cov = 0,
+    vx = 0,
+    vy = 0;
+  for (const [x, y] of pairs) {
+    cov += (x - mx) * (y - my);
+    vx += (x - mx) ** 2;
+    vy += (y - my) ** 2;
+  }
+  if (vx === 0 || vy === 0) return null;
+  return Math.round((cov / Math.sqrt(vx * vy)) * 100) / 100; // 2 dp
 }
 
 // Flatten + lowercase-dedupe culturalReferences across a group's profiles,
@@ -221,7 +274,7 @@ export async function getRecipe(): Promise<RecipeData> {
 
   const scoredCount = reels.length;
   if (scoredCount < RECIPE_MIN_SCORED) {
-    return { ready: false, scoredCount, top: null, bottom: null, checklist: [] };
+    return { ready: false, scoredCount, top: null, bottom: null, checklist: [], usFitReachCorr: null };
   }
 
   // Split into top and bottom halves, capped, non-overlapping.
@@ -263,37 +316,47 @@ export async function getRecipe(): Promise<RecipeData> {
       avgUsFit: avg(rows.map((r) => r.usFitScore)),
       avgSettingScore: avg(rows.map((r) => r.contentProfile?.settingScore)),
       avgCulturalScore: avg(rows.map((r) => r.contentProfile?.culturalScore)),
-      avgReach: avg(rows.map((r) => r.perfSnapshots[0]?.reach)),
+      medianReach: median(rows.map((r) => r.perfSnapshots[0]?.reach)),
     };
   };
 
-  const top = buildGroup(topRows, "US-pullers");
-  const bottom = buildGroup(bottomRows, "India-leaning / generic");
+  const top = buildGroup(topRows, "US-styled");
+  const bottom = buildGroup(bottomRows, "Generic / India-leaning");
 
-  // Derive a plain-English checklist from the top group's recurring US refs +
-  // its dominant setting strength. Concrete > generic — name the actual refs.
+  // Honesty check: does US-fit actually track reach? Measured across ALL scored
+  // reels, not just the two groups. On this account it's ≈0 — so the checklist
+  // below must describe TONE ("reads as US-aimed"), never promise performance.
+  const usFitReachCorr = pearson(
+    reels.map((r) => r.usFitScore),
+    reels.map((r) => r.perfSnapshots[0]?.reach),
+  );
+
+  // Derive a plain-English checklist of what makes a reel READ as US-aimed. This
+  // is a style/tone descriptor mined from the high-US-fit group — deliberately
+  // NOT framed as a reach or growth lever, because US-fit does not predict reach
+  // (usFitReachCorr ≈ 0). Concrete > generic: name the actual references.
   const checklist: string[] = [];
   const topRefs = top.usRefs.slice(0, 6).map((r) => r.text);
   if (topRefs.length) {
     checklist.push(
-      `Name US-specific brands & figures — your top reels lean on: ${topRefs.join(", ")}.`,
+      `To read as US-aimed, name US-specific brands & figures — your US-styled reels lean on: ${topRefs.join(", ")}.`,
     );
   }
   if ((top.avgSettingScore ?? 0) >= 70) {
     checklist.push(
-      "Film in a modern / minimalist Western home setting (bright, light-colored, contemporary) — your US-pullers consistently read this way.",
+      "A modern / minimalist Western home setting (bright, light-colored, contemporary) reads as US — your US-styled reels consistently look this way.",
     );
   }
   if ((top.avgUsFit ?? 0) - (bottom.avgUsFit ?? 0) >= 15) {
     checklist.push(
-      "Anchor each reel to a concrete US cultural cue (a named store, product, or US parenting norm) rather than a generic tip — that single difference separates your top reels from the bottom.",
+      "A concrete US cultural cue (a named store, product, or US parenting norm) is what separates a US-styled reel from a culturally-neutral one — it's a tone signal, not a reach signal.",
     );
   }
   if (bottom.usRefs.length === 0) {
     checklist.push(
-      "Avoid culturally-neutral 'generic advice' framing — your lowest reels share an absence of any US-specific reference at all.",
+      "Your lowest-US-fit reels share an absence of any US-specific reference — that's what makes them read as culturally neutral rather than US-aimed.",
     );
   }
 
-  return { ready: true, scoredCount, top, bottom, checklist };
+  return { ready: true, scoredCount, top, bottom, checklist, usFitReachCorr };
 }

@@ -7,6 +7,7 @@ import {
   createExperiment,
   updateExperiment,
   getUsReachTrend,
+  getGeoWindowTrend,
 } from "../services/experimentService.js";
 import { computeUsFit } from "../services/usFitScore.js";
 import type { ContentProfile } from "../services/geminiAnalysisService.js";
@@ -30,9 +31,14 @@ insightsRouter.get("/recipe", async (_req, res) => {
 
 // ── Experiments (Tab 3) ──────────────────────────────────────────────────────
 
-// GET /api/insights/us-reach-trend — reached-US% time series for the chart.
+// GET /api/insights/us-reach-trend — reached-US% time series (90d baseline).
 insightsRouter.get("/us-reach-trend", async (_req, res) => {
   res.json({ points: await getUsReachTrend() });
+});
+
+// GET /api/insights/geo-window-trend — 14d vs 90d US% thermometer (reached+engaged).
+insightsRouter.get("/geo-window-trend", async (_req, res) => {
+  res.json({ points: await getGeoWindowTrend() });
 });
 
 // GET /api/insights/experiments — all experiments, newest first.

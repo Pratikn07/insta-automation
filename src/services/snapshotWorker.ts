@@ -106,12 +106,14 @@ export async function runSnapshotTick(): Promise<void> {
       await sleep(PER_REEL_GAP_MS);
     }
 
-    // 3. Account-level geo demographics (3 stages).
+    // 3. Account-level geo demographics: 90d baseline + 14d moving thermometer
+    //    (engaged & reached at both windows; follower is lifetime-only at 90d).
     const splits = await fetchAllCountrySplits();
     for (const s of splits) {
       await prisma.geoDemographicSnapshot.create({
         data: {
           stage: s.stage,
+          timeframe: s.timeframe,
           counts: s.counts,
           usPct: s.usPct,
           inPct: s.inPct,
@@ -124,7 +126,7 @@ export async function runSnapshotTick(): Promise<void> {
       reels: reels.length,
       enqueued,
       perfWritten,
-      geoStages: splits.map((s) => s.stage),
+      geoSplits: splits.map((s) => `${s.stage}@${s.timeframe}`),
     });
     logger.info(
       { reels: reels.length, enqueued, perfWritten, geoStages: splits.length },
