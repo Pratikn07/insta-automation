@@ -1,234 +1,108 @@
 import { useQuery } from "@tanstack/react-query";
-import { AnimatePresence, motion } from "framer-motion";
-import { AlertCircle, Tag, Send, Hourglass, CheckCircle2, ChevronDown, RefreshCw } from "lucide-react";
-import { useState } from "react";
+import { motion } from "framer-motion";
+import { ArrowUpRight, CalendarDays, Sparkles } from "lucide-react";
+import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
-import type { Conversation, Paginated, Stats } from "@/lib/types";
-import { Card, CardContent, CardDescription, CardTitle } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
-import { cn } from "@/lib/utils";
+import type { GeoWindowPoint, LeaderboardRow, Stats } from "@/lib/types";
+import { rankRepeatCandidates, summarizeAudienceGrowth } from "@/lib/homeDashboard";
+import { AudienceGrowthPanel } from "@/components/home/AudienceGrowthPanel";
+import { AutomationHealthStrip } from "@/components/home/AutomationHealthStrip";
+import { RepeatReelsPanel } from "@/components/home/RepeatReelsPanel";
+import { Button } from "@/components/ui/button";
+
+interface GeoWindowResponse {
+  points: GeoWindowPoint[];
+}
+
+interface LeaderboardResponse {
+  items: LeaderboardRow[];
+}
 
 const fadeUp = {
-  initial: { opacity: 0, y: 8 },
+  initial: { opacity: 0, y: 10 },
   animate: { opacity: 1, y: 0 },
 };
 
 export function Home() {
-  const { data, isLoading } = useQuery<Stats>({
+  const geoQ = useQuery<GeoWindowResponse>({
+    queryKey: ["insights", "geo-window-trend"],
+    queryFn: () => api<GeoWindowResponse>("/insights/geo-window-trend"),
+  });
+  const leaderboardQ = useQuery<LeaderboardResponse>({
+    queryKey: ["insights", "leaderboard"],
+    queryFn: () => api<LeaderboardResponse>("/insights/leaderboard"),
+  });
+  const statsQ = useQuery<Stats>({
     queryKey: ["stats"],
     queryFn: () => api<Stats>("/stats"),
   });
 
-  const recipientsQ = useQuery<Paginated<Conversation>>({
-    queryKey: ["recent-recipients"],
-    queryFn: () =>
-      api<Paginated<Conversation>>("/conversations?state=completed&limit=6"),
-  });
-
-  if (isLoading || !data) {
-    return (
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {[0, 1, 2].map((i) => (
-          <Skeleton key={i} className="h-28" />
-        ))}
-      </div>
-    );
-  }
+  const points = geoQ.data?.points ?? [];
+  const audience = summarizeAudienceGrowth(points);
+  const repeatCandidates = rankRepeatCandidates(leaderboardQ.data?.items ?? []);
+  const updatedLabel = audience
+    ? new Date(audience.capturedAt).toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      })
+    : "Waiting for the next snapshot";
 
   return (
-    <div className="space-y-6">
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <StatCard
-          icon={<Tag className="size-4" />}
-          label="Active keywords"
-          value={`${data.activeKeywords}`}
-          sub={`of ${data.totalKeywords} total`}
-          delay={0}
-        />
-        <StatCard
-          icon={<Send className="size-4" />}
-          label="DMs sent today"
-          value={`${data.dmsSentToday}`}
-          sub={`${data.completedToday} sequences completed`}
-          delay={0.05}
-        />
-        <StatCard
-          icon={<Hourglass className="size-4" />}
-          label="Awaiting DONE"
-          value={`${data.conversationsAwaiting}`}
-          sub="people who replied DONE will receive their resource"
-          delay={0.1}
-        />
-        <StatCard
-          icon={<RefreshCw className="size-4" />}
-          label="Gate retries queued"
-          value={`${data.gateQueuePending}`}
-          sub={
-            data.gateQueueExhausted > 0
-              ? `${data.gateQueueExhausted} expired past the 7-day window`
-              : "comment DMs waiting to retry under the rate limit"
-          }
-          delay={0.15}
-        />
+    <div className="relative space-y-6 pb-6">
+      <div className="pointer-events-none absolute -left-32 -top-32 -z-10 size-80 rounded-full bg-emerald-400/5 blur-3xl" />
+      <div className="pointer-events-none absolute -right-24 top-24 -z-10 size-72 rounded-full bg-fuchsia-400/5 blur-3xl" />
+
+      <motion.header
+        {...fadeUp}
+        transition={{ duration: 0.24 }}
+        className="flex flex-col gap-5 rounded-2xl border border-white/10 bg-gradient-to-br from-white/[0.055] to-transparent p-5 sm:flex-row sm:items-end sm:justify-between sm:p-6"
+      >
+        <div className="max-w-2xl">
+          <div className="mb-3 flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-violet-300">
+            <Sparkles className="size-4" /> Growth snapshot
+          </div>
+          <h1 className="text-3xl font-semibold tracking-[-0.04em] text-white sm:text-4xl">
+            Know what is growing.<br className="hidden sm:block" /> Repeat what is working.
+          </h1>
+          <p className="mt-3 max-w-xl text-sm leading-relaxed text-muted-foreground">
+            A simple read on your US audience direction and the reels earning another version.
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2 rounded-full border border-white/10 bg-black/10 px-3 py-2 text-xs text-muted-foreground">
+            <CalendarDays className="size-3.5" /> Updated {updatedLabel}
+          </div>
+          <Button asChild variant="outline" size="sm" className="rounded-full bg-black/10">
+            <Link to="/insights">Full insights <ArrowUpRight className="size-3.5" /></Link>
+          </Button>
+        </div>
+      </motion.header>
+
+      <div className="grid items-stretch gap-5 xl:grid-cols-2">
+        <motion.div {...fadeUp} transition={{ duration: 0.24, delay: 0.05 }}>
+          <AudienceGrowthPanel
+            points={points}
+            summary={audience}
+            isLoading={geoQ.isLoading}
+            isError={geoQ.isError}
+            onRetry={() => void geoQ.refetch()}
+          />
+        </motion.div>
+        <motion.div {...fadeUp} transition={{ duration: 0.24, delay: 0.1 }}>
+          <RepeatReelsPanel
+            candidates={repeatCandidates}
+            isLoading={leaderboardQ.isLoading}
+            isError={leaderboardQ.isError}
+            onRetry={() => void leaderboardQ.refetch()}
+          />
+        </motion.div>
       </div>
 
-      {data.lastError && <LastErrorRow lastError={data.lastError} />}
-
-      <RecentRecipients
-        isLoading={recipientsQ.isLoading}
-        items={recipientsQ.data?.items ?? []}
-      />
+      <motion.div {...fadeUp} transition={{ duration: 0.24, delay: 0.15 }}>
+        <AutomationHealthStrip stats={statsQ.data} isLoading={statsQ.isLoading} />
+      </motion.div>
     </div>
-  );
-}
-
-function LastErrorRow({
-  lastError,
-}: {
-  lastError: NonNullable<Stats["lastError"]>;
-}) {
-  const [open, setOpen] = useState(false);
-  return (
-    <motion.div {...fadeUp} transition={{ duration: 0.2, delay: 0.15 }}>
-      <Card className="border-destructive/30 bg-destructive/5">
-        <CardContent className="p-3">
-          <button
-            type="button"
-            onClick={() => setOpen((v) => !v)}
-            className="flex w-full items-center gap-3 text-left text-sm"
-          >
-            <AlertCircle className="size-4 shrink-0 text-destructive" />
-            <span className="flex-1 truncate">
-              <span className="font-medium">Last error</span>
-              <span className="ml-2 text-muted-foreground">
-                {formatRelative(lastError.createdAt)}
-              </span>
-            </span>
-            <ChevronDown
-              className={cn(
-                "size-4 shrink-0 text-muted-foreground transition-transform",
-                open && "rotate-180",
-              )}
-            />
-          </button>
-          {open && (
-            <pre className="mt-3 whitespace-pre-wrap break-all text-xs text-muted-foreground">
-              {JSON.stringify(lastError.payload, null, 2)}
-            </pre>
-          )}
-        </CardContent>
-      </Card>
-    </motion.div>
-  );
-}
-
-function RecentRecipients({
-  isLoading,
-  items,
-}: {
-  isLoading: boolean;
-  items: Conversation[];
-}) {
-  return (
-    <motion.div {...fadeUp} transition={{ duration: 0.2, delay: 0.2 }}>
-      <Card>
-        <CardContent className="p-5">
-          <div className="mb-4 flex items-center gap-2 text-muted-foreground">
-            <CheckCircle2 className="size-4" />
-            <CardDescription className="text-xs uppercase tracking-wide">
-              Recent recipients
-            </CardDescription>
-          </div>
-          {isLoading ? (
-            <div className="space-y-2">
-              {[0, 1, 2, 3].map((i) => (
-                <Skeleton key={i} className="h-10" />
-              ))}
-            </div>
-          ) : items.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              Nobody has finished a sequence yet. As people comment your keywords
-              and reply DONE, they'll show up here.
-            </p>
-          ) : (
-            <ol className="space-y-3">
-              <AnimatePresence initial={false}>
-                {items.map((c, i) => (
-                  <motion.li
-                    key={c.id}
-                    initial={{ opacity: 0, y: 4 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.18, delay: Math.min(i * 0.02, 0.2) }}
-                    className="flex items-center justify-between gap-3 text-sm"
-                  >
-                    <div className="flex min-w-0 items-center gap-3">
-                      <span className="size-1.5 shrink-0 rounded-full bg-emerald-400" />
-                      <span className="truncate">
-                        Sent <span className="font-medium">{c.keyword.keyword}</span>{" "}
-                        to{" "}
-                        <span className={c.username ? "font-medium" : "font-mono text-xs text-muted-foreground"}>
-                          {c.username ? `@${c.username}` : c.igUserId}
-                        </span>
-                      </span>
-                    </div>
-                    <span className="shrink-0 text-xs text-muted-foreground">
-                      {formatRelative(c.completedAt ?? c.createdAt)}
-                    </span>
-                  </motion.li>
-                ))}
-              </AnimatePresence>
-            </ol>
-          )}
-        </CardContent>
-      </Card>
-    </motion.div>
-  );
-}
-
-function formatRelative(iso: string): string {
-  const ts = new Date(iso).getTime();
-  const diff = Date.now() - ts;
-  const sec = Math.round(diff / 1000);
-  if (sec < 60) return `${sec}s ago`;
-  const min = Math.round(sec / 60);
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.round(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  const days = Math.round(hr / 24);
-  if (days < 7) return `${days}d ago`;
-  return new Date(iso).toLocaleDateString();
-}
-
-function StatCard({
-  icon,
-  label,
-  value,
-  sub,
-  delay,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  sub: string;
-  delay: number;
-}) {
-  return (
-    <motion.div {...fadeUp} transition={{ duration: 0.2, delay }}>
-      <Card className="transition-shadow hover:shadow-md">
-        <CardContent className="p-5">
-          <div className="flex items-center gap-2 text-muted-foreground">
-            {icon}
-            <CardDescription className="text-xs uppercase tracking-wide">
-              {label}
-            </CardDescription>
-          </div>
-          <CardTitle className="mt-3 text-3xl font-semibold tracking-tight">
-            {value}
-          </CardTitle>
-          <p className="mt-1 text-xs text-muted-foreground">{sub}</p>
-        </CardContent>
-      </Card>
-    </motion.div>
   );
 }
