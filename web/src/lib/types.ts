@@ -181,6 +181,9 @@ export interface LeaderboardRow {
   reach: number | null;
   skipRate: number | null;
   conversion: ConversionLine;
+  // Share of reach that entered the funnel (keywordComments ÷ reach, %). Null
+  // below the backend reach floor — too small a denominator to trust.
+  captureRatePct: number | null;
 }
 
 export interface ContentProfile {
@@ -305,7 +308,11 @@ export interface Experiment {
   measuredEngagedUsPct: number | null;
   windowReachShare: number | null;
   suggestedVerdict: "confirmed" | "busted" | "inconclusive" | null;
-  attributionConfidence: "high" | "low" | null;
+  attributionConfidence: "high" | "medium" | "low" | null;
+  // Content features from the reel's Gemini profile (null for manual/unprofiled).
+  hookArchetype: string | null;
+  audioVibe: string | null;
+  onScreenLang: string | null;
 }
 
 export interface UsReachTrendPoint {

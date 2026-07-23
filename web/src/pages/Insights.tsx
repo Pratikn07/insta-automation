@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { BarChart3, Film, ExternalLink, Sparkles, RefreshCw, ListChecks, FlaskConical } from "lucide-react";
+import { BarChart3, Film, ExternalLink, Sparkles, RefreshCw, ListChecks, FlaskConical, Target } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -22,6 +22,13 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { EmptyState } from "@/components/EmptyState";
+import {
+  rankCaptureLeaders,
+  formatCaptureRate,
+  recommendNextTest,
+  learnedPatterns,
+  type LearnedPattern,
+} from "@/lib/growthLab";
 import { cn } from "@/lib/utils";
 
 type Tab = "leaderboard" | "recipe" | "experiments";
@@ -254,8 +261,13 @@ function ReelCard({ row }: { row: LeaderboardRow }) {
         <p className="line-clamp-2 text-xs text-muted-foreground">
           {row.caption?.trim() || "No caption"}
         </p>
-        <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
           {row.reach !== null && <span>{row.reach.toLocaleString()} reach</span>}
+          {row.captureRatePct !== null && (
+            <span className="text-sky-400" title="Share of reach that entered the DM funnel">
+              {formatCaptureRate(row.captureRatePct)} capture
+            </span>
+          )}
           {row.conversion.completed > 0 && (
             <span className="text-emerald-400">{row.conversion.completed} delivered</span>
           )}
@@ -659,6 +671,128 @@ const STATUS_TONE: Record<Experiment["status"], string> = {
   inconclusive: "text-muted-foreground bg-muted/40",
 };
 
+// Lead recommendation for the growth lab: the reels that convert the most reach
+// into the DM funnel (capture rate = keyword comments ÷ reach). Per-reel and
+// directly attributable, so honest to act on — unlike account-level geo.
+function CaptureLeadersCard({ rows, isLoading }: { rows: LeaderboardRow[]; isLoading: boolean }) {
+  const leaders = rankCaptureLeaders(rows);
+  return (
+    <div className="rounded-lg border bg-card/40 p-4">
+      <h3 className="mb-1 flex items-center gap-1.5 text-sm font-medium">
+        <Target className="size-4 text-muted-foreground" /> What converts best
+      </h3>
+      <p className="mb-3 text-[11px] text-muted-foreground">
+        Share of each reel's reach that entered the DM funnel. The most directly-attributable
+        per-reel signal — repeat the hooks that convert, not just the ones that go viral.
+      </p>
+      {isLoading ? (
+        <Skeleton className="h-24 w-full rounded-md" />
+      ) : leaders.length === 0 ? (
+        <p className="py-3 text-xs text-muted-foreground">
+          Not enough reach yet to rank reels by capture — this fills in as reels accrue reach.
+        </p>
+      ) : (
+        <ol className="space-y-2">
+          {leaders.map((l) => (
+            <li
+              key={l.row.mediaId}
+              className="flex items-center gap-3 rounded-md border bg-background/40 p-2.5"
+            >
+              {l.row.thumbnailUrl ? (
+                <img
+                  src={l.row.thumbnailUrl}
+                  alt=""
+                  loading="lazy"
+                  className="size-12 shrink-0 rounded object-cover"
+                />
+              ) : (
+                <div className="flex size-12 shrink-0 items-center justify-center rounded bg-accent text-muted-foreground">
+                  <Film className="size-4" />
+                </div>
+              )}
+              <div className="min-w-0 flex-1">
+                <p className="line-clamp-1 text-xs">{l.row.caption?.trim() || "No caption"}</p>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">{l.reason}</p>
+              </div>
+              <div className="shrink-0 text-right">
+                <div className="text-sm font-semibold text-sky-400">
+                  {formatCaptureRate(l.captureRatePct)}
+                </div>
+                <div className="text-[10px] text-muted-foreground">{l.completed} delivered</div>
+              </div>
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  );
+}
+
+// US-audience recommendation, kept separate from capture rate: which content
+// feature to test next, from completed auto-experiments with usable attribution.
+function NextTestCard({ experiments }: { experiments: Experiment[] }) {
+  const rec = recommendNextTest(experiments);
+  return (
+    <div className="rounded-lg border bg-card/40 p-4">
+      <h3 className="mb-1 flex items-center gap-1.5 text-sm font-medium">
+        <Sparkles className="size-4 text-muted-foreground" /> Recommended next test
+      </h3>
+      <p className={cn("text-xs", rec.status === "recommended" ? "text-foreground" : "text-muted-foreground")}>
+        {rec.headline}
+      </p>
+      <p className="mt-2 text-[11px] text-muted-foreground">
+        From completed auto-experiments with usable reach-share attribution (high or medium
+        confidence). A US-audience signal — separate from capture rate above.
+      </p>
+    </div>
+  );
+}
+
+const PATTERN_BADGE: Record<LearnedPattern["label"], { text: string; cls: string }> = {
+  repeat: { text: "Repeat", cls: "bg-emerald-500/15 text-emerald-400" },
+  rethink: { text: "Rethink", cls: "bg-rose-500/15 text-rose-400" },
+  collecting: { text: "Collecting", cls: "bg-muted text-muted-foreground" },
+};
+
+function LearnedPatterns({ experiments }: { experiments: Experiment[] }) {
+  const patterns = learnedPatterns(experiments);
+  if (patterns.length === 0) return null;
+  return (
+    <div className="rounded-lg border bg-card/40 p-4">
+      <h3 className="mb-2 flex items-center gap-1.5 text-sm font-medium">
+        <ListChecks className="size-4 text-muted-foreground" /> Learned patterns
+      </h3>
+      <ul className="space-y-1.5">
+        {patterns.map((p) => {
+          const badge = PATTERN_BADGE[p.label];
+          const shift = `${p.meanShift >= 0 ? "+" : "−"}${Math.abs(p.meanShift).toFixed(1)}`;
+          return (
+            <li
+              key={`${p.dimension}:${p.feature}`}
+              className="flex items-center justify-between gap-2 rounded-md border bg-background/40 p-2 text-xs"
+            >
+              <span className="min-w-0 truncate">
+                <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                  {p.dimension}
+                </span>{" "}
+                {p.feature}
+              </span>
+              <span className="flex shrink-0 items-center gap-2">
+                <span className="text-[10px] text-muted-foreground">
+                  {p.positive}/{p.total} · {shift} pts
+                </span>
+                <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-medium", badge.cls)}>
+                  {badge.text}
+                </span>
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 function Experiments() {
   const qc = useQueryClient();
   const trendQ = useQuery<{ points: UsReachTrendPoint[] }>({
@@ -673,6 +807,11 @@ function Experiments() {
     queryKey: ["insights", "experiments"],
     queryFn: () => api<{ items: Experiment[] }>("/insights/experiments"),
   });
+  // Reuses the Leaderboard tab's cached query (same key) for the capture card.
+  const leaderboardQ = useQuery<{ items: LeaderboardRow[] }>({
+    queryKey: ["insights", "leaderboard"],
+    queryFn: () => api<{ items: LeaderboardRow[] }>("/insights/leaderboard"),
+  });
 
   const points = trendQ.data?.points ?? [];
   const windowPoints = windowQ.data?.points ?? [];
@@ -686,6 +825,13 @@ function Experiments() {
 
   return (
     <div className="space-y-5">
+      {/* Lead recommendation: which reels turn views into the funnel. */}
+      <CaptureLeadersCard rows={leaderboardQ.data?.items ?? []} isLoading={leaderboardQ.isLoading} />
+
+      {/* US-audience recommendation + the evidence behind it. */}
+      <NextTestCard experiments={experiments} />
+      <LearnedPatterns experiments={experiments} />
+
       {/* Recent-vs-baseline thermometer: are RECENT reels pulling US or not? */}
       <RecentAudiencePanel points={windowPoints} />
 

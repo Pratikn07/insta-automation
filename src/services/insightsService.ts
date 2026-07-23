@@ -25,33 +25,58 @@ export interface LeaderboardRow {
   reach: number | null;
   skipRate: number | null;
   conversion: ConversionLine;
+  // Share of reach that entered the funnel (keywordComments ÷ reach, as %). Null
+  // when reach is below MIN_REACH_FLOOR — too small a denominator to trust (a
+  // 195-reach reel with 27 comments is 13.85%, pure noise). This is the honest,
+  // directly-attributable per-reel signal the growth lab recommends on.
+  captureRatePct: number | null;
 }
 
-/** Per-reel conversion counts, keyed by mediaId, from the existing tables. */
+// Below this reach, capture rate is dominated by denominator noise, so we report
+// null ("not enough reach to judge") rather than a misleading spike.
+const MIN_REACH_FLOOR = 500;
+
+/** Per-reel conversion counts, keyed by mediaId. */
 async function conversionByMedia(): Promise<Map<string, ConversionLine>> {
-  // IMPORTANT: count Conversation rows, NOT event_log `comment_received`. The raw
-  // comment stream is ~93% mechanical — ~48% our own "Check your DM" public
-  // replies (logged with our own IG id as the sender) and ~46% bare keyword
-  // comments ("sleep"/"potty"), leaving only ~2.6% organic. A Conversation is
-  // created once per keyword-triggered gate and deduped by the app, so it's the
-  // honest "this reel drove an intent" count. Never surface a raw comment count.
-  //
-  // Conversation → Keyword.mediaId. Group in JS (Prisma can't group across the
-  // relation cleanly) — the conversation volume here is small (~1.4k rows).
-  const convos = await prisma.conversation.findMany({
-    select: { state: true, gatedAt: true, keyword: { select: { mediaId: true } } },
-  });
+  // Attribution comes from event_log `keyword_matched`, which stamps the reel's
+  // mediaId AND the conversationId for every comment that fired a keyword. We can
+  // NOT use Conversation → Keyword.mediaId: every keyword is global (mediaId =
+  // null), so that join attributes nothing and leaves every reel at zero. DM-
+  // sourced matches carry no mediaId and are naturally excluded here.
+  const [events, convos] = await Promise.all([
+    prisma.eventLog.findMany({ where: { kind: "keyword_matched" }, select: { payload: true } }),
+    prisma.conversation.findMany({ select: { id: true, state: true, gatedAt: true } }),
+  ]);
+
+  const convoById = new Map(convos.map((c) => [c.id, c]));
+  // mediaId → set of conversationIds (dedupes any repeat match on one conversation).
+  const byMedia = new Map<string, Set<string>>();
+  for (const e of events) {
+    const p = e.payload as { mediaId?: string | null; conversationId?: string | null };
+    if (!p.mediaId || !p.conversationId) continue;
+    let set = byMedia.get(p.mediaId);
+    if (!set) byMedia.set(p.mediaId, (set = new Set()));
+    set.add(p.conversationId);
+  }
+
   const map = new Map<string, ConversionLine>();
-  for (const c of convos) {
-    const mediaId = c.keyword?.mediaId;
-    if (!mediaId) continue; // global keywords aren't attributable to one reel
-    const line = map.get(mediaId) ?? { keywordComments: 0, gateDelivered: 0, completed: 0 };
-    line.keywordComments++;
-    if (c.gatedAt) line.gateDelivered++;
-    if (c.state === "completed") line.completed++;
+  for (const [mediaId, convoIds] of byMedia) {
+    const line: ConversionLine = { keywordComments: 0, gateDelivered: 0, completed: 0 };
+    for (const id of convoIds) {
+      const c = convoById.get(id);
+      line.keywordComments++;
+      if (c?.gatedAt) line.gateDelivered++;
+      if (c?.state === "completed") line.completed++;
+    }
     map.set(mediaId, line);
   }
   return map;
+}
+
+/** keywordComments ÷ reach as a 2-dp %, or null below the reach floor. */
+function captureRate(keywordComments: number, reach: number | null): number | null {
+  if (!reach || reach < MIN_REACH_FLOOR || keywordComments <= 0) return null;
+  return Math.round((keywordComments / reach) * 10000) / 100;
 }
 
 /** The Leaderboard: every known reel, scored reels first. */
@@ -70,6 +95,11 @@ export async function getLeaderboard(): Promise<LeaderboardRow[]> {
 
   return reels.map((r) => {
     const perf = r.perfSnapshots[0];
+    const conv = conversion.get(r.mediaId) ?? {
+      keywordComments: 0,
+      gateDelivered: 0,
+      completed: 0,
+    };
     return {
       mediaId: r.mediaId,
       caption: r.caption,
@@ -84,11 +114,8 @@ export async function getLeaderboard(): Promise<LeaderboardRow[]> {
       views: perf?.views ?? null,
       reach: perf?.reach ?? null,
       skipRate: perf?.skipRate ?? null,
-      conversion: conversion.get(r.mediaId) ?? {
-        keywordComments: 0,
-        gateDelivered: 0,
-        completed: 0,
-      },
+      conversion: conv,
+      captureRatePct: captureRate(conv.keywordComments, perf?.reach ?? null),
     };
   });
 }
@@ -299,6 +326,7 @@ export async function getRecipe(): Promise<RecipeData> {
       reach: perf?.reach ?? null,
       skipRate: perf?.skipRate ?? null,
       conversion: { keywordComments: 0, gateDelivered: 0, completed: 0 }, // not shown in recipe
+      captureRatePct: null, // not shown in recipe
     };
   };
 

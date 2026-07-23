@@ -32,6 +32,11 @@ export interface ExperimentDto {
   windowReachShare: number | null;
   suggestedVerdict: string | null;
   attributionConfidence: string | null;
+  // Content features (from the reel's Gemini profile) so the client can group
+  // validations into learned patterns. Null for manual experiments or unprofiled reels.
+  hookArchetype: string | null;
+  audioVibe: string | null;
+  onScreenLang: string | null;
 }
 
 export interface UsReachTrendPoint {
@@ -76,16 +81,30 @@ async function latestEngagedUsPct14d(): Promise<number | null> {
   return row?.usPct ?? null;
 }
 
-// A reel must own at least this share of its 14-day window's reach before we'll
-// suggest a verdict — below it, other reels confound the account-level US%, so we
-// stay honest and label it inconclusive.
-const DOMINANCE_THRESHOLD = 0.5;
+// Reach-share attribution tiers. A reel that owned most of its 14-day window's
+// reach (HIGH) lets us attribute the account-level US% move to it confidently; a
+// meaningful minority share (MEDIUM) is usable evidence with a caveat; below that,
+// too many other reels confound the signal, so we stay inconclusive. The old code
+// used a single binary 0.5 gate, which left ~1 in 14 experiments usable and the
+// recommendation engine permanently starved — MEDIUM is what lets patterns accrue.
+const HIGH_SHARE_THRESHOLD = 0.5;
+const MEDIUM_SHARE_THRESHOLD = 0.25;
 // Auto-experiments measure once the reel has had ~2 weeks to accrue its window.
 const MEASURE_AFTER_DAYS = 14;
 
 type ExperimentRow = Awaited<ReturnType<typeof prisma.experiment.findFirst>>;
 
-function toDto(e: NonNullable<ExperimentRow>, currentUsPct: number | null): ExperimentDto {
+type ProfileFeatures = {
+  hookArchetype: string | null;
+  audioVibe: string | null;
+  onScreenLang: string | null;
+};
+
+function toDto(
+  e: NonNullable<ExperimentRow>,
+  currentUsPct: number | null,
+  profile?: ProfileFeatures | null,
+): ExperimentDto {
   return {
     id: e.id,
     hypothesis: e.hypothesis,
@@ -107,6 +126,9 @@ function toDto(e: NonNullable<ExperimentRow>, currentUsPct: number | null): Expe
     windowReachShare: e.windowReachShare,
     suggestedVerdict: e.suggestedVerdict,
     attributionConfidence: e.attributionConfidence,
+    hookArchetype: profile?.hookArchetype ?? null,
+    audioVibe: profile?.audioVibe ?? null,
+    onScreenLang: profile?.onScreenLang ?? null,
   };
 }
 
@@ -115,7 +137,19 @@ export async function listExperiments(): Promise<ExperimentDto[]> {
     prisma.experiment.findMany({ orderBy: { createdAt: "desc" } }),
     latestReachedUsPct(),
   ]);
-  return rows.map((e) => toDto(e, current));
+
+  // Enrich auto-experiments with their reel's content features so the client can
+  // group validations into learned patterns. One query for all mediaIds.
+  const mediaIds = rows.map((e) => e.mediaId).filter((m): m is string => m !== null);
+  const profiles = mediaIds.length
+    ? await prisma.reelContentProfile.findMany({
+        where: { mediaId: { in: mediaIds } },
+        select: { mediaId: true, hookArchetype: true, audioVibe: true, onScreenLang: true },
+      })
+    : [];
+  const profileByMedia = new Map(profiles.map((p) => [p.mediaId, p]));
+
+  return rows.map((e) => toDto(e, current, e.mediaId ? profileByMedia.get(e.mediaId) : null));
 }
 
 export async function createExperiment(input: {
@@ -322,10 +356,14 @@ export async function autoMeasureDueExperiments(): Promise<number> {
     const delta = base != null && measuredEngaged != null ? measuredEngaged - base : null;
 
     let suggestedVerdict: string;
-    let confidence: "high" | "low";
-    if (share != null && share >= DOMINANCE_THRESHOLD && delta != null) {
-      // This reel owned the window → the US% move is fairly attributable to it.
+    let confidence: "high" | "medium" | "low";
+    if (share != null && delta != null && share >= HIGH_SHARE_THRESHOLD) {
+      // This reel owned the window → the US% move is confidently attributable to it.
       confidence = "high";
+      suggestedVerdict = delta >= 0 ? "confirmed" : "busted";
+    } else if (share != null && delta != null && share >= MEDIUM_SHARE_THRESHOLD) {
+      // A meaningful minority share → usable evidence, weighted lower downstream.
+      confidence = "medium";
       suggestedVerdict = delta >= 0 ? "confirmed" : "busted";
     } else {
       confidence = "low";

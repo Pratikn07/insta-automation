@@ -37,6 +37,7 @@ function reel(overrides: Partial<LeaderboardRow> & Pick<LeaderboardRow, "mediaId
     reach: null,
     skipRate: null,
     conversion: { keywordComments: 0, gateDelivered: 0, completed: 0 },
+    captureRatePct: null,
     ...rest,
   };
 }

@@ -52,6 +52,7 @@ const candidate: RepeatCandidate = {
   reach: 9800,
   skipRate: 0.21,
   conversion: { keywordComments: 90, gateDelivered: 70, completed: 44 },
+  captureRatePct: 0.92,
   rank: 1,
   score: 92,
   reasonKey: "retention",
