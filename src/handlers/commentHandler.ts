@@ -1,5 +1,5 @@
 import type { CommentValue } from "../types/meta.js";
-import { extractKeyword, findActiveKeyword } from "../services/keywordService.js";
+import { extractCandidates, findKeywordForComment } from "../services/keywordService.js";
 import { openConversation, markGated } from "../services/conversationService.js";
 import { replyToComment } from "../meta/replyToComment.js";
 import { sendPrivateReply } from "../meta/sendMessage.js";
@@ -49,19 +49,23 @@ export async function handleComment(comment: CommentValue): Promise<void> {
     text: comment.text,
   });
 
-  const candidate = extractKeyword(comment.text);
-  if (!candidate) return;
+  // All-token matching: scan every word of a short comment (not just the first),
+  // so "@tinysoho sleep", "DM EGG", and "Potty🙏" resolve. Long comments fall back
+  // to first-word only — see scannableCommentTokens.
+  const candidates = extractCandidates(comment.text);
+  if (candidates.length === 0) return;
 
-  const keyword = await findActiveKeyword(candidate, comment.media?.id);
-  if (!keyword) {
-    log.debug({ candidate, mediaId: comment.media?.id }, "No matching active keyword");
+  const match = await findKeywordForComment(comment.text, comment.media?.id);
+  if (!match) {
+    log.debug({ candidates, mediaId: comment.media?.id }, "No matching active keyword");
     await logEvent("comment_ignored", {
       commentId: comment.id,
-      candidate,
+      candidate: candidates.join(" "),
       mediaId: comment.media?.id ?? null,
     });
     return;
   }
+  const keyword = match.keyword;
 
   log.info(
     { keyword: keyword.keyword, scope: keyword.mediaId ? "reel" : "global", mediaId: comment.media?.id },
@@ -76,6 +80,11 @@ export async function handleComment(comment: CommentValue): Promise<void> {
     commentId: comment.id,
     parentId: comment.parent_id ?? null,
     keyword: keyword.keyword,
+    // Observability for the all-token rollout: matchedToken names the word that
+    // fired; tokenCount > 1 flags a comment the old first-word matcher would have
+    // missed, so a post-deploy audit can spot-check for false positives.
+    matchedToken: match.matchedToken,
+    tokenCount: candidates.length,
     scope: keyword.mediaId ? "reel" : "global",
     mediaId: comment.media?.id ?? null,
   });
