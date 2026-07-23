@@ -3,6 +3,7 @@ import {
   findActiveAwaitingDone,
   hasCompletedKeyword,
   markCompleted,
+  markGated,
   openConversation,
 } from "../services/conversationService.js";
 import { findKeywordInMessage } from "../services/keywordService.js";
@@ -23,6 +24,9 @@ const DONE_RE = /^\s*done\s*[!.]*\s*$/i;
 // withhold — we only encourage).
 const FOLLOWER_THANKS = "Thanks for following! 💛";
 const FOLLOW_NUDGE = "Follow @tinysoho so you don't miss the next one 🙏";
+// Sent before redelivering a guide the user already received — replaces the old
+// silent skip, which left our most engaged users with no response at all.
+const REDELIVERY_INTRO = "You've already got this one — here it is again 💛";
 
 export async function handleMessage(entry: MessagingEntry): Promise<void> {
   const msg = entry.message;
@@ -55,8 +59,57 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
       senderId,
     });
 
+    // Their inbound DM already opened the 24h messaging window (Meta-verified),
+    // so a known follower — or anyone who already completed this keyword — gets
+    // the guide immediately. The "follow and reply DONE" gate is pure friction
+    // there; it stays only for non-followers/unknowns, where it's the one
+    // leverage moment for the follow ask.
+    const alreadyCompleted = await hasCompletedKeyword(senderId, keyword.id);
+    if (profile.isFollower === true || alreadyCompleted) {
+      try {
+        if (alreadyCompleted) await sendTextMessage(senderId, REDELIVERY_INTRO);
+        await sendSequence(senderId, keyword.resource.messages);
+        await markCompleted(convo.id);
+        await logEvent("sequence_completed", {
+          conversationId: convo.id,
+          followerAtDelivery: profile.isFollower,
+          source: "dm_instant",
+          redelivery: alreadyCompleted,
+        });
+
+        // Same follow-aware sign-off as the gated path; best-effort.
+        try {
+          const closing = profile.isFollower ? FOLLOWER_THANKS : FOLLOW_NUDGE;
+          await sendTextMessage(senderId, closing);
+          await logEvent("follow_nudge_sent", {
+            conversationId: convo.id,
+            isFollower: profile.isFollower,
+            variant: profile.isFollower ? "thanks" : "nudge",
+          });
+        } catch (err) {
+          logger.warn(
+            { ...describeGraphError(err), conversationId: convo.id },
+            "Follow-aware closing message failed (guide already delivered)",
+          );
+        }
+      } catch (err) {
+        // Conversation stays awaiting_done, so any follow-up reply from the user
+        // re-attempts delivery via the open-gate branch below.
+        logger.error({ ...describeGraphError(err), conversationId: convo.id }, "Instant DM sequence failed");
+        await logEvent("sequence_failed", {
+          conversationId: convo.id,
+          source: "dm_instant",
+          ...describeGraphError(err),
+        });
+      }
+      return;
+    }
+
     try {
       await sendTextMessage(senderId, keyword.gateMessage);
+      // Stamp gatedAt so the DONE-window runs from delivery — aligns the DM path
+      // with the comment path's markGated behavior.
+      await markGated(convo.id);
       await logEvent("dm_sent", { conversationId: convo.id, kind: "gate", source: "dm" });
     } catch (err) {
       logger.warn(describeGraphError(err), "Gate DM (from inbound message) failed");
@@ -76,21 +129,32 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
   // matching that recovers the users who never typed the magic word.
   const convo = await findActiveAwaitingDone(senderId);
   if (convo) {
-    // Idempotency guard: never deliver a keyword's guide twice to the same user
-    // (e.g. they commented "sleep" on two reels → two open gates). Close this gate
-    // silently and stop — the guide is already in their inbox.
+    // Duplicate guard: the user already completed this keyword (e.g. commented
+    // "sleep" on two reels → two open gates). The old behavior closed the gate
+    // silently — an unlock instruction followed by nothing, for our most engaged
+    // users. Now: acknowledge and redeliver.
     if (await hasCompletedKeyword(senderId, convo.keywordId)) {
       logger.info(
         { conversationId: convo.id, keyword: convo.keyword.keyword, senderId },
-        "Open-gate reply, but user already completed this keyword — skipping (dedupe)",
+        "Open-gate reply for an already-delivered keyword — redelivering",
       );
-      await markCompleted(convo.id);
-      await logEvent("duplicate_skipped", {
-        conversationId: convo.id,
-        keyword: convo.keyword.keyword,
-        senderId,
-        reason: "already_completed_keyword",
-      });
+      try {
+        await sendTextMessage(senderId, REDELIVERY_INTRO);
+        await sendSequence(senderId, convo.keyword.resource.messages);
+        await markCompleted(convo.id);
+        await logEvent("sequence_completed", {
+          conversationId: convo.id,
+          followerAtDelivery: profile.isFollower,
+          redelivery: true,
+        });
+      } catch (err) {
+        logger.error({ ...describeGraphError(err), conversationId: convo.id }, "Redelivery failed");
+        await logEvent("sequence_failed", {
+          conversationId: convo.id,
+          redelivery: true,
+          ...describeGraphError(err),
+        });
+      }
       return;
     }
 

@@ -12,6 +12,10 @@ const FIRST_RETRY_DELAY_MS = 5 * 60 * 1000;
  * Remember a gate private reply that failed (rate limit / 2534025) so the worker
  * can retry it across the 7-day window. Non-throwing: enqueue failures must never
  * break comment handling.
+ *
+ * `commentAt` defaults to now (live path); the late-keyword backfill passes the
+ * ORIGINAL comment timestamp so the worker's 7-day window math stays honest to
+ * Meta's private-reply rule.
  */
 export async function enqueueGate(args: {
   conversationId: string;
@@ -19,6 +23,7 @@ export async function enqueueGate(args: {
   commentId: string;
   gateMessage: string;
   lastError?: string;
+  commentAt?: Date;
 }): Promise<void> {
   try {
     const now = Date.now();
@@ -31,7 +36,7 @@ export async function enqueueGate(args: {
         status: "pending",
         attempts: 0,
         lastError: args.lastError ?? null,
-        commentAt: new Date(now),
+        commentAt: args.commentAt ?? new Date(now),
         nextAttemptAt: new Date(now + FIRST_RETRY_DELAY_MS),
       },
     });

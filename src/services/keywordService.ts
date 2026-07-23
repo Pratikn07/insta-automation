@@ -47,5 +47,25 @@ export async function findKeywordInMessage(text: string) {
 
   return prisma.keyword.findFirst({
     where: { keyword: { in: tokens }, mediaId: null, active: true },
+    // Carry the sequence so the DM path can deliver instantly (follower /
+    // already-completed) without a second lookup — mirrors findActiveAwaitingDone.
+    include: { resource: { include: { messages: true } } },
   });
+}
+
+/** Strip everything but letters/digits from a token — "Potty🙏" → "POTTY". */
+function normalizeToken(token: string): string {
+  return token.toUpperCase().replace(/[^\p{L}\p{N}]/gu, "");
+}
+
+/**
+ * Does the text contain the keyword as a standalone word? Tokens are compared
+ * with punctuation/emoji stripped, so "Potty🙏", "EGG!" and "@tinysoho sleep"
+ * all match their keyword. Shared by the late-keyword backfill scanner and any
+ * future all-token live matching.
+ */
+export function textContainsKeyword(text: string, keyword: string): boolean {
+  const target = normalizeToken(keyword);
+  if (!target) return false;
+  return text.split(/\s+/).some((t) => normalizeToken(t) === target);
 }

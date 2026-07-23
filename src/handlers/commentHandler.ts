@@ -7,6 +7,7 @@ import { logger } from "../lib/logger.js";
 import { logEvent, describeGraphError } from "../services/eventLogger.js";
 import { rememberUsername } from "../services/igUserService.js";
 import { enqueueGate } from "../services/gateQueueService.js";
+import { env } from "../config/env.js";
 
 export async function handleComment(comment: CommentValue): Promise<void> {
   const log = logger.child({ commentId: comment.id });
@@ -19,6 +20,16 @@ export async function handleComment(comment: CommentValue): Promise<void> {
   const senderId = comment.from?.id;
   if (!senderId) {
     log.debug("Comment has no sender id (likely own comment) — skipping");
+    return;
+  }
+
+  // Comments authored by our own account (the bot's public replies, or manual
+  // replies posted from @tinysoho) come back through the webhook like anyone
+  // else's. Skip them BEFORE any logging: they must not count as
+  // comment_received, and once matching scans every token, a reply such as
+  // "DM me sleep" would otherwise trigger a self-reply loop.
+  if (senderId === env.IG_USER_ID) {
+    log.debug("Comment authored by own account — skipping");
     return;
   }
 

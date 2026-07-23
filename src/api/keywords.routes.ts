@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { normalizeKeyword } from "../services/keywordService.js";
+import { backfillKeyword } from "../services/keywordBackfillService.js";
 
 export const keywordsRouter = Router();
 
@@ -60,6 +61,9 @@ keywordsRouter.post("/", async (req, res) => {
         active: data.active ?? true,
       },
     });
+    // Recover the last 7 days of commenters who used this keyword before it
+    // existed — fire-and-forget; backfillKeyword is non-throwing and idempotent.
+    if (created.active) void backfillKeyword(created.id);
     res.status(201).json(created);
   } catch (err: unknown) {
     if (err && typeof err === "object" && "code" in err && (err as { code: string }).code === "P2002") {
@@ -73,6 +77,7 @@ keywordsRouter.patch("/:id", async (req, res) => {
   const parsed = updateSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   const data = parsed.data;
+  const before = await prisma.keyword.findUnique({ where: { id: req.params.id } });
   const updated = await prisma.keyword.update({
     where: { id: req.params.id },
     data: {
@@ -86,6 +91,14 @@ keywordsRouter.patch("/:id", async (req, res) => {
       ...(data.mediaPermalink !== undefined && { mediaPermalink: data.mediaPermalink }),
     },
   });
+  // Backfill when matching could newly apply: keyword (re)activated, the word
+  // itself changed, or the reel scope changed. Idempotent, so over-triggering
+  // only costs a scan.
+  const matchingChanged =
+    (updated.active && before?.active === false) ||
+    (before && updated.keyword !== before.keyword) ||
+    (before && updated.mediaId !== before.mediaId);
+  if (updated.active && matchingChanged) void backfillKeyword(updated.id);
   res.json(updated);
 });
 
