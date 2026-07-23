@@ -80,6 +80,9 @@ model Conversation {
   // and expiry are measured from this, not createdAt, so a gate delivered days
   // after the comment (retry) still opens a valid window. Null for legacy rows.
   gatedAt     DateTime?         @map("gated_at")
+  // When the follow-recheck worker measured this completed conversation's
+  // follower outcome (fix #11). Null = not yet rechecked / not eligible.
+  followRecheckedAt DateTime?   @map("follow_rechecked_at")
 
   keyword     Keyword           @relation(fields: [keywordId], references: [id])
 

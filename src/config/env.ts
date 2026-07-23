@@ -60,6 +60,16 @@ const envSchema = z.object({
   // small dev interval can't spam the Graph API.
   SNAPSHOT_INTERVAL_MS: z.coerce.number().int().min(60_000).default(6 * 60 * 60 * 1000),
   GEMINI_QUEUE_INTERVAL_MS: z.coerce.number().int().min(10_000).default(2 * 60 * 1000),
+
+  // --- Follow-recheck worker (fix #11: funnel follower yield) ---
+  // Days after a guide is delivered before we re-read the recipient's follow
+  // status (gives them time to follow). Single pass; a lower bound on yield.
+  FOLLOW_RECHECK_DELAY_DAYS: z.coerce.number().int().min(1).max(30).default(3),
+  // Stop chasing conversations older than this (keeps the due-set bounded).
+  FOLLOW_RECHECK_MAX_AGE_DAYS: z.coerce.number().int().min(1).max(365).default(30),
+  // Distinct convertible users re-read per worker tick (each = one Graph call).
+  FOLLOW_RECHECK_BATCH: z.coerce.number().int().min(1).max(100).default(20),
+  FOLLOW_RECHECK_INTERVAL_MS: z.coerce.number().int().min(60_000).default(30 * 60 * 1000),
 });
 
 const parsed = envSchema.safeParse(process.env);

@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { GeoWindowPoint, LeaderboardRow } from "./types";
+import type { FollowConversion, GeoWindowPoint, LeaderboardRow } from "./types";
 import {
   formatAudienceDelta,
   rankRepeatCandidates,
   summarizeAudienceGrowth,
+  summarizeFollowerYield,
 } from "./homeDashboard";
 
 function geoPoint(overrides: Partial<GeoWindowPoint> = {}): GeoWindowPoint {
@@ -159,5 +160,52 @@ describe("rankRepeatCandidates", () => {
     ]);
 
     expect(candidates).toHaveLength(3);
+  });
+});
+
+describe("summarizeFollowerYield", () => {
+  function conv(overrides: Partial<FollowConversion> = {}): FollowConversion {
+    return {
+      windowDays: 30,
+      deliveredToNonFollowers: 0,
+      rechecked: 0,
+      converted: 0,
+      pending: 0,
+      yieldPct: null,
+      ...overrides,
+    };
+  }
+
+  it("returns null when data is missing", () => {
+    expect(summarizeFollowerYield(undefined)).toBeNull();
+    expect(summarizeFollowerYield(null)).toBeNull();
+  });
+
+  it("is empty with no rechecks and mentions pending measurement", () => {
+    const summary = summarizeFollowerYield(conv({ deliveredToNonFollowers: 4, pending: 4 }));
+    expect(summary?.state).toBe("empty");
+    expect(summary?.yieldPct).toBeNull();
+    expect(summary?.headline).toContain("4");
+  });
+
+  it("reports a measured yield", () => {
+    const summary = summarizeFollowerYield(
+      conv({ deliveredToNonFollowers: 10, rechecked: 8, converted: 2, pending: 2, yieldPct: 25 }),
+    );
+    expect(summary?.state).toBe("measured");
+    expect(summary?.yieldPct).toBe(25);
+    expect(summary?.converted).toBe(2);
+    expect(summary?.rechecked).toBe(8);
+  });
+
+  it("handles a zero-conversion measured window", () => {
+    const summary = summarizeFollowerYield(conv({ rechecked: 5, converted: 0, yieldPct: 0 }));
+    expect(summary?.state).toBe("measured");
+    expect(summary?.yieldPct).toBe(0);
+  });
+
+  it("derives a percentage when the backend omits it", () => {
+    const summary = summarizeFollowerYield(conv({ rechecked: 4, converted: 1, yieldPct: null }));
+    expect(summary?.yieldPct).toBe(25);
   });
 });

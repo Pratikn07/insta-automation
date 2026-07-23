@@ -8,6 +8,7 @@ import { expireOldConversations } from "./services/conversationService.js";
 import { runGateQueueTick } from "./services/gateQueueWorker.js";
 import { runSnapshotTick } from "./services/snapshotWorker.js";
 import { runGeminiQueueTick } from "./services/geminiQueueWorker.js";
+import { runFollowRecheckTick } from "./services/followRecheckWorker.js";
 import { apiRouter } from "./api/router.js";
 
 const app = express();
@@ -77,6 +78,13 @@ setInterval(() => {
 setInterval(() => {
   void runGeminiQueueTick();
 }, env.GEMINI_QUEUE_INTERVAL_MS);
+
+// Follow-recheck worker: re-reads follow status a few days after a guide is
+// delivered to a non-follower, so the funnel's follower yield becomes visible.
+// Non-throwing and tiny (~25 users/week), so it can't disturb the server.
+setInterval(() => {
+  void runFollowRecheckTick();
+}, env.FOLLOW_RECHECK_INTERVAL_MS);
 
 app.listen(env.PORT, () => {
   logger.info({ port: env.PORT, env: env.NODE_ENV }, "insta-automation listening");

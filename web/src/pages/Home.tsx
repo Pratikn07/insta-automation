@@ -7,6 +7,7 @@ import type { GeoWindowPoint, LeaderboardRow, Stats } from "@/lib/types";
 import { rankRepeatCandidates, summarizeAudienceGrowth } from "@/lib/homeDashboard";
 import { AudienceGrowthPanel } from "@/components/home/AudienceGrowthPanel";
 import { AutomationHealthStrip } from "@/components/home/AutomationHealthStrip";
+import { FollowerYieldPanel } from "@/components/home/FollowerYieldPanel";
 import { RepeatReelsPanel } from "@/components/home/RepeatReelsPanel";
 import { Button } from "@/components/ui/button";
 
@@ -102,6 +103,10 @@ export function Home() {
 
       <motion.div {...fadeUp} transition={{ duration: 0.24, delay: 0.15 }}>
         <AutomationHealthStrip stats={statsQ.data} isLoading={statsQ.isLoading} />
+      </motion.div>
+
+      <motion.div {...fadeUp} transition={{ duration: 0.24, delay: 0.2 }}>
+        <FollowerYieldPanel stats={statsQ.data} isLoading={statsQ.isLoading} />
       </motion.div>
     </div>
   );

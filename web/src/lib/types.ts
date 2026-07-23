@@ -87,6 +87,15 @@ export interface ConversationCounts {
   waitingOnReply: number;
 }
 
+export interface FollowConversion {
+  windowDays: number;
+  deliveredToNonFollowers: number;
+  rechecked: number;
+  converted: number;
+  pending: number;
+  yieldPct: number | null;
+}
+
 export interface Stats {
   activeKeywords: number;
   totalKeywords: number;
@@ -96,6 +105,7 @@ export interface Stats {
   lastError: { kind: string; createdAt: string; payload: unknown } | null;
   gateQueuePending: number;
   gateQueueExhausted: number;
+  followConversion?: FollowConversion;
 }
 
 export interface Paginated<T> {
