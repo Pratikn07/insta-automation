@@ -54,7 +54,7 @@ export async function runFollowRecheckTick(): Promise<void> {
     const users = await getIgUsers([...convosByUser.keys()]);
 
     let apiCalls = 0;
-    let converted = 0;
+    let nowFollowing = 0;
     for (const [igUserId, convoIds] of convosByUser) {
       const cached = users[igUserId];
       let isFollowerNow: boolean | null;
@@ -70,18 +70,19 @@ export async function runFollowRecheckTick(): Promise<void> {
         apiCalls++;
       }
 
-      const didConvert = isFollowerNow === true;
-      if (didConvert) converted++;
+      if (isFollowerNow === true) nowFollowing++;
 
       await prisma.conversation.updateMany({
         where: { id: { in: convoIds } },
         data: { followRecheckedAt: new Date() },
       });
+      // Record the raw fact (isFollowerNow). Whether it counts as a funnel
+      // conversion is decided at the stats layer, which scopes to the
+      // non-follower pool — a user already following at delivery isn't one.
       await logEvent("follow_recheck", {
         igUserId,
         conversationIds: convoIds,
         isFollowerNow,
-        converted: didConvert,
         apiCall,
       });
 
@@ -89,7 +90,7 @@ export async function runFollowRecheckTick(): Promise<void> {
     }
 
     logger.info(
-      { users: convosByUser.size, apiCalls, converted },
+      { users: convosByUser.size, apiCalls, nowFollowing },
       "Follow-recheck tick complete",
     );
   } catch (err) {

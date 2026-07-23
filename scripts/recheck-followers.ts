@@ -53,8 +53,7 @@ async function main() {
       if (profile.isFollower === null) unreadable++;
     }
 
-    const didConvert = isFollowerNow === true;
-    if (didConvert) converted++;
+    if (isFollowerNow === true) converted++;
 
     await prisma.conversation.updateMany({
       where: { id: { in: convoIds } },
@@ -64,7 +63,6 @@ async function main() {
       igUserId,
       conversationIds: convoIds,
       isFollowerNow,
-      converted: didConvert,
       apiCall,
       source: "baseline_script",
     });

@@ -33,36 +33,45 @@ function startOfTodayUtc(): Date {
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Follower-yield snapshot over the last FOLLOW_RECHECK_MAX_AGE_DAYS. Reads:
- * - deliveries to non-followers (sequence_completed, followerAtDelivery=false),
- * - how many of those conversations the worker has rechecked (followRecheckedAt),
- * - how many of those rechecks recorded a conversion (follow_recheck events).
- * Non-follower deliveries not yet due (< recheck delay) surface as `pending`.
+ * Follower-yield snapshot over the last FOLLOW_RECHECK_MAX_AGE_DAYS, scoped to
+ * the non-follower pool so already-followers can't inflate the rate:
+ * - pool = distinct users who received a guide while NOT a follower
+ *   (sequence_completed, followerAtDelivery=false);
+ * - rechecked = pool users whose follow status the worker has since refreshed;
+ * - converted = rechecked pool users who now follow (current ig_users.isFollower);
+ * - pending = pool users not yet rechecked.
+ * Conversion is a lower bound (single recheck) and correlational, not causal.
  */
 async function getFollowConversion(): Promise<FollowConversion> {
   const windowDays = env.FOLLOW_RECHECK_MAX_AGE_DAYS;
-  const since = new Date(Date.now() - windowDays * DAY_MS);
 
-  const [completedEvents, rechecked, recheckEvents] = await Promise.all([
-    prisma.eventLog.findMany({
-      where: { kind: "sequence_completed", createdAt: { gte: since } },
-      select: { payload: true },
-    }),
-    prisma.conversation.count({
-      where: { state: "completed", followRecheckedAt: { gte: since } },
-    }),
-    prisma.eventLog.findMany({
-      where: { kind: "follow_recheck", createdAt: { gte: since } },
-      select: { payload: true },
-    }),
-  ]);
+  const [row] = await prisma.$queryRaw<
+    { delivered: bigint; rechecked: bigint; converted: bigint }[]
+  >`
+    WITH pool AS (
+      SELECT DISTINCT c.ig_user_id
+      FROM event_log e
+      JOIN conversations c ON c.id = (e.payload->>'conversationId')::uuid
+      WHERE e.kind = 'sequence_completed'
+        AND (e.payload->>'followerAtDelivery')::boolean IS FALSE
+        AND e.created_at >= now() - (${windowDays} || ' days')::interval
+    ),
+    rechecked_users AS (
+      SELECT DISTINCT payload->>'igUserId' AS ig_user_id
+      FROM event_log WHERE kind = 'follow_recheck'
+    )
+    SELECT
+      COUNT(*) AS delivered,
+      COUNT(*) FILTER (WHERE ru.ig_user_id IS NOT NULL) AS rechecked,
+      COUNT(*) FILTER (WHERE ru.ig_user_id IS NOT NULL AND u.is_follower IS TRUE) AS converted
+    FROM pool p
+    LEFT JOIN rechecked_users ru ON ru.ig_user_id = p.ig_user_id
+    LEFT JOIN ig_users u ON u.id = p.ig_user_id
+  `;
 
-  const deliveredToNonFollowers = completedEvents.filter(
-    (e) => (e.payload as { followerAtDelivery?: boolean | null } | null)?.followerAtDelivery === false,
-  ).length;
-  const converted = recheckEvents.filter(
-    (e) => (e.payload as { converted?: boolean } | null)?.converted === true,
-  ).length;
+  const deliveredToNonFollowers = Number(row?.delivered ?? 0);
+  const rechecked = Number(row?.rechecked ?? 0);
+  const converted = Number(row?.converted ?? 0);
 
   return {
     windowDays,
