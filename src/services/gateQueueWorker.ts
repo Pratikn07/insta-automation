@@ -11,8 +11,14 @@ const RATE_LIMIT_SUBCODE = 2534025;
 
 // Spacing between retries for a single row that keeps hitting the limit (grows
 // with attempts, capped). Sends for DIFFERENT rows in a tick are also spaced.
-const BASE_BACKOFF_MS = 30 * 60 * 1000; // 30 min
-const MAX_BACKOFF_MS = 12 * 60 * 60 * 1000; // 12 h
+// The cap was 12h — a relic of the June 2534025 storm. With the rate limit now
+// rare (~5/week) and the queue routinely drained, a 12h cap only stranded the
+// occasional failing gate for half a day between tries, dragging the delivery
+// tail (p90 was ~1.8d). A 2h cap tightens that; real storms are still handled by
+// the adaptive per-tick break below (we stop the tick the moment 2534025 recurs),
+// so faster retries never hammer a limited account.
+const BASE_BACKOFF_MS = 15 * 60 * 1000; // 15 min
+const MAX_BACKOFF_MS = 2 * 60 * 60 * 1000; // 2 h
 const PER_SEND_GAP_MS = 4000; // gentle spacing between sends within a tick
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
