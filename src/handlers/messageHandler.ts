@@ -27,6 +27,11 @@ const FOLLOW_NUDGE = "Follow @tinysoho so you don't miss the next one 🙏";
 // Sent before redelivering a guide the user already received — replaces the old
 // silent skip, which left our most engaged users with no response at all.
 const REDELIVERY_INTRO = "You've already got this one — here it is again 💛";
+// Hard follow gate: shown when a confirmed non-follower replies to the gate. The
+// parenthetical pre-empts the follow-flag lag (a real tap can take minutes to
+// register), so someone who just followed knows to simply reply again.
+const FOLLOW_GATE =
+  "You're one step away! 💛 Follow @tinysoho, then reply DONE here and I'll send it right over. (Just followed? Give it a few seconds and reply DONE again.)";
 
 export async function handleMessage(entry: MessagingEntry): Promise<void> {
   const msg = entry.message;
@@ -156,6 +161,35 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
         });
       }
       return;
+    }
+
+    // Hard follow gate: a confirmed non-follower must follow before we deliver.
+    // isFollower is reliably readable here — they've messaged us, so consent is
+    // granted (0 unknowns across 248 live reads). We ENFORCE only on a confirmed
+    // `false`; a rare unreadable `null` (~0.4%) falls through to delivery, since
+    // we can't gate what we can't measure and mustn't trap them. We re-arm the
+    // window (markGated) so an engaged user has a fresh 48h to follow, and the
+    // next reply re-reads a fresh follow flag — covering the follow-flag lag.
+    if (profile.isFollower === false) {
+      logger.info(
+        { conversationId: convo.id, keyword: convo.keyword.keyword, senderId },
+        "Open-gate reply from a non-follower — withholding guide until they follow",
+      );
+      await logEvent("follow_required", {
+        conversationId: convo.id,
+        keyword: convo.keyword.keyword,
+        senderId,
+      });
+      try {
+        await sendTextMessage(senderId, FOLLOW_GATE);
+        await markGated(convo.id); // reset the 48h DONE-window from this reply
+      } catch (err) {
+        logger.warn(
+          { ...describeGraphError(err), conversationId: convo.id },
+          "Follow-required message failed",
+        );
+      }
+      return; // stays awaiting_done — they follow, reply again, and get it
     }
 
     logger.info(

@@ -1,17 +1,18 @@
 import { prisma } from "../src/lib/prisma.js";
 
-// Fix #6 — reword every keyword's gate message so the REPLY is the requirement
-// and the FOLLOW is a soft nudge (honest for the ~80% who already follow), and
-// every gate asks for "DONE" (never a keyword word like PICKY, which would
-// re-trigger the gate instead of completing it).
+// Gate copy for the HARD follow gate: following is a stated requirement to get
+// the guide (the reply alone no longer unlocks it — see messageHandler's
+// follow-gate). Phrased so the ~80% who already follow just reply DONE. Every
+// gate asks for "DONE" (never a keyword word like PICKY, which would re-trigger
+// the gate instead of completing it).
 //
 //   npx tsx scripts/reword-gates.ts --dry-run   # preview current -> new
 //   npx tsx scripts/reword-gates.ts             # apply
-const FOLLOW = "New here? Follow @tinysoho so you never miss the next one 🙏";
+const ALREADY = "Already following? Just reply DONE!";
 const one = (deliverable: string) =>
-  `Your ${deliverable} is ready! 💛 Reply DONE and I'll send it right over. ${FOLLOW}`;
+  `Your ${deliverable} is ready! 💛 Follow @tinysoho and reply DONE, and I'll send it right over. ${ALREADY}`;
 const many = (deliverable: string) =>
-  `Your ${deliverable} are ready! 💛 Reply DONE and I'll send them right over. ${FOLLOW}`;
+  `Your ${deliverable} are ready! 💛 Follow @tinysoho and reply DONE, and I'll send them right over. ${ALREADY}`;
 
 // Keyed by the normalized (uppercase) keyword.
 const GATES: Record<string, string> = {
