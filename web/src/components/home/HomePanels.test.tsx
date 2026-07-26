@@ -78,7 +78,10 @@ describe("FollowerFlowPanel", () => {
     expect(html).toContain("Where your new followers come from");
     expect(html).toContain("South Asia");
     expect(html).toContain("Daily net adds by region");
-    expect(html).toContain("Meta did not refresh");
+    // The "Meta did not refresh" caveat used to appear here because it lived in
+    // a per-bar <title>. It is now hover-only, covered by chartTooltip.test.ts;
+    // the panel's own footer keeps the standing version of the caveat.
+    expect(html).toContain("days Meta skips are absorbed into the next bar");
 
     // The KPI row above owns these now — printing them here too was the
     // duplication this redesign removes. Note the chart's own "Line = 7-day
@@ -115,6 +118,34 @@ describe("FollowerFlowPanel", () => {
     expect(html).toContain("<text");
     // More than the old 3 date ticks along the bottom.
     expect((html.match(/Jul /g) ?? []).length).toBeGreaterThan(3);
+  });
+
+  it("drops the slow native per-bar tooltips but keeps the chart's own labels", () => {
+    const points = [
+      flowPoint("2026-07-20", { us: 40, southAsian: 5, anglosphere: 10, other: 5 }),
+      flowPoint("2026-07-21", { us: 120, southAsian: 15, anglosphere: 30, other: 10 }),
+      flowPoint("2026-07-22", { us: 80, southAsian: 10, anglosphere: 20, other: 8 }),
+    ];
+    const summary = summarizeFollowerFlow(points)!;
+    const html = renderToStaticMarkup(
+      <FollowerFlowPanel
+        points={points}
+        stock={flowStock}
+        summary={summary}
+        isLoading={false}
+        isError={false}
+        onRetry={() => undefined}
+      />,
+    );
+
+    // The old native tooltips said "net." per bar — those are gone.
+    expect(html).not.toContain("net.");
+    // Exactly two <title>s survive: the chart's own, and the mean line's.
+    expect((html.match(/<title>/g) ?? []).length).toBe(2);
+    expect(html).toContain("<title>Daily net follower adds by region</title>");
+    expect(html).toContain("7-day rolling average per day");
+    // The accessible summary is untouched.
+    expect(html).toContain('role="img"');
   });
 
   it("surfaces unattributed rank-churn as an honest footnote when non-zero", () => {

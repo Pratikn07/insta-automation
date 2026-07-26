@@ -1,6 +1,9 @@
+import { useRef, useState } from "react";
 import type { FollowerDailyAddsPoint } from "@/lib/types";
 import { chartGeometry, formatSignedCount, type ChartRegion } from "@/lib/followerFlow";
+import { slotFromOffset, tooltipModel } from "@/lib/chartTooltip";
 import { cn } from "@/lib/utils";
+import { ChartTooltip } from "./ChartTooltip";
 
 interface DailyAddsChartProps {
   points: FollowerDailyAddsPoint[];
@@ -37,32 +40,35 @@ function tickLabel(day: string): string {
   });
 }
 
-function unattributedNote(unattributed: number | null): string {
-  if (!unattributed) return "";
-  return ` ${formatSignedCount(unattributed)} unplaced (top-country cutoff).`;
-}
-
-function barTitle(
-  bar: { day: string; slots: number; basis: string; total: number | null; unattributed: number | null },
-  segments: string,
-): string {
-  const label = tickLabel(bar.day);
-  if (bar.basis === "pending") return `${label} — waiting for Meta to refresh`;
-  if (bar.basis === "no_snapshot") return `${label} — no snapshot captured`;
-  if (bar.basis === "no_prior_day") return `${label} — series start, nothing to diff against`;
-  const extra = unattributedNote(bar.unattributed);
-  if (bar.slots > 1) {
-    const from = tickLabel(shiftDay(bar.day, -(bar.slots - 1)));
-    return `${from}–${label} combined (${formatSignedCount(bar.total ?? 0)}) — Meta did not refresh in between. ${segments}${extra}`;
-  }
-  return `${label}: ${formatSignedCount(bar.total ?? 0)} net. ${segments}${extra}`;
-}
-
-function shiftDay(day: string, byDays: number): string {
-  return new Date(Date.parse(`${day}T00:00:00Z`) + byDays * 86_400_000).toISOString().slice(0, 10);
-}
-
 export function DailyAddsChart({ points, className }: DailyAddsChartProps) {
+  // Hooks must run unconditionally, so they sit above the early return below.
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  // Width is captured here rather than read from the ref at render time: reading
+  // layout during render is unreliable and would not re-run on resize.
+  const [hover, setHover] = useState<{
+    index: number;
+    x: number;
+    y: number;
+    containerWidth: number;
+  } | null>(null);
+
+  function handlePointerMove(event: React.PointerEvent<HTMLDivElement>) {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const offsetX = event.clientX - rect.left;
+    const index = slotFromOffset(offsetX, rect.width, WIDTH, GUTTER_LEFT, points.length);
+    if (index === null) {
+      setHover(null);
+      return;
+    }
+    setHover({
+      index,
+      x: offsetX,
+      y: event.clientY - rect.top,
+      containerWidth: rect.width,
+    });
+  }
+
   const measured = points.filter((p) => p.total !== null);
 
   if (measured.length < 2) {
@@ -94,6 +100,10 @@ export function DailyAddsChart({ points, className }: DailyAddsChartProps) {
     (b.total ?? 0) / (b.spanDays ?? 1) > (a.total ?? 0) / (a.spanDays ?? 1) ? b : a,
   );
   const staleCount = points.filter((p) => p.stale).length;
+  // hover.index indexes `points`; bars are keyed by day. Map through the day so
+  // the two agree even though stale points render no bar.
+  const hoveredDay = hover ? points[hover.index]?.day ?? null : null;
+  const hoveredPoint = hover ? points[hover.index] ?? null : null;
 
   const ariaLabel =
     `Daily net follower adds, ${tickLabel(first)} to ${tickLabel(last)}: ` +
@@ -101,7 +111,12 @@ export function DailyAddsChart({ points, className }: DailyAddsChartProps) {
     (staleCount > 0 ? `, ${staleCount} day${staleCount === 1 ? "" : "s"} without a Meta refresh` : "");
 
   return (
-    <div className={className}>
+    <div
+      ref={containerRef}
+      className={cn("relative", className)}
+      onPointerMove={handlePointerMove}
+      onPointerLeave={() => setHover(null)}
+    >
       {/* Deliberately no preserveAspectRatio="none": a stretched line still
           reads as a trend, but stretched bar widths read as false data.
           Fixed aspect, scaled by width. */}
@@ -145,18 +160,24 @@ export function DailyAddsChart({ points, className }: DailyAddsChartProps) {
                 height={HEIGHT - 16}
                 rx={4}
                 fill="currentColor"
-                fillOpacity="0.06"
-              >
-                <title>{barTitle(bar, "")}</title>
-              </rect>
+                fillOpacity={hoveredDay === bar.day ? 0.12 : 0.06}
+              />
             );
           }
 
-          const segmentText = bar.segments
-            .map((s) => REGION_LABELS[s.region])
-            .join(", ");
           return (
-            <g key={bar.day} opacity={bar.provisional ? 0.45 : 1}>
+            <g
+              key={bar.day}
+              opacity={
+                bar.provisional
+                  ? hoveredDay === bar.day
+                    ? 0.7
+                    : 0.45
+                  : hoveredDay && hoveredDay !== bar.day
+                    ? 0.55
+                    : 1
+              }
+            >
               {bar.segments.map((seg) => (
                 <rect
                   key={seg.region}
@@ -183,7 +204,6 @@ export function DailyAddsChart({ points, className }: DailyAddsChartProps) {
                   vectorEffect="non-scaling-stroke"
                 />
               )}
-              <title>{barTitle(bar, segmentText)}</title>
             </g>
           );
         })}
@@ -213,6 +233,15 @@ export function DailyAddsChart({ points, className }: DailyAddsChartProps) {
           <span key={day}>{tickLabel(day)}</span>
         ))}
       </div>
+
+      {hover && hoveredPoint && (
+        <ChartTooltip
+          model={tooltipModel(hoveredPoint)}
+          x={hover.x}
+          y={hover.y}
+          containerWidth={hover.containerWidth}
+        />
+      )}
     </div>
   );
 }
