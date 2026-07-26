@@ -99,6 +99,9 @@ export function FollowerFlowPanel({
     : null;
   const stockVsFlow = describeStockVsFlow(stock, summary.avgPerDay7);
   const stockUsSharePct = stock.totalCounted > 0 ? Math.round((stock.us / stock.totalCounted) * 100) : null;
+  // The rate counts Meta's still-revising newest days (so it agrees with the
+  // region legend beside it); the label is where that gets disclosed.
+  const settlingDays = summary.window7.provisionalDays;
   const regionLegend = [
     { key: "us" as const, sum: summary.window7.us },
     { key: "southAsian" as const, sum: summary.window7.southAsian },
@@ -139,6 +142,9 @@ export function FollowerFlowPanel({
             </div>
             <p className="mt-2 text-sm text-muted-foreground">
               Net new followers a day over the past week
+              {settlingDays > 0 && (
+                <> · newest {settlingDays} still settling</>
+              )}
             </p>
           </div>
           <div className="rounded-xl border border-white/10 bg-black/15 px-4 py-3">

@@ -197,6 +197,52 @@ describe("FollowerFlowPanel", () => {
     expect(html).toContain("South Asia");
   });
 
+  it("counts still-settling days in the headline and says so in the label", () => {
+    const points = [
+      flowPoint("2026-07-24", { us: 100 }),
+      flowPoint("2026-07-25", { us: 100 }),
+      flowPoint("2026-07-26", { us: 10, provisional: true }),
+    ];
+    const summary = summarizeFollowerFlow(points)!;
+    const html = renderToStaticMarkup(
+      <FollowerFlowPanel
+        points={points}
+        stock={flowStock}
+        summary={summary}
+        isLoading={false}
+        isError={false}
+        onRetry={() => undefined}
+      />,
+    );
+
+    // 210 over 3 days = 70. Dropping the provisional day would print +100 next
+    // to a legend that sums 210 — so the day counts, and the label discloses it.
+    // Match the headline element, not bare "+100": the chart tooltips legitimately
+    // say "+100 net" for the two settled bars.
+    const headline = html.match(/text-6xl[^>]*>([^<]*)</)?.[1];
+    expect(headline).toBe("+70");
+    expect(html).toContain("newest 1 still settling");
+  });
+
+  it("omits the settling note when every day in the window is settled", () => {
+    const points = [
+      flowPoint("2026-07-24", { us: 20 }),
+      flowPoint("2026-07-25", { us: 30 }),
+    ];
+    const summary = summarizeFollowerFlow(points)!;
+    const html = renderToStaticMarkup(
+      <FollowerFlowPanel
+        points={points}
+        stock={flowStock}
+        summary={summary}
+        isLoading={false}
+        isError={false}
+        onRetry={() => undefined}
+      />,
+    );
+    expect(html).not.toContain("still settling");
+  });
+
   it("shows the waiting state before two measured days exist", () => {
     const html = renderToStaticMarkup(
       <FollowerFlowPanel

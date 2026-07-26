@@ -125,6 +125,50 @@ describe("summarizeFollowerFlow", () => {
     expect(summary.window7.usSharePct).toBe(62); // 80 of 130
   });
 
+  it("keeps the headline rate on the same 7-day basis as the region legend", () => {
+    dayCounter = 0;
+    const pts = series(
+      point({ us: 100, total: 100 }),
+      point({ us: 91, total: 91 }),
+      point({ us: 251, total: 251 }),
+      point({ us: 50, total: 50 }),
+      point({ us: 50, total: 50 }),
+      point({ us: 48, total: 48, provisional: true }),
+      point({ us: 47, total: 47, provisional: true }),
+    );
+    const summary = summarizeFollowerFlow(pts)!;
+
+    // 637 adds over 7 covered days = 91/day. Dropping the two provisional days
+    // leaves 542/5 = 108 — a headline the legend printed beside it never agrees
+    // with, so the panel contradicts itself on screen.
+    expect(summary.window7.total).toBe(637);
+    expect(summary.window7.coveredDays).toBe(7);
+    expect(summary.window7.provisionalDays).toBe(2); // disclosed, not dropped
+    expect(summary.avgPerDay7).toBe(91);
+    expect(summary.avgPerDay7!).toBeCloseTo(
+      summary.window7.total / summary.window7.coveredDays,
+      1,
+    );
+  });
+
+  it("does not flatter the trend by dropping the newest days from the short window", () => {
+    dayCounter = 0;
+    // 26 settled days at +100, then two provisional days that collapsed to +10.
+    const pts = series(
+      ...Array.from({ length: 26 }, () => point({ us: 100, total: 100 })),
+      point({ us: 10, total: 10, provisional: true }),
+      point({ us: 10, total: 10, provisional: true }),
+    );
+    const summary = summarizeFollowerFlow(pts)!;
+
+    // Truth: 520/7 = 74.3 against 2620/28 = 93.6 — slowing. Excluding
+    // provisional days strips 2 of 7 days from the short window but only 2 of 28
+    // from the baseline, so both read 100 and the badge claims "Holding steady".
+    expect(summary.avgPerDay7).toBe(74.3);
+    expect(summary.avgPerDay28).toBe(93.6);
+    expect(summary.trend).toBe("slowing");
+  });
+
   it("accumulates unattributed rank-churn across the window, apart from the regions", () => {
     dayCounter = 0;
     const pts = series(

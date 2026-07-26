@@ -61,6 +61,9 @@ export interface RegionWindowSums {
   // to Meta's reported delta; the four regions alone do NOT.
   unattributed: number;
   coveredDays: number;
+  // How many of coveredDays Meta may still revise. The rate counts them; the UI
+  // discloses them rather than silently narrowing the window.
+  provisionalDays: number;
   usSharePct: number | null; // of attributed total, only when total > 0
   southAsianSharePct: number | null;
 }
@@ -69,7 +72,7 @@ export function sumRegions(
   points: FollowerDailyAddsPoint[],
   windowDays: number,
 ): RegionWindowSums {
-  const sums = { us: 0, southAsian: 0, anglosphere: 0, other: 0, total: 0, unattributed: 0, coveredDays: 0 };
+  const sums = { us: 0, southAsian: 0, anglosphere: 0, other: 0, total: 0, unattributed: 0, coveredDays: 0, provisionalDays: 0 };
   for (const p of lastNDays(points, windowDays)) {
     if (!isMeasured(p)) continue;
     sums.us += p.us ?? 0;
@@ -79,6 +82,7 @@ export function sumRegions(
     sums.total += p.total!;
     sums.unattributed += p.unattributed ?? 0;
     sums.coveredDays += p.spanDays!;
+    if (p.provisional) sums.provisionalDays += p.spanDays!;
   }
   return {
     ...sums,
@@ -108,8 +112,13 @@ export interface FollowerFlowSummary {
 const TREND_RATIO = 0.15;
 
 /**
- * Headline numbers for the panel. Provisional points are excluded from the
- * averages (they may still shift) but ARE drawn on the chart. Null with fewer
+ * Headline numbers for the panel. Provisional points ARE counted: they're a
+ * real part of the window, sumRegions already includes them, and excluding them
+ * only from the averages made the panel contradict itself on screen — a 5-day
+ * rate printed beside a 7-day region legend and a 7-day US-share tile. It also
+ * bent the trend badge, since dropping the 2 newest days removes ~29% of the
+ * 7-day window but only ~7% of the 28-day baseline. The panel label and the
+ * dashed newest bars carry the "still settling" caveat instead. Null with fewer
  * than 2 measured points — nothing honest to say yet.
  */
 export function summarizeFollowerFlow(
@@ -118,8 +127,8 @@ export function summarizeFollowerFlow(
   const measured = points.filter(isMeasured);
   if (measured.length < 2) return null;
 
-  const avgPerDay7 = ratePerDay(points, { windowDays: 7, includeProvisional: false });
-  const avgPerDay28 = ratePerDay(points, { windowDays: 28, includeProvisional: false });
+  const avgPerDay7 = ratePerDay(points, { windowDays: 7, includeProvisional: true });
+  const avgPerDay28 = ratePerDay(points, { windowDays: 28, includeProvisional: true });
 
   let trend: FlowTrend = "steady";
   if (avgPerDay7 !== null && avgPerDay28 !== null) {
