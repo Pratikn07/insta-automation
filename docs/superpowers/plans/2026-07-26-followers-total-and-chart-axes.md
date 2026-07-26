@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Two separate test suites. **Backend:** `npm test` from repo root (`vitest`, `src/**/*.test.ts`). **Frontend:** `npm test` from `web/`. Run whichever covers the code you touched; run both before the final commit.
-- Measured baselines: backend **13 test files**; frontend **8 files, 72 tests**. Both green at `d1bf280`.
+- Measured baselines: backend **1 file, 12 tests** (only `followerFlowCore.test.ts` matches the root `src/**/*.test.ts` glob); frontend **8 files, 72 tests**. Both green at `d1bf280`.
 - Frontend component tests use `renderToStaticMarkup` and assert HTML substrings. Do NOT add jsdom or @testing-library — neither is installed.
 - Pure functions in `web/src/lib/` and `src/services/followerFlowCore.ts` must never call `Date.now()` or argless `new Date()`. Time arrives as a parameter.
 - `tsconfig.app.json` sets `noUnusedLocals`/`noUnusedParameters`. A stray import fails `npm run build`.
@@ -283,7 +283,7 @@ Run: `npm test -- followerFlowCore`
 Expected: PASS including the 2 new tests.
 
 Run: `npm test`
-Expected: full backend suite green, 13 files.
+Expected: full backend suite green (2 files after this task: followerFlowCore + profileFetcher).
 
 - [ ] **Step 5: Commit**
 
@@ -803,7 +803,7 @@ labels instead of three."
 - [ ] **Step 1: Full verification**
 
 ```bash
-npm test            # repo root: backend, 13 files
+npm test            # repo root: backend, 2 files
 cd web && npm test  # frontend, 8 files
 npm run build
 ```
