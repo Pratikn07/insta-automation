@@ -624,13 +624,19 @@ import { AutomationHealthStrip } from "@/components/activity/AutomationHealthStr
 ```
 (Home stops rendering it in Task 6; this keeps the build green in between.)
 
+**Also repair the second broken importer.** `web/src/components/home/HomePanels.test.tsx:9` imports it by *relative* path, which no longer resolves after the move:
+```tsx
+import { AutomationHealthStrip } from "./AutomationHealthStrip";
+```
+Delete that line, and delete the whole `describe("AutomationHealthStrip", ...)` block at the end of the file (lines 338-364) — the new `components/activity/AutomationHealthStrip.test.tsx` covers it now. Removing it here rather than in Task 6 is what keeps this task's suite green; Task 6's step-8 pruning list accounts for it already being gone.
+
 - [ ] **Step 6: Verify the build and full suite**
 
 Run: `npm run build`
 Expected: exit 0.
 
 Run: `npm test`
-Expected: 6 files, 73 tests passing.
+Expected: 6 files, 72 tests passing. (61 baseline + 6 Task 1 + 4 Task 2 + 2 new activity tests − 1 for the `AutomationHealthStrip` block removed from `HomePanels.test.tsx`.)
 
 - [ ] **Step 7: Commit**
 
@@ -864,7 +870,7 @@ Run: `npm run build`
 Expected: exit 0.
 
 Run: `npm test`
-Expected: 7 files, 76 tests passing.
+Expected: 7 files, 75 tests passing.
 
 - [ ] **Step 7: Commit**
 
@@ -1621,7 +1627,7 @@ In `web/src/components/home/HomePanels.test.tsx`:
 - delete `describe("AudienceGrowthPanel", ...)` (lines 65-87)
 - delete `describe("RepeatReelsPanel", ...)` (lines 89-110)
 - delete `describe("AudienceGrowthPanel staleness pill", ...)` (lines 322-336)
-- delete `describe("AutomationHealthStrip", ...)` (lines 338-364) — covered now by `components/activity/AutomationHealthStrip.test.tsx`
+- `describe("AutomationHealthStrip", ...)` should already be gone — Task 3 removed it, because its relative `./AutomationHealthStrip` import stopped resolving the moment that file moved. If it is still present, delete it now along with the stale import.
 - delete the `points` fixture (lines 11-30), the `summary` fixture (lines 32-40), and the `candidate` fixture (lines 42-63)
 - update the imports (lines 1-9) to:
   ```tsx
@@ -1659,7 +1665,7 @@ Expected: **8 files, 77 tests.** The arithmetic, from the measured baseline (eac
 | − `describe("AudienceGrowthPanel")` | −1 |
 | − `describe("RepeatReelsPanel")` | −1 |
 | − `describe("AudienceGrowthPanel staleness pill")` | −1 |
-| − `describe("AutomationHealthStrip")` (Home copy) | −1 |
+| − `describe("AutomationHealthStrip")` (Home copy) | −1 *(already removed in Task 3 — its relative import broke on the `git mv`, so it could not survive that task; counted here for the branch total, not as Task 6 work)* |
 | − `describe("summarizeAudienceGrowth")` | −4 |
 | − `describe("formatAudienceDelta")` | −1 |
 | **Total** | **77** |
