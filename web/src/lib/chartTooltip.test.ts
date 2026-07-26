@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { FollowerDailyAddsPoint } from "./types";
-import { slotFromOffset, tooltipModel } from "./chartTooltip";
+import { hitTestDay, tooltipModel } from "./chartTooltip";
 
 function point(overrides: Partial<FollowerDailyAddsPoint> = {}): FollowerDailyAddsPoint {
   const us = overrides.us ?? 0;
@@ -98,36 +98,62 @@ describe("tooltipModel", () => {
   });
 });
 
-describe("slotFromOffset", () => {
-  // Chart is 720 viewBox units wide with a 34-unit gutter, rendered at 1080px
-  // (1.5× scale), 20 slots. Plot spans SVG x 42..712, so each slot is 33.5 units.
-  const args = { containerWidth: 1080, viewBoxWidth: 720, gutterLeft: 34, slotCount: 20 };
-  const slot = (offsetX: number) =>
-    slotFromOffset(offsetX, args.containerWidth, args.viewBoxWidth, args.gutterLeft, args.slotCount);
+describe("hitTestDay", () => {
+  // Mirrors what chartGeometry actually emits for a 13-point series where index 6
+  // is stale (no bar) and index 7 is a span-2 bar covering slots 6 AND 7.
+  // slotWidth = (712-42)/13 = 51.54, BAR_FILL = 0.72.
+  const bars = [
+    { day: "2026-07-14", x: 49.2, width: 37.1 },
+    { day: "2026-07-15", x: 100.7, width: 37.1 },
+    { day: "2026-07-16", x: 152.3, width: 37.1 },
+    { day: "2026-07-17", x: 203.8, width: 37.1 },
+    { day: "2026-07-18", x: 255.4, width: 37.1 },
+    { day: "2026-07-19", x: 306.9, width: 37.1 },
+    // No bar for 07-20: it is stale and absorbed by the span bar below.
+    { day: "2026-07-21", x: 358.4, width: 88.7 }, // span-2
+    { day: "2026-07-22", x: 461.5, width: 37.1 },
+    { day: "2026-07-23", x: 513.1, width: 37.1 },
+  ];
+  const hit = (offsetX: number) => hitTestDay(offsetX, 1050, 720, bars);
+  // 1050px container over a 720 viewBox = 1.458× scale.
+  const px = (svgX: number) => (svgX / 720) * 1050;
 
-  it("converts screen pixels to svg units before picking a slot", () => {
-    // 1.5× scale: screen 63px -> svg 42 = the very start of slot 0.
-    expect(slot(63)).toBe(0);
-    // Middle of the plot lands mid-series, not at the end.
-    expect(slot(1080 / 2)).toBe(9);
+  it("converts screen pixels to svg units before testing", () => {
+    // Without the conversion, px(207) would land on a different bar entirely.
+    expect(hit(px(207))).toBe("2026-07-17");
+    expect(hit(px(104))).toBe("2026-07-15");
   });
 
-  it("returns the last slot at the right edge and never overflows", () => {
-    expect(slot(1079)).toBe(19);
-    expect(slot(5000)).toBe(19);
+  it("resolves the whole width of a span bar to that bar, not the day it absorbed", () => {
+    // The regression this replaced: index arithmetic mapped the span bar's left
+    // half to the stale day, which draws no bar, so the span tooltip was
+    // unreachable. Verified in a browser before the fix.
+    expect(hit(px(365))).toBe("2026-07-21"); // left portion
+    expect(hit(px(402))).toBe("2026-07-21"); // middle
+    expect(hit(px(440))).toBe("2026-07-21"); // right portion
   });
 
-  it("returns null left of the plot area so the y-axis labels are not hoverable", () => {
-    expect(slot(0)).toBeNull();
-    expect(slot(10)).toBeNull();
+  it("never resolves to a day that has no drawn bar", () => {
+    const days = new Set(bars.map((b) => b.day));
+    for (let svgX = 42; svgX <= 550; svgX += 3) {
+      const day = hit(px(svgX));
+      if (day !== null) expect(days.has(day)).toBe(true);
+    }
   });
 
-  it("clamps a negative offset to null rather than a negative index", () => {
-    expect(slot(-40)).toBeNull();
+  it("snaps to the nearest bar in the gap between two bars", () => {
+    // Gap between the 07-14 and 07-15 bars: 86.3..100.7, midpoint ~93.5.
+    expect(hit(px(88))).toBe("2026-07-14");
+    expect(hit(px(99))).toBe("2026-07-15");
   });
 
-  it("degrades safely when the container has not been measured yet", () => {
-    expect(slotFromOffset(50, 0, 720, 34, 20)).toBeNull();
-    expect(slotFromOffset(50, 1080, 720, 34, 0)).toBeNull();
+  it("returns null outside the plot inset on either side", () => {
+    expect(hit(px(2))).toBeNull();
+    expect(hit(px(719))).toBeNull();
+  });
+
+  it("degrades safely with no bars or an unmeasured container", () => {
+    expect(hitTestDay(500, 1050, 720, [])).toBeNull();
+    expect(hitTestDay(500, 0, 720, bars)).toBeNull();
   });
 });

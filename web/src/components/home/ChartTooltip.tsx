@@ -28,6 +28,10 @@ export function ChartTooltip({ model, x, y, containerWidth }: ChartTooltipProps)
       : { left: `${x + CURSOR_GAP}px` }),
     ...(flipVertical ? { top: `${y + CURSOR_GAP}px` } : { bottom: "0px" }),
     width: `${CARD_WIDTH}px`,
+    // Inline z-index, not just the Tailwind class: the svg is a later DOM
+    // sibling, and a Tailwind z-20 alone let it paint OVER the card — verified
+    // with elementFromPoint returning the <svg> at the card's own center.
+    zIndex: 50,
   };
 
   return (

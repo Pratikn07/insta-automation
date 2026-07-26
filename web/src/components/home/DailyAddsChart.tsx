@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import type { FollowerDailyAddsPoint } from "@/lib/types";
 import { chartGeometry, formatSignedCount, type ChartRegion } from "@/lib/followerFlow";
-import { slotFromOffset, tooltipModel } from "@/lib/chartTooltip";
+import { hitTestDay, tooltipModel } from "@/lib/chartTooltip";
 import { cn } from "@/lib/utils";
 import { ChartTooltip } from "./ChartTooltip";
 
@@ -43,31 +43,16 @@ function tickLabel(day: string): string {
 export function DailyAddsChart({ points, className }: DailyAddsChartProps) {
   // Hooks must run unconditionally, so they sit above the early return below.
   const containerRef = useRef<HTMLDivElement | null>(null);
-  // Width is captured here rather than read from the ref at render time: reading
-  // layout during render is unreliable and would not re-run on resize.
+  // Keyed by day, not index: chartGeometry draws no bar for stale days and gives
+  // span bars two slots, so an index does not identify a hoverable bar.
+  // Width is captured here rather than read from the ref at render time —
+  // reading layout during render is unreliable and would not re-run on resize.
   const [hover, setHover] = useState<{
-    index: number;
+    day: string;
     x: number;
     y: number;
     containerWidth: number;
   } | null>(null);
-
-  function handlePointerMove(event: React.PointerEvent<HTMLDivElement>) {
-    const rect = containerRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const offsetX = event.clientX - rect.left;
-    const index = slotFromOffset(offsetX, rect.width, WIDTH, GUTTER_LEFT, points.length);
-    if (index === null) {
-      setHover(null);
-      return;
-    }
-    setHover({
-      index,
-      x: offsetX,
-      y: event.clientY - rect.top,
-      containerWidth: rect.width,
-    });
-  }
 
   const measured = points.filter((p) => p.total !== null);
 
@@ -100,10 +85,20 @@ export function DailyAddsChart({ points, className }: DailyAddsChartProps) {
     (b.total ?? 0) / (b.spanDays ?? 1) > (a.total ?? 0) / (a.spanDays ?? 1) ? b : a,
   );
   const staleCount = points.filter((p) => p.stale).length;
-  // hover.index indexes `points`; bars are keyed by day. Map through the day so
-  // the two agree even though stale points render no bar.
-  const hoveredDay = hover ? points[hover.index]?.day ?? null : null;
-  const hoveredPoint = hover ? points[hover.index] ?? null : null;
+  const hoveredDay = hover?.day ?? null;
+  const hoveredPoint = hoveredDay ? points.find((p) => p.day === hoveredDay) ?? null : null;
+
+  function handlePointerMove(event: React.PointerEvent<HTMLDivElement>) {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const offsetX = event.clientX - rect.left;
+    const day = hitTestDay(offsetX, rect.width, WIDTH, geo.bars);
+    if (day === null) {
+      setHover(null);
+      return;
+    }
+    setHover({ day, x: offsetX, y: event.clientY - rect.top, containerWidth: rect.width });
+  }
 
   const ariaLabel =
     `Daily net follower adds, ${tickLabel(first)} to ${tickLabel(last)}: ` +

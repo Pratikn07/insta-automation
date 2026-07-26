@@ -107,31 +107,46 @@ export function tooltipModel(point: FollowerDailyAddsPoint): TooltipModel {
 // Matches chartGeometry's own inset.
 const INSET = 8;
 
+/** The subset of a ChartBar that hit-testing needs. */
+export interface HitTarget {
+  day: string;
+  x: number;
+  width: number;
+}
+
 /**
- * Which slot the cursor is over, or null when it is outside the plot.
+ * Which drawn bar the cursor is nearest, as its `day`, or null outside the plot.
  *
- * The svg is a fixed viewBox scaled by css width, so screen pixels must be
- * converted to viewBox units before comparing against slot boundaries —
- * skipping that conversion picks a bar further and further off as you move
- * right.
+ * Hit-tests against the RENDERED bars rather than computing a slot index,
+ * because the two do not correspond one-to-one: chartGeometry gives a span-2
+ * catch-up bar two slots wide and draws nothing at all for the stale day it
+ * absorbed. Index arithmetic therefore resolved the left half of every span bar
+ * to a day with no bar — the span bar's own tooltip was unreachable. Verified in
+ * a browser: hovering the wide bar reported the stale gap day instead.
+ *
+ * The svg is a fixed viewBox scaled by css width, so screen pixels are converted
+ * to viewBox units first; comparing raw client x to svg coordinates drifts
+ * further off the further right you hover.
  */
-export function slotFromOffset(
+export function hitTestDay(
   offsetX: number,
   containerWidth: number,
   viewBoxWidth: number,
-  gutterLeft: number,
-  slotCount: number,
-): number | null {
-  if (containerWidth <= 0 || slotCount <= 0) return null;
+  bars: HitTarget[],
+): string | null {
+  if (containerWidth <= 0 || bars.length === 0) return null;
 
   const svgX = (offsetX / containerWidth) * viewBoxWidth;
-  const plotLeft = INSET + gutterLeft;
-  const plotRight = viewBoxWidth - INSET;
-  if (svgX < plotLeft) return null;
+  if (svgX < INSET || svgX > viewBoxWidth - INSET) return null;
 
-  const slotWidth = (plotRight - plotLeft) / slotCount;
-  if (slotWidth <= 0) return null;
-
-  const index = Math.floor((svgX - plotLeft) / slotWidth);
-  return Math.max(0, Math.min(index, slotCount - 1));
+  // Inside a bar wins outright; otherwise fall to the nearest bar center so the
+  // gaps between bars stay hoverable instead of being dead zones.
+  let nearest: { day: string; distance: number } | null = null;
+  for (const bar of bars) {
+    if (svgX >= bar.x && svgX <= bar.x + bar.width) return bar.day;
+    const center = bar.x + bar.width / 2;
+    const distance = Math.abs(svgX - center);
+    if (!nearest || distance < nearest.distance) nearest = { day: bar.day, distance };
+  }
+  return nearest?.day ?? null;
 }
