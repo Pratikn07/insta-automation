@@ -143,17 +143,12 @@ const flowStock: FollowerStock = {
 };
 
 describe("FollowerFlowPanel", () => {
-  it("leads with the per-day rate and contrasts new-follower US share with stock share", () => {
+  it("shows the region legend and chart without repeating the KPI row's numbers", () => {
     const points = [
       flowPoint("2026-07-19", { us: 10, southAsian: 3, anglosphere: 2, other: 2 }),
       flowPoint("2026-07-20", { us: 28, southAsian: 5, anglosphere: 12, other: 8 }),
       {
-        ...flowPoint("2026-07-21", {
-          us: null,
-          southAsian: null,
-          anglosphere: null,
-          other: null,
-        }),
+        ...flowPoint("2026-07-21", { us: null, southAsian: null, anglosphere: null, other: null }),
         total: null,
         spanDays: null,
         reportedTotalDelta: null,
@@ -183,77 +178,21 @@ describe("FollowerFlowPanel", () => {
       />,
     );
 
-    expect(html).toContain("How many new followers a day?");
-    // 238 adds over 4 covered days = 60/day — days covered, not points counted.
-    expect(html).toContain("+60");
-    expect(html).toContain("US share of NEW followers (7d)");
-    expect(html).toContain("66%"); // 156 of 238
-    expect(html).toContain("US share of ALL followers");
-    expect(html).toContain("35%"); // 1489 of 4308
-    expect(html).toContain("4,308");
-    expect(html).toContain("followers counted");
-    expect(html).toContain("Meta did not refresh");
+    expect(html).toContain("Where your new followers come from");
     expect(html).toContain("South Asia");
-  });
+    expect(html).toContain("Daily net adds by region");
+    expect(html).toContain("Meta did not refresh");
 
-  it("counts still-settling days in the headline and says so in the label", () => {
-    const points = [
-      flowPoint("2026-07-24", { us: 100 }),
-      flowPoint("2026-07-25", { us: 100 }),
-      flowPoint("2026-07-26", { us: 10, provisional: true }),
-    ];
-    const summary = summarizeFollowerFlow(points)!;
-    const html = renderToStaticMarkup(
-      <FollowerFlowPanel
-        points={points}
-        stock={flowStock}
-        summary={summary}
-        isLoading={false}
-        isError={false}
-        onRetry={() => undefined}
-      />,
-    );
-
-    // 210 over 3 days = 70. Dropping the provisional day would print +100 next
-    // to a legend that sums 210 — so the day counts, and the label discloses it.
-    // Match the headline element, not bare "+100": the chart tooltips legitimately
-    // say "+100 net" for the two settled bars.
-    const headline = html.match(/text-6xl[^>]*>([^<]*)</)?.[1];
-    expect(headline).toBe("+70");
-    expect(html).toContain("newest 1 still settling");
-  });
-
-  it("omits the settling note when every day in the window is settled", () => {
-    const points = [
-      flowPoint("2026-07-24", { us: 20 }),
-      flowPoint("2026-07-25", { us: 30 }),
-    ];
-    const summary = summarizeFollowerFlow(points)!;
-    const html = renderToStaticMarkup(
-      <FollowerFlowPanel
-        points={points}
-        stock={flowStock}
-        summary={summary}
-        isLoading={false}
-        isError={false}
-        onRetry={() => undefined}
-      />,
-    );
-    expect(html).not.toContain("still settling");
-  });
-
-  it("shows the waiting state before two measured days exist", () => {
-    const html = renderToStaticMarkup(
-      <FollowerFlowPanel
-        points={[]}
-        stock={null}
-        summary={null}
-        isLoading={false}
-        isError={false}
-        onRetry={() => undefined}
-      />,
-    );
-    expect(html).toContain("Waiting for follower snapshots");
+    // The KPI row above owns these now — printing them here too was the
+    // duplication this redesign removes. Note the chart's own "Line = 7-day
+    // average" caption stays, so assert on the headline's "/day" suffix
+    // specifically rather than the bare substring.
+    expect(html).not.toContain("Net new followers a day");
+    expect(html).not.toContain(">/day<");
+    expect(html).not.toContain("US share of ALL followers");
+    expect(html).not.toContain("US share of NEW followers");
+    expect(html).not.toContain("followers counted");
+    expect(html).not.toContain("At this pace");
   });
 
   it("surfaces unattributed rank-churn as an honest footnote when non-zero", () => {
@@ -315,6 +254,20 @@ describe("FollowerFlowPanel", () => {
       />,
     );
     expect(html).not.toContain("Snapshots as of");
+  });
+
+  it("shows the waiting state before two measured days exist", () => {
+    const html = renderToStaticMarkup(
+      <FollowerFlowPanel
+        points={[]}
+        stock={null}
+        summary={null}
+        isLoading={false}
+        isError={false}
+        onRetry={() => undefined}
+      />,
+    );
+    expect(html).toContain("Waiting for follower snapshots");
   });
 });
 

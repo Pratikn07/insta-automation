@@ -6,9 +6,25 @@ import { Card, CardContent } from "@/components/ui/card";
 // verbatim in AudienceGrowthPanel and RepeatReelsPanel, differing only in the
 // accent color and icon — those come in as props now.
 
-export function PanelShell({ children, className }: { children: React.ReactNode; className?: string }) {
+export function PanelShell({
+  children,
+  className,
+  tall = false,
+}: {
+  children: React.ReactNode;
+  className?: string;
+  // Empty/error states still want a generous box; the populated chart panel is
+  // much shorter than the old all-in-one panel and a 600px floor left a gap.
+  tall?: boolean;
+}) {
   return (
-    <Card className={cn("min-h-[600px] rounded-2xl border-white/10 bg-card/85 shadow-xl shadow-black/10", className)}>
+    <Card
+      className={cn(
+        "rounded-2xl border-white/10 bg-card/85 shadow-xl shadow-black/10",
+        tall && "min-h-[600px]",
+        className,
+      )}
+    >
       <CardContent className="p-5 sm:p-6">{children}</CardContent>
     </Card>
   );
