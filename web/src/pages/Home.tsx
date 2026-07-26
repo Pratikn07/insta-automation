@@ -7,7 +7,7 @@ import type { FollowerFlowResponse, GeoWindowPoint, LeaderboardRow, Stats } from
 import { rankRepeatCandidates, summarizeAudienceGrowth } from "@/lib/homeDashboard";
 import { summarizeFollowerFlow } from "@/lib/followerFlow";
 import { AudienceGrowthPanel } from "@/components/home/AudienceGrowthPanel";
-import { AutomationHealthStrip } from "@/components/home/AutomationHealthStrip";
+import { AutomationHealthStrip } from "@/components/activity/AutomationHealthStrip";
 import { FollowerFlowPanel } from "@/components/home/FollowerFlowPanel";
 import { FollowerYieldPanel } from "@/components/home/FollowerYieldPanel";
 import { RepeatReelsPanel } from "@/components/home/RepeatReelsPanel";

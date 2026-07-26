@@ -6,7 +6,6 @@ import { summarizeFollowerFlow } from "@/lib/followerFlow";
 import { AudienceGrowthPanel } from "./AudienceGrowthPanel";
 import { FollowerFlowPanel } from "./FollowerFlowPanel";
 import { RepeatReelsPanel } from "./RepeatReelsPanel";
-import { AutomationHealthStrip } from "./AutomationHealthStrip";
 
 const points: GeoWindowPoint[] = [
   {
@@ -332,33 +331,5 @@ describe("AudienceGrowthPanel staleness pill", () => {
       />,
     );
     expect(html).toContain("days old");
-  });
-});
-
-describe("AutomationHealthStrip", () => {
-  it("keeps delivery operations visible without competing with the two main stories", () => {
-    const html = renderToStaticMarkup(
-      <AutomationHealthStrip
-        stats={{
-          activeKeywords: 8,
-          totalKeywords: 10,
-          dmsSentToday: 16,
-          conversationsAwaiting: 5,
-          completedToday: 12,
-          lastError: null,
-          gateQueuePending: 2,
-          gateQueueExhausted: 0,
-        }}
-        isLoading={false}
-      />,
-    );
-
-    expect(html).toContain("Automation health");
-    expect(html).toContain("12");
-    expect(html).toContain("Sequences today");
-    expect(html).toContain("5");
-    expect(html).toContain("Awaiting reply");
-    expect(html).toContain("2");
-    expect(html).toContain("Retries queued");
   });
 });

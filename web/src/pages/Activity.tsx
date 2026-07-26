@@ -1,7 +1,9 @@
-import { useInfiniteQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Activity as ActivityIcon } from "lucide-react";
 import { useState } from "react";
 import { api } from "@/lib/api";
+import type { Stats } from "@/lib/types";
+import { AutomationHealthStrip } from "@/components/activity/AutomationHealthStrip";
 import { cn, displayUser, type IgUserLite } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -52,6 +54,12 @@ export function Activity() {
     getNextPageParam: (last) => last.nextCursor ?? undefined,
   });
 
+  // Same key as elsewhere, so this shares one cached fetch across pages.
+  const statsQ = useQuery<Stats>({
+    queryKey: ["stats"],
+    queryFn: () => api<Stats>("/stats"),
+  });
+
   const items = eventsQ.data?.pages.flatMap((p) => p.items) ?? [];
   const users: Record<string, IgUserLite> = Object.assign(
     {},
@@ -68,6 +76,8 @@ export function Activity() {
           (including DMs we couldn't deliver). The full diagnostic feed.
         </p>
       </div>
+
+      <AutomationHealthStrip stats={statsQ.data} isLoading={statsQ.isLoading} />
 
       <div className="flex flex-wrap items-center gap-2">
         {KIND_FILTERS.map((f) => (
