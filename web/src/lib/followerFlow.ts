@@ -159,6 +159,63 @@ export function summarizeFollowerFlow(
   };
 }
 
+export interface UsWeekOverWeek {
+  thisWeek: number;
+  lastWeek: number | null;
+  deltaCount: number | null;
+  trend: FlowTrend;
+  coveredDays: number;
+  provisionalDays: number;
+}
+
+const WEEK_DAYS = 7;
+
+/**
+ * Net US followers gained this week against last week, in real counts.
+ *
+ * Answers "is my US audience growing?" without percentage-point arithmetic.
+ * Both windows reuse sumRegions, so this tile and the region legend under the
+ * chart are computed identically and can never disagree on screen.
+ *
+ * Provisional (still-settling) days are counted, matching
+ * summarizeFollowerFlow's includeProvisional: true — excluding them would make
+ * this tile contradict the legend beside it, and would bend the trend by
+ * stripping a larger share of the newer window than the older one. The count
+ * is surfaced as provisionalDays so the UI can disclose it instead.
+ *
+ * lastWeek is null (and trend "steady") until the prior window covers a full
+ * 7 days — a partial prior window makes the comparison misleading, so we
+ * withhold it rather than print a number that reads as a real decline.
+ */
+export function summarizeUsWeekOverWeek(
+  points: FollowerDailyAddsPoint[],
+): UsWeekOverWeek | null {
+  const current = sumRegions(points, WEEK_DAYS);
+  if (current.coveredDays === 0) return null;
+
+  // Slice off the current window by point count (sumRegions windows by points),
+  // then measure the 7 points before it.
+  const priorPoints = points.slice(0, Math.max(points.length - WEEK_DAYS, 0));
+  const prior = sumRegions(priorPoints, WEEK_DAYS);
+  const lastWeek = prior.coveredDays >= WEEK_DAYS ? prior.us : null;
+
+  let trend: FlowTrend = "steady";
+  if (lastWeek !== null) {
+    const band = Math.max(Math.abs(lastWeek) * TREND_RATIO, 1);
+    if (current.us - lastWeek >= band) trend = "accelerating";
+    else if (current.us - lastWeek <= -band) trend = "slowing";
+  }
+
+  return {
+    thisWeek: current.us,
+    lastWeek,
+    deltaCount: lastWeek === null ? null : round(current.us - lastWeek, 0),
+    trend,
+    coveredDays: current.coveredDays,
+    provisionalDays: current.provisionalDays,
+  };
+}
+
 // U+2212 minus, matching formatAudienceDelta.
 export function formatSignedCount(n: number): string {
   if (n > 0) return `+${n}`;

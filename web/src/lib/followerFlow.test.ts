@@ -6,6 +6,7 @@ import {
   formatSignedCount,
   ratePerDay,
   summarizeFollowerFlow,
+  summarizeUsWeekOverWeek,
 } from "./followerFlow";
 import { describeFreshness } from "./homeDashboard";
 
@@ -298,6 +299,94 @@ describe("chartGeometry", () => {
     const geo = chartGeometry(pts);
     // Rates: [80, 84, 84] -> trailing means [_, 82, 82.7]
     expect(geo.meanLine[geo.meanLine.length - 1]!.value).toBeCloseTo(82.7, 1);
+  });
+});
+
+describe("summarizeUsWeekOverWeek", () => {
+  it("compares real US counts across two 7-day windows", () => {
+    dayCounter = 0;
+    const pts = series(
+      ...Array.from({ length: 7 }, () => point({ us: 20, total: 20 })), // last week: 140
+      ...Array.from({ length: 7 }, () => point({ us: 26, total: 26 })), // this week: 182
+    );
+    const s = summarizeUsWeekOverWeek(pts)!;
+    expect(s.thisWeek).toBe(182);
+    expect(s.lastWeek).toBe(140);
+    expect(s.deltaCount).toBe(42);
+    expect(s.coveredDays).toBe(7);
+  });
+
+  it("counts still-settling days and reports how many there are", () => {
+    dayCounter = 0;
+    const pts = series(
+      ...Array.from({ length: 7 }, () => point({ us: 20, total: 20 })),
+      ...Array.from({ length: 5 }, () => point({ us: 30, total: 30 })),
+      point({ us: 8, total: 8, provisional: true }),
+      point({ us: 7, total: 7, provisional: true }),
+    );
+    const s = summarizeUsWeekOverWeek(pts)!;
+    // 150 + 8 + 7 = 165 — the provisional days count, matching the chart legend.
+    expect(s.thisWeek).toBe(165);
+    expect(s.provisionalDays).toBe(2);
+  });
+
+  it("withholds the comparison when the prior window is short", () => {
+    dayCounter = 0;
+    const pts = series(
+      ...Array.from({ length: 3 }, () => point({ us: 20, total: 20 })),
+      ...Array.from({ length: 7 }, () => point({ us: 30, total: 30 })),
+    );
+    const s = summarizeUsWeekOverWeek(pts)!;
+    expect(s.thisWeek).toBe(210);
+    expect(s.lastWeek).toBeNull();
+    expect(s.deltaCount).toBeNull();
+    expect(s.trend).toBe("steady");
+  });
+
+  it("reads a 15%-or-greater rise as accelerating and a fall as slowing", () => {
+    dayCounter = 0;
+    const rising = series(
+      ...Array.from({ length: 7 }, () => point({ us: 100, total: 100 })),
+      ...Array.from({ length: 7 }, () => point({ us: 116, total: 116 })),
+    );
+    // band = max(700 × 0.15, 1) = 105; 812 − 700 = 112 ≥ 105.
+    expect(summarizeUsWeekOverWeek(rising)!.trend).toBe("accelerating");
+
+    dayCounter = 0;
+    const falling = series(
+      ...Array.from({ length: 7 }, () => point({ us: 100, total: 100 })),
+      ...Array.from({ length: 7 }, () => point({ us: 80, total: 80 })),
+    );
+    // 560 − 700 = −140 ≤ −105.
+    expect(summarizeUsWeekOverWeek(falling)!.trend).toBe("slowing");
+
+    dayCounter = 0;
+    const flat = series(
+      ...Array.from({ length: 7 }, () => point({ us: 100, total: 100 })),
+      ...Array.from({ length: 7 }, () => point({ us: 105, total: 105 })),
+    );
+    // 735 − 700 = 35 < 105.
+    expect(summarizeUsWeekOverWeek(flat)!.trend).toBe("steady");
+  });
+
+  it("handles a net-negative US week without flipping the trend sign", () => {
+    dayCounter = 0;
+    const pts = series(
+      ...Array.from({ length: 7 }, () => point({ us: 10, total: 10 })),
+      ...Array.from({ length: 7 }, () => point({ us: -5, total: -5 })),
+    );
+    const s = summarizeUsWeekOverWeek(pts)!;
+    expect(s.thisWeek).toBe(-35);
+    expect(s.lastWeek).toBe(70);
+    expect(s.deltaCount).toBe(-105);
+    expect(s.trend).toBe("slowing");
+  });
+
+  it("returns null when no day in the window is measured", () => {
+    dayCounter = 0;
+    expect(
+      summarizeUsWeekOverWeek(series(nullPoint("no_prior_day"), nullPoint("stale"))),
+    ).toBeNull();
   });
 });
 
