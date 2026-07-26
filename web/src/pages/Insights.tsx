@@ -22,6 +22,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { EmptyState } from "@/components/EmptyState";
+import { RepeatReelsCard } from "@/components/insights/RepeatReelsCard";
 import {
   rankCaptureLeaders,
   formatCaptureRate,
@@ -176,7 +177,9 @@ function Leaderboard() {
 
   return (
     <>
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+      <RepeatReelsCard rows={items} isLoading={q.isLoading} />
+
+      <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
         {items.map((row, i) => (
           <motion.button
             key={row.mediaId}
