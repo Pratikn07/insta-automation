@@ -98,6 +98,13 @@ verbatim from `followerFlow.ts`.
 - Headline: `stock.totalCounted` (e.g. `4,355`).
 - Comparison line: the existing `sentence` field (e.g. "At this pace, about
   6 days to 5,000."), or nothing if `daysToNextMilestone` is null.
+- Note line: **the overall daily rate** — `+108/day all regions` from
+  `summary.avgPerDay7`. Trimming the flow panel deletes its `+108/day`
+  headline, and "how many followers were added a day" is a stated must-have,
+  so the number must survive somewhere. It belongs on this tile rather than
+  tile 1: tile 1 is scoped to US, this tile is the all-regions view, and the
+  milestone ETA printed above it is derived from exactly this rate — so the
+  two lines corroborate each other instead of competing.
 
 ## KPI tile 3: Guide→follow yield
 
