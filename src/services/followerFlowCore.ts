@@ -47,6 +47,10 @@ export interface FollowerDailyAddsPoint {
 export interface FollowerStock {
   capturedAt: string;
   totalCounted: number; // sum across Meta's reported countries — NOT the true follower total
+  // Instagram's real profile count (followers_count). Null when the profile
+  // fetch failed. Differs from totalCounted by the followers living in countries
+  // below Meta's ~45-country reporting cutoff — 4,355 vs 4,578 on 2026-07-26.
+  followersTotal: number | null;
   us: number;
   southAsian: number;
   anglosphere: number;
@@ -218,7 +222,10 @@ export function buildDailyPoints(anchors: AnchorSnapshot[]): FollowerDailyAddsPo
   return points;
 }
 
-export function stockFrom(anchor: AnchorSnapshot): FollowerStock {
+export function stockFrom(
+  anchor: AnchorSnapshot,
+  followersTotal: number | null = null,
+): FollowerStock {
   const sums: Record<FollowerRegion, number> = { us: 0, southAsian: 0, anglosphere: 0, other: 0 };
   for (const [country, value] of Object.entries(anchor.counts)) {
     sums[regionOf(country)] += value;
@@ -226,6 +233,7 @@ export function stockFrom(anchor: AnchorSnapshot): FollowerStock {
   return {
     capturedAt: anchor.capturedAt.toISOString(),
     totalCounted: anchor.totalCounted ?? sums.us + sums.southAsian + sums.anglosphere + sums.other,
+    followersTotal,
     ...sums,
     countriesReported: Object.keys(anchor.counts).length,
   };

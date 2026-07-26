@@ -3,6 +3,7 @@ import {
   asCounts,
   buildDailyPoints,
   diffAnchors,
+  stockFrom,
   type AnchorSnapshot,
 } from "./followerFlowCore.js";
 
@@ -124,5 +125,30 @@ describe("buildDailyPoints", () => {
 
   it("returns empty for no anchors", () => {
     expect(buildDailyPoints([])).toEqual([]);
+  });
+});
+
+describe("stockFrom followersTotal", () => {
+  const snapshot: AnchorSnapshot = {
+    day: "2026-07-26",
+    capturedAt: new Date("2026-07-26T18:07:52.909Z"),
+    counts: { US: 1522, IN: 1278, GB: 400, BR: 100 },
+    totalCounted: 3300,
+  };
+
+  it("carries the true total alongside the 45-country subtotal", () => {
+    const stock = stockFrom(snapshot, 4578);
+    expect(stock.followersTotal).toBe(4578);
+    // The demographics subtotal is preserved, not overwritten — the regional
+    // diff math is built on it.
+    expect(stock.totalCounted).toBe(3300);
+  });
+
+  it("leaves followersTotal null when the profile fetch failed", () => {
+    expect(stockFrom(snapshot, null).followersTotal).toBeNull();
+  });
+
+  it("defaults followersTotal to null when the argument is omitted", () => {
+    expect(stockFrom(snapshot).followersTotal).toBeNull();
   });
 });

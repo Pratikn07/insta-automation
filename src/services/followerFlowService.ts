@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma.js";
+import { fetchProfileTotals } from "../meta/profileFetcher.js";
 import {
   asCounts,
   buildDailyPoints,
@@ -26,6 +27,13 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  */
 export async function getFollowerDailyAdds(): Promise<FollowerFlowResult> {
   const cutoff = new Date(Date.now() - LOOKBACK_DAYS * DAY_MS);
+
+  // Kick off the profile fetch before awaiting the DB read — it's an independent
+  // network call, so serializing them would add its latency for nothing. Fetched
+  // per request rather than stored, so the headline can never drift from what
+  // Instagram shows on the profile.
+  const profileTotalsPromise = fetchProfileTotals();
+
   const rows = await prisma.geoDemographicSnapshot.findMany({
     where: { stage: "follower", capturedAt: { gte: cutoff } },
     orderBy: { capturedAt: "asc" },
@@ -44,9 +52,13 @@ export async function getFollowerDailyAdds(): Promise<FollowerFlowResult> {
     });
   }
   const anchors = [...anchorsByDay.values()];
+  const { followersTotal } = await profileTotalsPromise;
 
   return {
     points: buildDailyPoints(anchors),
-    stock: anchors.length > 0 ? stockFrom(anchors[anchors.length - 1]!) : null,
+    stock:
+      anchors.length > 0
+        ? stockFrom(anchors[anchors.length - 1]!, followersTotal)
+        : null,
   };
 }
