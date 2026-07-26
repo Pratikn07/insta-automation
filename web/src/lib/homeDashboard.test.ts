@@ -1,24 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { FollowConversion, GeoWindowPoint, LeaderboardRow } from "./types";
-import {
-  formatAudienceDelta,
-  rankRepeatCandidates,
-  summarizeAudienceGrowth,
-  summarizeFollowerYield,
-} from "./homeDashboard";
-
-function geoPoint(overrides: Partial<GeoWindowPoint> = {}): GeoWindowPoint {
-  return {
-    capturedAt: "2026-07-17T12:00:00.000Z",
-    reachedUs90: 38,
-    reachedUs14: 38,
-    engagedUs90: 36,
-    engagedUs14: 36,
-    reachedIn14: 22,
-    engagedIn14: 24,
-    ...overrides,
-  };
-}
+import type { FollowConversion, LeaderboardRow } from "./types";
+import { rankRepeatCandidates, summarizeFollowerYield } from "./homeDashboard";
 
 function reel(overrides: Partial<LeaderboardRow> & Pick<LeaderboardRow, "mediaId">): LeaderboardRow {
   const { mediaId, ...rest } = overrides;
@@ -41,63 +23,6 @@ function reel(overrides: Partial<LeaderboardRow> & Pick<LeaderboardRow, "mediaId
     ...rest,
   };
 }
-
-describe("summarizeAudienceGrowth", () => {
-  it("describes a two-point-or-greater reached-audience lift as growing", () => {
-    expect(
-      summarizeAudienceGrowth([geoPoint({ reachedUs14: 42, reachedUs90: 37 })]),
-    ).toMatchObject({
-      status: "growing",
-      currentPct: 42,
-      baselinePct: 37,
-      deltaPoints: 5,
-      source: "reached",
-    });
-  });
-
-  it("falls back to engaged audience when reached percentages are missing", () => {
-    expect(
-      summarizeAudienceGrowth([
-        geoPoint({ reachedUs14: null, reachedUs90: null, engagedUs14: 31, engagedUs90: 34 }),
-      ]),
-    ).toMatchObject({
-      status: "cooling",
-      currentPct: 31,
-      baselinePct: 34,
-      deltaPoints: -3,
-      source: "engaged",
-    });
-  });
-
-  it("uses the newest usable snapshot and treats small moves as steady", () => {
-    const summary = summarizeAudienceGrowth([
-      geoPoint({ capturedAt: "2026-07-15T12:00:00.000Z", reachedUs14: 44, reachedUs90: 38 }),
-      geoPoint({ capturedAt: "2026-07-17T12:00:00.000Z", reachedUs14: 39.2, reachedUs90: 38 }),
-    ]);
-
-    expect(summary).toMatchObject({ status: "steady", deltaPoints: 1.2 });
-  });
-
-  it("returns no summary when neither reached nor engaged comparison is available", () => {
-    expect(
-      summarizeAudienceGrowth([
-        geoPoint({
-          reachedUs14: null,
-          reachedUs90: null,
-          engagedUs14: null,
-          engagedUs90: null,
-        }),
-      ]),
-    ).toBeNull();
-  });
-});
-
-describe("formatAudienceDelta", () => {
-  it("uses percentage-point language and preserves the sign", () => {
-    expect(formatAudienceDelta(5)).toBe("+5.0 percentage points");
-    expect(formatAudienceDelta(-2.25)).toBe("−2.3 percentage points");
-  });
-});
 
 describe("rankRepeatCandidates", () => {
   it("excludes reels that only have a US-fit score and no measured performance", () => {

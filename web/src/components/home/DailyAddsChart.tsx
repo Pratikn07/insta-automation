@@ -7,8 +7,8 @@ interface DailyAddsChartProps {
   className?: string;
 }
 
-// Region fills, hardcoded like DashboardSparkline's colors. No <defs> at all —
-// the sparkline's global gradient id can't collide with what doesn't exist.
+// Region fills, hardcoded rather than themed. No <defs> at all — nothing here
+// declares a global gradient id, so nothing can collide with one.
 const REGION_COLORS: Record<ChartRegion, string> = {
   us: "rgb(52 211 153)", // emerald-400
   southAsian: "rgb(167 139 250)", // violet-400
@@ -95,9 +95,9 @@ export function DailyAddsChart({ points, className }: DailyAddsChartProps) {
 
   return (
     <div className={className}>
-      {/* No preserveAspectRatio="none" here (unlike DashboardSparkline): a
-          stretched line still reads as a trend, but stretched bar widths read
-          as false data. Fixed aspect, scaled by width. */}
+      {/* Deliberately no preserveAspectRatio="none": a stretched line still
+          reads as a trend, but stretched bar widths read as false data.
+          Fixed aspect, scaled by width. */}
       <svg role="img" aria-label={ariaLabel} viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="w-full">
         <title>Daily net follower adds by region</title>
 

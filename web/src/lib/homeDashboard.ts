@@ -1,18 +1,6 @@
-import type { FollowConversion, GeoWindowPoint, LeaderboardRow } from "./types";
+import type { FollowConversion, LeaderboardRow } from "./types";
 
-export type AudienceGrowthStatus = "growing" | "steady" | "cooling";
-export type AudienceGrowthSource = "reached" | "engaged";
 export type RepeatReasonKey = "reach" | "retention" | "guides";
-
-export interface AudienceGrowthSummary {
-  status: AudienceGrowthStatus;
-  source: AudienceGrowthSource;
-  currentPct: number;
-  baselinePct: number;
-  deltaPoints: number;
-  capturedAt: string;
-  latestPoint: GeoWindowPoint;
-}
 
 export interface RepeatCandidate extends LeaderboardRow {
   rank: number;
@@ -26,7 +14,6 @@ export interface RepeatCandidate extends LeaderboardRow {
   };
 }
 
-const GROWTH_THRESHOLD_POINTS = 2;
 const REPEAT_LIMIT = 3;
 
 function isNumber(value: number | null | undefined): value is number {
@@ -36,55 +23,6 @@ function isNumber(value: number | null | undefined): value is number {
 function round(value: number, precision = 1): number {
   const factor = 10 ** precision;
   return Math.round(value * factor) / factor;
-}
-
-function comparisonFromPoint(point: GeoWindowPoint): {
-  source: AudienceGrowthSource;
-  currentPct: number;
-  baselinePct: number;
-} | null {
-  if (isNumber(point.reachedUs14) && isNumber(point.reachedUs90)) {
-    return { source: "reached", currentPct: point.reachedUs14, baselinePct: point.reachedUs90 };
-  }
-  if (isNumber(point.engagedUs14) && isNumber(point.engagedUs90)) {
-    return { source: "engaged", currentPct: point.engagedUs14, baselinePct: point.engagedUs90 };
-  }
-  return null;
-}
-
-export function summarizeAudienceGrowth(points: GeoWindowPoint[]): AudienceGrowthSummary | null {
-  const ordered = [...points].sort(
-    (a, b) => new Date(b.capturedAt).getTime() - new Date(a.capturedAt).getTime(),
-  );
-
-  for (const point of ordered) {
-    const comparison = comparisonFromPoint(point);
-    if (!comparison) continue;
-
-    const deltaPoints = round(comparison.currentPct - comparison.baselinePct);
-    const status: AudienceGrowthStatus =
-      deltaPoints >= GROWTH_THRESHOLD_POINTS
-        ? "growing"
-        : deltaPoints <= -GROWTH_THRESHOLD_POINTS
-          ? "cooling"
-          : "steady";
-
-    return {
-      ...comparison,
-      status,
-      deltaPoints,
-      capturedAt: point.capturedAt,
-      latestPoint: point,
-    };
-  }
-
-  return null;
-}
-
-export function formatAudienceDelta(deltaPoints: number): string {
-  const absolute = Math.abs(deltaPoints).toFixed(1);
-  const sign = deltaPoints > 0 ? "+" : deltaPoints < 0 ? "−" : "";
-  return `${sign}${absolute} percentage points`;
 }
 
 export interface FreshnessSummary {

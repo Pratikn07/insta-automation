@@ -2,9 +2,9 @@ import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Card, CardContent } from "@/components/ui/card";
 
-// Shared shell + empty state for the full-height Home panels. Was duplicated
-// verbatim in AudienceGrowthPanel and RepeatReelsPanel, differing only in the
-// accent color and icon — those come in as props now.
+// Shared shell + empty state for the Home panels. The accent color and icon
+// come in as props, so several panels once shared it verbatim; FollowerFlowPanel
+// is the only remaining consumer since the Home declutter.
 
 export function PanelShell({
   children,

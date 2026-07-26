@@ -216,7 +216,7 @@ export function summarizeUsWeekOverWeek(
   };
 }
 
-// U+2212 minus, matching formatAudienceDelta.
+// Signs with the U+2212 minus (−), not an ASCII hyphen.
 export function formatSignedCount(n: number): string {
   if (n > 0) return `+${n}`;
   if (n < 0) return `−${Math.abs(n)}`;
