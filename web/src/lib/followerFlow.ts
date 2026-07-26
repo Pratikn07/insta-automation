@@ -289,6 +289,11 @@ export interface MeanLinePoint {
   value: number;
 }
 
+export interface AxisTick {
+  value: number;
+  y: number;
+}
+
 export interface ChartGeometry {
   bars: ChartBar[];
   meanLine: MeanLinePoint[];
@@ -297,9 +302,64 @@ export interface ChartGeometry {
   zeroY: number;
   width: number;
   height: number;
+  gutterLeft: number;
+  ticks: AxisTick[];
 }
 
 const INSET = 8;
+
+// 1/2/5 × 10^n — the standard "nice number" ladder, so labels read 50/100/150
+// rather than 47/94/141.
+const NICE_STEPS = [1, 2, 5];
+const TARGET_TICKS = 4;
+
+function niceStep(span: number, target: number): number {
+  if (span <= 0) return 1;
+  const rough = span / target;
+  const magnitude = 10 ** Math.floor(Math.log10(rough));
+  for (const s of NICE_STEPS) {
+    if (magnitude * s >= rough) return magnitude * s;
+  }
+  return magnitude * 10;
+}
+
+/**
+ * The rounded-outward y-domain the axis and the bars share.
+ *
+ * Both must agree on it: if the bars scaled to the raw data range while the
+ * ticks rounded outward, the top tick would render above the plot and get
+ * clipped. Snapping the DOMAIN to whole steps puts the outermost ticks exactly
+ * on the plot edges and keeps every bar inside them.
+ */
+function niceDomain(yMin: number, yMax: number): { min: number; max: number; step: number } {
+  const step = niceStep(Math.max(yMax - yMin, 1), TARGET_TICKS);
+  return {
+    min: Math.floor(yMin / step) * step,
+    max: Math.ceil(yMax / step) * step,
+    step,
+  };
+}
+
+/**
+ * Y-axis ticks in the same pixel space chartGeometry uses. Always includes zero:
+ * the bars are signed, so the zero line is the datum the eye reads against.
+ * Every returned y falls within [0, height] — verified by test.
+ */
+export function axisTicks(yMin: number, yMax: number, height: number): AxisTick[] {
+  const { min, max, step } = niceDomain(yMin, yMax);
+  const spread = Math.max(max - min, 1);
+  const plotHeight = height - INSET * 2;
+  const yOf = (value: number) => round(INSET + ((max - value) / spread) * plotHeight);
+
+  const ticks: AxisTick[] = [];
+  for (let v = min; v <= max + step * 0.001; v += step) {
+    ticks.push({ value: round(v, 0), y: yOf(v) });
+  }
+  if (!ticks.some((t) => t.value === 0) && min <= 0 && max >= 0) {
+    ticks.push({ value: 0, y: yOf(0) });
+  }
+  return ticks.sort((a, b) => a.value - b.value);
+}
 const BAR_FILL = 0.72; // fraction of the slot a bar occupies
 const MEAN_WINDOW = 7;
 
@@ -313,9 +373,12 @@ export function chartGeometry(
   points: FollowerDailyAddsPoint[],
   width = 720,
   height = 220,
+  gutterLeft = 0,
 ): ChartGeometry {
   const slots = Math.max(points.length, 1);
-  const slotWidth = (width - INSET * 2) / slots;
+  // Only the x-axis shifts: the gutter is horizontal room for y labels.
+  const plotLeft = INSET + gutterLeft;
+  const slotWidth = (width - plotLeft - INSET) / slots;
   const indexByDay = new Map(points.map((p, i) => [p.day, i]));
 
   // Y domain always includes zero so negatives have somewhere to go.
@@ -333,9 +396,13 @@ export function chartGeometry(
     yMax = Math.max(yMax, up);
     yMin = Math.min(yMin, down);
   }
-  const spread = Math.max(yMax - yMin, 1);
+  // Scale to the SAME rounded domain the ticks use, so a gridline labelled 150
+  // sits exactly where a 150-tall bar ends. Scaling bars to the raw range while
+  // ticks rounded outward would misalign every label.
+  const domain = niceDomain(yMin, yMax);
+  const spread = Math.max(domain.max - domain.min, 1);
   const plotHeight = height - INSET * 2;
-  const yOf = (value: number) => round(INSET + ((yMax - value) / spread) * plotHeight);
+  const yOf = (value: number) => round(INSET + ((domain.max - value) / spread) * plotHeight);
   const zeroY = yOf(0);
 
   const bars: ChartBar[] = [];
@@ -345,7 +412,7 @@ export function chartGeometry(
     if (isMeasured(p)) {
       const span = p.spanDays!;
       const startSlot = Math.max(i - (span - 1), 0);
-      const x = round(INSET + startSlot * slotWidth + (slotWidth * (1 - BAR_FILL)) / 2);
+      const x = round(plotLeft + startSlot * slotWidth + (slotWidth * (1 - BAR_FILL)) / 2);
       const barWidth = round(slotWidth * (i - startSlot) + slotWidth * BAR_FILL);
 
       let upCursor = 0;
@@ -384,7 +451,7 @@ export function chartGeometry(
     bars.push({
       day: p.day,
       endDay: p.day,
-      x: round(INSET + i * slotWidth + (slotWidth * (1 - BAR_FILL)) / 2),
+      x: round(plotLeft + i * slotWidth + (slotWidth * (1 - BAR_FILL)) / 2),
       width: round(slotWidth * BAR_FILL),
       slots: 1,
       segments: [],
@@ -416,11 +483,21 @@ export function chartGeometry(
     if (window.length < 2) continue;
     const mean = window.reduce((s, v) => s + v, 0) / window.length;
     meanLine.push({
-      x: round(INSET + i * slotWidth + slotWidth / 2),
+      x: round(plotLeft + i * slotWidth + slotWidth / 2),
       y: yOf(mean),
       value: round(mean),
     });
   }
 
-  return { bars, meanLine, yMin, yMax, zeroY, width, height };
+  return {
+    bars,
+    meanLine,
+    yMin,
+    yMax,
+    zeroY,
+    width,
+    height,
+    gutterLeft,
+    ticks: axisTicks(yMin, yMax, height),
+  };
 }

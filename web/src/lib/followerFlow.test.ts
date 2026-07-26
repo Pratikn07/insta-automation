@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { FollowerDailyAddsPoint, FollowerStock } from "./types";
 import {
+  axisTicks,
   chartGeometry,
   describeStockVsFlow,
   formatSignedCount,
@@ -421,5 +422,105 @@ describe("describeFreshness", () => {
 
   it("returns null for unparseable dates", () => {
     expect(describeFreshness("not-a-date", "2026-07-25T12:00:00.000Z")).toBeNull();
+  });
+});
+
+describe("axisTicks", () => {
+  it("picks round steps and always includes zero", () => {
+    const ticks = axisTicks(0, 180, 220);
+    expect(ticks.map((t) => t.value)).toContain(0);
+    // Nice steps only — no 37s or 43s.
+    for (const t of ticks) expect(t.value % 50).toBe(0);
+    expect(Math.max(...ticks.map((t) => t.value))).toBeGreaterThanOrEqual(180);
+  });
+
+  it("spans negative domains without losing the zero line", () => {
+    const ticks = axisTicks(-40, 120, 220);
+    const values = ticks.map((t) => t.value);
+    expect(values).toContain(0);
+    expect(Math.min(...values)).toBeLessThanOrEqual(-40);
+  });
+
+  it("maps values to descending y pixels inside the plot", () => {
+    const ticks = axisTicks(0, 100, 220);
+    const zero = ticks.find((t) => t.value === 0)!;
+    const top = ticks.reduce((a, b) => (b.value > a.value ? b : a));
+    expect(zero.y).toBeGreaterThan(top.y); // y grows downward
+    expect(top.y).toBeGreaterThanOrEqual(0);
+    expect(zero.y).toBeLessThanOrEqual(220);
+  });
+
+  it("keeps every tick inside the plot band across many domains", () => {
+    // The bug this guards: rounding the tick range outward while the bars kept
+    // the raw range pushed the top tick above the chart, where it clipped.
+    const domains: Array<[number, number]> = [
+      [0, 180], [0, 100], [-40, 120], [0, 0],
+      [0, 7], [-5, 3], [0, 1234], [-200, -10],
+    ];
+    for (const [lo, hi] of domains) {
+      for (const t of axisTicks(lo, hi, 220)) {
+        expect(t.y).toBeGreaterThanOrEqual(0);
+        expect(t.y).toBeLessThanOrEqual(220);
+      }
+    }
+  });
+
+  it("aligns bar tops with the gridline of the same value", () => {
+    dayCounter = 0;
+    // A single +150 bar against ticks stepping by 50: its top must land exactly
+    // on the 150 gridline, not near it.
+    const geo = chartGeometry(
+      series(point({ us: 150, total: 150 }), point({ us: 50, total: 50 })),
+      720,
+      220,
+      34,
+    );
+    const tallest = geo.bars.find((b) => b.total === 150)!;
+    const barTop = Math.min(...tallest.segments.map((sg) => sg.y));
+    const tick150 = geo.ticks.find((t) => t.value === 150);
+    expect(tick150).toBeDefined();
+    expect(barTop).toBeCloseTo(tick150!.y, 1);
+  });
+
+  it("returns a usable single tick for a flat all-zero series", () => {
+    const ticks = axisTicks(0, 0, 220);
+    expect(ticks.length).toBeGreaterThanOrEqual(1);
+    expect(ticks.every((t) => Number.isFinite(t.y))).toBe(true);
+  });
+});
+
+describe("chartGeometry gutter", () => {
+  it("defaults to no gutter so existing coordinates are untouched", () => {
+    dayCounter = 0;
+    const geo = chartGeometry(series(point({ us: 20, total: 20 }), point({ us: 30, total: 30 })));
+    expect(geo.gutterLeft).toBe(0);
+    expect(geo.bars[0]!.x).toBeGreaterThanOrEqual(0);
+  });
+
+  it("shifts bars right by the gutter and narrows them to fit", () => {
+    dayCounter = 0;
+    const pts = series(point({ us: 20, total: 20 }), point({ us: 30, total: 30 }));
+    const plain = chartGeometry(pts, 720, 220, 0);
+    dayCounter = 0;
+    const gutter = chartGeometry(pts, 720, 220, 34);
+
+    expect(gutter.gutterLeft).toBe(34);
+    expect(gutter.bars[0]!.x).toBeGreaterThan(plain.bars[0]!.x);
+    expect(gutter.bars[0]!.width).toBeLessThan(plain.bars[0]!.width);
+    // Right edge still inside the viewBox.
+    const last = gutter.bars[gutter.bars.length - 1]!;
+    expect(last.x + last.width).toBeLessThanOrEqual(720);
+  });
+
+  it("supplies ticks spanning the data domain", () => {
+    dayCounter = 0;
+    const geo = chartGeometry(
+      series(point({ us: 40, total: 40 }), point({ us: 160, total: 160 })),
+      720,
+      220,
+      34,
+    );
+    expect(geo.ticks.length).toBeGreaterThanOrEqual(2);
+    expect(Math.max(...geo.ticks.map((t) => t.value))).toBeGreaterThanOrEqual(160);
   });
 });
