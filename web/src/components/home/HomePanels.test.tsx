@@ -92,6 +92,31 @@ describe("FollowerFlowPanel", () => {
     expect(html).not.toContain("At this pace");
   });
 
+  it("labels the y-axis so a single day's gain is readable", () => {
+    const points = [
+      flowPoint("2026-07-20", { us: 40, southAsian: 5, anglosphere: 10, other: 5 }),
+      flowPoint("2026-07-21", { us: 120, southAsian: 15, anglosphere: 30, other: 10 }),
+      flowPoint("2026-07-22", { us: 80, southAsian: 10, anglosphere: 20, other: 8 }),
+      flowPoint("2026-07-23", { us: 60, southAsian: 8, anglosphere: 15, other: 6 }),
+    ];
+    const summary = summarizeFollowerFlow(points)!;
+    const html = renderToStaticMarkup(
+      <FollowerFlowPanel
+        points={points}
+        stock={flowStock}
+        summary={summary}
+        isLoading={false}
+        isError={false}
+        onRetry={() => undefined}
+      />,
+    );
+
+    // Gridline labels render as <text> inside the svg.
+    expect(html).toContain("<text");
+    // More than the old 3 date ticks along the bottom.
+    expect((html.match(/Jul /g) ?? []).length).toBeGreaterThan(3);
+  });
+
   it("surfaces unattributed rank-churn as an honest footnote when non-zero", () => {
     const points = [
       flowPoint("2026-07-24", { us: 20, other: 5 }),

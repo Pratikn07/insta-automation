@@ -25,6 +25,9 @@ const REGION_LABELS: Record<ChartRegion, string> = {
 
 const WIDTH = 720;
 const HEIGHT = 220;
+// Room for the y-axis labels; chartGeometry shifts the plot right by this much.
+const GUTTER_LEFT = 34;
+const X_TICK_COUNT = 6;
 
 function tickLabel(day: string): string {
   return new Date(`${day}T00:00:00Z`).toLocaleDateString(undefined, {
@@ -77,10 +80,14 @@ export function DailyAddsChart({ points, className }: DailyAddsChartProps) {
     );
   }
 
-  const geo = chartGeometry(points, WIDTH, HEIGHT);
+  const geo = chartGeometry(points, WIDTH, HEIGHT, GUTTER_LEFT);
   const first = points[0]!.day;
   const last = points[points.length - 1]!.day;
-  const mid = points[Math.floor(points.length / 2)]!.day;
+
+  // ~6 evenly spaced date labels instead of 3, so a bar can be located in time.
+  const stride = Math.max(1, Math.ceil(points.length / X_TICK_COUNT));
+  const xTicks = points.filter((_, i) => i % stride === 0).map((p) => p.day);
+  if (xTicks[xTicks.length - 1] !== last) xTicks.push(last);
   // Rank by per-day rate, not raw total, so a 2-day catch-up bar can't be named
   // "best" over a genuinely bigger single day — matches summarizeFollowerFlow.
   const best = measured.reduce((a, b) =>
@@ -101,15 +108,31 @@ export function DailyAddsChart({ points, className }: DailyAddsChartProps) {
       <svg role="img" aria-label={ariaLabel} viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="w-full">
         <title>Daily net follower adds by region</title>
 
-        <line
-          x1={8}
-          y1={geo.zeroY}
-          x2={WIDTH - 8}
-          y2={geo.zeroY}
-          stroke="currentColor"
-          strokeOpacity="0.15"
-          vectorEffect="non-scaling-stroke"
-        />
+        {/* Gridlines first so they sit behind the bars. Zero keeps a stronger
+            stroke — signed bars are read against it. */}
+        {geo.ticks.map((tick) => (
+          <g key={`tick-${tick.value}`}>
+            <line
+              x1={geo.gutterLeft + 8}
+              y1={tick.y}
+              x2={WIDTH - 8}
+              y2={tick.y}
+              stroke="currentColor"
+              strokeOpacity={tick.value === 0 ? 0.28 : 0.08}
+              vectorEffect="non-scaling-stroke"
+            />
+            <text
+              x={geo.gutterLeft}
+              y={tick.y + 3.5}
+              textAnchor="end"
+              fontSize="10"
+              fill="currentColor"
+              fillOpacity="0.45"
+            >
+              {formatSignedCount(tick.value)}
+            </text>
+          </g>
+        ))}
 
         {geo.bars.map((bar) => {
           if (bar.ghost) {
@@ -180,10 +203,15 @@ export function DailyAddsChart({ points, className }: DailyAddsChartProps) {
         )}
       </svg>
 
-      <div className="mt-1.5 flex justify-between text-[10px] text-muted-foreground">
-        <span>{tickLabel(first)}</span>
-        <span>{tickLabel(mid)}</span>
-        <span>{tickLabel(last)}</span>
+      {/* Left padding matches the svg gutter so the first date sits under the
+          first bar, not under the y-axis labels. */}
+      <div
+        className="mt-1.5 flex justify-between text-[10px] text-muted-foreground"
+        style={{ paddingLeft: `${(GUTTER_LEFT / WIDTH) * 100}%` }}
+      >
+        {xTicks.map((day) => (
+          <span key={day}>{tickLabel(day)}</span>
+        ))}
       </div>
     </div>
   );
