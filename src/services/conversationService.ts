@@ -43,10 +43,21 @@ export async function findActiveAwaitingDone(igUserId: string) {
 }
 
 export async function markCompleted(conversationId: string) {
-  return prisma.conversation.update({
-    where: { id: conversationId },
-    data: { state: "completed", completedAt: new Date() },
-  });
+  // Completing a conversation also cancels any still-pending gate retries for
+  // it: the user has the guide, so another "reply DONE to unlock" would be pure
+  // spam (Meta sometimes delivers a private reply while returning an error, so
+  // a "failing" queue row may in fact be reaching the user's inbox).
+  const [convo] = await prisma.$transaction([
+    prisma.conversation.update({
+      where: { id: conversationId },
+      data: { state: "completed", completedAt: new Date() },
+    }),
+    prisma.gateQueue.updateMany({
+      where: { conversationId, status: "pending" },
+      data: { status: "abandoned", lastError: "conversation_completed" },
+    }),
+  ]);
+  return convo;
 }
 
 /**

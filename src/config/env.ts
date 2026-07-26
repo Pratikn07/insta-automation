@@ -37,6 +37,11 @@ const envSchema = z.object({
   // Gate retry worker pacing. Defaults are conservative; can be tuned without a
   // code change. GATE_RETRY_BATCH = max private replies attempted per worker tick.
   GATE_RETRY_BATCH: z.coerce.number().int().min(1).max(100).default(8),
+  // Max send attempts per queued gate. Successful sends land on attempt 1 in
+  // practice; the cap bounds the delivered-but-API-errored case where Meta
+  // returns an error for a private reply it actually delivered (real inboxes
+  // received 30+ copies before this existed). Mirrors Gemini's MAX_ATTEMPTS.
+  GATE_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(50).default(5),
   // Run the standard-DM experiment on aged/exhausted users (measures whether a
   // cold standard DM is ever accepted). Off by default.
   GATE_DM_EXPERIMENT: z.coerce.boolean().default(false),

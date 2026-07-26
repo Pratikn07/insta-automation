@@ -21,6 +21,14 @@ const BASE_BACKOFF_MS = 15 * 60 * 1000; // 15 min
 const MAX_BACKOFF_MS = 2 * 60 * 60 * 1000; // 2 h
 const PER_SEND_GAP_MS = 4000; // gentle spacing between sends within a tick
 
+// Hard ceiling on send attempts per row. Discovered the hard way (a user got 33
+// copies of the same gate over 4 days): Meta sometimes DELIVERS the private
+// reply but still returns an error ("An unknown error has occurred"), so a
+// "failing" row can actually be spamming a real inbox. Successful sends land on
+// attempt 1 in practice (sent rows avg 1.0 attempts), so a small cap loses
+// nothing and bounds the worst delivered-but-errored case. Mirrors
+// geminiQueueWorker's MAX_ATTEMPTS.
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function isRateLimit(err: unknown): boolean {
@@ -48,6 +56,12 @@ export async function runGateQueueTick(): Promise<void> {
       data: { status: "exhausted" },
     });
 
+    // Retire rows already at the attempt ceiling (covers rows predating the cap).
+    await prisma.gateQueue.updateMany({
+      where: { status: "pending", attempts: { gte: env.GATE_MAX_ATTEMPTS } },
+      data: { status: "exhausted" },
+    });
+
     const due = await prisma.gateQueue.findMany({
       where: {
         status: "pending",
@@ -63,8 +77,31 @@ export async function runGateQueueTick(): Promise<void> {
       return;
     }
 
+    // Never retry a gate whose conversation already completed — the user has the
+    // guide (they replied to an earlier send, possibly one Meta claimed failed).
+    // This is what let a completed user keep receiving "reply DONE to unlock".
+    const convoStates = await prisma.conversation.findMany({
+      where: { id: { in: due.map((r) => r.conversationId) } },
+      select: { id: true, state: true },
+    });
+    const completedConvos = new Set(
+      convoStates.filter((c) => c.state === "completed").map((c) => c.id),
+    );
+
     let sent = 0;
     for (const row of due) {
+      if (completedConvos.has(row.conversationId)) {
+        await prisma.gateQueue.update({
+          where: { id: row.id },
+          data: { status: "abandoned", lastError: "conversation_completed" },
+        });
+        await logEvent("gate_abandoned", {
+          conversationId: row.conversationId,
+          reason: "conversation_completed",
+          attempts: row.attempts,
+        });
+        continue;
+      }
       try {
         await sendPrivateReply(row.commentId, row.gateMessage);
         await prisma.gateQueue.update({
@@ -88,15 +125,25 @@ export async function runGateQueueTick(): Promise<void> {
       } catch (err) {
         const detail = describeGraphError(err);
         const attempts = row.attempts + 1;
-        const backoff = Math.min(BASE_BACKOFF_MS * 2 ** (attempts - 1), MAX_BACKOFF_MS);
-        await prisma.gateQueue.update({
-          where: { id: row.id },
-          data: {
-            attempts,
-            lastError: typeof detail.message === "string" ? detail.message : "error",
-            nextAttemptAt: new Date(Date.now() + backoff),
-          },
-        });
+        const lastError = typeof detail.message === "string" ? detail.message : "error";
+        if (attempts >= env.GATE_MAX_ATTEMPTS) {
+          // Cap reached: stop for good. Either the target is gone (dead IGSID)
+          // or Meta is delivering-but-erroring — both mean more sends only harm.
+          await prisma.gateQueue.update({
+            where: { id: row.id },
+            data: { status: "exhausted", attempts, lastError },
+          });
+        } else {
+          const backoff = Math.min(BASE_BACKOFF_MS * 2 ** (attempts - 1), MAX_BACKOFF_MS);
+          await prisma.gateQueue.update({
+            where: { id: row.id },
+            data: {
+              attempts,
+              lastError,
+              nextAttemptAt: new Date(Date.now() + backoff),
+            },
+          });
+        }
 
         // Adaptive: if we hit the rate limit, the account window is closed right
         // now — stop this tick rather than burning more failed calls.
