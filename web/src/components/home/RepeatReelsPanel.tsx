@@ -1,9 +1,8 @@
 import { ArrowUpRight, Eye, Film, RefreshCw, Repeat2, Sparkles } from "lucide-react";
 import type { RepeatCandidate } from "@/lib/homeDashboard";
-import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { EmptyPanel, PanelShell } from "./PanelShell";
 
 interface RepeatReelsPanelProps {
   candidates: RepeatCandidate[];
@@ -27,6 +26,8 @@ export function RepeatReelsPanel({ candidates, isLoading, isError, onRetry }: Re
           title="Reel performance couldn't load"
           body="Your audience signal is still available. Retry this panel to restore repeat recommendations."
           action={<Button variant="outline" size="sm" onClick={onRetry}><RefreshCw className="size-3.5" /> Retry</Button>}
+          Icon={Repeat2}
+          accentClassName="bg-fuchsia-400/10 text-fuchsia-300"
         />
       </PanelShell>
     );
@@ -38,6 +39,8 @@ export function RepeatReelsPanel({ candidates, isLoading, isError, onRetry }: Re
         <EmptyPanel
           title="Waiting for reel performance"
           body="Once snapshots include reach, skip rate, or guide deliveries, your clearest repeat candidates will appear here."
+          Icon={Repeat2}
+          accentClassName="bg-fuchsia-400/10 text-fuchsia-300"
         />
       </PanelShell>
     );
@@ -136,23 +139,3 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function PanelShell({ children, className }: { children: React.ReactNode; className?: string }) {
-  return (
-    <Card className={cn("min-h-[600px] rounded-2xl border-white/10 bg-card/85 shadow-xl shadow-black/10", className)}>
-      <CardContent className="p-5 sm:p-6">{children}</CardContent>
-    </Card>
-  );
-}
-
-function EmptyPanel({ title, body, action }: { title: string; body: string; action?: React.ReactNode }) {
-  return (
-    <div className="flex min-h-[540px] flex-col items-center justify-center px-6 text-center">
-      <div className="mb-4 flex size-12 items-center justify-center rounded-2xl bg-fuchsia-400/10 text-fuchsia-300">
-        <Repeat2 className="size-6" />
-      </div>
-      <h2 className="text-lg font-semibold">{title}</h2>
-      <p className="mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">{body}</p>
-      {action && <div className="mt-5">{action}</div>}
-    </div>
-  );
-}

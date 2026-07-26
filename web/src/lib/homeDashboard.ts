@@ -87,6 +87,38 @@ export function formatAudienceDelta(deltaPoints: number): string {
   return `${sign}${absolute} percentage points`;
 }
 
+export interface FreshnessSummary {
+  label: string; // "as of Jul 19 · 6 days old"
+  daysOld: number;
+  isStale: boolean;
+}
+
+/**
+ * How old a feed's newest data is. `now` is a parameter (never Date.now())
+ * so this stays pure like everything else in this file. The reached/engaged
+ * geo feed normally refreshes every 3-4 days, hence the default threshold.
+ */
+export function describeFreshness(
+  capturedAt: string,
+  now: string,
+  staleAfterDays = 3,
+): FreshnessSummary | null {
+  const captured = new Date(capturedAt).getTime();
+  const current = new Date(now).getTime();
+  if (!Number.isFinite(captured) || !Number.isFinite(current)) return null;
+
+  const daysOld = Math.max(0, Math.floor((current - captured) / (24 * 60 * 60 * 1000)));
+  const dateLabel = new Date(capturedAt).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+  return {
+    label: `as of ${dateLabel} · ${daysOld} day${daysOld === 1 ? "" : "s"} old`,
+    daysOld,
+    isStale: daysOld >= staleAfterDays,
+  };
+}
+
 export type FollowerYieldState = "empty" | "measured";
 
 export interface FollowerYieldSummary {

@@ -15,6 +15,7 @@ import {
   getUsReachTrend,
   getGeoWindowTrend,
 } from "../services/experimentService.js";
+import { getFollowerDailyAdds } from "../services/followerFlowService.js";
 import { computeUsFit } from "../services/usFitScore.js";
 import type { ContentProfile } from "../services/geminiAnalysisService.js";
 
@@ -51,6 +52,12 @@ insightsRouter.get("/us-reach-trend", async (_req, res) => {
 // GET /api/insights/geo-window-trend — 14d vs 90d US% thermometer (reached+engaged).
 insightsRouter.get("/geo-window-trend", async (_req, res) => {
   res.json({ points: await getGeoWindowTrend() });
+});
+
+// GET /api/insights/follower-daily-adds — daily net follower adds by region
+// (diffed from cumulative follower_demographics snapshots) + latest stock.
+insightsRouter.get("/follower-daily-adds", async (_req, res) => {
+  res.json(await getFollowerDailyAdds());
 });
 
 // GET /api/insights/experiments — all experiments, newest first.

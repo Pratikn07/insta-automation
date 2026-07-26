@@ -1,11 +1,11 @@
-import { ArrowDownRight, ArrowRight, ArrowUpRight, RefreshCw, Sparkles, UsersRound } from "lucide-react";
+import { ArrowDownRight, ArrowRight, ArrowUpRight, Clock, RefreshCw, Sparkles, UsersRound } from "lucide-react";
 import type { GeoWindowPoint } from "@/lib/types";
-import { formatAudienceDelta, type AudienceGrowthSummary } from "@/lib/homeDashboard";
+import { describeFreshness, formatAudienceDelta, type AudienceGrowthSummary } from "@/lib/homeDashboard";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { DashboardSparkline } from "./DashboardSparkline";
+import { EmptyPanel, PanelShell } from "./PanelShell";
 
 interface AudienceGrowthPanelProps {
   points: GeoWindowPoint[];
@@ -13,6 +13,9 @@ interface AudienceGrowthPanelProps {
   isLoading: boolean;
   isError: boolean;
   onRetry: () => void;
+  // When set, an "as of" pill warns that this panel's reached/engaged feed can
+  // lag days behind the daily follower feed the hero panel runs on.
+  asOf?: string | null;
 }
 
 const statusStyles = {
@@ -42,6 +45,7 @@ export function AudienceGrowthPanel({
   isLoading,
   isError,
   onRetry,
+  asOf,
 }: AudienceGrowthPanelProps) {
   if (isLoading) {
     return <Skeleton className="min-h-[600px] rounded-2xl" />;
@@ -54,6 +58,8 @@ export function AudienceGrowthPanel({
           title="Audience signal couldn't load"
           body="Your reel data is still available. Retry this panel when you're ready."
           action={<Button variant="outline" size="sm" onClick={onRetry}><RefreshCw className="size-3.5" /> Retry</Button>}
+          Icon={UsersRound}
+          accentClassName="bg-emerald-400/10 text-emerald-300"
         />
       </PanelShell>
     );
@@ -65,10 +71,14 @@ export function AudienceGrowthPanel({
         <EmptyPanel
           title="Waiting for an audience snapshot"
           body="Once Meta returns two geography windows, this card will compare your recent US audience with the 90-day baseline."
+          Icon={UsersRound}
+          accentClassName="bg-emerald-400/10 text-emerald-300"
         />
       </PanelShell>
     );
   }
+
+  const freshness = asOf ? describeFreshness(asOf, new Date().toISOString()) : null;
 
   const style = statusStyles[summary.status];
   const StatusIcon = style.Icon;
@@ -88,9 +98,16 @@ export function AudienceGrowthPanel({
             </div>
             <h2 className="text-xl font-semibold tracking-tight">Is my US audience growing?</h2>
           </div>
-          <span className={cn("inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold", style.badge)}>
-            <StatusIcon className="size-3.5" /> {style.label}
-          </span>
+          <div className="flex shrink-0 flex-col items-end gap-1.5">
+            <span className={cn("inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold", style.badge)}>
+              <StatusIcon className="size-3.5" /> {style.label}
+            </span>
+            {freshness?.isStale && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-amber-300/25 bg-amber-300/10 px-2.5 py-1 text-[11px] font-medium text-amber-200">
+                <Clock className="size-3" /> {freshness.label}
+              </span>
+            )}
+          </div>
         </div>
 
         <div className="grid items-end gap-5 sm:grid-cols-[auto_1fr]">
@@ -156,23 +173,3 @@ function ComparisonRow({ label, recent, baseline }: { label: string; recent: num
   );
 }
 
-function PanelShell({ children, className }: { children: React.ReactNode; className?: string }) {
-  return (
-    <Card className={cn("min-h-[600px] rounded-2xl border-white/10 bg-card/85 shadow-xl shadow-black/10", className)}>
-      <CardContent className="p-5 sm:p-6">{children}</CardContent>
-    </Card>
-  );
-}
-
-function EmptyPanel({ title, body, action }: { title: string; body: string; action?: React.ReactNode }) {
-  return (
-    <div className="flex min-h-[540px] flex-col items-center justify-center px-6 text-center">
-      <div className="mb-4 flex size-12 items-center justify-center rounded-2xl bg-emerald-400/10 text-emerald-300">
-        <UsersRound className="size-6" />
-      </div>
-      <h2 className="text-lg font-semibold">{title}</h2>
-      <p className="mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">{body}</p>
-      {action && <div className="mt-5">{action}</div>}
-    </div>
-  );
-}

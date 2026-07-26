@@ -330,3 +330,46 @@ export interface GeoWindowPoint {
   reachedIn14: number | null;
   engagedIn14: number | null;
 }
+
+// ── Follower flow (daily net adds by region) ─────────────────────────────────
+// Mirrors src/services/followerFlowCore.ts. Diffed from Meta's cumulative
+// follower_demographics; nulls mean "unknown" (gap/stale), never zero.
+
+export type DailyAddsBasis =
+  | "diff"
+  | "multi_day_span" // real diff absorbing prior stale/missing days
+  | "stale" // Meta didn't refresh; adds absorbed by a later point
+  | "no_snapshot"
+  | "no_prior_day"
+  | "pending"; // trailing stale day, no later real diff yet
+
+export interface FollowerDailyAddsPoint {
+  day: string; // UTC calendar day, "2026-07-21"
+  capturedAt: string | null;
+  us: number | null;
+  southAsian: number | null;
+  anglosphere: number | null;
+  other: number | null;
+  total: number | null;
+  unattributed: number | null; // Meta top-45 rank-churn residual, not a region
+  reportedTotalDelta: number | null;
+  spanDays: number | null; // calendar days this diff covers (>1 absorbs gaps)
+  stale: boolean;
+  provisional: boolean; // within Meta's ~48h demographics lag, may still shift
+  basis: DailyAddsBasis;
+}
+
+export interface FollowerStock {
+  capturedAt: string;
+  totalCounted: number; // sum across Meta's reported countries, NOT true total
+  us: number;
+  southAsian: number;
+  anglosphere: number;
+  other: number;
+  countriesReported: number;
+}
+
+export interface FollowerFlowResponse {
+  points: FollowerDailyAddsPoint[];
+  stock: FollowerStock | null;
+}

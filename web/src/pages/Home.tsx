@@ -3,10 +3,12 @@ import { motion } from "framer-motion";
 import { ArrowUpRight, CalendarDays, Sparkles } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
-import type { GeoWindowPoint, LeaderboardRow, Stats } from "@/lib/types";
+import type { FollowerFlowResponse, GeoWindowPoint, LeaderboardRow, Stats } from "@/lib/types";
 import { rankRepeatCandidates, summarizeAudienceGrowth } from "@/lib/homeDashboard";
+import { summarizeFollowerFlow } from "@/lib/followerFlow";
 import { AudienceGrowthPanel } from "@/components/home/AudienceGrowthPanel";
 import { AutomationHealthStrip } from "@/components/home/AutomationHealthStrip";
+import { FollowerFlowPanel } from "@/components/home/FollowerFlowPanel";
 import { FollowerYieldPanel } from "@/components/home/FollowerYieldPanel";
 import { RepeatReelsPanel } from "@/components/home/RepeatReelsPanel";
 import { Button } from "@/components/ui/button";
@@ -25,6 +27,10 @@ const fadeUp = {
 };
 
 export function Home() {
+  const flowQ = useQuery<FollowerFlowResponse>({
+    queryKey: ["insights", "follower-daily-adds"],
+    queryFn: () => api<FollowerFlowResponse>("/insights/follower-daily-adds"),
+  });
   const geoQ = useQuery<GeoWindowResponse>({
     queryKey: ["insights", "geo-window-trend"],
     queryFn: () => api<GeoWindowResponse>("/insights/geo-window-trend"),
@@ -38,11 +44,17 @@ export function Home() {
     queryFn: () => api<Stats>("/stats"),
   });
 
+  const flowPoints = flowQ.data?.points ?? [];
+  const flowStock = flowQ.data?.stock ?? null;
+  const flowSummary = summarizeFollowerFlow(flowPoints);
   const points = geoQ.data?.points ?? [];
   const audience = summarizeAudienceGrowth(points);
   const repeatCandidates = rankRepeatCandidates(leaderboardQ.data?.items ?? []);
-  const updatedLabel = audience
-    ? new Date(audience.capturedAt).toLocaleDateString(undefined, {
+
+  // The follower feed refreshes daily; the reached/engaged feed can freeze for
+  // days, so the header date must come from the follower stock, not `audience`.
+  const updatedLabel = flowStock
+    ? new Date(flowStock.capturedAt).toLocaleDateString(undefined, {
         month: "short",
         day: "numeric",
         year: "numeric",
@@ -67,7 +79,7 @@ export function Home() {
             Know what is growing.<br className="hidden sm:block" /> Repeat what is working.
           </h1>
           <p className="mt-3 max-w-xl text-sm leading-relaxed text-muted-foreground">
-            A simple read on your US audience direction and the reels earning another version.
+            Who you gained each day, where they are from, and the reels earning another version.
           </p>
         </div>
 
@@ -83,12 +95,14 @@ export function Home() {
 
       <div className="grid items-stretch gap-5 xl:grid-cols-2">
         <motion.div {...fadeUp} transition={{ duration: 0.24, delay: 0.05 }}>
-          <AudienceGrowthPanel
-            points={points}
-            summary={audience}
-            isLoading={geoQ.isLoading}
-            isError={geoQ.isError}
-            onRetry={() => void geoQ.refetch()}
+          <FollowerFlowPanel
+            points={flowPoints}
+            stock={flowStock}
+            summary={flowSummary}
+            isLoading={flowQ.isLoading}
+            isError={flowQ.isError}
+            onRetry={() => void flowQ.refetch()}
+            now={new Date().toISOString()}
           />
         </motion.div>
         <motion.div {...fadeUp} transition={{ duration: 0.24, delay: 0.1 }}>
@@ -101,13 +115,22 @@ export function Home() {
         </motion.div>
       </div>
 
-      <motion.div {...fadeUp} transition={{ duration: 0.24, delay: 0.15 }}>
-        <AutomationHealthStrip stats={statsQ.data} isLoading={statsQ.isLoading} />
-      </motion.div>
-
-      <motion.div {...fadeUp} transition={{ duration: 0.24, delay: 0.2 }}>
-        <FollowerYieldPanel stats={statsQ.data} isLoading={statsQ.isLoading} />
-      </motion.div>
+      <div className="grid items-stretch gap-5 xl:grid-cols-2">
+        <motion.div {...fadeUp} transition={{ duration: 0.24, delay: 0.15 }}>
+          <AudienceGrowthPanel
+            points={points}
+            summary={audience}
+            isLoading={geoQ.isLoading}
+            isError={geoQ.isError}
+            onRetry={() => void geoQ.refetch()}
+            asOf={audience?.capturedAt ?? null}
+          />
+        </motion.div>
+        <motion.div {...fadeUp} transition={{ duration: 0.24, delay: 0.2 }} className="space-y-5">
+          <AutomationHealthStrip stats={statsQ.data} isLoading={statsQ.isLoading} />
+          <FollowerYieldPanel stats={statsQ.data} isLoading={statsQ.isLoading} />
+        </motion.div>
+      </div>
     </div>
   );
 }
