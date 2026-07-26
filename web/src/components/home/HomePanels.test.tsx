@@ -31,6 +31,7 @@ function flowPoint(
 const flowStock: FollowerStock = {
   capturedAt: "2026-07-25T23:24:27.681Z",
   totalCounted: 4308,
+  followersTotal: 4578,
   us: 1489,
   southAsian: 1278,
   anglosphere: 817,

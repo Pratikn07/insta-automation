@@ -20,6 +20,24 @@ const TREND_ICON: Record<FlowTrend, typeof ArrowUpRight> = {
 
 const numberFormat = new Intl.NumberFormat("en-US");
 
+/**
+ * The note under the total: the all-regions daily rate, plus the demographics
+ * subtotal. When the true total is showing as the headline, the subtotal is
+ * named explicitly so the two numbers can't look like a contradiction.
+ */
+function buildTotalsNote(stock: FollowerStock, avgPerDay7: number | null): string {
+  const parts: string[] = [];
+  if (avgPerDay7 !== null) {
+    parts.push(`${formatSignedCount(Math.round(avgPerDay7))}/day all regions`);
+  }
+  parts.push(
+    stock.followersTotal === null
+      ? `Counted across Meta's ${stock.countriesReported} reported countries`
+      : `${numberFormat.format(stock.totalCounted)} across Meta's ${stock.countriesReported} reported countries`,
+  );
+  return parts.join(" · ");
+}
+
 interface FollowerKpiRowProps {
   weekOverWeek: UsWeekOverWeek | null;
   stock: FollowerStock | null;
@@ -69,21 +87,19 @@ export function FollowerKpiRow({
 
       <KpiTile
         label="Total followers"
-        value={stock === null ? "—" : numberFormat.format(stock.totalCounted)}
+        // milestone.stockLabel is Instagram's real count when available, so this
+        // matches the profile instead of the 45-country subtotal.
+        value={milestone?.stockLabel ?? "—"}
         context={
           milestone?.sentence ??
           (stock === null
             ? "Waiting for the next follower snapshot"
             : `Next milestone ${numberFormat.format(milestone!.nextMilestone)}`)
         }
-        // The trimmed flow panel no longer prints its own "+108/day" headline,
-        // and the daily rate is a must-have number — it lives here, beside the
-        // milestone ETA that is derived from it.
-        note={
-          avgPerDay7 === null
-            ? null
-            : `${formatSignedCount(Math.round(avgPerDay7))}/day all regions`
-        }
+        // Two facts, both load-bearing: the daily rate (the trimmed chart panel
+        // gave up its own headline) and the 45-country subtotal, so the smaller
+        // number stays visible and explained rather than silently disappearing.
+        note={stock === null ? null : buildTotalsNote(stock, avgPerDay7)}
         Icon={Trophy}
         tone="sky"
         isLoading={isFlowLoading}

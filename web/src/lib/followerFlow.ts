@@ -235,13 +235,17 @@ export function describeStockVsFlow(
   stock: FollowerStock,
   avgPerDay7: number | null,
 ): StockVsFlow {
-  const nextMilestone = (Math.floor(stock.totalCounted / 1000) + 1) * 1000;
+  // Prefer Instagram's real count. The demographics subtotal undercounts by
+  // whatever sits below Meta's ~45-country cutoff, which would make the
+  // milestone ETA contradict the headline printed directly above it.
+  const base = stock.followersTotal ?? stock.totalCounted;
+  const nextMilestone = (Math.floor(base / 1000) + 1) * 1000;
   const daysToNextMilestone =
     avgPerDay7 !== null && avgPerDay7 > 0
-      ? Math.ceil((nextMilestone - stock.totalCounted) / avgPerDay7)
+      ? Math.ceil((nextMilestone - base) / avgPerDay7)
       : null;
   return {
-    stockLabel: stock.totalCounted.toLocaleString("en-US"),
+    stockLabel: base.toLocaleString("en-US"),
     flowLabel: avgPerDay7 === null ? "—" : `${formatSignedCount(round(avgPerDay7, 0))} a day`,
     nextMilestone,
     daysToNextMilestone,

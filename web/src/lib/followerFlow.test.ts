@@ -195,6 +195,7 @@ describe("describeStockVsFlow", () => {
   const stock: FollowerStock = {
     capturedAt: "2026-07-25T23:24:27.681Z",
     totalCounted: 4308,
+    followersTotal: 4577,
     us: 1489,
     southAsian: 1278,
     anglosphere: 817,
@@ -205,8 +206,23 @@ describe("describeStockVsFlow", () => {
   it("projects days to the next thousand", () => {
     const s = describeStockVsFlow(stock, 91);
     expect(s.nextMilestone).toBe(5000);
-    expect(s.daysToNextMilestone).toBe(8); // ceil(692 / 91)
+    expect(s.daysToNextMilestone).toBe(5); // ceil((5000 − 4577) / 91)
     expect(s.sentence).toContain("5,000");
+  });
+
+  it("projects the milestone from the true total, not the 45-country subtotal", () => {
+    // 4577 -> 5000 is 423 away; at 91/day that's 5 days. From the 4308 subtotal
+    // it would read 8 — a milestone contradicting the headline above it.
+    const s = describeStockVsFlow({ ...stock, totalCounted: 4308, followersTotal: 4577 }, 91);
+    expect(s.nextMilestone).toBe(5000);
+    expect(s.daysToNextMilestone).toBe(5);
+    expect(s.stockLabel).toBe("4,577");
+  });
+
+  it("falls back to the reported subtotal when the true total is unavailable", () => {
+    const s = describeStockVsFlow({ ...stock, totalCounted: 4308, followersTotal: null }, 91);
+    expect(s.stockLabel).toBe("4,308");
+    expect(s.daysToNextMilestone).toBe(8); // ceil(692/91)
   });
 
   it("never returns Infinity or a negative ETA", () => {

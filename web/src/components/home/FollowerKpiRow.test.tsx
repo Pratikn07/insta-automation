@@ -7,6 +7,7 @@ import { FollowerKpiRow } from "./FollowerKpiRow";
 const stock: FollowerStock = {
   capturedAt: "2026-07-25T23:24:27.681Z",
   totalCounted: 4355,
+  followersTotal: 4578,
   us: 1489,
   southAsian: 1278,
   anglosphere: 817,
@@ -120,6 +121,37 @@ describe("FollowerKpiRow", () => {
     // "How many followers were added a day" is a must-have; trimming the panel
     // removed its +108/day headline, so this tile has to carry it.
     expect(html).toContain("+108/day all regions");
+  });
+
+  it("shows Instagram's real follower count, disclosing the reported subtotal", () => {
+    const html = renderToStaticMarkup(
+      <FollowerKpiRow
+        weekOverWeek={wow}
+        stock={stock}
+        avgPerDay7={91}
+        stats={stats}
+        isFlowLoading={false}
+        isStatsLoading={false}
+      />,
+    );
+    expect(html).toContain("4,578");
+    // The 45-country number stays visible — we added a truer number, not hid one.
+    expect(html).toContain("4,355 across Meta&#x27;s 45 reported countries");
+  });
+
+  it("falls back to the reported subtotal when the profile fetch failed", () => {
+    const html = renderToStaticMarkup(
+      <FollowerKpiRow
+        weekOverWeek={wow}
+        stock={{ ...stock, followersTotal: null }}
+        avgPerDay7={91}
+        stats={stats}
+        isFlowLoading={false}
+        isStatsLoading={false}
+      />,
+    );
+    expect(html).toContain("4,355");
+    expect(html).toContain("Counted across Meta&#x27;s 45 reported countries");
   });
 
   it("shows the guide-to-follow yield without claiming causation", () => {

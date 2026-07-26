@@ -362,6 +362,10 @@ export interface FollowerDailyAddsPoint {
 export interface FollowerStock {
   capturedAt: string;
   totalCounted: number; // sum across Meta's reported countries, NOT true total
+  // Instagram's real profile count (followers_count); null if the fetch failed.
+  // Exceeds totalCounted by the followers in countries below Meta's ~45-country
+  // reporting cutoff.
+  followersTotal: number | null;
   us: number;
   southAsian: number;
   anglosphere: number;
