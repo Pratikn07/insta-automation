@@ -1,6 +1,7 @@
 import axios, { AxiosError, AxiosInstance } from "axios";
 import { env } from "../config/env.js";
 import { logger } from "../lib/logger.js";
+import { getAccessToken } from "./tokenStore.js";
 
 // A SECOND Graph client, deliberately separate from graphClient.ts.
 //
@@ -18,7 +19,9 @@ export const insightsGraph: AxiosInstance = axios.create({
 });
 
 insightsGraph.interceptors.request.use((config) => {
-  config.params = { access_token: env.IG_ACCESS_TOKEN, ...(config.params ?? {}) };
+  // Per-request read, same reason as graphClient: the refresh worker rotates the
+  // token in place and a boot-time snapshot would silently go stale.
+  config.params = { access_token: getAccessToken(), ...(config.params ?? {}) };
   return config;
 });
 

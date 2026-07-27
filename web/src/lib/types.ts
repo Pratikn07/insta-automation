@@ -96,6 +96,16 @@ export interface FollowConversion {
   yieldPct: number | null;
 }
 
+// Mirrors src/meta/tokenStoreCore.ts. The Instagram token's countdown — the
+// refresh worker should hold this at "healthy" forever, so anything else means
+// the worker has stopped and a manual re-mint is coming.
+export interface TokenHealth {
+  daysUntilExpiry: number;
+  expiresAt: string;
+  lastRefreshedAt: string;
+  status: "healthy" | "warning" | "critical" | "expired";
+}
+
 export interface Stats {
   activeKeywords: number;
   totalKeywords: number;
@@ -106,6 +116,7 @@ export interface Stats {
   gateQueuePending: number;
   gateQueueExhausted: number;
   followConversion?: FollowConversion;
+  tokenHealth?: TokenHealth | null;
 }
 
 export interface Paginated<T> {

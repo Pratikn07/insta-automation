@@ -8,33 +8,33 @@ datasource db {
 }
 
 model Keyword {
-  id             String         @id @default(uuid()) @db.Uuid
+  id             String   @id @default(uuid()) @db.Uuid
   keyword        String
-  mediaId        String?        @map("media_id")
-  mediaCaption   String?        @map("media_caption")
-  mediaPermalink String?        @map("media_permalink")
-  resourceId     String         @map("resource_id") @db.Uuid
-  publicReply    String         @map("public_reply")
-  gateMessage    String         @map("gate_message")
-  active         Boolean        @default(true)
-  createdAt      DateTime       @default(now()) @map("created_at")
-  updatedAt      DateTime       @updatedAt @map("updated_at")
+  mediaId        String?  @map("media_id")
+  mediaCaption   String?  @map("media_caption")
+  mediaPermalink String?  @map("media_permalink")
+  resourceId     String   @map("resource_id") @db.Uuid
+  publicReply    String   @map("public_reply")
+  gateMessage    String   @map("gate_message")
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
-  resource       Resource       @relation(fields: [resourceId], references: [id])
-  conversations  Conversation[]
+  resource      Resource       @relation(fields: [resourceId], references: [id])
+  conversations Conversation[]
 
   @@unique([keyword, mediaId])
   @@map("keywords")
 }
 
 model Resource {
-  id          String            @id @default(uuid()) @db.Uuid
+  id          String   @id @default(uuid()) @db.Uuid
   name        String
   description String?
-  createdAt   DateTime          @default(now()) @map("created_at")
+  createdAt   DateTime @default(now()) @map("created_at")
 
-  messages    ResourceMessage[]
-  keywords    Keyword[]
+  messages ResourceMessage[]
+  keywords Keyword[]
 
   @@map("resources")
 }
@@ -55,7 +55,7 @@ model ResourceMessage {
   body       String?
   mediaUrl   String?             @map("media_url")
 
-  resource   Resource            @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  resource Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
 
   @@unique([resourceId, order])
   @@map("resource_messages")
@@ -70,21 +70,21 @@ enum ConversationState {
 }
 
 model Conversation {
-  id          String            @id @default(uuid()) @db.Uuid
-  igUserId    String            @map("ig_user_id")
-  keywordId   String            @map("keyword_id") @db.Uuid
-  state       ConversationState @default(awaiting_done)
-  createdAt   DateTime          @default(now()) @map("created_at")
-  completedAt DateTime?         @map("completed_at")
+  id                String            @id @default(uuid()) @db.Uuid
+  igUserId          String            @map("ig_user_id")
+  keywordId         String            @map("keyword_id") @db.Uuid
+  state             ConversationState @default(awaiting_done)
+  createdAt         DateTime          @default(now()) @map("created_at")
+  completedAt       DateTime?         @map("completed_at")
   // When the gate DM was actually delivered (live or via retry). The DONE-window
   // and expiry are measured from this, not createdAt, so a gate delivered days
   // after the comment (retry) still opens a valid window. Null for legacy rows.
-  gatedAt     DateTime?         @map("gated_at")
+  gatedAt           DateTime?         @map("gated_at")
   // When the follow-recheck worker measured this completed conversation's
   // follower outcome (fix #11). Null = not yet rechecked / not eligible.
-  followRecheckedAt DateTime?   @map("follow_rechecked_at")
+  followRecheckedAt DateTime?         @map("follow_rechecked_at")
 
-  keyword     Keyword           @relation(fields: [keywordId], references: [id])
+  keyword Keyword @relation(fields: [keywordId], references: [id])
 
   @@index([igUserId, state])
   @@index([state, createdAt])
@@ -102,10 +102,10 @@ model EventLog {
 }
 
 model IgUser {
-  id         String    @id // the Instagram-scoped user ID (IGSID)
-  username   String?
-  name       String?
-  resolvedAt DateTime? @map("resolved_at") // null = never successfully resolved
+  id              String    @id // the Instagram-scoped user ID (IGSID)
+  username        String?
+  name            String?
+  resolvedAt      DateTime? @map("resolved_at") // null = never successfully resolved
   // Follow intel — only readable once the user is in a messaging context (they've
   // DM'd us). Volatile, so refreshed on each resolve. Null = not yet checked.
   isFollower      Boolean?  @map("is_follower")
@@ -123,25 +123,25 @@ model IgUser {
   originEvidence   String?   @map("origin_evidence") // the token/script/bio that drove it
   originCheckedAt  DateTime? @map("origin_checked_at")
 
-  createdAt  DateTime  @default(now()) @map("created_at")
-  updatedAt  DateTime  @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("ig_users")
 }
 
 model GateQueue {
-  id             String    @id @default(uuid()) @db.Uuid
-  conversationId String    @map("conversation_id") @db.Uuid
-  igUserId       String    @map("ig_user_id")
-  commentId      String    @map("comment_id")
-  gateMessage    String    @map("gate_message")
-  status         String    @default("pending") // pending | sent | exhausted | abandoned
-  attempts       Int       @default(0)
-  lastError      String?   @map("last_error")
-  commentAt      DateTime  @map("comment_at") // enforces the 7-day private-reply window
-  nextAttemptAt  DateTime  @map("next_attempt_at")
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
+  id             String   @id @default(uuid()) @db.Uuid
+  conversationId String   @map("conversation_id") @db.Uuid
+  igUserId       String   @map("ig_user_id")
+  commentId      String   @map("comment_id")
+  gateMessage    String   @map("gate_message")
+  status         String   @default("pending") // pending | sent | exhausted | abandoned
+  attempts       Int      @default(0)
+  lastError      String?  @map("last_error")
+  commentAt      DateTime @map("comment_at") // enforces the 7-day private-reply window
+  nextAttemptAt  DateTime @map("next_attempt_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
   @@index([status, nextAttemptAt])
   @@map("gate_queue")
@@ -155,25 +155,25 @@ model GateQueue {
 // it renders without re-walking the Graph media list, plus the manual overrides
 // and the cached fused US-fit score (sorted on, so kept on this lean row).
 model ReelMeta {
-  mediaId          String   @id @map("media_id")
+  mediaId          String    @id @map("media_id")
   caption          String?
   permalink        String?
-  thumbnailUrl     String?  @map("thumbnail_url")
+  thumbnailUrl     String?   @map("thumbnail_url")
   // The downloadable video. Omitted by Meta when the reel uses copyrighted/
   // licensed audio — absence is itself a weak "trending licensed audio" signal.
-  mediaUrl         String?  @map("media_url")
+  mediaUrl         String?   @map("media_url")
   postedAt         DateTime? @map("posted_at") // IG timestamp; drives post-time-ET analysis
-  mediaAudioType   String?  @map("media_audio_type") // MUSIC | ORIGINAL_SOUND (free Meta field)
-  videoUnavailable Boolean  @default(false) @map("video_unavailable")
+  mediaAudioType   String?   @map("media_audio_type") // MUSIC | ORIGINAL_SOUND (free Meta field)
+  videoUnavailable Boolean   @default(false) @map("video_unavailable")
 
   // Manual overrides (drawer-editable). Override > derived when present.
-  manualAudioType   String? @map("manual_audio_type")
+  manualAudioType    String? @map("manual_audio_type")
   manualLangOverride String? @map("manual_lang_override")
-  manualNote        String? @map("manual_note")
+  manualNote         String? @map("manual_note")
 
   // Cached fused result, denormalized for fast Leaderboard sort.
   usFitScore Int?      @map("us_fit_score") // 0..100
-  confidence String?   // high | low
+  confidence String? // high | low
   scoredAt   DateTime? @map("scored_at")
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -191,20 +191,20 @@ model ReelMeta {
 // cached forever. Kept separate so the large immutable JSON blob doesn't bloat
 // the row we sort the Leaderboard by, and re-analysis is a clean row replace.
 model ReelContentProfile {
-  mediaId       String   @id @map("media_id")
-  source        String   // gemini | fallback
-  promptVersion String   @map("prompt_version")
-  modelId       String   @map("model_id")
-  profile       Json     // full structured content profile
+  mediaId       String @id @map("media_id")
+  source        String // gemini | fallback
+  promptVersion String @map("prompt_version")
+  modelId       String @map("model_id")
+  profile       Json // full structured content profile
 
   // Sub-scores lifted out of `profile` for querying / scoring.
-  accentScore   Int?     @map("accent_score")
-  settingScore  Int?     @map("setting_score")
-  culturalScore Int?     @map("cultural_score")
-  hookArchetype String?  @map("hook_archetype")
-  onScreenLang  String?  @map("on_screen_lang")
-  audioVibe     String?  @map("audio_vibe")
-  costUsd       Float?   @map("cost_usd")
+  accentScore   Int?    @map("accent_score")
+  settingScore  Int?    @map("setting_score")
+  culturalScore Int?    @map("cultural_score")
+  hookArchetype String? @map("hook_archetype")
+  onScreenLang  String? @map("on_screen_lang")
+  audioVibe     String? @map("audio_vibe")
+  costUsd       Float?  @map("cost_usd")
 
   createdAt DateTime @default(now()) @map("created_at")
 
@@ -226,10 +226,10 @@ model ReelPerformanceSnapshot {
   shares             Int?
   saved              Int?
   totalInteractions  Int?     @map("total_interactions")
-  avgWatchTimeMs     Int?     @map("avg_watch_time_ms")     // ig_reels_avg_watch_time
+  avgWatchTimeMs     Int?     @map("avg_watch_time_ms") // ig_reels_avg_watch_time
   videoViewTotalTime Int?     @map("video_view_total_time") // ig_reels_video_view_total_time
-  skipRate           Float?   @map("skip_rate")             // reels_skip_rate
-  raw                Json?    // full payload incl. which metrics 400'd
+  skipRate           Float?   @map("skip_rate") // reels_skip_rate
+  raw                Json? // full payload incl. which metrics 400'd
 
   reel ReelMeta @relation(fields: [mediaId], references: [mediaId], onDelete: Cascade)
 
@@ -241,10 +241,10 @@ model ReelPerformanceSnapshot {
 // account level). One row per (stage, run). Spine of the geo trend + experiments.
 model GeoDemographicSnapshot {
   id           String   @id @default(uuid()) @db.Uuid
-  stage        String   // follower | engaged | reached
+  stage        String // follower | engaged | reached
   capturedAt   DateTime @default(now()) @map("captured_at")
   timeframe    String   @default("last_90_days")
-  counts       Json     // { US: n, IN: n, ... }
+  counts       Json // { US: n, IN: n, ... }
   usPct        Float?   @map("us_pct")
   inPct        Float?   @map("in_pct")
   totalCounted Int?     @map("total_counted")
@@ -272,15 +272,15 @@ model GeminiJob {
 
 // Tab 3. Created now so the table ships in one migration; used in Phase 4.
 model Experiment {
-  id            String   @id @default(uuid()) @db.Uuid
+  id            String    @id @default(uuid()) @db.Uuid
   hypothesis    String
   variable      String
-  reelMediaIds  String[] @map("reel_media_ids")
-  status        String   @default("running") // running | inconclusive | confirmed | busted
-  baselineUsPct Float?   @map("baseline_us_pct") // reached-US% at creation (90d, legacy)
-  startedAt     DateTime @default(now()) @map("started_at")
+  reelMediaIds  String[]  @map("reel_media_ids")
+  status        String    @default("running") // running | inconclusive | confirmed | busted
+  baselineUsPct Float?    @map("baseline_us_pct") // reached-US% at creation (90d, legacy)
+  startedAt     DateTime  @default(now()) @map("started_at")
   postedAt      DateTime? @map("posted_at")
-  measuredUsPct Float?   @map("measured_us_pct")
+  measuredUsPct Float?    @map("measured_us_pct")
   conclusion    String?
 
   // ── Auto-experiments (origin="auto") ──────────────────────────────────────
@@ -288,21 +288,42 @@ model Experiment {
   // profile. Tracks the responsive 14d ENGAGED-US% before→after. Never
   // auto-decides a verdict unless the reel dominated its window's reach (else
   // account-level geo can't isolate it) — see suggestedVerdict/attributionConfidence.
-  origin        String   @default("manual") // manual | auto
-  mediaId       String?  @map("media_id") // the reel this auto-experiment tracks
-  usFitScore    Int?     @map("us_fit_score") // Gemini score at creation ("what changed")
-  culturalCues  String[] @map("cultural_cues") // US cues Gemini saw, snapshotted
-  baselineEngagedUsPct Float? @map("baseline_engaged_us_pct") // 14d engaged-US% at post time
-  measuredEngagedUsPct Float? @map("measured_engaged_us_pct") // 14d engaged-US% after the window
-  windowReachShare     Float? @map("window_reach_share") // this reel's share of its 14d window reach (0..1)
-  suggestedVerdict     String? @map("suggested_verdict") // confirmed | busted | inconclusive (a SUGGESTION)
-  attributionConfidence String? @map("attribution_confidence") // high | low — can we isolate this reel?
-  measuredAt    DateTime? @map("measured_at")
+  origin                String    @default("manual") // manual | auto
+  mediaId               String?   @map("media_id") // the reel this auto-experiment tracks
+  usFitScore            Int?      @map("us_fit_score") // Gemini score at creation ("what changed")
+  culturalCues          String[]  @map("cultural_cues") // US cues Gemini saw, snapshotted
+  baselineEngagedUsPct  Float?    @map("baseline_engaged_us_pct") // 14d engaged-US% at post time
+  measuredEngagedUsPct  Float?    @map("measured_engaged_us_pct") // 14d engaged-US% after the window
+  windowReachShare      Float?    @map("window_reach_share") // this reel's share of its 14d window reach (0..1)
+  suggestedVerdict      String?   @map("suggested_verdict") // confirmed | busted | inconclusive (a SUGGESTION)
+  attributionConfidence String?   @map("attribution_confidence") // high | low — can we isolate this reel?
+  measuredAt            DateTime? @map("measured_at")
 
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   @@index([status])
   @@index([origin, mediaId])
   @@map("experiment")
+}
+
+// The live Instagram access token, as a single row (id = 1).
+//
+// Lives in the DB rather than env because the refresh worker has to WRITE it: a
+// process cannot rewrite its own Railway environment variables, so an env-only
+// token can never renew itself. That is exactly how the 2026-07-26 expiry
+// happened.
+//
+// env.IG_ACCESS_TOKEN is still the seed and the manual override — paste a
+// freshly minted token there and it wins over a stale row on next boot.
+model IgToken {
+  id          Int      @id @default(1)
+  accessToken String   @map("access_token")
+  // Meta's authoritative expiry, from refresh_access_token's expires_in. Before
+  // the first successful refresh this is an estimate (seeded as now + 60d).
+  expiresAt   DateTime @map("expires_at")
+  refreshedAt DateTime @map("refreshed_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("ig_token")
 }

@@ -1,11 +1,48 @@
-import { CheckCircle2, Clock3, RefreshCw, Send } from "lucide-react";
-import type { Stats } from "@/lib/types";
+import { AlertTriangle, CheckCircle2, Clock3, RefreshCw, Send } from "lucide-react";
+import type { Stats, TokenHealth } from "@/lib/types";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
 interface AutomationHealthStripProps {
   stats: Stats | undefined;
   isLoading: boolean;
+}
+
+// Instagram token countdown, rendered ONLY when something is wrong.
+//
+// The refresh worker is supposed to hold this at "healthy" permanently, so a
+// standing "token is fine" badge would be noise nobody reads — and then nobody
+// reads it on the day it matters either. It appears only when action is needed.
+//
+// Worth having even though refreshing is automatic: the worker itself can stop,
+// and an unwatched worker is precisely how the 2026-07-26 expiry took the Graph
+// API down with nothing raising a hand.
+function TokenAlarm({ health }: { health: TokenHealth }) {
+  if (health.status === "healthy") return null;
+
+  const critical = health.status === "critical" || health.status === "expired";
+  const window = health.status === "expired"
+    ? "has expired"
+    : `expires in ${health.daysUntilExpiry} ${health.daysUntilExpiry === 1 ? "day" : "days"}`;
+
+  return (
+    <div
+      className={`flex items-start gap-2.5 rounded-xl border px-3 py-2.5 sm:col-span-4 ${
+        critical
+          ? "border-rose-400/25 bg-rose-400/10 text-rose-200"
+          : "border-amber-300/25 bg-amber-300/10 text-amber-200"
+      }`}
+    >
+      <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+      <div className="text-xs leading-relaxed">
+        <span className="font-semibold">Instagram token {window}.</span>{" "}
+        <span className="text-muted-foreground">
+          Auto-refresh should prevent this — if it is showing, generate a new token in the
+          Meta App Dashboard and update IG_ACCESS_TOKEN.
+        </span>
+      </div>
+    </div>
+  );
 }
 
 export function AutomationHealthStrip({ stats, isLoading }: AutomationHealthStripProps) {
@@ -46,6 +83,7 @@ export function AutomationHealthStrip({ stats, isLoading }: AutomationHealthStri
             </div>
           </div>
         ))}
+        {stats.tokenHealth && <TokenAlarm health={stats.tokenHealth} />}
       </CardContent>
     </Card>
   );

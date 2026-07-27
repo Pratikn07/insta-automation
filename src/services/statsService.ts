@@ -1,5 +1,7 @@
 import { prisma } from "../lib/prisma.js";
 import { env } from "../config/env.js";
+import { readTokenHealth } from "../meta/tokenStore.js";
+import type { TokenHealth } from "../meta/tokenStoreCore.js";
 
 // Fix #11 — funnel follower yield over the recent measurement window: of the
 // non-follower recipients we've been able to re-check, how many now follow.
@@ -22,6 +24,11 @@ export interface DashboardStats {
   gateQueuePending: number;
   gateQueueExhausted: number;
   followConversion: FollowConversion;
+  // Instagram token countdown. The refresh worker should keep this permanently
+  // healthy; a warning here means the worker itself has stopped, which is the
+  // failure that caused the 2026-07-26 outage (nothing was watching).
+  // null only before the ig_token row is first seeded.
+  tokenHealth: TokenHealth | null;
 }
 
 function startOfTodayUtc(): Date {
@@ -96,6 +103,7 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     gateQueuePending,
     gateQueueExhausted,
     followConversion,
+    tokenHealth,
   ] = await Promise.all([
     prisma.keyword.count({ where: { active: true } }),
     prisma.keyword.count(),
@@ -114,6 +122,8 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     prisma.gateQueue.count({ where: { status: "pending" } }),
     prisma.gateQueue.count({ where: { status: "exhausted" } }),
     getFollowConversion(),
+    // Non-fatal: a stats page must still render if this lookup fails.
+    readTokenHealth().catch(() => null),
   ]);
 
   return {
@@ -126,5 +136,6 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     gateQueuePending,
     gateQueueExhausted,
     followConversion,
+    tokenHealth,
   };
 }
