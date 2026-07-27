@@ -28,6 +28,30 @@ export type DailyAddsBasis =
   | "no_prior_day" // first day in range, nothing to diff against
   | "pending"; // trailing stale day, no later real diff yet
 
+/**
+ * Reel that gained notable reach while a spike happened. A CANDIDATE, never a
+ * cause: Meta gives no per-reel follower attribution, so this is reach-timing
+ * correlation only. Populated by spikeService (which owns the DB join); declared
+ * here so this file stays the single definition of a point's shape.
+ */
+export interface SpikeCandidateInfo {
+  mediaId: string;
+  caption: string | null;
+  thumbnailUrl: string | null;
+  permalink: string | null;
+  postedAt: string | null;
+  reachGained: number;
+  sharePct: number;
+}
+
+export interface SpikeInfo {
+  multiple: number; // net / trailing median, e.g. 4.4
+  net: number;
+  baselineMedian: number;
+  confidence: "high" | "medium" | "low"; // low = several reels overlapped
+  candidates: SpikeCandidateInfo[]; // at most 3, largest reach gain first
+}
+
 export interface FollowerDailyAddsPoint {
   day: string; // UTC calendar day, "2026-07-21"
   capturedAt: string | null; // anchor snapshot time, null when no_snapshot
@@ -42,6 +66,8 @@ export interface FollowerDailyAddsPoint {
   stale: boolean;
   provisional: boolean;
   basis: DailyAddsBasis;
+  // Present only on days that cleared the spike thresholds; absent is normal.
+  spike?: SpikeInfo;
 }
 
 export interface FollowerStock {

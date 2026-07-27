@@ -8,6 +8,7 @@ import {
   type FollowerDailyAddsPoint,
   type FollowerStock,
 } from "./followerFlowCore.js";
+import { getSpikesByDay } from "./spikeService.js";
 
 // DB-facing wrapper around the pure follower-flow core (followerFlowCore.ts) —
 // all diff/gap/staleness semantics live there.
@@ -52,10 +53,19 @@ export async function getFollowerDailyAdds(): Promise<FollowerFlowResult> {
     });
   }
   const anchors = [...anchorsByDay.values()];
+  const points = buildDailyPoints(anchors);
+
+  // Spike attribution needs the finished points, so it can only start here.
+  const spikesByDay = await getSpikesByDay(points);
+  for (const point of points) {
+    const spike = spikesByDay.get(point.day);
+    if (spike) point.spike = spike;
+  }
+
   const { followersTotal } = await profileTotalsPromise;
 
   return {
-    points: buildDailyPoints(anchors),
+    points,
     stock:
       anchors.length > 0
         ? stockFrom(anchors[anchors.length - 1]!, followersTotal)

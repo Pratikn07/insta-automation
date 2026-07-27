@@ -343,6 +343,27 @@ export type DailyAddsBasis =
   | "no_prior_day"
   | "pending"; // trailing stale day, no later real diff yet
 
+// Mirrors src/services/followerFlowCore.ts. A reel that gained notable reach
+// while a spike happened — a CANDIDATE, never a cause. Meta gives no per-reel
+// follower attribution, so this is reach-timing correlation only.
+export interface SpikeCandidateInfo {
+  mediaId: string;
+  caption: string | null;
+  thumbnailUrl: string | null;
+  permalink: string | null;
+  postedAt: string | null;
+  reachGained: number;
+  sharePct: number;
+}
+
+export interface SpikeInfo {
+  multiple: number; // net / trailing median, e.g. 4.4
+  net: number;
+  baselineMedian: number;
+  confidence: "high" | "medium" | "low"; // low = several reels overlapped
+  candidates: SpikeCandidateInfo[]; // at most 3, largest reach gain first
+}
+
 export interface FollowerDailyAddsPoint {
   day: string; // UTC calendar day, "2026-07-21"
   capturedAt: string | null;
@@ -357,6 +378,8 @@ export interface FollowerDailyAddsPoint {
   stale: boolean;
   provisional: boolean; // within Meta's ~48h demographics lag, may still shift
   basis: DailyAddsBasis;
+  // Present only on days that cleared the spike thresholds; absent is normal.
+  spike?: SpikeInfo;
 }
 
 export interface FollowerStock {

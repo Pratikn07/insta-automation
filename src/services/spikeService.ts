@@ -1,11 +1,10 @@
 import { prisma } from "../lib/prisma.js";
-import type { FollowerDailyAddsPoint } from "./followerFlowCore.js";
-import {
-  detectSpikes,
-  rankCandidates,
-  type ReelSnapshot,
-  type SpikeConfidence,
-} from "./spikeCore.js";
+import type {
+  FollowerDailyAddsPoint,
+  SpikeCandidateInfo,
+  SpikeInfo,
+} from "./followerFlowCore.js";
+import { detectSpikes, rankCandidates, type ReelSnapshot } from "./spikeCore.js";
 
 // DB-facing wrapper around spikeCore. All detection/ranking semantics live in the
 // core; this file only loads rows and joins reel metadata for display.
@@ -18,23 +17,9 @@ const WINDOW_PAD_DAYS = 1;
 // Baseline lookback handed to the core so it can find a pre-window snapshot.
 const BASELINE_LOOKBACK_DAYS = 2;
 
-export interface SpikeCandidateView {
-  mediaId: string;
-  caption: string | null;
-  thumbnailUrl: string | null;
-  permalink: string | null;
-  postedAt: string | null;
-  reachGained: number;
-  sharePct: number;
-}
-
-export interface SpikeInfo {
-  multiple: number; // e.g. 4.4 -> "4.4x your usual day"
-  net: number;
-  baselineMedian: number;
-  confidence: SpikeConfidence;
-  candidates: SpikeCandidateView[];
-}
+// The wire shapes live in followerFlowCore so a point's type has one definition;
+// re-exported here for callers that only import this service.
+export type { SpikeCandidateInfo, SpikeInfo };
 
 /**
  * Spike info keyed by UTC day, for the days that qualify. Days absent from the
