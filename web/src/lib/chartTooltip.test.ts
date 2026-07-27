@@ -74,6 +74,57 @@ describe("tooltipModel", () => {
     expect(tooltipModel(point({ us: 30, unattributed: 0 })).notes).toEqual([]);
   });
 
+  it("flags a spike day and points at the candidate list below", () => {
+    const m = tooltipModel(
+      point({
+        us: 180,
+        spike: {
+          multiple: 4.4,
+          net: 187,
+          baselineMedian: 42.5,
+          confidence: "medium",
+          candidates: [
+            {
+              mediaId: "a",
+              caption: "I made this from an egg carton",
+              thumbnailUrl: null,
+              permalink: null,
+              postedAt: "2026-07-08T23:28:53.000Z",
+              reachGained: 7885,
+              sharePct: 49,
+            },
+          ],
+        },
+      }),
+    );
+    expect(m.notes).toContain("4.4× your usual day — candidates below");
+  });
+
+  it("says nothing about spikes on an ordinary day", () => {
+    const m = tooltipModel(point({ us: 40 }));
+    expect(m.notes.some((n) => n.includes("usual day"))).toBe(false);
+  });
+
+  it("keeps the spike note alongside the other caveats", () => {
+    const m = tooltipModel(
+      point({
+        us: 180,
+        provisional: true,
+        unattributed: 3,
+        spike: {
+          multiple: 5.7,
+          net: 251,
+          baselineMedian: 44,
+          confidence: "high",
+          candidates: [],
+        },
+      }),
+    );
+    expect(m.notes).toContain("5.7× your usual day — candidates below");
+    expect(m.notes).toContain("Still settling — Meta may revise");
+    expect(m.notes).toContain("+3 unplaced (top-country cutoff)");
+  });
+
   it("explains each kind of gap column instead of showing empty rows", () => {
     const gap = (basis: FollowerDailyAddsPoint["basis"], note: string) => {
       const m = tooltipModel(

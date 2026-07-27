@@ -87,6 +87,11 @@ export function tooltipModel(point: FollowerDailyAddsPoint): TooltipModel {
   }
 
   const notes: string[] = [];
+  // Spike first: it is the reason someone hovered this bar. The candidate reels
+  // themselves are too wide for a 200px card, so they live in the panel below.
+  if (point.spike) {
+    notes.push(`${point.spike.multiple}× your usual day — candidates below`);
+  }
   if (point.spanDays !== null && point.spanDays > 1) {
     notes.push("Meta did not refresh in between");
   }
