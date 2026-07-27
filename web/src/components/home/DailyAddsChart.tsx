@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import type { FollowerDailyAddsPoint } from "@/lib/types";
 import { chartGeometry, formatSignedCount, type ChartRegion } from "@/lib/followerFlow";
-import { hitTestDay, tooltipModel } from "@/lib/chartTooltip";
+import { hitTestDay, shownSpikeDays, tooltipModel } from "@/lib/chartTooltip";
 import { cn } from "@/lib/utils";
 import { ChartTooltip } from "./ChartTooltip";
 
@@ -87,6 +87,9 @@ export function DailyAddsChart({ points, className }: DailyAddsChartProps) {
   const staleCount = points.filter((p) => p.stale).length;
   const hoveredDay = hover?.day ?? null;
   const hoveredPoint = hoveredDay ? points.find((p) => p.day === hoveredDay) ?? null : null;
+  // Same list SpikeCandidates renders, so the tooltip only points "below" when
+  // there is a card down there to point at.
+  const panelSpikeDays = shownSpikeDays(points);
 
   function handlePointerMove(event: React.PointerEvent<HTMLDivElement>) {
     const rect = containerRef.current?.getBoundingClientRect();
@@ -231,7 +234,7 @@ export function DailyAddsChart({ points, className }: DailyAddsChartProps) {
 
       {hover && hoveredPoint && (
         <ChartTooltip
-          model={tooltipModel(hoveredPoint)}
+          model={tooltipModel(hoveredPoint, panelSpikeDays)}
           x={hover.x}
           y={hover.y}
           containerWidth={hover.containerWidth}

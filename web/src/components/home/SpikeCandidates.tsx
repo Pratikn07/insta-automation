@@ -1,6 +1,7 @@
 import { ArrowUpRight, Film, Zap } from "lucide-react";
 import type { FollowerDailyAddsPoint, SpikeInfo } from "@/lib/types";
 import { formatSignedCount } from "@/lib/followerFlow";
+import { shownSpikeDays } from "@/lib/chartTooltip";
 
 // Which reels were gaining reach when a follower spike happened.
 //
@@ -23,11 +24,17 @@ function dayLabel(day: string): string {
   });
 }
 
+// A 2%-share reel is not a candidate for anything; it is the rest of the catalog
+// ticking over. Only list reels with a real slice of the window.
+const MIN_SHARE_PCT = 5;
+
 export function SpikeCandidates({ points }: { points: FollowerDailyAddsPoint[] }) {
-  const spikeDays = points
-    .filter((p): p is FollowerDailyAddsPoint & { spike: SpikeInfo } => Boolean(p.spike))
-    // Newest first: the recent spike is the one still worth acting on.
-    .sort((a, b) => b.day.localeCompare(a.day));
+  // shownSpikeDays owns the cap and the ordering; the tooltip reads the same list
+  // so it never says "candidates below" about a day this section left out.
+  const shown = shownSpikeDays(points);
+  const spikeDays = shown
+    .map((day) => points.find((p) => p.day === day))
+    .filter((p): p is FollowerDailyAddsPoint & { spike: SpikeInfo } => Boolean(p?.spike));
 
   if (spikeDays.length === 0) return null;
 
@@ -63,7 +70,9 @@ export function SpikeCandidates({ points }: { points: FollowerDailyAddsPoint[] }
             )}
 
             <ol className="space-y-1.5">
-              {point.spike.candidates.map((c) => (
+              {point.spike.candidates
+                .filter((c) => c.sharePct >= MIN_SHARE_PCT)
+                .map((c) => (
                 <li key={c.mediaId} className="flex items-center gap-2.5">
                   <div className="relative aspect-[9/16] w-8 shrink-0 overflow-hidden rounded bg-accent">
                     {c.thumbnailUrl ? (
@@ -104,8 +113,8 @@ export function SpikeCandidates({ points }: { points: FollowerDailyAddsPoint[] }
                       <ArrowUpRight className="size-3" />
                     </a>
                   )}
-                </li>
-              ))}
+                  </li>
+                ))}
             </ol>
           </div>
         ))}

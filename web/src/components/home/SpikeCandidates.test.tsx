@@ -99,6 +99,46 @@ describe("SpikeCandidates", () => {
     expect(html).toContain("Several reels overlapped");
   });
 
+  it("shows at most two spikes so the section cannot swamp the page", () => {
+    // Four spikes rendered ~1800px of text below the chart on real data.
+    const html = renderToStaticMarkup(
+      <SpikeCandidates
+        points={[
+          point("2026-07-11", 105, { ...highSpike, multiple: 2.7 }),
+          point("2026-07-15", 187, { ...highSpike, multiple: 4.4 }),
+          point("2026-07-22", 168, { ...highSpike, multiple: 3.9 }),
+          point("2026-07-23", 251, highSpike),
+        ]}
+      />,
+    );
+    expect(html).toContain("Jul 23");
+    expect(html).toContain("Jul 22");
+    expect(html).not.toContain("Jul 15");
+    expect(html).not.toContain("Jul 11");
+  });
+
+  it("drops trivial-share reels rather than listing the whole catalog", () => {
+    // Real data had a spike whose 2nd and 3rd candidates were 2% each — that is
+    // the back catalogue ticking over, not a candidate for anything.
+    const html = renderToStaticMarkup(
+      <SpikeCandidates
+        points={[
+          point("2026-07-11", 105, {
+            ...highSpike,
+            candidates: [
+              candidate("lead", "The reel that actually moved", 89741, 90),
+              candidate("noise-a", "Back catalogue reel A", 1950, 2),
+              candidate("noise-b", "Back catalogue reel B", 1727, 2),
+            ],
+          }),
+        ]}
+      />,
+    );
+    expect(html).toContain("The reel that actually moved");
+    expect(html).not.toContain("Back catalogue reel A");
+    expect(html).not.toContain("Back catalogue reel B");
+  });
+
   it("renders nothing at all when no day is a spike", () => {
     const html = renderToStaticMarkup(
       <SpikeCandidates points={[point("2026-07-18", 45), point("2026-07-19", 50)]} />,

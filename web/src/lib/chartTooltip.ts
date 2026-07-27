@@ -19,6 +19,27 @@ export interface TooltipModel {
   emptyLabel: string | null;
 }
 
+/**
+ * Which spike days the candidates panel actually renders, newest first.
+ *
+ * Shared with SpikeCandidates so the tooltip can only ever say "candidates
+ * below" about a day that IS below. Browser-verified the alternative: with the
+ * panel capped at two spikes, all four spike tooltips still advertised
+ * candidates, and hovering Jul 11 or Jul 15 pointed at nothing.
+ *
+ * Two, because four spike cards rendered ~1800px of text under the chart. Enough
+ * to compare a recent event against the one before it.
+ */
+export const MAX_SPIKES_SHOWN = 2;
+
+export function shownSpikeDays(points: FollowerDailyAddsPoint[]): string[] {
+  return points
+    .filter((p) => p.spike)
+    .map((p) => p.day)
+    .sort((a, b) => b.localeCompare(a))
+    .slice(0, MAX_SPIKES_SHOWN);
+}
+
 // Same order the bars stack in, so the tooltip reads top-to-bottom like the bar.
 const REGION_ORDER: ChartRegion[] = ["us", "southAsian", "anglosphere", "other"];
 
@@ -61,8 +82,15 @@ function rangeLabel(fromDay: string, toDay: string): string {
  * day where everything nets to zero gets an explicit "No net change" rather than
  * an empty card. The notes carry the caveats that explain odd-looking bars —
  * without them a 2-day combined bar reads as a real spike.
+ *
+ * `panelDays` is the set of spike days the candidates panel renders (from
+ * shownSpikeDays). A spike day outside it still says it was unusual — that is
+ * true and worth knowing — but drops the pointer to candidates that aren't there.
  */
-export function tooltipModel(point: FollowerDailyAddsPoint): TooltipModel {
+export function tooltipModel(
+  point: FollowerDailyAddsPoint,
+  panelDays: readonly string[] = [],
+): TooltipModel {
   const heading =
     point.spanDays !== null && point.spanDays > 1
       ? rangeLabel(shiftDay(point.day, -(point.spanDays - 1)), point.day)
@@ -90,7 +118,10 @@ export function tooltipModel(point: FollowerDailyAddsPoint): TooltipModel {
   // Spike first: it is the reason someone hovered this bar. The candidate reels
   // themselves are too wide for a 200px card, so they live in the panel below.
   if (point.spike) {
-    notes.push(`${point.spike.multiple}× your usual day — candidates below`);
+    const hasPanelCard = panelDays.includes(point.day);
+    notes.push(
+      `${point.spike.multiple}× your usual day${hasPanelCard ? " — candidates below" : ""}`,
+    );
   }
   if (point.spanDays !== null && point.spanDays > 1) {
     notes.push("Meta did not refresh in between");
