@@ -9,6 +9,8 @@ import { runGateQueueTick } from "./services/gateQueueWorker.js";
 import { runSnapshotTick } from "./services/snapshotWorker.js";
 import { runGeminiQueueTick } from "./services/geminiQueueWorker.js";
 import { runFollowRecheckTick } from "./services/followRecheckWorker.js";
+import { seedTokenFromEnv } from "./meta/tokenStore.js";
+import { runTokenRefreshTick } from "./meta/tokenRefresher.js";
 import { apiRouter } from "./api/router.js";
 
 const app = express();
@@ -86,6 +88,23 @@ setInterval(() => {
   void runFollowRecheckTick();
 }, env.FOLLOW_RECHECK_INTERVAL_MS);
 
+// Token refresh worker: keeps the Instagram access token from ever expiring.
+// Meta's long-lived tokens last 60 days and each refresh resets that clock to 60
+// days from the refresh, so a 6-hourly tick (with the weekly/urgent rules in
+// tokenStoreCore) holds the token permanently ~53 days from expiry.
+//
+// 6h rather than 24h so a transient Meta failure still has three more attempts
+// before the day is out. runTokenRefreshTick is non-throwing, and the first
+// ticks after a manual re-mint no-op quietly until the token clears Meta's 24h
+// minimum age.
+const TOKEN_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
+setInterval(() => {
+  void runTokenRefreshTick();
+}, TOKEN_REFRESH_INTERVAL_MS);
+
 app.listen(env.PORT, () => {
   logger.info({ port: env.PORT, env: env.NODE_ENV }, "insta-automation listening");
+  // Make sure ig_token exists (and honours a hand-pasted env override) before
+  // any worker tick fires. Non-throwing: getAccessToken falls back to env.
+  void seedTokenFromEnv().then(() => runTokenRefreshTick());
 });

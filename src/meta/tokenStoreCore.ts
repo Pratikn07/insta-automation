@@ -36,6 +36,26 @@ export interface TokenTiming {
   refreshedAt: Date;
 }
 
+/**
+ * Whether a hand-pasted env token should replace the stored one.
+ *
+ * Only when the stored token is beyond saving (at/past expiry). The tempting
+ * rule — "they differ, so env wins" — silently destroys the feature: once the
+ * refresh worker rotates the token, the DB differs from env on EVERY boot, so a
+ * blind override throws away the refreshed credential and resets expiry to a
+ * guess. Hit exactly that during development; a refresh out to Sep 25 was
+ * clobbered by the older env value on the next seed.
+ */
+export function shouldEnvOverride(
+  storedToken: string,
+  envToken: string,
+  storedExpiresAt: Date,
+  nowMs: number,
+): boolean {
+  if (storedToken === envToken) return false;
+  return storedExpiresAt.getTime() <= nowMs;
+}
+
 export type RefreshSkipReason = "too_young" | "recently_refreshed";
 
 export type RefreshDecision =

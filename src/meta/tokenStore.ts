@@ -1,7 +1,12 @@
 import { prisma } from "../lib/prisma.js";
 import { env } from "../config/env.js";
 import { logger } from "../lib/logger.js";
-import { tokenHealth, type TokenHealth, type TokenTiming } from "./tokenStoreCore.js";
+import {
+  shouldEnvOverride,
+  tokenHealth,
+  type TokenHealth,
+  type TokenTiming,
+} from "./tokenStoreCore.js";
 
 // The live Instagram access token, read through a tiny in-process cache.
 //
@@ -71,12 +76,22 @@ async function warmCache(): Promise<void> {
 }
 
 /**
- * Ensures a row exists, and lets a hand-pasted env token win over a stale one.
+ * Ensures a row exists, and lets a hand-pasted env token rescue a broken one.
  *
- * The override matters: when the token HAS died and a human re-mints one in the
- * Meta dashboard, they paste it into Railway. If the DB row silently kept
- * priority, that recovery would appear to do nothing — the single most confusing
- * failure this design could have. So env difference means env wins.
+ * The subtlety here caused a real bug during development. The obvious rule —
+ * "env differs from DB, so env wins" — is WRONG once refreshing works: after the
+ * worker rotates the token, the DB legitimately differs from env on every
+ * subsequent boot, and a blind override would throw away the refreshed token and
+ * reset expiry to a 60-day guess. Observed exactly that: a successful refresh to
+ * an expiry of Sep 25 was immediately clobbered by the older env value.
+ *
+ * But the override still has to exist, because it is the manual recovery path:
+ * when a token has actually died, a human re-mints one in the Meta dashboard and
+ * pastes it into Railway, and if the DB silently kept priority that recovery
+ * would appear to do nothing.
+ *
+ * Resolution: env only wins when the DB token cannot be saved by refreshing —
+ * i.e. it is at/past expiry. A live DB token always beats env.
  */
 export async function seedTokenFromEnv(now = new Date()): Promise<void> {
   try {
@@ -95,16 +110,27 @@ export async function seedTokenFromEnv(now = new Date()): Promise<void> {
         },
       });
       logger.info("ig token row seeded from env");
-    } else if (row.accessToken !== env.IG_ACCESS_TOKEN) {
-      await prisma.igToken.update({
-        where: { id: 1 },
-        data: {
-          accessToken: env.IG_ACCESS_TOKEN,
-          expiresAt: new Date(now.getTime() + SEED_LIFETIME_MS),
-          refreshedAt: now,
-        },
-      });
-      logger.warn("ig token replaced from env (manual re-mint detected)");
+    } else {
+      const override = shouldEnvOverride(
+        row.accessToken,
+        env.IG_ACCESS_TOKEN,
+        row.expiresAt,
+        now.getTime(),
+      );
+      if (override) {
+        await prisma.igToken.update({
+          where: { id: 1 },
+          data: {
+            accessToken: env.IG_ACCESS_TOKEN,
+            expiresAt: new Date(now.getTime() + SEED_LIFETIME_MS),
+            refreshedAt: now,
+          },
+        });
+        logger.warn("ig token replaced from env (stored token had expired)");
+      } else if (row.accessToken !== env.IG_ACCESS_TOKEN) {
+        // Normal steady state once refreshing works. Not a warning.
+        logger.debug("ig token in db differs from env; keeping the live db token");
+      }
     }
 
     cache = null;

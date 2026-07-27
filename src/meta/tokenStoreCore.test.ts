@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   MIN_TOKEN_AGE_MS,
   isRefreshDue,
+  shouldEnvOverride,
   tokenHealth,
   type TokenTiming,
 } from "./tokenStoreCore.js";
@@ -119,5 +120,33 @@ describe("tokenHealth", () => {
     const h = tokenHealth(t, NOW);
     expect(h.expiresAt).toBe(t.expiresAt.toISOString());
     expect(h.lastRefreshedAt).toBe(t.refreshedAt.toISOString());
+  });
+});
+
+describe("shouldEnvOverride", () => {
+  const alive = new Date(NOW + 55 * DAY);
+  const dead = new Date(NOW - DAY);
+
+  it("does NOT clobber a live refreshed token that merely differs from env", () => {
+    // The bug this function exists to prevent: once the worker rotates the
+    // token, the DB differs from env on every boot. A blind "env wins" rule
+    // threw away a real refresh (expiry Sep 25) and reset it to a guess.
+    expect(shouldEnvOverride("IGAA_refreshed", "IGAA_env_original", alive, NOW)).toBe(false);
+  });
+
+  it("lets env rescue a stored token that has expired", () => {
+    // The manual recovery path: a human re-mints in the Meta dashboard and
+    // pastes into Railway. If the dead DB row kept priority, that fix would
+    // appear to do nothing.
+    expect(shouldEnvOverride("IGAA_dead", "IGAA_fresh_from_dashboard", dead, NOW)).toBe(true);
+  });
+
+  it("is a no-op when the two already agree", () => {
+    expect(shouldEnvOverride("IGAA_same", "IGAA_same", dead, NOW)).toBe(false);
+    expect(shouldEnvOverride("IGAA_same", "IGAA_same", alive, NOW)).toBe(false);
+  });
+
+  it("treats the exact expiry instant as dead", () => {
+    expect(shouldEnvOverride("IGAA_a", "IGAA_b", new Date(NOW), NOW)).toBe(true);
   });
 });
