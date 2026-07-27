@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { FollowerDailyAddsPoint } from "./types";
-import { hitTestDay, tooltipModel } from "./chartTooltip";
+import { hitTestDay, shownSpikeDays, tooltipModel } from "./chartTooltip";
 
 function point(overrides: Partial<FollowerDailyAddsPoint> = {}): FollowerDailyAddsPoint {
   const us = overrides.us ?? 0;
@@ -74,6 +74,79 @@ describe("tooltipModel", () => {
     expect(tooltipModel(point({ us: 30, unattributed: 0 })).notes).toEqual([]);
   });
 
+  it("flags a spike day and points at the candidate list below", () => {
+    const m = tooltipModel(
+      point({
+        us: 180,
+        spike: {
+          multiple: 4.4,
+          net: 187,
+          baselineMedian: 42.5,
+          confidence: "medium",
+          candidates: [
+            {
+              mediaId: "a",
+              caption: "I made this from an egg carton",
+              thumbnailUrl: null,
+              permalink: null,
+              postedAt: "2026-07-08T23:28:53.000Z",
+              reachGained: 7885,
+              sharePct: 49,
+            },
+          ],
+        },
+      }),
+      ["2026-07-24"],
+    );
+    expect(m.notes).toContain("4.4× your usual day — candidates below");
+  });
+
+  it("still flags a spike the panel left out, but promises no candidates", () => {
+    // The panel shows only the two newest spikes. Older spike days must not
+    // advertise a card that is not on the page — browser-verified regression.
+    const m = tooltipModel(
+      point({
+        us: 180,
+        spike: {
+          multiple: 2.7,
+          net: 105,
+          baselineMedian: 39,
+          confidence: "high",
+          candidates: [],
+        },
+      }),
+      ["2026-07-26", "2026-07-25"],
+    );
+    expect(m.notes).toContain("2.7× your usual day");
+    expect(m.notes.some((n) => n.includes("candidates below"))).toBe(false);
+  });
+
+  it("says nothing about spikes on an ordinary day", () => {
+    const m = tooltipModel(point({ us: 40 }));
+    expect(m.notes.some((n) => n.includes("usual day"))).toBe(false);
+  });
+
+  it("keeps the spike note alongside the other caveats", () => {
+    const m = tooltipModel(
+      point({
+        us: 180,
+        provisional: true,
+        unattributed: 3,
+        spike: {
+          multiple: 5.7,
+          net: 251,
+          baselineMedian: 44,
+          confidence: "high",
+          candidates: [],
+        },
+      }),
+      ["2026-07-24"],
+    );
+    expect(m.notes).toContain("5.7× your usual day — candidates below");
+    expect(m.notes).toContain("Still settling — Meta may revise");
+    expect(m.notes).toContain("+3 unplaced (top-country cutoff)");
+  });
+
   it("explains each kind of gap column instead of showing empty rows", () => {
     const gap = (basis: FollowerDailyAddsPoint["basis"], note: string) => {
       const m = tooltipModel(
@@ -97,6 +170,36 @@ describe("tooltipModel", () => {
     gap("stale", "Absorbed into the next bar");
   });
 });
+
+describe("shownSpikeDays", () => {
+  const spike = {
+    multiple: 3,
+    net: 120,
+    baselineMedian: 40,
+    confidence: "high" as const,
+    candidates: [],
+  };
+
+  it("returns the two newest spike days, newest first", () => {
+    const days = shownSpikeDays([
+      point({ day: "2026-07-11", spike }),
+      point({ day: "2026-07-15", spike }),
+      point({ day: "2026-07-22", spike }),
+      point({ day: "2026-07-23", spike }),
+    ]);
+    expect(days).toEqual(["2026-07-23", "2026-07-22"]);
+  });
+
+  it("ignores days without a spike and returns empty when there are none", () => {
+    expect(shownSpikeDays([point({ day: "2026-07-18" }), point({ day: "2026-07-19" })])).toEqual([]);
+  });
+
+  it("does not pad when only one spike exists", () => {
+    expect(shownSpikeDays([point({ day: "2026-07-04" }), point({ day: "2026-07-23", spike })]))
+      .toEqual(["2026-07-23"]);
+  });
+});
+
 
 describe("hitTestDay", () => {
   // Mirrors what chartGeometry actually emits for a 13-point series where index 6

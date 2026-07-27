@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { DailyAddsChart, REGION_COLORS, REGION_LABELS } from "./DailyAddsChart";
 import { EmptyPanel, PanelShell } from "./PanelShell";
+import { SpikeCandidates } from "./SpikeCandidates";
 
 interface FollowerFlowPanelProps {
   points: FollowerDailyAddsPoint[];
@@ -149,6 +150,8 @@ export function FollowerFlowPanel({
           </div>
           <DailyAddsChart points={points} />
         </div>
+
+        <SpikeCandidates points={points} />
 
         <div className="flex gap-3 rounded-xl border border-violet-400/15 bg-violet-400/5 p-3.5 text-xs leading-relaxed text-muted-foreground">
           <Info className="mt-0.5 size-4 shrink-0 text-violet-300" />
