@@ -31,6 +31,11 @@ const stats: Stats = {
     converted: 25,
     pending: 0,
     yieldPct: 22.3,
+    followThroughDays: 21,
+    followThroughChecked: 12,
+    stillFollowing: 11,
+    unfollowed: 1,
+    retentionPct: 91.7,
   },
 };
 
@@ -184,5 +189,47 @@ describe("FollowerKpiRow", () => {
     );
     expect(html).toContain("Needs two days of follower geography");
     expect(html).toContain("—");
+  });
+});
+
+describe("FollowerKpiRow follow-through line", () => {
+  it("shows whether the counted followers stayed", () => {
+    const html = renderToStaticMarkup(
+      <FollowerKpiRow
+        weekOverWeek={wow}
+        stock={stock}
+        avgPerDay7={108}
+        stats={stats}
+        isFlowLoading={false}
+        isStatsLoading={false}
+      />,
+    );
+    expect(html).toContain("11 of 12 still following 21 days later");
+  });
+
+  it("falls back to the measuring count when nothing has been re-measured", () => {
+    const noFt = {
+      ...stats,
+      followConversion: {
+        ...stats.followConversion!,
+        followThroughChecked: 0,
+        stillFollowing: 0,
+        unfollowed: 0,
+        retentionPct: null,
+        pending: 4,
+      },
+    };
+    const html = renderToStaticMarkup(
+      <FollowerKpiRow
+        weekOverWeek={wow}
+        stock={stock}
+        avgPerDay7={108}
+        stats={noFt}
+        isFlowLoading={false}
+        isStatsLoading={false}
+      />,
+    );
+    expect(html).toContain("4 still measuring");
+    expect(html).not.toContain("still following");
   });
 });

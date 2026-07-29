@@ -67,6 +67,10 @@ export interface FollowerYieldSummary {
   pending: number;
   yieldPct: number | null;
   headline: string;
+  // Second line: whether the counted followers stayed. Null when nothing has
+  // been re-measured yet, or when the sample is too thin to report — an absent
+  // line is honest, "0 of 0 still following" is alarming noise.
+  retention: string | null;
 }
 
 /**
@@ -83,11 +87,18 @@ export function summarizeFollowerYield(
   const { windowDays, rechecked, converted, pending } = data;
   const base = { windowDays, converted, rechecked, pending, yieldPct: data.yieldPct };
 
+  // Only speak when the backend was willing to put a number on it.
+  const retention =
+    data.retentionPct !== null && data.followThroughChecked > 0
+      ? `${data.stillFollowing} of ${data.followThroughChecked} still following ${data.followThroughDays} days later`
+      : null;
+
   if (rechecked <= 0) {
     return {
       ...base,
       state: "empty",
       yieldPct: null,
+      retention,
       headline:
         pending > 0
           ? `Measuring ${pending} recent non-follower${pending === 1 ? "" : "s"} — results unlock a few days after delivery`
@@ -100,6 +111,7 @@ export function summarizeFollowerYield(
     ...base,
     state: "measured",
     yieldPct: pct,
+    retention,
     headline: `${converted} of ${rechecked} non-followers followed after getting their guide`,
   };
 }
