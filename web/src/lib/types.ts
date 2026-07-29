@@ -94,6 +94,14 @@ export interface FollowConversion {
   converted: number;
   pending: number;
   yieldPct: number | null;
+  // Follow-THROUGH: of the converts, how many were still following when
+  // re-measured weeks later. Keeps yieldPct honest — one reading taken days
+  // after delivery cannot tell a real follower from a freebie grab.
+  followThroughDays: number;
+  followThroughChecked: number;
+  stillFollowing: number;
+  unfollowed: number;
+  retentionPct: number | null; // null when the sample is too small to report
 }
 
 // Mirrors src/meta/tokenStoreCore.ts. The Instagram token's countdown — the

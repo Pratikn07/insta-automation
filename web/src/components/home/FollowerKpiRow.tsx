@@ -119,10 +119,14 @@ export function FollowerKpiRow({
               ? `${yieldSummary.converted} of ${yieldSummary.rechecked} non-followers followed after getting their guide`
               : yieldSummary.headline
         }
+        // Retention outranks the "still measuring" count: whether those followers
+        // STAYED is the caveat that decides how much the headline % is worth, so
+        // it must travel with the number rather than being a nice-to-have.
         note={
-          yieldSummary?.state === "measured" && yieldSummary.pending > 0
+          yieldSummary?.retention ??
+          (yieldSummary?.state === "measured" && yieldSummary.pending > 0
             ? `${yieldSummary.pending} still measuring`
-            : null
+            : null)
         }
         Icon={UserPlus}
         tone="violet"

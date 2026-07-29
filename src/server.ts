@@ -9,6 +9,7 @@ import { runGateQueueTick } from "./services/gateQueueWorker.js";
 import { runSnapshotTick } from "./services/snapshotWorker.js";
 import { runGeminiQueueTick } from "./services/geminiQueueWorker.js";
 import { runFollowRecheckTick } from "./services/followRecheckWorker.js";
+import { runFollowThroughTick } from "./services/followThroughWorker.js";
 import { seedTokenFromEnv } from "./meta/tokenStore.js";
 import { runTokenRefreshTick } from "./meta/tokenRefresher.js";
 import { apiRouter } from "./api/router.js";
@@ -87,6 +88,19 @@ setInterval(() => {
 setInterval(() => {
   void runFollowRecheckTick();
 }, env.FOLLOW_RECHECK_INTERVAL_MS);
+
+// Follow-through worker: re-reads follow status ~3 weeks after a guide recipient
+// was counted as a conversion, so "23 of 97 followed" can be checked against
+// whether they STAYED. Unlike the recheck worker it always makes a live Graph
+// call — every convert is cached as a follower by definition, so trusting the
+// cache would report 100% retention unconditionally.
+//
+// Hourly: the eligible pool is tiny (~59 users once, then a trickle) and the
+// batch cap bounds each tick. Non-throwing.
+const FOLLOW_THROUGH_INTERVAL_MS = 60 * 60 * 1000;
+setInterval(() => {
+  void runFollowThroughTick();
+}, FOLLOW_THROUGH_INTERVAL_MS);
 
 // Token refresh worker: keeps the Instagram access token from ever expiring.
 // Meta's long-lived tokens last 60 days and each refresh resets that clock to 60

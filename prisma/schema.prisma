@@ -70,19 +70,25 @@ enum ConversationState {
 }
 
 model Conversation {
-  id                String            @id @default(uuid()) @db.Uuid
-  igUserId          String            @map("ig_user_id")
-  keywordId         String            @map("keyword_id") @db.Uuid
-  state             ConversationState @default(awaiting_done)
-  createdAt         DateTime          @default(now()) @map("created_at")
-  completedAt       DateTime?         @map("completed_at")
+  id                      String            @id @default(uuid()) @db.Uuid
+  igUserId                String            @map("ig_user_id")
+  keywordId               String            @map("keyword_id") @db.Uuid
+  state                   ConversationState @default(awaiting_done)
+  createdAt               DateTime          @default(now()) @map("created_at")
+  completedAt             DateTime?         @map("completed_at")
   // When the gate DM was actually delivered (live or via retry). The DONE-window
   // and expiry are measured from this, not createdAt, so a gate delivered days
   // after the comment (retry) still opens a valid window. Null for legacy rows.
-  gatedAt           DateTime?         @map("gated_at")
+  gatedAt                 DateTime?         @map("gated_at")
   // When the follow-recheck worker measured this completed conversation's
   // follower outcome (fix #11). Null = not yet rechecked / not eligible.
-  followRecheckedAt DateTime?         @map("follow_rechecked_at")
+  followRecheckedAt       DateTime?         @map("follow_rechecked_at")
+  // Second, LATER reading of the same user (fix: does the guide follower stay?).
+  // Tracked separately from followRecheckedAt so the two measurements never
+  // overwrite each other — the whole point is comparing them.
+  followThroughAt         DateTime?         @map("follow_through_at")
+  // Follow status AT that later reading. Null until measured.
+  followThroughIsFollower Boolean?          @map("follow_through_is_follower")
 
   keyword Keyword @relation(fields: [keywordId], references: [id])
 

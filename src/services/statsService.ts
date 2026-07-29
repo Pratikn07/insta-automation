@@ -1,6 +1,10 @@
 import { prisma } from "../lib/prisma.js";
 import { env } from "../config/env.js";
 import { readTokenHealth } from "../meta/tokenStore.js";
+import {
+  FOLLOW_THROUGH_MIN_DAYS,
+  summarizeRetention,
+} from "./followThroughCore.js";
 import type { TokenHealth } from "../meta/tokenStoreCore.js";
 
 // Fix #11 — funnel follower yield over the recent measurement window: of the
@@ -12,6 +16,15 @@ export interface FollowConversion {
   converted: number; // rechecked recipients who now follow
   pending: number; // measured-eligible but not yet rechecked
   yieldPct: number | null; // converted / rechecked, null until we have data
+  // Follow-THROUGH: of the converts, how many were still following when
+  // re-measured ~3 weeks later. This is what keeps yieldPct honest — a single
+  // reading taken days after delivery cannot tell a real follower from someone
+  // who unlocked a freebie and left.
+  followThroughDays: number;
+  followThroughChecked: number;
+  stillFollowing: number;
+  unfollowed: number;
+  retentionPct: number | null; // null below MIN_RETENTION_SAMPLE
 }
 
 export interface DashboardStats {
@@ -76,6 +89,23 @@ async function getFollowConversion(): Promise<FollowConversion> {
     LEFT JOIN ig_users u ON u.id = p.ig_user_id
   `;
 
+  // Follow-through is a separate query: it counts USERS with a second reading,
+  // not conversations, and must not disturb the yield numbers above.
+  const [ft] = await prisma.$queryRaw<{ checked: bigint; still_following: bigint }[]>`
+    SELECT
+      COUNT(DISTINCT c.ig_user_id) AS checked,
+      COUNT(DISTINCT c.ig_user_id) FILTER (WHERE c.follow_through_is_follower IS TRUE)
+        AS still_following
+    FROM event_log e
+    JOIN conversations c ON c.id = (e.payload->>'conversationId')::uuid
+    WHERE e.kind = 'sequence_completed'
+      AND (e.payload->>'followerAtDelivery')::boolean IS FALSE
+      AND c.follow_through_at IS NOT NULL
+  `;
+  const followThroughChecked = Number(ft?.checked ?? 0);
+  const stillFollowing = Number(ft?.still_following ?? 0);
+  const retention = summarizeRetention(followThroughChecked, stillFollowing);
+
   const deliveredToNonFollowers = Number(row?.delivered ?? 0);
   const rechecked = Number(row?.rechecked ?? 0);
   const converted = Number(row?.converted ?? 0);
@@ -87,6 +117,11 @@ async function getFollowConversion(): Promise<FollowConversion> {
     converted,
     pending: Math.max(deliveredToNonFollowers - rechecked, 0),
     yieldPct: rechecked > 0 ? Math.round((converted / rechecked) * 1000) / 10 : null,
+    followThroughDays: FOLLOW_THROUGH_MIN_DAYS,
+    followThroughChecked,
+    stillFollowing,
+    unfollowed: retention.unfollowed,
+    retentionPct: retention.retentionPct,
   };
 }
 
