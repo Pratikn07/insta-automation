@@ -1,10 +1,10 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Film } from "lucide-react";
+import { Film, Images } from "lucide-react";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { api, ApiError } from "@/lib/api";
-import type { Keyword, Resource } from "@/lib/types";
+import type { Keyword, MediaKind, Resource } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,13 +15,20 @@ import { cn } from "@/lib/utils";
 
 type SequenceMode = "new" | "existing";
 
-/** When set, the keyword is being attached to a specific reel (from the Reels page). */
+/** When set, the keyword is being attached to one specific post (from the Content page). */
 export interface MediaContext {
   mediaId: string;
+  kind: MediaKind;
   caption: string | null;
   permalink: string | null;
   thumbnailUrl: string | null;
 }
+
+// Wording + icon per post kind, so the form never calls a carousel a reel.
+const KIND = {
+  reel: { icon: Film, noun: "reel" },
+  carousel: { icon: Images, noun: "carousel" },
+} as const;
 
 interface KeywordFormState {
   keyword: string;
@@ -108,7 +115,7 @@ export function KeywordForm({
           publicReply: form.publicReply,
           gateMessage: form.gateMessage,
           active: form.active,
-          // Attach to a reel when invoked from the Reels page; otherwise global.
+          // Attach to one post when invoked from the Content page; otherwise global.
           ...(mediaContext && {
             mediaId: mediaContext.mediaId,
             mediaCaption: mediaContext.caption,
@@ -132,7 +139,7 @@ export function KeywordForm({
       if (err instanceof ApiError && err.status === 409) {
         toast.error(
           mediaContext
-            ? "That keyword is already attached to this reel"
+            ? `That keyword is already attached to this ${KIND[mediaContext.kind].noun}`
             : "That keyword already exists",
         );
         return;
@@ -163,7 +170,7 @@ export function KeywordForm({
       }}
     >
       <div className="space-y-5">
-        {mediaContext && <ReelContextCard media={mediaContext} />}
+        {mediaContext && <MediaContextCard media={mediaContext} />}
 
         <Field label="Keyword" hint="Auto-uppercased. People comment this exactly to trigger.">
           <Input
@@ -305,7 +312,8 @@ export function KeywordForm({
   );
 }
 
-function ReelContextCard({ media }: { media: MediaContext }) {
+function MediaContextCard({ media }: { media: MediaContext }) {
+  const { icon: KindIcon, noun } = KIND[media.kind];
   return (
     <div className="flex gap-3 rounded-md border bg-card/40 p-3">
       <div className="size-14 shrink-0 overflow-hidden rounded bg-accent">
@@ -313,14 +321,14 @@ function ReelContextCard({ media }: { media: MediaContext }) {
           <img src={media.thumbnailUrl} alt="" className="size-full object-cover" />
         ) : (
           <div className="flex size-full items-center justify-center text-muted-foreground">
-            <Film className="size-5" />
+            <KindIcon className="size-5" />
           </div>
         )}
       </div>
       <div className="min-w-0">
         <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-          <Film className="size-3" />
-          Attaching to this reel
+          <KindIcon className="size-3" />
+          Attaching to this {noun}
         </div>
         <p className="mt-0.5 line-clamp-2 text-sm">
           {media.caption?.trim() || "No caption"}

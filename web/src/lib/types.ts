@@ -39,16 +39,23 @@ export interface Keyword {
   _count?: { conversations: number };
 }
 
-export interface Reel {
+// Mirrors src/meta/fetchMedia.ts. Only these two kinds exist on the account
+// (114 reels + 33 feed carousels); a single-image feed post would arrive as
+// "carousel", which is correct for keyword attachment.
+export type MediaKind = "reel" | "carousel";
+
+/** One post from /api/media/content — a reel or a carousel. */
+export interface MediaItem {
   id: string;
+  kind: MediaKind;
   caption: string | null;
   thumbnailUrl: string | null;
   permalink: string | null;
   timestamp: string | null;
 }
 
-export interface ReelsPage {
-  items: Reel[];
+export interface MediaPage {
+  items: MediaItem[];
   nextCursor: string | null;
 }
 

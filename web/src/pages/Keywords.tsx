@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
-import { Plus, Tag, Trash2, MessageSquare, Film, Globe } from "lucide-react";
+import { Plus, Tag, Trash2, MessageSquare, LayoutGrid, Globe } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { api, ApiError } from "@/lib/api";
@@ -68,7 +68,7 @@ export function Keywords() {
         <div>
           <h2 className="text-xl font-semibold tracking-tight">Keywords</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Words people comment on a reel to trigger a DM sequence.
+            Words people comment on a post to trigger a DM sequence.
           </p>
         </div>
         <Button variant="brand" onClick={() => setCreating(true)}>
@@ -233,10 +233,13 @@ function ScopeBadge({ k }: { k: Keyword }) {
     );
   }
 
-  const label = k.mediaCaption?.trim().slice(0, 24) || "Reel";
+  // A media-scoped keyword can be on a reel OR a carousel, and the Keyword row
+  // doesn't record which — so the wording stays neutral ("Post") rather than
+  // claiming "Reel". The caption, shown whenever there is one, identifies it.
+  const label = k.mediaCaption?.trim().slice(0, 24) || "Post";
   const badge = (
     <span className="inline-flex max-w-[180px] items-center gap-1 rounded-full border border-brand-gradient/40 bg-brand-gradient/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-foreground">
-      <Film className="size-2.5 shrink-0" />
+      <LayoutGrid className="size-2.5 shrink-0" />
       <span className="truncate">{label}</span>
     </span>
   );
@@ -248,7 +251,7 @@ function ScopeBadge({ k }: { k: Keyword }) {
       target="_blank"
       rel="noreferrer"
       onClick={(e) => e.stopPropagation()}
-      title={k.mediaCaption ?? "Open reel"}
+      title={k.mediaCaption ?? "Open post"}
     >
       {badge}
     </a>

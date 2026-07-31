@@ -3,7 +3,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { AppShell } from "@/components/layout/AppShell";
 import { Login } from "@/pages/Login";
 import { Home } from "@/pages/Home";
-import { Reels } from "@/pages/Reels";
+import { Content } from "@/pages/Content";
 import { Keywords } from "@/pages/Keywords";
 import { Sequences } from "@/pages/Sequences";
 import { SequenceEditor } from "@/pages/SequenceEditor";
@@ -31,7 +31,10 @@ export default function App() {
         <Routes>
           <Route element={<AppShell />}>
             <Route index element={<Home />} />
-            <Route path="reels" element={<Reels />} />
+            <Route path="content" element={<Content />} />
+            {/* /reels was this page's old home — keep the URL working for
+                bookmarks rather than bouncing them to the dashboard. */}
+            <Route path="reels" element={<Navigate to="/content" replace />} />
             <Route path="keywords" element={<Keywords />} />
             <Route path="sequences" element={<Sequences />} />
             <Route path="sequences/:id" element={<SequenceEditor />} />

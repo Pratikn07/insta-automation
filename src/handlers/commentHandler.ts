@@ -9,6 +9,17 @@ import { rememberUsername } from "../services/igUserService.js";
 import { enqueueGate } from "../services/gateQueueService.js";
 import { env } from "../config/env.js";
 
+/**
+ * Human-readable scope for a media-attached keyword, from the webhook's
+ * media_product_type. Logged on keyword_matched, so historical "reel" values
+ * stay comparable: REELS still reads "reel".
+ */
+function mediaScopeLabel(productType: string | undefined): string {
+  if (productType === "REELS") return "reel";
+  if (productType === "FEED") return "carousel";
+  return "media";
+}
+
 export async function handleComment(comment: CommentValue): Promise<void> {
   const log = logger.child({ commentId: comment.id });
 
@@ -67,10 +78,13 @@ export async function handleComment(comment: CommentValue): Promise<void> {
   }
   const keyword = match.keyword;
 
-  log.info(
-    { keyword: keyword.keyword, scope: keyword.mediaId ? "reel" : "global", mediaId: comment.media?.id },
-    "Keyword matched",
-  );
+  // A media-scoped keyword can now be attached to a carousel as well as a reel,
+  // so derive the label from the webhook's media_product_type ("REELS" | "FEED")
+  // rather than assuming reel. Falls back to a generic "media" when Meta omits
+  // the field, so the value is never a claim we can't back.
+  const scope = keyword.mediaId ? mediaScopeLabel(comment.media?.media_product_type) : "global";
+
+  log.info({ keyword: keyword.keyword, scope, mediaId: comment.media?.id }, "Keyword matched");
 
   const convo = await openConversation(senderId, keyword.id);
   log.info({ conversationId: convo.id }, "Conversation opened");
@@ -85,7 +99,7 @@ export async function handleComment(comment: CommentValue): Promise<void> {
     // missed, so a post-deploy audit can spot-check for false positives.
     matchedToken: match.matchedToken,
     tokenCount: candidates.length,
-    scope: keyword.mediaId ? "reel" : "global",
+    scope,
     mediaId: comment.media?.id ?? null,
   });
 

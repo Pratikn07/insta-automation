@@ -1,10 +1,21 @@
 import { NavLink } from "react-router-dom";
-import { Home, Tag, Layers, MessageCircle, Film, Sparkles, Activity, Users, BarChart3 } from "lucide-react";
+import {
+  Home,
+  Tag,
+  Layers,
+  MessageCircle,
+  LayoutGrid,
+  Sparkles,
+  Activity,
+  Users,
+  BarChart3,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const items = [
   { to: "/", label: "Home", icon: Home },
-  { to: "/reels", label: "Reels", icon: Film },
+  // "Content", not "Reels" — this page holds carousels too.
+  { to: "/content", label: "Content", icon: LayoutGrid },
   { to: "/keywords", label: "Keywords", icon: Tag },
   { to: "/sequences", label: "Sequences", icon: Layers },
   { to: "/conversations", label: "Conversations", icon: MessageCircle },
