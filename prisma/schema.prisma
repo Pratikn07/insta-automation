@@ -13,6 +13,13 @@ model Keyword {
   mediaId        String?  @map("media_id")
   mediaCaption   String?  @map("media_caption")
   mediaPermalink String?  @map("media_permalink")
+  // When the POST was published (Meta's timestamp), snapshotted at attach time —
+  // not when the keyword was created. Ranks candidates when a cold DM has to pick
+  // between several posts sharing a word: a DM carries no media context, so
+  // "newest post wins" is the inference. A column rather than a join because
+  // ReelMeta.postedAt covers reels only (140 reels, 0 carousels), so it cannot
+  // date a carousel-scoped keyword. Null on the legacy global rows.
+  mediaPostedAt  DateTime? @map("media_posted_at")
   resourceId     String   @map("resource_id") @db.Uuid
   publicReply    String   @map("public_reply")
   gateMessage    String   @map("gate_message")
@@ -24,6 +31,8 @@ model Keyword {
   conversations Conversation[]
 
   @@unique([keyword, mediaId])
+  // The cold-DM fallback ranks post-scoped candidates for one word by post date.
+  @@index([keyword, mediaPostedAt])
   @@map("keywords")
 }
 

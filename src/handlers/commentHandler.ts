@@ -84,7 +84,10 @@ export async function handleComment(comment: CommentValue): Promise<void> {
   // the field, so the value is never a claim we can't back.
   const scope = keyword.mediaId ? mediaScopeLabel(comment.media?.media_product_type) : "global";
 
-  log.info({ keyword: keyword.keyword, scope, mediaId: comment.media?.id }, "Keyword matched");
+  log.info(
+    { keyword: keyword.keyword, scope, matchMode: match.mode, mediaId: comment.media?.id },
+    "Keyword matched",
+  );
 
   const convo = await openConversation(senderId, keyword.id);
   log.info({ conversationId: convo.id }, "Conversation opened");
@@ -100,6 +103,11 @@ export async function handleComment(comment: CommentValue): Promise<void> {
     matchedToken: match.matchedToken,
     tokenCount: candidates.length,
     scope,
+    // How the keyword resolved. "post_strict" means the post had its own keywords
+    // and only those were considered; "global_fallback" means the post has none
+    // attached yet and a legacy global answered. Lets a post-deploy audit watch
+    // adoption move from fallback to strict without guessing.
+    matchMode: match.mode,
     mediaId: comment.media?.id ?? null,
   });
 

@@ -56,12 +56,25 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
   const keyword = await findKeywordInMessage(text);
   if (keyword) {
     const convo = await openConversation(senderId, keyword.id);
-    logger.info({ conversationId: convo.id, keyword: keyword.keyword, senderId }, "Keyword matched in DM");
+    logger.info(
+      {
+        conversationId: convo.id,
+        keyword: keyword.keyword,
+        senderId,
+        inferredFromPost: keyword.inferredFromPost,
+      },
+      "Keyword matched in DM",
+    );
     await logEvent("keyword_matched", {
       conversationId: convo.id,
       keyword: keyword.keyword,
       source: "dm",
       senderId,
+      // A DM carries no post, so when only post-scoped rows hold the word we pick
+      // the newest post and record which one here. Null means an unambiguous
+      // global answered — no inference was needed.
+      inferredFromPost: keyword.inferredFromPost,
+      mediaId: keyword.mediaId,
     });
 
     // Their inbound DM already opened the 24h messaging window (Meta-verified),

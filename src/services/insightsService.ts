@@ -39,10 +39,13 @@ const MIN_REACH_FLOOR = 500;
 /** Per-reel conversion counts, keyed by mediaId. */
 async function conversionByMedia(): Promise<Map<string, ConversionLine>> {
   // Attribution comes from event_log `keyword_matched`, which stamps the reel's
-  // mediaId AND the conversationId for every comment that fired a keyword. We can
-  // NOT use Conversation → Keyword.mediaId: every keyword is global (mediaId =
-  // null), so that join attributes nothing and leaves every reel at zero. DM-
-  // sourced matches carry no mediaId and are naturally excluded here.
+  // mediaId AND the conversationId for every comment that fired a keyword.
+  // Deliberately NOT Conversation → Keyword.mediaId: that join attributes nothing
+  // for a legacy global keyword (mediaId = null), which is still how most posts
+  // resolve, so it would leave those reels at zero. Reading the event instead
+  // attributes every match to the post it actually happened on, whether the
+  // keyword was post-scoped or a global fallback. DM-sourced matches carry no
+  // mediaId and are naturally excluded here.
   const [events, convos] = await Promise.all([
     prisma.eventLog.findMany({ where: { kind: "keyword_matched" }, select: { payload: true } }),
     prisma.conversation.findMany({ select: { id: true, state: true, gatedAt: true } }),

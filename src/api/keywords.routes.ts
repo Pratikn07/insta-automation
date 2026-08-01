@@ -12,15 +12,22 @@ const createSchema = z.object({
   publicReply: z.string().min(1).max(280),
   gateMessage: z.string().min(1).max(1000),
   active: z.boolean().optional(),
-  // Reel scope: mediaId = the IG media id this keyword is attached to (null =
-  // global). mediaCaption/mediaPermalink are denormalized snapshots so the
-  // Keywords list can show which reel without re-hitting the Graph API.
-  mediaId: z.string().nullable().optional(),
+  // mediaId is REQUIRED: a keyword belongs to one post, so the API can no longer
+  // mint a global. The 24 pre-existing globals stay valid and editable — they are
+  // just the last of their kind. mediaCaption/mediaPermalink/mediaPostedAt are
+  // denormalized snapshots so the Keywords list can show which post, and the
+  // cold-DM fallback can rank by post date, without re-hitting the Graph API.
+  mediaId: z.string().min(1),
   mediaCaption: z.string().nullable().optional(),
   mediaPermalink: z.string().nullable().optional(),
+  mediaPostedAt: z.string().datetime().nullable().optional(),
 });
 
-const updateSchema = createSchema.partial();
+// PATCH stays permissive on mediaId so the legacy globals remain editable (their
+// mediaId is null and must be allowed to stay that way).
+const updateSchema = createSchema.partial().extend({
+  mediaId: z.string().nullable().optional(),
+});
 
 keywordsRouter.get("/", async (_req, res) => {
   const rows = await prisma.keyword.findMany({
@@ -38,23 +45,19 @@ keywordsRouter.post("/", async (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   const data = parsed.data;
   const keyword = normalizeKeyword(data.keyword);
-  const mediaId = data.mediaId ?? null;
 
-  // The @@unique([keyword, mediaId]) constraint catches duplicate reel-scoped
-  // keywords (P2002 below), but Postgres treats NULLs as distinct, so it does
-  // NOT stop two globals with the same word. Guard that case explicitly.
-  if (mediaId === null) {
-    const existingGlobal = await prisma.keyword.findFirst({ where: { keyword, mediaId: null } });
-    if (existingGlobal) return res.status(409).json({ error: "keyword_exists" });
-  }
-
+  // mediaId is required by the schema, so every new keyword is post-scoped and
+  // @@unique([keyword, mediaId]) fully covers duplicates (P2002 below). The old
+  // explicit global-duplicate guard is gone with it: Postgres treats NULLs as
+  // distinct, but no request can create a NULL mediaId anymore.
   try {
     const created = await prisma.keyword.create({
       data: {
         keyword,
-        mediaId,
+        mediaId: data.mediaId,
         mediaCaption: data.mediaCaption ?? null,
         mediaPermalink: data.mediaPermalink ?? null,
+        mediaPostedAt: data.mediaPostedAt ? new Date(data.mediaPostedAt) : null,
         resourceId: data.resourceId,
         publicReply: data.publicReply,
         gateMessage: data.gateMessage,
@@ -89,6 +92,9 @@ keywordsRouter.patch("/:id", async (req, res) => {
       ...(data.mediaId !== undefined && { mediaId: data.mediaId }),
       ...(data.mediaCaption !== undefined && { mediaCaption: data.mediaCaption }),
       ...(data.mediaPermalink !== undefined && { mediaPermalink: data.mediaPermalink }),
+      ...(data.mediaPostedAt !== undefined && {
+        mediaPostedAt: data.mediaPostedAt ? new Date(data.mediaPostedAt) : null,
+      }),
     },
   });
   // Backfill when matching could newly apply: keyword (re)activated, the word

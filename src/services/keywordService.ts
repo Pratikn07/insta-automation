@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma.js";
+import { resolveCommentMatch, resolveDmFallback } from "./keywordMatchCore.js";
 
 export function normalizeKeyword(text: string): string {
   return text.trim().toUpperCase();
@@ -48,41 +49,69 @@ export function scannableCommentTokens(text: string): string[] {
 
 /**
  * Resolve the keyword a comment should fire, scanning all words in short comments
- * (not just the first). A reel-scoped keyword wins over a global one. Returns the
- * matched keyword row plus which token matched (for observability), or null.
+ * (not just the first).
+ *
+ * A post that has ANY keyword attached is matched STRICTLY against its own
+ * keywords — no falling through to a global. That is what stops `SLEEP` on a
+ * potty reel from sending the sleep guide. A post with nothing attached still
+ * uses the globals, so the legacy keywords keep working untouched. See
+ * keywordMatchCore for why the rule is per-post rather than a flat cutoff.
+ *
+ * Returns the matched row, which token matched, and how it resolved
+ * (post_strict | global_fallback) for adoption auditing — or null.
  */
 export async function findKeywordForComment(text: string, mediaId?: string | null) {
   const scan = scannableCommentTokens(text);
   if (scan.length === 0) return null;
 
-  const lookup = (scope: string | null) =>
-    prisma.keyword.findFirst({ where: { keyword: { in: scan }, mediaId: scope, active: true } });
+  // Fetch the post's keywords and the globals in one round trip, then let the
+  // pure core decide. Note the post query is NOT filtered by `scan`: the core
+  // needs to know the post has keywords at all, even when none match this
+  // comment, because that is exactly when the global fallback must be withheld.
+  const [postKeywords, globalKeywords] = await Promise.all([
+    mediaId
+      ? prisma.keyword.findMany({ where: { mediaId, active: true } })
+      : Promise.resolve([]),
+    prisma.keyword.findMany({ where: { keyword: { in: scan }, mediaId: null, active: true } }),
+  ]);
 
-  let row = mediaId ? await lookup(mediaId) : null; // reel-scoped wins
-  if (!row) row = await lookup(null); // global fallback
-  if (!row) return null;
-
-  return { keyword: row, matchedToken: row.keyword };
+  return resolveCommentMatch(scan, postKeywords, globalKeywords);
 }
+
+// Carry the sequence so the DM path can deliver instantly (follower /
+// already-completed) without a second lookup — mirrors findActiveAwaitingDone.
+const WITH_SEQUENCE = { resource: { include: { messages: true } } } as const;
 
 /**
  * Resolve a keyword from an inbound DM.
  *
- * Unlike a comment, a DM has no reel context, so only GLOBAL keywords
- * (mediaId = null) can match. We scan every word — with no length gate, since a
- * DM is an intentional message — so "sleep", "Sleep", "sleep🙏", and "DM me
- * sleep" all resolve. Returns the first active global keyword found, or null.
+ * A DM carries no post context — the user opened the inbox and typed a word — so
+ * a global keyword matches unambiguously and is tried first. When only
+ * POST-SCOPED rows carry the word, the newest post wins: measured at 472
+ * DM-sourced matches per 90 days (408 of them SLEEP, live on 6 posts), and
+ * dropping them would silence real traffic. `inferredFromPost` is set on that
+ * path so the guess is auditable rather than invisible.
+ *
+ * Every word is scanned with no length gate, since a DM is an intentional
+ * message — so "sleep", "Sleep", "sleep🙏" and "DM me sleep" all resolve.
  */
 export async function findKeywordInMessage(text: string) {
   const candidates = extractCandidates(text);
   if (candidates.length === 0) return null;
 
-  return prisma.keyword.findFirst({
+  const global = await prisma.keyword.findFirst({
     where: { keyword: { in: candidates }, mediaId: null, active: true },
-    // Carry the sequence so the DM path can deliver instantly (follower /
-    // already-completed) without a second lookup — mirrors findActiveAwaitingDone.
-    include: { resource: { include: { messages: true } } },
+    include: WITH_SEQUENCE,
   });
+  if (global) return { ...global, inferredFromPost: null as string | null };
+
+  // No global carries the word — fall back to the newest post that does.
+  const scoped = await prisma.keyword.findMany({
+    where: { keyword: { in: candidates }, mediaId: { not: null }, active: true },
+    include: WITH_SEQUENCE,
+  });
+  const pick = resolveDmFallback(scoped);
+  return pick ? { ...pick, inferredFromPost: pick.mediaId } : null;
 }
 
 /**

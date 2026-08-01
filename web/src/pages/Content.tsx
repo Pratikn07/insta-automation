@@ -280,6 +280,8 @@ function MediaDrawer({
           caption: item.caption,
           permalink: item.permalink,
           thumbnailUrl: item.thumbnailUrl,
+          // Snapshotted onto the keyword so a cold DM can rank posts by date.
+          postedAt: item.timestamp,
         }}
       />
     );

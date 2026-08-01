@@ -26,9 +26,13 @@ export interface ResourceWithMessages extends Resource {
 export interface Keyword {
   id: string;
   keyword: string;
+  // null only on the legacy global keywords — new ones always belong to a post.
   mediaId: string | null;
   mediaCaption: string | null;
   mediaPermalink: string | null;
+  // The POST's publish date, snapshotted at attach time. Ranks candidates when a
+  // cold DM must choose between several posts sharing a word. Null on globals.
+  mediaPostedAt: string | null;
   resourceId: string;
   publicReply: string;
   gateMessage: string;

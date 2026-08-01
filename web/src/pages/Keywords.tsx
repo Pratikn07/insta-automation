@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
-import { Plus, Tag, Trash2, MessageSquare, LayoutGrid, Globe } from "lucide-react";
-import { useState } from "react";
+import { Plus, Tag, Trash2, MessageSquare, Globe } from "lucide-react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { api, ApiError } from "@/lib/api";
 import type { Keyword, Resource } from "@/lib/types";
@@ -62,13 +62,38 @@ export function Keywords() {
 
   const isLoading = keywordsQ.isLoading || resourcesQ.isLoading;
 
+  // Grouped by post, because a keyword now belongs to one post and the same word
+  // can legitimately appear on several with different guides — a flat list of six
+  // rows all reading "SLEEP" would be unreadable. The legacy globals get their own
+  // group at the end, since they behave differently (they answer any post that has
+  // no keywords of its own).
+  const groups = useMemo(() => {
+    const byPost = new Map<string, { label: string; permalink: string | null; items: Keyword[] }>();
+    const globals: Keyword[] = [];
+    for (const k of keywordsQ.data ?? []) {
+      if (!k.mediaId) {
+        globals.push(k);
+        continue;
+      }
+      const g = byPost.get(k.mediaId) ?? {
+        label: k.mediaCaption?.trim() || "Untitled post",
+        permalink: k.mediaPermalink,
+        items: [],
+      };
+      g.items.push(k);
+      byPost.set(k.mediaId, g);
+    }
+    return { byPost: [...byPost.entries()], globals };
+  }, [keywordsQ.data]);
+
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-semibold tracking-tight">Keywords</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Words people comment on a post to trigger a DM sequence.
+            Words people comment on a post to trigger a DM sequence. Each keyword belongs to one
+            post, so the same word can send a different guide per post.
           </p>
         </div>
         <Button variant="brand" onClick={() => setCreating(true)}>
@@ -96,27 +121,55 @@ export function Keywords() {
           }
         />
       ) : (
-        <ul className="space-y-2">
-          <AnimatePresence initial={false}>
-            {keywordsQ.data!.map((k, i) => (
-              <motion.li
-                key={k.id}
-                layout
-                initial={{ opacity: 0, y: 6 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -4 }}
-                transition={{ duration: 0.18, delay: i * 0.02 }}
-              >
-                <KeywordRow
-                  k={k}
-                  onToggle={(active) => toggleMutation.mutate({ id: k.id, active })}
-                  onEdit={() => setEditing(k)}
-                  onDelete={() => setConfirmDelete(k)}
-                />
-              </motion.li>
-            ))}
-          </AnimatePresence>
-        </ul>
+        <div className="space-y-6">
+          {groups.byPost.map(([mediaId, g]) => (
+            <section key={mediaId} className="space-y-2">
+              <div className="flex items-baseline gap-2">
+                <h3 className="truncate text-sm font-medium">{g.label}</h3>
+                <span className="shrink-0 text-xs text-muted-foreground">
+                  {g.items.length} keyword{g.items.length === 1 ? "" : "s"}
+                </span>
+                {g.permalink && (
+                  <a
+                    href={g.permalink}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="shrink-0 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                  >
+                    View post
+                  </a>
+                )}
+              </div>
+              <KeywordList
+                items={g.items}
+                onToggle={(id, active) => toggleMutation.mutate({ id, active })}
+                onEdit={setEditing}
+                onDelete={setConfirmDelete}
+              />
+            </section>
+          ))}
+
+          {groups.globals.length > 0 && (
+            <section className="space-y-2">
+              <div className="flex items-baseline gap-2">
+                <h3 className="text-sm font-medium">Global (legacy)</h3>
+                <span className="text-xs text-muted-foreground">
+                  {groups.globals.length} keyword{groups.globals.length === 1 ? "" : "s"}
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                These fire on any post that has no keywords of its own. Attach a keyword to a
+                post and that post stops using these.
+              </p>
+              <KeywordList
+                items={groups.globals}
+                onToggle={(id, active) => toggleMutation.mutate({ id, active })}
+                onEdit={setEditing}
+                onDelete={setConfirmDelete}
+              />
+            </section>
+          )}
+        </div>
       )}
 
       <Drawer
@@ -223,37 +276,55 @@ function KeywordRow({
   );
 }
 
-function ScopeBadge({ k }: { k: Keyword }) {
-  if (!k.mediaId) {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
-        <Globe className="size-2.5" />
-        Global
-      </span>
-    );
-  }
-
-  // A media-scoped keyword can be on a reel OR a carousel, and the Keyword row
-  // doesn't record which — so the wording stays neutral ("Post") rather than
-  // claiming "Reel". The caption, shown whenever there is one, identifies it.
-  const label = k.mediaCaption?.trim().slice(0, 24) || "Post";
-  const badge = (
-    <span className="inline-flex max-w-[180px] items-center gap-1 rounded-full border border-brand-gradient/40 bg-brand-gradient/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-foreground">
-      <LayoutGrid className="size-2.5 shrink-0" />
-      <span className="truncate">{label}</span>
-    </span>
-  );
-
-  if (!k.mediaPermalink) return badge;
+/** The animated row list, shared by every post group and the legacy section. */
+function KeywordList({
+  items,
+  onToggle,
+  onEdit,
+  onDelete,
+}: {
+  items: Keyword[];
+  onToggle: (id: string, active: boolean) => void;
+  onEdit: (k: Keyword) => void;
+  onDelete: (k: Keyword) => void;
+}) {
   return (
-    <a
-      href={k.mediaPermalink}
-      target="_blank"
-      rel="noreferrer"
-      onClick={(e) => e.stopPropagation()}
-      title={k.mediaCaption ?? "Open post"}
-    >
-      {badge}
-    </a>
+    <ul className="space-y-2">
+      <AnimatePresence initial={false}>
+        {items.map((k, i) => (
+          <motion.li
+            key={k.id}
+            layout
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.18, delay: i * 0.02 }}
+          >
+            <KeywordRow
+              k={k}
+              onToggle={(active) => onToggle(k.id, active)}
+              onEdit={() => onEdit(k)}
+              onDelete={() => onDelete(k)}
+            />
+          </motion.li>
+        ))}
+      </AnimatePresence>
+    </ul>
+  );
+}
+
+/**
+ * Marks a keyword as one of the legacy globals.
+ *
+ * Post-scoped keywords get nothing: the list is grouped by post, and the group
+ * header already names it — repeating the caption on every row would be noise.
+ */
+function ScopeBadge({ k }: { k: Keyword }) {
+  if (k.mediaId) return null;
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+      <Globe className="size-2.5" />
+      Global
+    </span>
   );
 }
