@@ -18,6 +18,7 @@ import {
 import { getFollowerDailyAdds } from "../services/followerFlowService.js";
 import { computeUsFit } from "../services/usFitScore.js";
 import type { ContentProfile } from "../services/geminiAnalysisService.js";
+import { mediaTimestamp } from "./mediaTimestamp.js";
 
 export const insightsRouter = Router();
 
@@ -69,7 +70,7 @@ const createExperimentSchema = z.object({
   hypothesis: z.string().min(1).max(500),
   variable: z.string().min(1).max(200),
   reelMediaIds: z.array(z.string()).default([]),
-  postedAt: z.string().datetime().nullable().optional(),
+  postedAt: mediaTimestamp,
 });
 
 // POST /api/insights/experiments — create one; baselineUsPct captured at creation.
@@ -81,7 +82,7 @@ insightsRouter.post("/experiments", async (req, res) => {
 
 const updateExperimentSchema = z.object({
   status: z.enum(["running", "inconclusive", "confirmed", "busted"]).optional(),
-  postedAt: z.string().datetime().nullable().optional(),
+  postedAt: mediaTimestamp,
   conclusion: z.string().max(1000).nullable().optional(),
   measure: z.boolean().optional(), // re-read current reached-US% into measuredUsPct
 });

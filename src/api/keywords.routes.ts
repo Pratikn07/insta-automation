@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { normalizeKeyword } from "../services/keywordService.js";
 import { backfillKeyword } from "../services/keywordBackfillService.js";
+import { mediaTimestamp } from "./mediaTimestamp.js";
 
 export const keywordsRouter = Router();
 
@@ -20,7 +21,9 @@ const createSchema = z.object({
   mediaId: z.string().min(1),
   mediaCaption: z.string().nullable().optional(),
   mediaPermalink: z.string().nullable().optional(),
-  mediaPostedAt: z.string().datetime().nullable().optional(),
+  // Forwarded verbatim from the Graph API, so it carries Meta's numeric offset
+  // rather than a "Z" — see mediaTimestamp.ts.
+  mediaPostedAt: mediaTimestamp,
 });
 
 // PATCH stays permissive on mediaId so the legacy globals remain editable (their
