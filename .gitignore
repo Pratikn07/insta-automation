@@ -14,3 +14,6 @@ prisma/migrations/dev.db*
 
 # Local Superpowers brainstorming companion
 .superpowers/
+
+# Local isolated development worktrees
+.worktrees/
