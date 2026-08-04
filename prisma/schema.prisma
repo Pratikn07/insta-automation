@@ -39,12 +39,36 @@ model Keyword {
 model Resource {
   id          String   @id @default(uuid()) @db.Uuid
   name        String
+  // What this guide is for, in prose: the problem it solves, its shape (BOX and
+  // Cardboard are COLLECTIONS of several activities, not one), and hard warnings
+  // — Link/Book/Dough are bare Amazon affiliate lists and must never be offered
+  // as parenting advice. Read by the LLM; the filterable facets are columns below.
   description String?
+  // What this resource IS: guide | recipes | activity | product_links.
+  // The safety facet. `product_links` rows (Link, Book, Dough) are bare Amazon
+  // affiliate links, not advice, and must be excluded by SQL — a struggling
+  // parent handed an affiliate link is the worst routing failure available, so
+  // it cannot be left to the model's judgment. Null = unclassified (orphan
+  // drafts); the router selects kinds it wants rather than excluding ones it
+  // doesn't, so null is never routed.
+  kind        String?
+  // Coarse routing bucket: sleep | eating | behavior | learning. A column, not
+  // prose, so candidates narrow in SQL before the LLM reads anything — this is
+  // what stops the car-seat guide surfacing on a feeding question.
+  theme       String?
+  // Age window in MONTHS, from the author's own words ("Sensory Play for
+  // Babies", "18-24 MONTHS", "For Ages 1-3"). Months because parents state
+  // infant age in months. NULL = no stated age, which means ELIGIBLE FOR
+  // EVERYONE — never treat null as excluded, or real content becomes
+  // unreachable.
+  ageMinMonths Int?    @map("age_min_months")
+  ageMaxMonths Int?    @map("age_max_months")
   createdAt   DateTime @default(now()) @map("created_at")
 
   messages ResourceMessage[]
   keywords Keyword[]
 
+  @@index([theme, ageMinMonths, ageMaxMonths])
   @@map("resources")
 }
 
@@ -63,6 +87,14 @@ model ResourceMessage {
   type       ResourceMessageType
   body       String?
   mediaUrl   String?             @map("media_url")
+  // The words inside an image guide, transcribed. Images are stored under UUID
+  // filenames, so `media_url` reveals nothing about the page's content, and 7
+  // resources are image-ONLY (zero queryable text) — including `Picky`, a
+  // 10-page "Toddler Feeding Handbook". Sits here rather than on Resource so
+  // each page's text lives on the row holding that page's media_url.
+  // Never read by the send path; delivery is unchanged. Null = not yet
+  // transcribed, which is the backlog query.
+  altText    String?             @map("alt_text")
 
   resource Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
 

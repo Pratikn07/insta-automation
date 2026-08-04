@@ -1,0 +1,34 @@
+-- What KIND of thing a resource is — the safety facet.
+--
+-- Three of the 38 resources are not advice at all: `Link` (3 Amazon book links),
+-- `Book` (6 Amazon links, no descriptions) and `Dough` (one bare affiliate URL
+-- plus the unedited placeholder "New step — edit me."). Verified: Amazon links
+-- appear in ONLY these three resources and nowhere else, so the concept is
+-- cleanly separable.
+--
+-- Before this column they were marked only by an all-caps "NOT A GUIDE — DO NOT
+-- OFFER AS PARENTING ADVICE" line in `description`, which left it to the model's
+-- judgment. A struggling parent being handed an affiliate link is the worst
+-- routing failure available, so it must be structurally impossible rather than
+-- discouraged:
+--
+--   WHERE kind <> 'product_links'
+--
+-- Values:
+--   guide         -- an approach / method the author wrote (Sleep, potty, Picky, Calm...)
+--   recipes       -- food with ingredients + method (protein, Recipe x3, Fancy...)
+--   activity      -- something to BUILD and play with (BOX, Cardboard, Puzzle...)
+--   product_links -- affiliate links only. NEVER routable as advice.
+--
+-- The non-safety values also let the router answer "does this parent want a
+-- method or a recipe?", which prose alone cannot be filtered on.
+--
+-- Text rather than an enum, matching `theme`: the taxonomy is young, and adding
+-- a fifth kind should not require a migration. Nullable so unclassified rows
+-- (the 11 orphan drafts) stay valid; a null kind is simply never routed, since
+-- the router selects the kinds it wants rather than excluding ones it doesn't.
+ALTER TABLE "resources" ADD COLUMN "kind" TEXT;
+
+-- The router's guard clause. Partial: indexes only the handful of product rows,
+-- which is all this predicate ever needs to find.
+CREATE INDEX "resources_kind_idx" ON "resources" ("kind") WHERE "kind" IS NOT NULL;
