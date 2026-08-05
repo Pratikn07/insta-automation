@@ -1,13 +1,27 @@
 import express from "express";
 import type { Express, NextFunction, Request, Response } from "express";
 import type { AccountService } from "./accountService.js";
+import type { DraftService } from "./draftService.js";
+import { DraftGenerationError } from "./draftService.js";
+import { dmDraftRequestSchema } from "./schemas.js";
 import { requireRuntimeSecret } from "./auth.js";
 
 export interface RuntimeAppDependencies {
   accountService: AccountService;
+  draftService: DraftService;
   runtimeSecret: string;
   appServerReady: () => boolean;
 }
+
+/** DraftGenerationError code → HTTP status. Only the code and retryAt cross back. */
+const DRAFT_ERROR_STATUS: Record<DraftGenerationError["code"], number> = {
+  invalid_draft_output: 503,
+  turn_incomplete: 503,
+  turn_timeout: 504,
+  usage_limited: 429,
+  app_server_unauthenticated: 401,
+  draft_unavailable: 503,
+};
 
 /**
  * The runtime's entire HTTP surface. Four routes, no more: a public health probe
@@ -60,6 +74,28 @@ export function createRuntimeApp(deps: RuntimeAppDependencies): Express {
       res.status(204).end();
     } catch (error) {
       next(error);
+    }
+  });
+
+  internal.post("/drafts/generate", async (req, res) => {
+    const parsed = dmDraftRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "invalid_request" });
+      return;
+    }
+    try {
+      res.json(await deps.draftService.generate(parsed.data));
+    } catch (error) {
+      // Only the safe category and retry hint cross back; a raw app-server
+      // message can embed account or token detail.
+      if (error instanceof DraftGenerationError) {
+        res.status(DRAFT_ERROR_STATUS[error.code]).json({
+          error: error.code,
+          retryAt: error.retryAt ? error.retryAt.toISOString() : null,
+        });
+        return;
+      }
+      res.status(503).json({ error: "draft_unavailable", retryAt: null });
     }
   });
 

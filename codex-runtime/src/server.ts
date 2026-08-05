@@ -1,5 +1,6 @@
 import pino from "pino";
 import { createAccountService } from "./accountService.js";
+import { createDraftService } from "./draftService.js";
 import { startAppServerClient } from "./appServerClient.js";
 import { createRuntimeApp } from "./app.js";
 import { parseRuntimeConfig } from "./config.js";
@@ -16,6 +17,7 @@ async function main(): Promise<void> {
 
   const app = createRuntimeApp({
     accountService: createAccountService(appServer),
+    draftService: createDraftService(appServer),
     runtimeSecret: config.RUNTIME_SHARED_SECRET,
     appServerReady: () => ready,
   });
