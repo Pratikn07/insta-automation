@@ -77,3 +77,137 @@ export interface DmDraftSuggestion {
   warnings: string[];
   modelId: string | null;
 }
+
+// --- advisor ------------------------------------------------------------------
+
+/** The only links the advisor may point at: existing read-only owner pages. */
+const ADVISOR_HREFS = ["/conversations", "/insights", "/keywords", "/sequences"] as const;
+
+/**
+ * Every substantive advisor answer must carry a recommendation, the evidence
+ * behind it, a confidence level, one next step, and any data gaps. The schema
+ * enforces that rather than trusting the prompt: an advisor that answers without
+ * evidence is just a chatbot with database access.
+ */
+export const advisorResponseSchema = z.object({
+  answer: z.string().min(1).max(4000),
+  recommendation: z.string().min(1).max(1200),
+  evidence: z
+    .array(
+      z.object({
+        label: z.string().min(1).max(120),
+        value: z.string().min(1).max(300),
+        // A closed enum, so the advisor cannot emit an arbitrary URL for the owner
+        // to click.
+        href: z.enum(ADVISOR_HREFS).nullable(),
+      }),
+    )
+    .max(8),
+  confidence: z.enum(["low", "medium", "high"]),
+  nextStep: z.string().min(1).max(600),
+  nextStepHref: z.enum(ADVISOR_HREFS).nullable(),
+  dataGaps: z.array(z.string().max(300)).max(8),
+});
+
+export type AdvisorResponse = z.infer<typeof advisorResponseSchema>;
+
+export const advisorRequestSchema = z
+  .object({
+    message: z.string().min(1).max(2000),
+    clientMessageId: z.string().min(1).max(128),
+  })
+  .strict();
+
+export type AdvisorRequest = z.infer<typeof advisorRequestSchema>;
+
+export interface AdvisorHistoryItem {
+  role: "user" | "assistant";
+  clientMessageId: string | null;
+  text: string | null;
+  response: AdvisorResponse | null;
+}
+
+const hrefProperty = { type: "string", enum: [...ADVISOR_HREFS] } as const;
+
+/** JSON Schema handed to app-server as the advisor turn's outputSchema. */
+export const advisorResponseJsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "answer",
+    "recommendation",
+    "evidence",
+    "confidence",
+    "nextStep",
+    "nextStepHref",
+    "dataGaps",
+  ],
+  properties: {
+    answer: { type: "string", minLength: 1, maxLength: 4000 },
+    recommendation: { type: "string", minLength: 1, maxLength: 1200 },
+    evidence: {
+      type: "array",
+      maxItems: 8,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["label", "value", "href"],
+        properties: {
+          label: { type: "string", minLength: 1, maxLength: 120 },
+          value: { type: "string", minLength: 1, maxLength: 300 },
+          href: { anyOf: [hrefProperty, { type: "null" }] },
+        },
+      },
+    },
+    confidence: { type: "string", enum: ["low", "medium", "high"] },
+    nextStep: { type: "string", minLength: 1, maxLength: 600 },
+    nextStepHref: { anyOf: [hrefProperty, { type: "null" }] },
+    dataGaps: { type: "array", maxItems: 8, items: { type: "string", maxLength: 300 } },
+  },
+} as const;
+
+/**
+ * The advisor's dynamic tools, declared literally.
+ *
+ * Three read-only functions. Nothing here can send, write, update, delete, or
+ * touch Instagram — a test asserts those words appear nowhere in this list, so a
+ * future edit that adds a write tool fails loudly.
+ */
+export const ADVISOR_TOOLS = [
+  {
+    type: "function",
+    name: "business_overview",
+    description: "Read measured Tiny SOHO business totals for a fixed 7- or 30-day window.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["windowDays"],
+      properties: { windowDays: { type: "integer", enum: [7, 30] } },
+    },
+  },
+  {
+    type: "function",
+    name: "keyword_guide_catalog",
+    description: "Read the bounded active keyword and guide catalog.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["limit"],
+      properties: { limit: { type: "integer", minimum: 1, maximum: 100 } },
+    },
+  },
+  {
+    type: "function",
+    name: "conversation_summary",
+    description: "Read redacted aggregate DM thread summaries for a fixed window.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["windowDays", "limit"],
+      properties: {
+        windowDays: { type: "integer", enum: [7, 30] },
+        limit: { type: "integer", minimum: 1, maximum: 25 },
+      },
+    },
+  },
+] as const;

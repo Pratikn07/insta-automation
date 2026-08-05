@@ -1,17 +1,30 @@
 import express from "express";
 import type { Express, NextFunction, Request, Response } from "express";
 import type { AccountService } from "./accountService.js";
+import type { AdvisorService } from "./advisorService.js";
+import { AdvisorError } from "./advisorService.js";
 import type { DraftService } from "./draftService.js";
 import { DraftGenerationError } from "./draftService.js";
-import { dmDraftRequestSchema } from "./schemas.js";
+import { advisorRequestSchema, dmDraftRequestSchema } from "./schemas.js";
 import { requireRuntimeSecret } from "./auth.js";
 
 export interface RuntimeAppDependencies {
   accountService: AccountService;
   draftService: DraftService;
+  advisorService: AdvisorService;
   runtimeSecret: string;
   appServerReady: () => boolean;
 }
+
+/** AdvisorError code → HTTP status. Only the code and retryAt cross back. */
+const ADVISOR_ERROR_STATUS: Record<AdvisorError["code"], number> = {
+  advisor_not_configured: 503,
+  not_connected: 401,
+  usage_limited: 429,
+  turn_timeout: 504,
+  invalid_advisor_output: 503,
+  advisor_unavailable: 503,
+};
 
 /** DraftGenerationError code → HTTP status. Only the code and retryAt cross back. */
 const DRAFT_ERROR_STATUS: Record<DraftGenerationError["code"], number> = {
@@ -96,6 +109,35 @@ export function createRuntimeApp(deps: RuntimeAppDependencies): Express {
         return;
       }
       res.status(503).json({ error: "draft_unavailable", retryAt: null });
+    }
+  });
+
+  internal.get("/advisor/history", async (_req, res) => {
+    try {
+      res.json({ items: await deps.advisorService.history() });
+    } catch {
+      // History is a convenience; an empty list beats an error page.
+      res.json({ items: [] });
+    }
+  });
+
+  internal.post("/advisor/messages", async (req, res) => {
+    const parsed = advisorRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "invalid_request" });
+      return;
+    }
+    try {
+      res.json(await deps.advisorService.ask(parsed.data));
+    } catch (error) {
+      if (error instanceof AdvisorError) {
+        res.status(ADVISOR_ERROR_STATUS[error.code]).json({
+          error: error.code,
+          retryAt: error.retryAt ? error.retryAt.toISOString() : null,
+        });
+        return;
+      }
+      res.status(503).json({ error: "advisor_unavailable", retryAt: null });
     }
   });
 

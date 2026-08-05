@@ -1,6 +1,9 @@
 import pino from "pino";
 import { createAccountService } from "./accountService.js";
+import { createAdvisorService } from "./advisorService.js";
+import { createAdvisorSessionStore } from "./advisorSessionStore.js";
 import { createDraftService } from "./draftService.js";
+import { createInternalApiClient } from "./internalApiClient.js";
 import { startAppServerClient } from "./appServerClient.js";
 import { createRuntimeApp } from "./app.js";
 import { parseRuntimeConfig } from "./config.js";
@@ -15,9 +18,21 @@ async function main(): Promise<void> {
   const appServer = await startAppServerClient(config);
   let ready = true;
 
+  if (!config.TINY_SOHO_API_URL || !config.TINY_SOHO_INTERNAL_TOKEN) {
+    // Not fatal: DM drafting is tool-free and still works. Only the advisor needs
+    // the read tools, and it reports itself unavailable rather than speculating.
+    logger.warn("advisor data tools unconfigured; advisor routes will report unavailable");
+  }
+
   const app = createRuntimeApp({
     accountService: createAccountService(appServer),
     draftService: createDraftService(appServer),
+    advisorService: createAdvisorService({
+      appServer,
+      internalApi: createInternalApiClient(config),
+      store: createAdvisorSessionStore(config),
+      config,
+    }),
     runtimeSecret: config.RUNTIME_SHARED_SECRET,
     appServerReady: () => ready,
   });
