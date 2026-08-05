@@ -77,6 +77,13 @@ function renderDrawer(
 }
 
 describe("FeedFollowAttributionDrawer", () => {
+  it("leaves the chart interactive so another day can replace the selection", () => {
+    const html = renderDrawer({ data: response(attributionDay()) });
+    expect(html).toContain('role="dialog"');
+    expect(html).not.toContain('aria-modal="true"');
+    expect(html).not.toContain("fixed inset-0 z-40 bg-black/60");
+  });
+
   it("keeps the selected date visible while loading", () => {
     const html = renderDrawer({ isLoading: true });
     expect(html).toContain("August 3, 2026");

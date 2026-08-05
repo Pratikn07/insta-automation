@@ -271,6 +271,7 @@ export function FeedFollowAttributionDrawer({
     <Drawer
       open={day !== null}
       onClose={onClose}
+      modal={false}
       title={titleDay}
       description="Feed-post follow attribution"
       widthClass="w-full max-w-xl"

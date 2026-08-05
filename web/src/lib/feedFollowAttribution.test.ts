@@ -91,6 +91,25 @@ describe("feedCollectionCopy", () => {
     });
   });
 
+  it("explains a deployment day where every post reading succeeded", () => {
+    expect(
+      feedCollectionCopy(
+        day({
+          collectionStatus: "partial",
+          eligiblePosts: 37,
+          successfulPosts: 37,
+          attributedFeedFollows: 0,
+          netResidualAfterFeed: null,
+          comparisonReason: "feed_tracking_partial_day",
+        }),
+      ),
+    ).toEqual({
+      label: "Partial collection",
+      detail: "All 37 post readings succeeded, but tracking began partway through this UTC day.",
+      tone: "caution",
+    });
+  });
+
   it("does not turn a day before tracking into a zero", () => {
     expect(
       feedCollectionCopy(

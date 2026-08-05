@@ -74,6 +74,18 @@ export function feedCollectionCopy(day: FeedFollowAttributionDay): FeedCollectio
     };
   }
 
+  if (
+    day.collectionStatus === "partial" &&
+    day.comparisonReason === "feed_tracking_partial_day" &&
+    day.successfulPosts === day.eligiblePosts
+  ) {
+    return {
+      label: "Partial collection",
+      detail: `All ${day.eligiblePosts} post readings succeeded, but tracking began partway through this UTC day.`,
+      tone: "caution",
+    };
+  }
+
   const uncertainty = uncertaintyDetail(day);
   if (day.collectionStatus === "partial") {
     return {
