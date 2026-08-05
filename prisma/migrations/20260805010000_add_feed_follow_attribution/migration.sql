@@ -47,6 +47,8 @@ CREATE TABLE "feed_follow_collector_state" (
   "unavailable_count" INTEGER NOT NULL DEFAULT 0,
   "failed_count" INTEGER NOT NULL DEFAULT 0,
   "last_error" TEXT,
+  "lease_owner" TEXT,
+  "lease_expires_at" TIMESTAMPTZ(3),
   "updated_at" TIMESTAMPTZ(3) NOT NULL,
 
   CONSTRAINT "feed_follow_collector_state_pkey" PRIMARY KEY ("scope"),
@@ -58,6 +60,10 @@ CREATE TABLE "feed_follow_collector_state" (
     AND "written_count" >= 0
     AND "unavailable_count" >= 0
     AND "failed_count" >= 0
+  ),
+  CONSTRAINT "feed_follow_collector_state_lease_check" CHECK (
+    ("lease_owner" IS NULL AND "lease_expires_at" IS NULL)
+    OR ("lease_owner" IS NOT NULL AND "lease_expires_at" IS NOT NULL)
   )
 );
 

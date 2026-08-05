@@ -25,6 +25,7 @@ export interface FeedAttributionSnapshot {
 export type FeedCollectionStatus = "not_started" | "complete" | "partial" | "missing";
 export type FeedComparisonReason =
   | "feed_not_started"
+  | "feed_tracking_partial_day"
   | "feed_collection_incomplete"
   | "feed_multi_day_delta"
   | "feed_counter_correction"
@@ -111,9 +112,13 @@ function enumerateDays(from: string, to: string): string[] {
 function calculateSnapshots(
   post: FeedAttributionPost,
   snapshots: FeedAttributionSnapshot[],
+  trackingStartedAt: Date | null,
 ): Map<string, CalculatedSnapshot> {
   let priorCount = post.baselineFollows;
   let priorDay = post.baselineCapturedAt ? dayString(post.baselineCapturedAt) : null;
+  let firstSuccessfulReading = true;
+  const usesPublicationBaseline =
+    trackingStartedAt !== null && post.postedAt !== null && post.postedAt >= trackingStartedAt;
   const byDay = new Map<string, CalculatedSnapshot>();
 
   for (const snapshot of snapshots.sort((a, b) => a.day.getTime() - b.day.getTime())) {
@@ -122,9 +127,17 @@ function calculateSnapshots(
     let spanDays: number | null = null;
     if (snapshot.status === "ok" && snapshot.follows !== null && priorCount !== null) {
       delta = snapshot.follows - priorCount;
-      spanDays = priorDay === null ? 1 : Math.max(1, calendarDaysBetween(priorDay, day));
+      spanDays =
+        priorDay === null
+          ? 1
+          : Math.max(
+              1,
+              calendarDaysBetween(priorDay, day) +
+                (firstSuccessfulReading && usesPublicationBaseline ? 1 : 0),
+            );
       priorCount = snapshot.follows;
       priorDay = day;
+      firstSuccessfulReading = false;
     }
     byDay.set(day, { snapshot, delta, spanDays });
   }
@@ -133,11 +146,13 @@ function calculateSnapshots(
 
 function comparisonReason(
   collectionStatus: FeedCollectionStatus,
+  trackingPartialDay: boolean,
   hasMultiDayDelta: boolean,
   hasCounterCorrection: boolean,
   account: FollowerDailyAddsPoint | undefined,
 ): FeedComparisonReason | null {
   if (collectionStatus === "not_started") return "feed_not_started";
+  if (trackingPartialDay) return "feed_tracking_partial_day";
   if (collectionStatus !== "complete") return "feed_collection_incomplete";
   if (hasMultiDayDelta) return "feed_multi_day_delta";
   if (hasCounterCorrection) return "feed_counter_correction";
@@ -157,7 +172,7 @@ export function buildFeedFollowAttribution(input: BuildAttributionInput): FeedFo
   const calculatedByPost = new Map(
     input.posts.map((post) => [
       post.mediaId,
-      calculateSnapshots(post, snapshotsByPost.get(post.mediaId) ?? []),
+      calculateSnapshots(post, snapshotsByPost.get(post.mediaId) ?? [], input.trackingStartedAt),
     ]),
   );
   const followersByDay = new Map(input.followerPoints.map((point) => [point.day, point]));
@@ -186,7 +201,17 @@ export function buildFeedFollowAttribution(input: BuildAttributionInput): FeedFo
       };
     }
 
-    const eligible = input.posts.filter((post) => dayString(post.firstSeenAt) <= day);
+    const eligible = input.posts.filter((post) => {
+      const publishedAfterTracking =
+        input.trackingStartedAt !== null &&
+        post.postedAt !== null &&
+        post.postedAt >= input.trackingStartedAt;
+      const eligibleFrom =
+        publishedAfterTracking && post.postedAt
+          ? dayString(post.postedAt)
+          : dayString(post.firstSeenAt);
+      return eligibleFrom <= day;
+    });
     let successfulPosts = 0;
     let unavailablePosts = 0;
     let failedPosts = 0;
@@ -239,16 +264,21 @@ export function buildFeedFollowAttribution(input: BuildAttributionInput): FeedFo
       }
     }
 
-    const collectionStatus: FeedCollectionStatus =
+    let collectionStatus: FeedCollectionStatus =
       eligible.length > 0 && successfulPosts === eligible.length
         ? "complete"
         : successfulPosts > 0 || unavailablePosts > 0 || failedPosts > 0
           ? "partial"
           : "missing";
+    // State creation never proves the first count was captured at 00:00:00, so
+    // deployment day is always partial. Comparable windows start next UTC day.
+    const trackingPartialDay = day === trackingDay;
+    if (trackingPartialDay && collectionStatus === "complete") collectionStatus = "partial";
     const attributedFeedFollows = successfulPosts > 0 ? attributed : null;
     const account = followersByDay.get(day);
     const reason = comparisonReason(
       collectionStatus,
+      trackingPartialDay,
       hasMultiDayDelta,
       hasCounterCorrection,
       account,

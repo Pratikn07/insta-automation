@@ -7,10 +7,10 @@ vi.mock("../lib/prisma.js", () => ({
     feedFollowDailySnapshot: { findMany: vi.fn() },
   },
 }));
-vi.mock("./followerFlowService.js", () => ({ getFollowerDailyAdds: vi.fn() }));
+vi.mock("./followerFlowService.js", () => ({ getFollowerDailyAddsPointsForRange: vi.fn() }));
 
 const { prisma } = await import("../lib/prisma.js");
-const { getFollowerDailyAdds } = await import("./followerFlowService.js");
+const { getFollowerDailyAddsPointsForRange } = await import("./followerFlowService.js");
 const { getFeedFollowAttribution } = await import("./feedFollowAttributionService.js");
 
 describe("getFeedFollowAttribution", () => {
@@ -57,9 +57,7 @@ describe("getFeedFollowAttribution", () => {
         status: "ok",
       },
     ] as never);
-    vi.mocked(getFollowerDailyAdds).mockResolvedValueOnce({
-      stock: null,
-      points: [
+    vi.mocked(getFollowerDailyAddsPointsForRange).mockResolvedValueOnce([
         {
           day: "2026-08-02",
           capturedAt: "2026-08-02T12:00:00Z",
@@ -75,8 +73,7 @@ describe("getFeedFollowAttribution", () => {
           provisional: false,
           basis: "diff",
         },
-      ],
-    });
+    ]);
 
     const response = await getFeedFollowAttribution({ from: "2026-08-02", to: "2026-08-02" });
 

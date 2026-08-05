@@ -27,14 +27,22 @@ function post(id: string, timestamp: string | null): AccountMedia {
 function memoryRepository(startedAt: Date) {
   const baselines = new Map<string, number | null>();
   const snapshots = new Map<string, { status: string; follows: number | null }>();
+  const snapshotWrites: Array<{
+    mediaId: string;
+    day: Date;
+    capturedAt: Date;
+    status: string;
+    follows: number | null;
+  }> = [];
   const finishes: unknown[] = [];
 
   return {
     baselines,
     snapshots,
+    snapshotWrites,
     finishes,
     repository: {
-      beginRun: vi.fn(async () => ({ startedAt })),
+      beginRun: vi.fn(async () => ({ startedAt, runId: "run-1" })),
       upsertPost: vi.fn(async (input: { mediaId: string; initialBaseline: number | null }) => {
         if (!baselines.has(input.mediaId)) baselines.set(input.mediaId, input.initialBaseline);
       }),
@@ -43,12 +51,13 @@ function memoryRepository(startedAt: Date) {
       }),
       writeSnapshot: vi.fn(
         async (input: { mediaId: string; status: string; follows: number | null }) => {
+          snapshotWrites.push(input as (typeof snapshotWrites)[number]);
           const existing = snapshots.get(input.mediaId);
           if (existing?.status === "ok" && input.status !== "ok") return;
           snapshots.set(input.mediaId, { status: input.status, follows: input.follows });
         },
       ),
-      finishRun: vi.fn(async (summary: unknown) => {
+      finishRun: vi.fn(async (_runId: string, summary: unknown) => {
         finishes.push(summary);
       }),
     },
@@ -163,16 +172,85 @@ describe("collectFeedFollowSnapshot", () => {
     expect(fetched).toEqual(["first"]);
     expect(result).toMatchObject({ status: "failed", eligibleCount: 2, writtenCount: 0, failedCount: 1 });
   });
+
+  it("skips collection when another process holds the database lease", async () => {
+    const memory = memoryRepository(new Date("2026-08-01T00:00:00Z"));
+    memory.repository.beginRun.mockResolvedValueOnce(null as never);
+    const listPosts = vi.fn().mockResolvedValue([post("never-listed", null)]);
+
+    const result = await collectFeedFollowSnapshot(
+      {
+        repository: memory.repository,
+        listPosts,
+        fetchFollowCount: vi.fn(),
+        isAuthenticationError: () => false,
+        pause: async () => undefined,
+        recordEvent: async () => undefined,
+        describeError: () => ({}),
+      },
+      new Date("2026-08-04T18:00:00Z"),
+    );
+
+    expect(result).toBeNull();
+    expect(listPosts).not.toHaveBeenCalled();
+  });
+
+  it("dates each media snapshot at its own capture time when a batch crosses UTC midnight", async () => {
+    const memory = memoryRepository(new Date("2026-08-01T00:00:00Z"));
+    const clock = vi
+      .fn()
+      .mockReturnValueOnce(new Date("2026-08-05T00:00:01Z"))
+      .mockReturnValueOnce(new Date("2026-08-05T00:00:02Z"));
+
+    await collectFeedFollowSnapshot(
+      {
+        repository: memory.repository,
+        listPosts: async () => [post("midnight", null)],
+        fetchFollowCount: async () => ({ status: "ok", follows: 2 }),
+        isAuthenticationError: () => false,
+        pause: async () => undefined,
+        recordEvent: async () => undefined,
+        describeError: () => ({}),
+        clock,
+      },
+      new Date("2026-08-04T23:59:59Z"),
+    );
+
+    expect(memory.snapshotWrites[0]).toMatchObject({
+      day: new Date("2026-08-05T00:00:00Z"),
+      capturedAt: new Date("2026-08-05T00:00:01Z"),
+    });
+  });
 });
 
 describe("createPrismaFeedFollowRepository", () => {
-  it("uses insert-ignore for failures so they cannot overwrite a successful same-day row", async () => {
+  it("acquires the database lease atomically and skips when another owner holds it", async () => {
     const client = {
-      feedFollowDailySnapshot: {
-        upsert: vi.fn(),
+      feedFollowCollectorState: {
         createMany: vi.fn().mockResolvedValue({ count: 0 }),
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+        findUnique: vi.fn(),
       },
     };
+    const repository = createPrismaFeedFollowRepository(client as never);
+
+    await expect(repository.beginRun(new Date("2026-08-04T18:00:00Z"))).resolves.toBeNull();
+    expect(client.feedFollowCollectorState.findUnique).not.toHaveBeenCalled();
+    expect(client.feedFollowCollectorState.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          scope: "feed",
+          OR: [
+            { leaseExpiresAt: null },
+            { leaseExpiresAt: { lte: new Date("2026-08-04T18:00:00Z") } },
+          ],
+        }),
+      }),
+    );
+  });
+
+  it("emits monotonic conflict clauses that update failures but preserve successful rows", async () => {
+    const client = { $executeRaw: vi.fn().mockResolvedValue(1) };
     const repository = createPrismaFeedFollowRepository(client as never);
 
     await repository.writeSnapshot({
@@ -183,19 +261,21 @@ describe("createPrismaFeedFollowRepository", () => {
       follows: null,
     });
 
-    expect(client.feedFollowDailySnapshot.createMany).toHaveBeenCalledWith({
-      data: [
-        {
-          mediaId: "post-1",
-          day: new Date("2026-08-04T00:00:00Z"),
-          capturedAt: new Date("2026-08-04T18:00:00Z"),
-          status: "failed",
-          follows: null,
-        },
-      ],
-      skipDuplicates: true,
+    const failedSql = (client.$executeRaw.mock.calls[0]![0] as TemplateStringsArray).join("?");
+    expect(failedSql).toContain('"status" <> \'ok\'');
+    expect(failedSql).toContain('"captured_at" <= EXCLUDED."captured_at"');
+
+    await repository.writeSnapshot({
+      mediaId: "post-1",
+      day: new Date("2026-08-04T00:00:00Z"),
+      capturedAt: new Date("2026-08-04T19:00:00Z"),
+      status: "ok",
+      follows: 4,
     });
-    expect(client.feedFollowDailySnapshot.upsert).not.toHaveBeenCalled();
+
+    const successSql = (client.$executeRaw.mock.calls[1]![0] as TemplateStringsArray).join("?");
+    expect(successSql).toMatch(/"status" <> 'ok'\s+OR/);
+    expect(successSql).toContain('"captured_at" <= EXCLUDED."captured_at"');
   });
 });
 

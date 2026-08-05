@@ -1,5 +1,5 @@
 import { prisma } from "../lib/prisma.js";
-import { getFollowerDailyAdds } from "./followerFlowService.js";
+import { getFollowerDailyAddsPointsForRange } from "./followerFlowService.js";
 import {
   buildFeedFollowAttribution,
   type FeedAttributionPost,
@@ -66,14 +66,14 @@ export async function getFeedFollowAttribution(range: {
       status: true,
     },
   });
-  const followerFlow = await getFollowerDailyAdds();
+  const followerPoints = await getFollowerDailyAddsPointsForRange(range);
 
   const attribution = buildFeedFollowAttribution({
     ...range,
     trackingStartedAt: state?.startedAt ?? null,
     posts: posts as FeedAttributionPost[],
     snapshots: snapshots as FeedAttributionSnapshot[],
-    followerPoints: followerFlow.points,
+    followerPoints,
   });
   const latestSnapshot = snapshots.at(-1);
 

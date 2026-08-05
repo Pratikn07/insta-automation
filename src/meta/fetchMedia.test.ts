@@ -38,6 +38,18 @@ describe("fetchAllFeedPosts", () => {
             media_url: "https://example.com/legacy.jpg",
           },
           {
+            id: "legacy-feed-video",
+            media_type: "VIDEO",
+            permalink: "https://www.instagram.com/p/legacy-feed-video/",
+            thumbnail_url: "https://example.com/legacy-feed-video.jpg",
+          },
+          {
+            id: "legacy-reel",
+            media_type: "VIDEO",
+            permalink: "https://www.instagram.com/reel/legacy-reel/",
+            thumbnail_url: "https://example.com/legacy-reel.jpg",
+          },
+          {
             id: "reel",
             media_type: "VIDEO",
             media_product_type: "REELS",
@@ -54,12 +66,14 @@ describe("fetchAllFeedPosts", () => {
       "image",
       "feed-video",
       "legacy-image",
+      "legacy-feed-video",
     ]);
     expect(posts.map((post) => [post.id, post.mediaType, post.mediaProductType])).toEqual([
       ["carousel", "CAROUSEL_ALBUM", "FEED"],
       ["image", "IMAGE", "FEED"],
       ["feed-video", "VIDEO", "FEED"],
       ["legacy-image", "IMAGE", null],
+      ["legacy-feed-video", "VIDEO", null],
     ]);
   });
 });

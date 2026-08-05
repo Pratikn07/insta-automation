@@ -70,7 +70,12 @@ let allCache: { at: number; media: AccountMedia[] } | null = null;
  * Everything else (FEED carousels, single images) is not a reel.
  */
 function isReel(m: GraphMediaItem): boolean {
-  return m.media_product_type === "REELS" || (!m.media_product_type && m.media_type === "VIDEO");
+  if (m.media_product_type) return m.media_product_type === "REELS";
+  // Older media can omit product_type. Its canonical permalink still preserves
+  // the distinction: regular feed media uses /p/, while Reels use /reel/.
+  if (m.permalink?.includes("/reel/")) return true;
+  if (m.permalink?.includes("/p/")) return false;
+  return m.media_type === "VIDEO";
 }
 
 function toMedia(m: GraphMediaItem): AccountMedia {

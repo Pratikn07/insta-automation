@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
+import { randomUUID } from "node:crypto";
 import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
 import type { AccountMedia } from "../meta/fetchMedia.js";
@@ -12,6 +13,7 @@ import { describeGraphError, logEvent } from "./eventLogger.js";
 
 const FEED_SCOPE = "feed";
 const PER_POST_GAP_MS = 1_500;
+const COLLECTOR_LEASE_MS = 3 * 60 * 60 * 1000;
 
 export type FeedFollowSnapshotStatus = "ok" | "unavailable" | "failed";
 export type FeedFollowRunStatus = "success" | "partial" | "failed";
@@ -38,11 +40,11 @@ interface FeedPostUpsert {
 }
 
 export interface FeedFollowRepository {
-  beginRun(now: Date): Promise<{ startedAt: Date }>;
+  beginRun(now: Date): Promise<{ startedAt: Date; runId: string } | null>;
   upsertPost(input: FeedPostUpsert): Promise<void>;
   setBaselineIfMissing(mediaId: string, follows: number, capturedAt: Date): Promise<void>;
   writeSnapshot(input: FeedFollowSnapshotWrite): Promise<void>;
-  finishRun(summary: FeedFollowCollectionResult): Promise<void>;
+  finishRun(runId: string, summary: FeedFollowCollectionResult): Promise<void>;
 }
 
 export interface FeedFollowCollectionResult {
@@ -65,6 +67,7 @@ export interface FeedFollowCollectorDependencies {
   pause(ms: number): Promise<void>;
   recordEvent(result: FeedFollowCollectionResult): Promise<void>;
   describeError(error: unknown): Record<string, unknown>;
+  clock?: () => Date;
 }
 
 export function toFeedFollowEvent(result: FeedFollowCollectionResult): object {
@@ -93,21 +96,32 @@ function errorMessage(details: Record<string, unknown>): string {
 export function createPrismaFeedFollowRepository(client: PrismaClient): FeedFollowRepository {
   return {
     async beginRun(now) {
-      return client.feedFollowCollectorState.upsert({
-        where: { scope: FEED_SCOPE },
-        create: {
+      const runId = randomUUID();
+      const leaseExpiresAt = new Date(now.getTime() + COLLECTOR_LEASE_MS);
+      await client.feedFollowCollectorState.createMany({
+        data: [{ scope: FEED_SCOPE, startedAt: now }],
+        skipDuplicates: true,
+      });
+      const acquired = await client.feedFollowCollectorState.updateMany({
+        where: {
           scope: FEED_SCOPE,
-          startedAt: now,
-          lastAttemptAt: now,
-          lastStatus: "running",
+          OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lte: now } }],
         },
-        update: {
+        data: {
+          leaseOwner: runId,
+          leaseExpiresAt,
           lastAttemptAt: now,
           lastStatus: "running",
           lastError: null,
         },
+      });
+      if (acquired.count === 0) return null;
+      const state = await client.feedFollowCollectorState.findUnique({
+        where: { scope: FEED_SCOPE },
         select: { startedAt: true },
       });
+      if (!state) throw new Error("feed_follow_collector_state_missing_after_lease");
+      return { startedAt: state.startedAt, runId };
     },
 
     async upsertPost(input) {
@@ -142,29 +156,44 @@ export function createPrismaFeedFollowRepository(client: PrismaClient): FeedFoll
 
     async writeSnapshot(input) {
       if (input.status === "ok") {
-        await client.feedFollowDailySnapshot.upsert({
-          where: { mediaId_day: { mediaId: input.mediaId, day: input.day } },
-          create: input,
-          update: {
-            capturedAt: input.capturedAt,
-            follows: input.follows,
-            status: input.status,
-          },
-        });
+        if (input.follows === null) throw new Error("ok_feed_follow_snapshot_requires_count");
+        await client.$executeRaw`
+          INSERT INTO "feed_follow_daily_snapshot"
+            ("media_id", "day", "captured_at", "follows", "status")
+          VALUES
+            (${input.mediaId}, ${input.day}, ${input.capturedAt}, ${input.follows}, 'ok')
+          ON CONFLICT ("media_id", "day") DO UPDATE SET
+            "captured_at" = EXCLUDED."captured_at",
+            "follows" = EXCLUDED."follows",
+            "status" = EXCLUDED."status"
+          WHERE "feed_follow_daily_snapshot"."status" <> 'ok'
+            OR "feed_follow_daily_snapshot"."captured_at" <= EXCLUDED."captured_at"
+        `;
         return;
       }
 
-      // An insert-ignore is deliberately asymmetric with the successful
-      // upsert: a later failure on the same UTC day can never erase good data.
-      await client.feedFollowDailySnapshot.createMany({ data: [input], skipDuplicates: true });
+      // A newer unsuccessful attempt replaces an older unsuccessful attempt,
+      // but can never erase a successful reading from the same UTC day.
+      await client.$executeRaw`
+        INSERT INTO "feed_follow_daily_snapshot"
+          ("media_id", "day", "captured_at", "follows", "status")
+        VALUES
+          (${input.mediaId}, ${input.day}, ${input.capturedAt}, NULL, ${input.status})
+        ON CONFLICT ("media_id", "day") DO UPDATE SET
+          "captured_at" = EXCLUDED."captured_at",
+          "follows" = NULL,
+          "status" = EXCLUDED."status"
+        WHERE "feed_follow_daily_snapshot"."status" <> 'ok'
+          AND "feed_follow_daily_snapshot"."captured_at" <= EXCLUDED."captured_at"
+      `;
     },
 
-    async finishRun(summary) {
+    async finishRun(runId, summary) {
       const lastError = summary.errors[0]?.details
         ? errorMessage(summary.errors[0].details)
         : null;
-      await client.feedFollowCollectorState.update({
-        where: { scope: FEED_SCOPE },
+      await client.feedFollowCollectorState.updateMany({
+        where: { scope: FEED_SCOPE, leaseOwner: runId },
         data: {
           lastCompletedAt: summary.completedAt,
           lastStatus: summary.status,
@@ -173,6 +202,8 @@ export function createPrismaFeedFollowRepository(client: PrismaClient): FeedFoll
           unavailableCount: summary.unavailableCount,
           failedCount: summary.failedCount,
           lastError,
+          leaseOwner: null,
+          leaseExpiresAt: null,
         },
       });
     },
@@ -183,8 +214,11 @@ export function createPrismaFeedFollowRepository(client: PrismaClient): FeedFoll
 export async function collectFeedFollowSnapshot(
   deps: FeedFollowCollectorDependencies,
   now = new Date(),
-): Promise<FeedFollowCollectionResult> {
-  const { startedAt } = await deps.repository.beginRun(now);
+): Promise<FeedFollowCollectionResult | null> {
+  const lease = await deps.repository.beginRun(now);
+  if (!lease) return null;
+  const { startedAt, runId } = lease;
+  const clock = deps.clock ?? (() => new Date());
   let posts: AccountMedia[];
   const errors: FeedFollowCollectionResult["errors"] = [];
 
@@ -195,7 +229,7 @@ export async function collectFeedFollowSnapshot(
     const failed: FeedFollowCollectionResult = {
       status: "failed",
       startedAt,
-      completedAt: new Date(),
+      completedAt: clock(),
       eligibleCount: 0,
       writtenCount: 0,
       unavailableCount: 0,
@@ -203,7 +237,7 @@ export async function collectFeedFollowSnapshot(
       abortedForAuthentication: deps.isAuthenticationError(error),
       errors,
     };
-    await deps.repository.finishRun(failed);
+    await deps.repository.finishRun(runId, failed);
     await deps.recordEvent(failed);
     return failed;
   }
@@ -212,12 +246,22 @@ export async function collectFeedFollowSnapshot(
   let unavailableCount = 0;
   let failedCount = 0;
   let abortedForAuthentication = false;
-  const day = utcDay(now);
-
   for (let index = 0; index < posts.length; index++) {
     const media = posts[index]!;
     const postedAt = asDate(media.timestamp);
     const wasPublishedAfterTrackingStarted = postedAt !== null && postedAt >= startedAt;
+    let metric: FeedFollowMetricResult | null = null;
+    let metricError: unknown;
+    let metricFailed = false;
+
+    try {
+      metric = await deps.fetchFollowCount(media.id);
+    } catch (error) {
+      metricError = error;
+      metricFailed = true;
+    }
+    const capturedAt = clock();
+    const day = utcDay(capturedAt);
 
     try {
       await deps.repository.upsertPost({
@@ -228,20 +272,21 @@ export async function collectFeedFollowSnapshot(
         permalink: media.permalink,
         thumbnailUrl: media.thumbnailUrl,
         postedAt,
-        seenAt: now,
+        seenAt: capturedAt,
         initialBaseline: wasPublishedAfterTrackingStarted ? 0 : null,
         initialBaselineCapturedAt: wasPublishedAfterTrackingStarted ? postedAt : null,
       });
 
-      const metric = await deps.fetchFollowCount(media.id);
+      if (metricFailed) throw metricError;
+      if (!metric) throw new Error("feed_follow_metric_missing_without_error");
       if (metric.status === "ok") {
         if (!wasPublishedAfterTrackingStarted) {
-          await deps.repository.setBaselineIfMissing(media.id, metric.follows, now);
+          await deps.repository.setBaselineIfMissing(media.id, metric.follows, capturedAt);
         }
         await deps.repository.writeSnapshot({
           mediaId: media.id,
           day,
-          capturedAt: now,
+          capturedAt,
           follows: metric.follows,
           status: "ok",
         });
@@ -250,7 +295,7 @@ export async function collectFeedFollowSnapshot(
         await deps.repository.writeSnapshot({
           mediaId: media.id,
           day,
-          capturedAt: now,
+          capturedAt,
           follows: null,
           status: "unavailable",
         });
@@ -263,7 +308,7 @@ export async function collectFeedFollowSnapshot(
         await deps.repository.writeSnapshot({
           mediaId: media.id,
           day,
-          capturedAt: now,
+          capturedAt,
           follows: null,
           status: "failed",
         });
@@ -288,7 +333,7 @@ export async function collectFeedFollowSnapshot(
   const result: FeedFollowCollectionResult = {
     status,
     startedAt,
-    completedAt: new Date(),
+    completedAt: clock(),
     eligibleCount: posts.length,
     writtenCount,
     unavailableCount,
@@ -296,7 +341,7 @@ export async function collectFeedFollowSnapshot(
     abortedForAuthentication,
     errors,
   };
-  await deps.repository.finishRun(result);
+  await deps.repository.finishRun(runId, result);
   await deps.recordEvent(result);
   return result;
 }
@@ -334,6 +379,10 @@ export const runFeedFollowSnapshotTick = createFeedFollowSnapshotRunner(
       recordEvent: (summary) => logEvent("feed_follow_snapshot", toFeedFollowEvent(summary)),
       describeError: describeGraphError,
     });
+    if (!result) {
+      logger.debug("Feed follow snapshot skipped; another process holds the lease");
+      return;
+    }
     const context = {
       status: result.status,
       eligible: result.eligibleCount,

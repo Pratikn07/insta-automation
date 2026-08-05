@@ -212,6 +212,87 @@ describe("buildFeedFollowAttribution", () => {
       comparisonReason: "account_provisional",
     });
   });
+
+  it("marks publication day missing and a next-day first reading as multi-day", () => {
+    const response = buildFeedFollowAttribution({
+      from: "2026-08-04",
+      to: "2026-08-05",
+      trackingStartedAt: new Date("2026-08-01T10:00:00Z"),
+      posts: [
+        post({
+          postedAt: new Date("2026-08-04T22:00:00Z"),
+          firstSeenAt: new Date("2026-08-05T06:00:00Z"),
+          baselineFollows: 0,
+          baselineCapturedAt: new Date("2026-08-04T22:00:00Z"),
+        }),
+      ],
+      snapshots: [snapshot("2026-08-05", 4)],
+      followerPoints: [followerPoint("2026-08-04", 3), followerPoint("2026-08-05", 5)],
+    });
+
+    expect(response.days[0]).toMatchObject({
+      day: "2026-08-04",
+      collectionStatus: "missing",
+      eligiblePosts: 1,
+      missingPosts: 1,
+      comparisonReason: "feed_collection_incomplete",
+    });
+    expect(response.days[1]).toMatchObject({
+      day: "2026-08-05",
+      collectionStatus: "complete",
+      attributedFeedFollows: 4,
+      hasMultiDayDelta: true,
+      comparisonReason: "feed_multi_day_delta",
+      posts: [{ mediaId: "post-1", delta: 4, spanDays: 2 }],
+    });
+  });
+
+  it("never compares the partial UTC day on which tracking starts", () => {
+    const response = buildFeedFollowAttribution({
+      from: "2026-08-02",
+      to: "2026-08-02",
+      trackingStartedAt: new Date("2026-08-02T10:00:00Z"),
+      posts: [
+        post({
+          firstSeenAt: new Date("2026-08-02T10:00:00Z"),
+          baselineFollows: 5,
+          baselineCapturedAt: new Date("2026-08-02T10:00:00Z"),
+        }),
+      ],
+      snapshots: [snapshot("2026-08-02", 5)],
+      followerPoints: [followerPoint("2026-08-02", 4)],
+    });
+
+    expect(response.days[0]).toMatchObject({
+      collectionStatus: "partial",
+      attributedFeedFollows: 0,
+      netResidualAfterFeed: null,
+      comparisonReason: "feed_tracking_partial_day",
+    });
+  });
+
+  it("treats tracking day as partial even when state creation lands exactly at midnight", () => {
+    const response = buildFeedFollowAttribution({
+      from: "2026-08-02",
+      to: "2026-08-02",
+      trackingStartedAt: new Date("2026-08-02T00:00:00Z"),
+      posts: [
+        post({
+          firstSeenAt: new Date("2026-08-02T00:05:00Z"),
+          baselineFollows: 5,
+          baselineCapturedAt: new Date("2026-08-02T00:05:00Z"),
+        }),
+      ],
+      snapshots: [snapshot("2026-08-02", 5)],
+      followerPoints: [followerPoint("2026-08-02", 4)],
+    });
+
+    expect(response.days[0]).toMatchObject({
+      collectionStatus: "partial",
+      netResidualAfterFeed: null,
+      comparisonReason: "feed_tracking_partial_day",
+    });
+  });
 });
 
 describe("parseFeedFollowAttributionRange", () => {

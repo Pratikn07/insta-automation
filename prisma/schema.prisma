@@ -337,6 +337,8 @@ model FeedFollowCollectorState {
   unavailableCount Int       @default(0) @map("unavailable_count")
   failedCount      Int       @default(0) @map("failed_count")
   lastError        String?   @map("last_error")
+  leaseOwner       String?   @map("lease_owner")
+  leaseExpiresAt   DateTime? @map("lease_expires_at") @db.Timestamptz(3)
   updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   @@map("feed_follow_collector_state")
