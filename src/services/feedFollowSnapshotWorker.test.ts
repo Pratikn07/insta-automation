@@ -43,6 +43,7 @@ function memoryRepository(startedAt: Date) {
     finishes,
     repository: {
       beginRun: vi.fn(async () => ({ startedAt, runId: "run-1" })),
+      renewLease: vi.fn(async () => true),
       upsertPost: vi.fn(async (input: { mediaId: string; initialBaseline: number | null }) => {
         if (!baselines.has(input.mediaId)) baselines.set(input.mediaId, input.initialBaseline);
       }),
@@ -195,6 +196,30 @@ describe("collectFeedFollowSnapshot", () => {
     expect(listPosts).not.toHaveBeenCalled();
   });
 
+  it("does not write post state or snapshots after losing its database lease", async () => {
+    const memory = memoryRepository(new Date("2026-08-01T00:00:00Z"));
+    memory.repository.renewLease.mockResolvedValueOnce(false);
+
+    await expect(
+      collectFeedFollowSnapshot(
+        {
+          repository: memory.repository,
+          listPosts: async () => [post("lease-lost", null)],
+          fetchFollowCount: async () => ({ status: "ok", follows: 2 }),
+          isAuthenticationError: () => false,
+          pause: async () => undefined,
+          recordEvent: async () => undefined,
+          describeError: () => ({}),
+        },
+        new Date("2026-08-04T18:00:00Z"),
+      ),
+    ).rejects.toThrow("feed_follow_collector_lease_lost");
+
+    expect(memory.repository.upsertPost).not.toHaveBeenCalled();
+    expect(memory.repository.writeSnapshot).not.toHaveBeenCalled();
+    expect(memory.repository.finishRun).not.toHaveBeenCalled();
+  });
+
   it("dates each media snapshot at its own capture time when a batch crosses UTC midnight", async () => {
     const memory = memoryRepository(new Date("2026-08-01T00:00:00Z"));
     const clock = vi
@@ -247,6 +272,28 @@ describe("createPrismaFeedFollowRepository", () => {
         }),
       }),
     );
+  });
+
+  it("renews a lease only while the same run still owns an unexpired lease", async () => {
+    const client = {
+      feedFollowCollectorState: {
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const repository = createPrismaFeedFollowRepository(client as never);
+    const now = new Date("2026-08-04T18:00:00Z");
+
+    await expect(repository.renewLease("run-1", now)).resolves.toBe(true);
+    expect(client.feedFollowCollectorState.updateMany).toHaveBeenCalledWith({
+      where: {
+        scope: "feed",
+        leaseOwner: "run-1",
+        leaseExpiresAt: { gt: now },
+      },
+      data: {
+        leaseExpiresAt: new Date("2026-08-04T21:00:00Z"),
+      },
+    });
   });
 
   it("emits monotonic conflict clauses that update failures but preserve successful rows", async () => {

@@ -39,7 +39,15 @@ export async function getFeedFollowAttribution(range: {
     where: { scope: "feed" },
   });
   const posts = await prisma.feedPostMeta.findMany({
-    where: { firstSeenAt: { lt: toExclusive } },
+    // A post can be published inside the requested range but first discovered
+    // by the collector later. Include it by publication time so the core can
+    // report that earlier day as missing instead of silently dropping it.
+    where: {
+      OR: [
+        { firstSeenAt: { lt: toExclusive } },
+        { postedAt: { lt: toExclusive } },
+      ],
+    },
     orderBy: { firstSeenAt: "asc" },
     select: {
       mediaId: true,

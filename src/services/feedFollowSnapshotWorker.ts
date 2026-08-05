@@ -41,6 +41,7 @@ interface FeedPostUpsert {
 
 export interface FeedFollowRepository {
   beginRun(now: Date): Promise<{ startedAt: Date; runId: string } | null>;
+  renewLease(runId: string, now: Date): Promise<boolean>;
   upsertPost(input: FeedPostUpsert): Promise<void>;
   setBaselineIfMissing(mediaId: string, follows: number, capturedAt: Date): Promise<void>;
   writeSnapshot(input: FeedFollowSnapshotWrite): Promise<void>;
@@ -122,6 +123,20 @@ export function createPrismaFeedFollowRepository(client: PrismaClient): FeedFoll
       });
       if (!state) throw new Error("feed_follow_collector_state_missing_after_lease");
       return { startedAt: state.startedAt, runId };
+    },
+
+    async renewLease(runId, now) {
+      const renewed = await client.feedFollowCollectorState.updateMany({
+        where: {
+          scope: FEED_SCOPE,
+          leaseOwner: runId,
+          leaseExpiresAt: { gt: now },
+        },
+        data: {
+          leaseExpiresAt: new Date(now.getTime() + COLLECTOR_LEASE_MS),
+        },
+      });
+      return renewed.count === 1;
     },
 
     async upsertPost(input) {
@@ -262,6 +277,13 @@ export async function collectFeedFollowSnapshot(
     }
     const capturedAt = clock();
     const day = utcDay(capturedAt);
+
+    // Fence every persistence group with an ownership check. A collector that
+    // stalled beyond its lease must stop before an active successor's data can
+    // be touched, even if its Graph request eventually returned.
+    if (!(await deps.repository.renewLease(runId, capturedAt))) {
+      throw new Error("feed_follow_collector_lease_lost");
+    }
 
     try {
       await deps.repository.upsertPost({

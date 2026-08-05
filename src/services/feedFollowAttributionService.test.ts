@@ -77,6 +77,16 @@ describe("getFeedFollowAttribution", () => {
 
     const response = await getFeedFollowAttribution({ from: "2026-08-02", to: "2026-08-02" });
 
+    expect(prisma.feedPostMeta.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          OR: [
+            { firstSeenAt: { lt: new Date("2026-08-03T00:00:00Z") } },
+            { postedAt: { lt: new Date("2026-08-03T00:00:00Z") } },
+          ],
+        },
+      }),
+    );
     expect(response.range).toEqual({ from: "2026-08-02", to: "2026-08-02" });
     expect(response.tracking).toEqual({
       startedAt: "2026-08-01T10:00:00.000Z",
