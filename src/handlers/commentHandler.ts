@@ -2,7 +2,7 @@ import type { CommentValue } from "../types/meta.js";
 import { extractCandidates, findKeywordForComment } from "../services/keywordService.js";
 import { openConversation, markGated } from "../services/conversationService.js";
 import { replyToComment } from "../meta/replyToComment.js";
-import { sendPrivateReply } from "../meta/sendMessage.js";
+import { sendTrackedPrivateReply } from "../services/dmDeliveryService.js";
 import { logger } from "../lib/logger.js";
 import { logEvent, describeGraphError } from "../services/eventLogger.js";
 import { rememberUsername } from "../services/igUserService.js";
@@ -124,7 +124,14 @@ export async function handleComment(comment: CommentValue): Promise<void> {
   }
 
   try {
-    await sendPrivateReply(comment.id, keyword.gateMessage);
+    // A private reply is addressed by comment_id but lands in the commenter's DM
+    // thread, so it is recorded against the user rather than the comment.
+    await sendTrackedPrivateReply({
+      recipientIgUserId: senderId,
+      commentId: comment.id,
+      text: keyword.gateMessage,
+      source: "keyword_automation",
+    });
     // Stamp gatedAt so the DONE-window is measured from delivery (consistent with
     // the retry path). markGated keeps state awaiting_done + sets gatedAt=now.
     await markGated(convo.id);

@@ -2,7 +2,7 @@ import { isAxiosError } from "axios";
 import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
 import { env } from "../config/env.js";
-import { sendPrivateReply, sendTextMessage } from "../meta/sendMessage.js";
+import { sendTrackedPrivateReply, sendTrackedText } from "./dmDeliveryService.js";
 import { logEvent, describeGraphError } from "../services/eventLogger.js";
 import { PRIVATE_REPLY_WINDOW_MS } from "./gateQueueService.js";
 
@@ -103,7 +103,12 @@ export async function runGateQueueTick(): Promise<void> {
         continue;
       }
       try {
-        await sendPrivateReply(row.commentId, row.gateMessage);
+        await sendTrackedPrivateReply({
+          recipientIgUserId: row.igUserId,
+          commentId: row.commentId,
+          text: row.gateMessage,
+          source: "keyword_automation",
+        });
         await prisma.gateQueue.update({
           where: { id: row.id },
           data: { status: "sent", attempts: row.attempts + 1, lastError: null },
@@ -179,7 +184,11 @@ async function maybeRunExperiment(): Promise<void> {
     });
     for (const row of sample) {
       try {
-        await sendTextMessage(row.igUserId, row.gateMessage);
+        await sendTrackedText({
+          recipientIgUserId: row.igUserId,
+          text: row.gateMessage,
+          source: "keyword_automation",
+        });
         await logEvent("gate_dm_experiment_ok", {
           conversationId: row.conversationId,
           igUserId: row.igUserId,

@@ -1,3 +1,4 @@
+import type { DmMessageType } from "@prisma/client";
 import type { MessagingEntry } from "../types/meta.js";
 import {
   findActiveAwaitingDone,
@@ -8,7 +9,13 @@ import {
 } from "../services/conversationService.js";
 import { findKeywordInMessage } from "../services/keywordService.js";
 import { sendSequence } from "../services/sequenceSender.js";
-import { sendTextMessage } from "../meta/sendMessage.js";
+import { sendTrackedText } from "../services/dmDeliveryService.js";
+import {
+  markThreadResolved,
+  recordInboundMessage,
+  updateDmThreadProfile,
+} from "../services/dmThreadService.js";
+import { queueReplyDraft } from "../services/replyDraftService.js";
 import { logger } from "../lib/logger.js";
 import { logEvent, describeGraphError } from "../services/eventLogger.js";
 import { resolveUsername } from "../services/igUserService.js";
@@ -33,6 +40,33 @@ const REDELIVERY_INTRO = "You've already got this one — here it is again 💛"
 const FOLLOW_GATE =
   "You're one step away! 💛 Follow @tinysoho, then reply DONE here and I'll send it right over. (Just followed? Give it a few seconds and reply DONE again.)";
 
+/**
+ * Classify an inbound message for the DmMessage row.
+ *
+ * Meta omits `text` entirely for media, so without this an image-only DM would be
+ * recorded as an empty text message and read as if the user sent nothing.
+ */
+function classifyInbound(msg: NonNullable<MessagingEntry["message"]>): {
+  messageType: DmMessageType;
+  mediaUrl: string | null;
+} {
+  const attachment = msg.attachments?.[0];
+  if (!attachment) return { messageType: "text", mediaUrl: null };
+
+  const url = attachment.payload?.url ?? null;
+  switch (attachment.type) {
+    case "image":
+    case "video":
+    case "audio":
+    case "file":
+      return { messageType: attachment.type, mediaUrl: url };
+    default:
+      // A share, story mention, reaction or anything Meta adds later. Recorded as
+      // `unknown` with its URL rather than guessed into the wrong bucket.
+      return { messageType: "unknown", mediaUrl: url };
+  }
+}
+
 export async function handleMessage(entry: MessagingEntry): Promise<void> {
   const msg = entry.message;
   if (!msg || msg.is_echo) return;
@@ -45,10 +79,37 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
   // Record every inbound DM from a user, before any matching.
   await logEvent("message_received", { senderId, text, mid: msg.mid });
 
+  // Capture the real message into its thread. Idempotent on Meta's `mid`: Meta
+  // retries webhooks, and a replay must not re-run automation, re-send a guide, or
+  // re-open a thread the owner already answered.
+  const { messageType, mediaUrl } = classifyInbound(msg);
+  const inbound = await recordInboundMessage({
+    igAccountId: env.IG_USER_ID,
+    igUserId: senderId,
+    instagramMessageId: msg.mid,
+    text: text || null,
+    messageType,
+    mediaUrl,
+    // Meta's timestamp, not ours, so a delayed webhook still orders correctly.
+    instagramTimestamp: new Date(entry.timestamp),
+  });
+  if (inbound.duplicate) {
+    logger.debug({ senderId, mid: msg.mid }, "Duplicate inbound webhook ignored");
+    return;
+  }
+
   // DM webhooks don't carry a username — resolve it via the Graph API (non-throwing
   // so it can't break message handling). The same call also returns follow intel
   // (is_user_follow_business), which we use to personalize the guide delivery below.
-  const profile = await resolveUsername(senderId);
+  const profile = await resolveUsername(senderId).catch((err: unknown) => {
+    logger.warn({ err, senderId }, "Profile resolve failed — continuing without it");
+    return { isFollower: null, username: null, name: null };
+  });
+  await updateDmThreadProfile({
+    threadId: inbound.threadId,
+    username: profile.username ?? null,
+    name: profile.name ?? null,
+  });
 
   // ---- 1. New keyword → (re)send the gate ----------------------------------
   // Checked FIRST so someone with an open "sleep" gate who DMs "potty" starts a
@@ -85,9 +146,23 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     const alreadyCompleted = await hasCompletedKeyword(senderId, keyword.id);
     if (profile.isFollower === true || alreadyCompleted) {
       try {
-        if (alreadyCompleted) await sendTextMessage(senderId, REDELIVERY_INTRO);
-        await sendSequence(senderId, keyword.resource.messages);
+        if (alreadyCompleted) {
+          await sendTrackedText({
+            recipientIgUserId: senderId,
+            text: REDELIVERY_INTRO,
+            source: "keyword_automation",
+          });
+        }
+        await sendSequence({
+          igUserId: senderId,
+          messages: keyword.resource.messages,
+          source: "guide_automation",
+        });
         await markCompleted(convo.id);
+        await markThreadResolved({
+          threadId: inbound.threadId,
+          inboundMessageId: inbound.messageId,
+        });
         await logEvent("sequence_completed", {
           conversationId: convo.id,
           followerAtDelivery: profile.isFollower,
@@ -98,7 +173,11 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
         // Same follow-aware sign-off as the gated path; best-effort.
         try {
           const closing = profile.isFollower ? FOLLOWER_THANKS : FOLLOW_NUDGE;
-          await sendTextMessage(senderId, closing);
+          await sendTrackedText({
+            recipientIgUserId: senderId,
+            text: closing,
+            source: "guide_automation",
+          });
           await logEvent("follow_nudge_sent", {
             conversationId: convo.id,
             isFollower: profile.isFollower,
@@ -124,10 +203,20 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     }
 
     try {
-      await sendTextMessage(senderId, keyword.gateMessage);
+      await sendTrackedText({
+        recipientIgUserId: senderId,
+        text: keyword.gateMessage,
+        source: "keyword_automation",
+      });
       // Stamp gatedAt so the DONE-window runs from delivery — aligns the DM path
       // with the comment path's markGated behavior.
       await markGated(convo.id);
+      // The gate IS our answer to this inbound, so the thread no longer needs the
+      // owner's attention.
+      await markThreadResolved({
+        threadId: inbound.threadId,
+        inboundMessageId: inbound.messageId,
+      });
       await logEvent("dm_sent", { conversationId: convo.id, kind: "gate", source: "dm" });
     } catch (err) {
       logger.warn(describeGraphError(err), "Gate DM (from inbound message) failed");
@@ -157,9 +246,21 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
         "Open-gate reply for an already-delivered keyword — redelivering",
       );
       try {
-        await sendTextMessage(senderId, REDELIVERY_INTRO);
-        await sendSequence(senderId, convo.keyword.resource.messages);
+        await sendTrackedText({
+          recipientIgUserId: senderId,
+          text: REDELIVERY_INTRO,
+          source: "keyword_automation",
+        });
+        await sendSequence({
+          igUserId: senderId,
+          messages: convo.keyword.resource.messages,
+          source: "guide_automation",
+        });
         await markCompleted(convo.id);
+        await markThreadResolved({
+          threadId: inbound.threadId,
+          inboundMessageId: inbound.messageId,
+        });
         await logEvent("sequence_completed", {
           conversationId: convo.id,
           followerAtDelivery: profile.isFollower,
@@ -194,8 +295,17 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
         senderId,
       });
       try {
-        await sendTextMessage(senderId, FOLLOW_GATE);
+        await sendTrackedText({
+          recipientIgUserId: senderId,
+          text: FOLLOW_GATE,
+          source: "keyword_automation",
+        });
         await markGated(convo.id); // reset the 48h DONE-window from this reply
+        // We answered them (with the follow ask), so this inbound is handled.
+        await markThreadResolved({
+          threadId: inbound.threadId,
+          inboundMessageId: inbound.messageId,
+        });
       } catch (err) {
         logger.warn(
           { ...describeGraphError(err), conversationId: convo.id },
@@ -217,8 +327,16 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     });
 
     try {
-      await sendSequence(senderId, convo.keyword.resource.messages);
+      await sendSequence({
+        igUserId: senderId,
+        messages: convo.keyword.resource.messages,
+        source: "guide_automation",
+      });
       await markCompleted(convo.id);
+      await markThreadResolved({
+        threadId: inbound.threadId,
+        inboundMessageId: inbound.messageId,
+      });
       await logEvent("sequence_completed", {
         conversationId: convo.id,
         followerAtDelivery: profile.isFollower,
@@ -229,7 +347,11 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
       // Best-effort — a failure here must not undo the completed delivery.
       try {
         const closing = profile.isFollower ? FOLLOWER_THANKS : FOLLOW_NUDGE;
-        await sendTextMessage(senderId, closing);
+        await sendTrackedText({
+          recipientIgUserId: senderId,
+          text: closing,
+          source: "guide_automation",
+        });
         await logEvent("follow_nudge_sent", {
           conversationId: convo.id,
           isFollower: profile.isFollower,
@@ -248,8 +370,23 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     return;
   }
 
-  // ---- 3. No keyword, no open gate → nothing to do -------------------------
-  // e.g. a "thanks" from an already-completed user (stays silent) or a cold DM.
+  // ---- 3. No keyword, no open gate → queue a draft for the owner ------------
+  // Historically this branch was silent: 673 people wrote something real and got
+  // nothing back. It now queues an AI draft for the owner to approve. Nothing is
+  // sent from here — approval is a separate, explicit action, which is also what
+  // keeps a considered reply inside Meta's rules.
   logger.debug({ senderId, text }, "Inbound DM with no keyword and no open gate");
   await logEvent("message_unhandled", { senderId, text, hadOpenConversation: false });
+
+  if (!env.AI_DRAFTS_ENABLED) return;
+  try {
+    await queueReplyDraft({
+      threadId: inbound.threadId,
+      inboundMessageId: inbound.messageId,
+    });
+  } catch (err) {
+    // A draft is an assist, never a requirement. Failing here must not fail the
+    // webhook — Meta would retry it and we would re-run everything above.
+    logger.error({ err, threadId: inbound.threadId }, "Failed to queue reply draft");
+  }
 }

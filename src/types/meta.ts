@@ -31,7 +31,23 @@ export interface MessagingEntry {
     mid: string;
     text?: string;
     is_echo?: boolean;
+    // Present when someone sends a photo, video, voice note or file. Meta omits
+    // `text` entirely for those, so without this an image-only DM looks empty and
+    // would be recorded as a blank message.
+    attachments?: Array<{
+      type?: string;
+      payload?: { url?: string };
+    }>;
   };
 }
 
 export type AttachmentType = "image" | "video" | "audio" | "file";
+
+/**
+ * Meta's `message_id` for a send we just made. Null when the Graph response
+ * omitted it — the send still succeeded, we simply cannot key the recorded row on
+ * it, so idempotency for that row falls back to nothing rather than a wrong id.
+ */
+export interface MetaSendResult {
+  messageId: string | null;
+}

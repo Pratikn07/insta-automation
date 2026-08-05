@@ -1,7 +1,7 @@
 import { graph } from "./graphClient.js";
 import { env } from "../config/env.js";
 import { logger } from "../lib/logger.js";
-import type { AttachmentType } from "../types/meta.js";
+import type { AttachmentType, MetaSendResult } from "../types/meta.js";
 
 interface SendMediaArgs {
   recipientIgUserId: string;
@@ -9,8 +9,16 @@ interface SendMediaArgs {
   url: string;
 }
 
-export async function sendMedia({ recipientIgUserId, type, url }: SendMediaArgs): Promise<void> {
-  await graph.post(`/${env.IG_USER_ID}/messages`, {
+interface GraphSendResponse {
+  message_id?: string;
+}
+
+export async function sendMedia({
+  recipientIgUserId,
+  type,
+  url,
+}: SendMediaArgs): Promise<MetaSendResult> {
+  const { data } = await graph.post<GraphSendResponse>(`/${env.IG_USER_ID}/messages`, {
     recipient: { id: recipientIgUserId },
     message: {
       attachment: {
@@ -20,4 +28,5 @@ export async function sendMedia({ recipientIgUserId, type, url }: SendMediaArgs)
     },
   });
   logger.debug({ recipientIgUserId, type, url }, "Sent media DM");
+  return { messageId: data.message_id ?? null };
 }
