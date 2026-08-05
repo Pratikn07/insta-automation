@@ -1,7 +1,7 @@
 import type { AppServerClient } from "./appServerClient.js";
 import {
-  DM_DRAFTER_DEVELOPER_PROMPT,
   DM_DRAFTER_TURN_INPUT,
+  developerInstructionsFor,
   renderBrandContext,
   renderTranscript,
 } from "./prompts.js";
@@ -93,7 +93,7 @@ export function createDraftService(appServer: AppServerClient): DraftService {
           runtimeWorkspaceRoots: [],
           environments: [],
           dynamicTools: null,
-          developerMessage: DM_DRAFTER_DEVELOPER_PROMPT,
+          developerInstructions: developerInstructionsFor(input.kind),
         },
         THREAD_TIMEOUT_MS,
       );

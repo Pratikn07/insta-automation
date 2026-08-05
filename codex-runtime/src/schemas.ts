@@ -8,34 +8,39 @@ import { z } from "zod";
  * from a model turn. Neither is assumed well-formed.
  */
 
-export const dmDraftRequestSchema = z.object({
-  requestId: z.string().uuid(),
-  participant: z.object({
-    igUserId: z.string().min(1).max(128),
-    username: z.string().max(100).nullable(),
-    name: z.string().max(200).nullable(),
-  }),
-  messages: z
-    .array(
-      z.object({
-        direction: z.enum(["inbound", "outbound"]),
-        text: z.string().max(2000).nullable(),
-        messageType: z.enum(["text", "image", "video", "audio", "file", "unknown"]),
-        source: z.string().max(64),
-        at: z.string().datetime(),
-      }),
-    )
-    .min(1)
-    .max(20),
-  brandVoice: z.string().min(1).max(4000),
-  guideContext: z
-    .object({
-      keyword: z.string().max(100),
-      resourceName: z.string().max(200),
-      description: z.string().max(2000).nullable(),
-    })
-    .nullable(),
-});
+export const dmDraftRequestSchema = z
+  .object({
+    requestId: z.string().uuid(),
+    kind: z.enum(["reply", "engagement_follow_up"]),
+    promptVersion: z.literal(2),
+    guideDeliveredAt: z.string().datetime().nullable(),
+    participant: z.object({
+      igUserId: z.string().min(1).max(128),
+      username: z.string().max(100).nullable(),
+      name: z.string().max(200).nullable(),
+    }),
+    messages: z
+      .array(
+        z.object({
+          direction: z.enum(["inbound", "outbound"]),
+          text: z.string().max(2000).nullable(),
+          messageType: z.enum(["text", "image", "video", "audio", "file", "unknown"]),
+          source: z.string().max(64),
+          at: z.string().datetime(),
+        }),
+      )
+      .min(1)
+      .max(20),
+    brandVoice: z.string().min(1).max(4000),
+    guideContext: z
+      .object({
+        keyword: z.string().max(100),
+        resourceName: z.string().max(200),
+        description: z.string().max(2000).nullable(),
+      })
+      .nullable(),
+  })
+  .strict();
 
 export type DmDraftRequest = z.infer<typeof dmDraftRequestSchema>;
 

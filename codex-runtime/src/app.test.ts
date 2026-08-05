@@ -79,6 +79,9 @@ function advisorApp(advisorService: AdvisorService) {
 
 const VALID_DRAFT_BODY = {
   requestId: "11111111-1111-1111-1111-111111111111",
+  kind: "reply",
+  promptVersion: 2,
+  guideDeliveredAt: null,
   participant: { igUserId: "ig-user-1", username: "geri", name: "Geri" },
   messages: [
     {

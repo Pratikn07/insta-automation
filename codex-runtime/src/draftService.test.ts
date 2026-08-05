@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { AppServerClient } from "./appServerClient.js";
 import { createDraftService } from "./draftService.js";
-import type { DmDraftRequest } from "./schemas.js";
 
-const draftRequest: DmDraftRequest = {
+const draftRequest = {
   requestId: "11111111-1111-1111-1111-111111111111",
+  kind: "reply",
+  promptVersion: 2,
+  guideDeliveredAt: null,
   participant: { igUserId: "ig-user-1", username: "geri", name: "Geri" },
   messages: [
     {
@@ -100,6 +102,41 @@ describe("createDraftService", () => {
       }),
       30_000,
     );
+  });
+
+  it("uses the supported owner-review developer instructions field", async () => {
+    const service = createDraftService(appServer.client);
+    await service.generate(draftRequest);
+
+    expect(appServer.client.request).toHaveBeenCalledWith(
+      "thread/start",
+      expect.objectContaining({
+        developerInstructions: expect.stringContaining("owner to review"),
+      }),
+      30_000,
+    );
+    expect(appServer.client.request.mock.calls[0]![1]).not.toHaveProperty("developerMessage");
+  });
+
+  it("uses the engagement follow-up safety instructions for follow-up drafts", async () => {
+    const service = createDraftService(appServer.client);
+    await service.generate({
+      ...draftRequest,
+      kind: "engagement_follow_up",
+      guideDeliveredAt: "2026-08-04T10:00:00.000Z",
+    });
+
+    const threadStart = appServer.client.request.mock.calls[0]![1] as {
+      developerInstructions: string;
+    };
+    expect(threadStart.developerInstructions).toContain("one or two short sentences");
+    expect(threadStart.developerInstructions).toContain("one easy question");
+    expect(threadStart.developerInstructions).toContain("Do not repeat a link by default");
+    expect(threadStart.developerInstructions).toContain("Do not ask them to follow");
+    expect(threadStart.developerInstructions).toContain("Do not sell");
+    expect(threadStart.developerInstructions).toContain("Do not diagnose");
+    expect(threadStart.developerInstructions).toContain("urgency or guilt");
+    expect(threadStart.developerInstructions).toContain("Never say or imply the message has been sent");
   });
 
   it("marks the DM transcript as untrusted additional context", async () => {

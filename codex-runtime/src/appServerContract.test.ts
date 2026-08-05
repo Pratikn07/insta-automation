@@ -1,11 +1,37 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { execFile as execFileCallback } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import type { RuntimeConfig } from "./config.js";
 import { startAppServerClient } from "./appServerClient.js";
 
+const execFile = promisify(execFileCallback);
+
 describe("pinned Codex app-server contract", () => {
+  it(
+    "generates a thread/start schema with developerInstructions, not developerMessage",
+    async () => {
+      const outputDirectory = await mkdtemp(path.join(tmpdir(), "tinysoho-codex-types-"));
+      const codexBinary = path.join(process.cwd(), "node_modules", ".bin", "codex");
+
+      try {
+        await execFile(codexBinary, ["app-server", "generate-ts", "--experimental", "--out", outputDirectory]);
+        const generated = await readFile(
+          path.join(outputDirectory, "v2", "ThreadStartParams.ts"),
+          "utf8",
+        );
+
+        expect(generated).toContain("developerInstructions");
+        expect(generated).not.toContain("developerMessage");
+      } finally {
+        await rm(outputDirectory, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
+
   it(
     "initializes and reads account state without performing a model turn",
     async () => {
