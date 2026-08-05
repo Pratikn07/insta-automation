@@ -137,6 +137,33 @@ describe("createDraftService", () => {
     expect(threadStart.developerInstructions).toContain("Do not diagnose");
     expect(threadStart.developerInstructions).toContain("urgency or guilt");
     expect(threadStart.developerInstructions).toContain("Never say or imply the message has been sent");
+    expect(threadStart.developerInstructions).toContain("guide was already delivered");
+    expect(threadStart.developerInstructions).toContain("Naturally reference the delivered guide or its topic");
+  });
+
+  it("passes a follow-up's guide delivery time as application context", async () => {
+    const service = createDraftService(appServer.client);
+    await service.generate({
+      ...draftRequest,
+      kind: "engagement_follow_up",
+      guideDeliveredAt: "2026-08-04T10:00:00.000Z",
+      guideContext: {
+        keyword: "NAP",
+        resourceName: "The Toddler Nap Guide",
+        description: "A flexible nap routine for toddlers.",
+      },
+    });
+
+    const turn = appServer.calls.find((call) => call.method === "turn/start");
+    const context = (turn?.params as {
+      additionalContext: Record<string, { kind: string; value: string }>;
+    }).additionalContext;
+    expect(context.guide_delivery).toEqual({
+      kind: "application",
+      value: "2026-08-04T10:00:00.000Z",
+    });
+    expect(context.brand_context.value).toContain("already delivered");
+    expect(context.brand_context.value).toContain("The Toddler Nap Guide");
   });
 
   it("marks the DM transcript as untrusted additional context", async () => {

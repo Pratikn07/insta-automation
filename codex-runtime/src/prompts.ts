@@ -19,6 +19,7 @@ export const DM_REPLY_DEVELOPER_INSTRUCTIONS = [
 
 export const ENGAGEMENT_FOLLOW_UP_DEVELOPER_INSTRUCTIONS = [
   "You draft ONE gentle engagement follow-up Instagram DM, for the account owner to review.",
+  "A guide was already delivered to the participant. Naturally reference the delivered guide or its topic; do not offer it as new or imply it was just sent.",
   "Write one or two short sentences and include one easy question.",
   "Do not repeat a link by default. Do not ask them to follow. Do not sell. Do not diagnose. Do not use urgency or guilt.",
   "You are not sending anything. Never say or imply the message has been sent.",
@@ -73,14 +74,16 @@ export const ADVISOR_DEVELOPER_INSTRUCTIONS = [
   "Return ONLY the structured object required by the output schema.",
 ].join("\n");
 
-/** Brand voice plus, when present, the one guide already associated with this thread. */
+/** Brand voice plus, when present, the one guide relevant to this draft. */
 export function renderBrandContext(request: DmDraftRequest): string {
   const parts = [`Brand voice: ${request.brandVoice}`];
   if (request.guideContext) {
     const g = request.guideContext;
     parts.push(
       "",
-      "A guide already associated with this conversation (offer it only if it genuinely fits):",
+      request.kind === "engagement_follow_up"
+        ? "A guide was already delivered in this conversation (naturally reference it or its topic; do not offer it as new):"
+        : "A guide already associated with this conversation (offer it only if it genuinely fits):",
       `- keyword: ${g.keyword}`,
       `- name: ${g.resourceName}`,
       ...(g.description ? [`- about: ${g.description}`] : []),

@@ -128,6 +128,11 @@ export function createDraftService(appServer: AppServerClient): DraftService {
             additionalContext: {
               dm_transcript: { kind: "untrusted", value: renderTranscript(input) },
               brand_context: { kind: "application", value: renderBrandContext(input) },
+              ...(input.kind === "engagement_follow_up" && input.guideDeliveredAt
+                ? {
+                    guide_delivery: { kind: "application", value: input.guideDeliveredAt },
+                  }
+                : {}),
             },
           },
           TURN_TIMEOUT_MS,
