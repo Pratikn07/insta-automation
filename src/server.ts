@@ -11,6 +11,7 @@ import { runGeminiQueueTick } from "./services/geminiQueueWorker.js";
 import { runFollowRecheckTick } from "./services/followRecheckWorker.js";
 import { runFollowThroughTick } from "./services/followThroughWorker.js";
 import { runReplyDraftTick } from "./services/replyDraftWorker.js";
+import { internalAiRouter } from "./api/internalAi.routes.js";
 import { seedTokenFromEnv } from "./meta/tokenStore.js";
 import { runTokenRefreshTick } from "./meta/tokenRefresher.js";
 import { apiRouter } from "./api/router.js";
@@ -34,6 +35,12 @@ app.use(
 );
 
 app.use(express.json({ verify: captureRawBody, limit: "1mb" }));
+
+// Advisor data tools for the Codex runtime. Mounted here — after the JSON body
+// parser it needs, but ABOVE the owner's /api router — so it inherits neither the
+// browser CORS policy (scoped to /api) nor Supabase requireAdmin. A Supabase user
+// token cannot open these, and the internal service token cannot open /api.
+app.use("/internal/ai", internalAiRouter);
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true, env: env.NODE_ENV });
