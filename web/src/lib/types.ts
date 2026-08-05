@@ -555,3 +555,76 @@ export interface AdvisorHistoryItem {
   text: string | null;
   response: AdvisorResponse | null;
 }
+
+// ── Feed-post follow attribution ─────────────────────────────────────────────
+// Mirrors src/services/feedFollowAttributionCore.ts and
+// src/services/feedFollowAttributionService.ts. These counts cover regular
+// FEED media only; Reels and Stories are not part of this response.
+
+export type FeedFollowCollectionStatus = "not_started" | "complete" | "partial" | "missing";
+
+export type FeedFollowComparisonReason =
+  | "feed_not_started"
+  | "feed_tracking_partial_day"
+  | "feed_collection_incomplete"
+  | "feed_multi_day_delta"
+  | "feed_counter_correction"
+  | "account_missing"
+  | "account_provisional"
+  | "account_not_one_day";
+
+export interface FeedFollowAttributedPost {
+  mediaId: string;
+  mediaType: string | null;
+  caption: string | null;
+  permalink: string | null;
+  thumbnailUrl: string | null;
+  postedAt: string | null;
+  follows: number;
+  delta: number;
+  spanDays: number;
+}
+
+export interface FeedFollowAttributionDay {
+  day: string;
+  collectionStatus: FeedFollowCollectionStatus;
+  eligiblePosts: number;
+  successfulPosts: number;
+  unavailablePosts: number;
+  failedPosts: number;
+  missingPosts: number;
+  attributedFeedFollows: number | null;
+  posts: FeedFollowAttributedPost[];
+  hasCounterCorrection: boolean;
+  hasMultiDayDelta: boolean;
+  accountNetAdds: number | null;
+  accountBasis: DailyAddsBasis | null;
+  accountProvisional: boolean;
+  netResidualAfterFeed: number | null;
+  comparisonReason: FeedFollowComparisonReason | null;
+}
+
+export interface FeedFollowAttributionResponse {
+  range: { from: string; to: string };
+  tracking: {
+    startedAt: string | null;
+    lastAttemptAt: string | null;
+    lastCompletedAt: string | null;
+    lastStatus: string | null;
+    eligibleCount: number;
+    writtenCount: number;
+    unavailableCount: number;
+    failedCount: number;
+    lastError: string | null;
+    trackedPosts: number;
+    latestSnapshotDay: string | null;
+  };
+  days: FeedFollowAttributionDay[];
+  summary: {
+    comparableDays: number;
+    attributedFeedFollows: number;
+    accountNetAdds: number;
+    netResidualAfterFeed: number;
+  };
+  caveats: string[];
+}

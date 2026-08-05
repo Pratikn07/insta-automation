@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 interface DrawerProps {
   open: boolean;
   onClose: () => void;
+  modal?: boolean;
   title?: React.ReactNode;
   description?: React.ReactNode;
   footer?: React.ReactNode;
@@ -16,12 +17,17 @@ interface DrawerProps {
 export function Drawer({
   open,
   onClose,
+  modal = true,
   title,
   description,
   footer,
   children,
   widthClass = "w-full max-w-md",
 }: DrawerProps) {
+  const panelRef = React.useRef<HTMLElement | null>(null);
+  const titleId = React.useId();
+  const descriptionId = React.useId();
+
   React.useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -31,20 +37,38 @@ export function Drawer({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
+  React.useEffect(() => {
+    if (!open) return;
+    const activeElement = document.activeElement;
+    const previouslyFocused =
+      activeElement && "focus" in activeElement
+        ? (activeElement as Element & { focus: () => void })
+        : null;
+    const focusFrame = window.requestAnimationFrame(() => panelRef.current?.focus());
+
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      if (previouslyFocused?.isConnected) previouslyFocused.focus();
+    };
+  }, [open]);
+
   return (
     <AnimatePresence>
       {open && (
         <>
-          <motion.div
-            key="backdrop"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.18 }}
-            onClick={onClose}
-            className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm"
-          />
+          {modal && (
+            <motion.div
+              key="backdrop"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.18 }}
+              onClick={onClose}
+              className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm"
+            />
+          )}
           <motion.aside
+            ref={panelRef}
             key="panel"
             initial={{ x: "100%" }}
             animate={{ x: 0 }}
@@ -55,13 +79,22 @@ export function Drawer({
               widthClass,
             )}
             role="dialog"
-            aria-modal="true"
+            aria-modal={modal || undefined}
+            aria-labelledby={title ? titleId : undefined}
+            aria-describedby={description ? descriptionId : undefined}
+            tabIndex={-1}
           >
             <header className="flex items-start justify-between gap-4 border-b px-6 py-5">
               <div className="min-w-0">
-                {title && <h2 className="text-base font-semibold tracking-tight">{title}</h2>}
+                {title && (
+                  <h2 id={titleId} className="text-base font-semibold tracking-tight">
+                    {title}
+                  </h2>
+                )}
                 {description && (
-                  <p className="mt-1 text-sm text-muted-foreground">{description}</p>
+                  <p id={descriptionId} className="mt-1 text-sm text-muted-foreground">
+                    {description}
+                  </p>
                 )}
               </div>
               <button

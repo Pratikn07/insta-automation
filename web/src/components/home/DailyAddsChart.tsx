@@ -8,6 +8,8 @@ import { ChartTooltip } from "./ChartTooltip";
 interface DailyAddsChartProps {
   points: FollowerDailyAddsPoint[];
   className?: string;
+  selectedDay?: string | null;
+  onDaySelect?: (day: string) => void;
 }
 
 // Region fills, hardcoded rather than themed. No <defs> at all — nothing here
@@ -40,7 +42,19 @@ function tickLabel(day: string): string {
   });
 }
 
-export function DailyAddsChart({ points, className }: DailyAddsChartProps) {
+function accessibleDayLabel(day: string): string {
+  return new Date(`${day}T00:00:00Z`).toLocaleDateString("en-US", {
+    timeZone: "UTC",
+    dateStyle: "long",
+  });
+}
+
+export function DailyAddsChart({
+  points,
+  className,
+  selectedDay = null,
+  onDaySelect,
+}: DailyAddsChartProps) {
   // Hooks must run unconditionally, so they sit above the early return below.
   const containerRef = useRef<HTMLDivElement | null>(null);
   // Keyed by day, not index: chartGeometry draws no bar for stale days and gives
@@ -86,6 +100,7 @@ export function DailyAddsChart({ points, className }: DailyAddsChartProps) {
   );
   const staleCount = points.filter((p) => p.stale).length;
   const hoveredDay = hover?.day ?? null;
+  const activeDay = hoveredDay ?? selectedDay;
   const hoveredPoint = hoveredDay ? points.find((p) => p.day === hoveredDay) ?? null : null;
   // Same list SpikeCandidates renders, so the tooltip only points "below" when
   // there is a card down there to point at.
@@ -103,6 +118,12 @@ export function DailyAddsChart({ points, className }: DailyAddsChartProps) {
     setHover({ day, x: offsetX, y: event.clientY - rect.top, containerWidth: rect.width });
   }
 
+  function handleDayKeyDown(event: React.KeyboardEvent<SVGGElement>, day: string) {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    onDaySelect?.(day);
+  }
+
   const ariaLabel =
     `Daily net follower adds, ${tickLabel(first)} to ${tickLabel(last)}: ` +
     `best ${formatSignedCount(best.total ?? 0)} on ${tickLabel(best.day)}` +
@@ -118,7 +139,12 @@ export function DailyAddsChart({ points, className }: DailyAddsChartProps) {
       {/* Deliberately no preserveAspectRatio="none": a stretched line still
           reads as a trend, but stretched bar widths read as false data.
           Fixed aspect, scaled by width. */}
-      <svg role="img" aria-label={ariaLabel} viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="w-full">
+      <svg
+        role={onDaySelect ? "group" : "img"}
+        aria-label={ariaLabel}
+        viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
+        className="w-full"
+      >
         <title>Daily net follower adds by region</title>
 
         {/* Gridlines first so they sit behind the bars. Zero keeps a stronger
@@ -148,34 +174,60 @@ export function DailyAddsChart({ points, className }: DailyAddsChartProps) {
         ))}
 
         {geo.bars.map((bar) => {
+          const selectionProps = onDaySelect
+            ? {
+                role: "button",
+                tabIndex: 0,
+                "aria-label": `View feed-post attribution for ${accessibleDayLabel(bar.day)}`,
+                "aria-pressed": selectedDay === bar.day,
+                onClick: () => onDaySelect(bar.day),
+                onKeyDown: (event: React.KeyboardEvent<SVGGElement>) =>
+                  handleDayKeyDown(event, bar.day),
+                className: "cursor-pointer",
+              }
+            : {};
+
           if (bar.ghost) {
             return (
-              <rect
-                key={bar.day}
-                x={bar.x}
-                y={8}
-                width={bar.width}
-                height={HEIGHT - 16}
-                rx={4}
-                fill="currentColor"
-                fillOpacity={hoveredDay === bar.day ? 0.12 : 0.06}
-              />
+              <g key={bar.day} {...selectionProps}>
+                <rect
+                  data-day-hit-target={bar.day}
+                  x={bar.x}
+                  y={8}
+                  width={bar.width}
+                  height={HEIGHT - 16}
+                  rx={4}
+                  fill="currentColor"
+                  fillOpacity={activeDay === bar.day ? 0.12 : 0.06}
+                  pointerEvents="all"
+                />
+              </g>
             );
           }
 
           return (
             <g
               key={bar.day}
+              {...selectionProps}
               opacity={
                 bar.provisional
-                  ? hoveredDay === bar.day
+                  ? activeDay === bar.day
                     ? 0.7
                     : 0.45
-                  : hoveredDay && hoveredDay !== bar.day
+                  : activeDay && activeDay !== bar.day
                     ? 0.55
                     : 1
               }
             >
+              <rect
+                data-day-hit-target={bar.day}
+                x={bar.x}
+                y={8}
+                width={bar.width}
+                height={HEIGHT - 16}
+                fill="transparent"
+                pointerEvents="all"
+              />
               {bar.segments.map((seg) => (
                 <rect
                   key={seg.region}
@@ -238,6 +290,7 @@ export function DailyAddsChart({ points, className }: DailyAddsChartProps) {
           x={hover.x}
           y={hover.y}
           containerWidth={hover.containerWidth}
+          actionHint={onDaySelect ? "Click to see contributing feed posts" : undefined}
         />
       )}
     </div>

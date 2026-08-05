@@ -209,6 +209,50 @@ describe("FollowerFlowPanel", () => {
     expect(html).not.toContain("Snapshots as of");
   });
 
+  it("makes every rendered chart day keyboard-selectable, including a ghost day", () => {
+    const points = [
+      flowPoint("2026-08-01", { us: 20 }),
+      flowPoint("2026-08-02", { us: 30 }),
+      flowPoint("2026-08-03", { us: 40 }),
+      {
+        ...flowPoint("2026-08-04", {
+          us: null,
+          southAsian: null,
+          anglosphere: null,
+          other: null,
+        }),
+        total: null,
+        reportedTotalDelta: null,
+        unattributed: null,
+        spanDays: null,
+        stale: true,
+        provisional: true,
+        basis: "pending" as const,
+      },
+    ];
+    const summary = summarizeFollowerFlow(points)!;
+    const html = renderToStaticMarkup(
+      <FollowerFlowPanel
+        points={points}
+        stock={flowStock}
+        summary={summary}
+        isLoading={false}
+        isError={false}
+        onRetry={() => undefined}
+        selectedDay="2026-08-03"
+        onDaySelect={() => undefined}
+      />,
+    );
+
+    expect((html.match(/role="button"/g) ?? [])).toHaveLength(4);
+    expect((html.match(/tabindex="0"/g) ?? [])).toHaveLength(4);
+    expect((html.match(/data-day-hit-target=/g) ?? [])).toHaveLength(4);
+    expect((html.match(/pointer-events="all"/g) ?? [])).toHaveLength(4);
+    expect(html).toContain("View feed-post attribution for August 1, 2026");
+    expect(html).toContain("View feed-post attribution for August 4, 2026");
+    expect(html).toContain('aria-label="View feed-post attribution for August 3, 2026" aria-pressed="true"');
+  });
+
   it("shows the waiting state before two measured days exist", () => {
     const html = renderToStaticMarkup(
       <FollowerFlowPanel
