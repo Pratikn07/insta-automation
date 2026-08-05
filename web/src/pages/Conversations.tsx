@@ -18,6 +18,7 @@ import type {
   Conversation,
   ConversationCounts,
   ConversationState,
+  DmThreadRow,
   Paginated,
   ResourceMessage,
 } from "@/lib/types";
@@ -28,9 +29,17 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/EmptyState";
 import { UserLineage } from "@/components/UserLineage";
 import { IncomingBubble, OutgoingBubble, StepBubble } from "@/components/ChatBubbles";
+import { DmThreadList } from "@/components/conversations/DmThreadList";
+import { DmThreadDrawer } from "@/components/conversations/DmThreadDrawer";
 import { cn, displayUser } from "@/lib/utils";
 
 type StateFilter = ConversationState | "all";
+
+// Two lenses on the same page. The DM views show the REAL message thread with its
+// approval surface; the journey views are the existing keyword→gate→guide funnel,
+// unchanged. Kept side by side rather than replaced, because a journey row and a
+// DM thread answer different questions.
+type Lens = "needs_reply" | "dms" | "journeys";
 
 // Plain-English tab labels. "DONE" is internal jargon (the word the user types) —
 // a marketer tracks outcomes: who's waiting, who got it, who never replied.
@@ -65,9 +74,18 @@ function rowBadge(c: Conversation): { label: string; tone: string; Icon: typeof 
 }
 
 export function Conversations() {
+  const [lens, setLens] = useState<Lens>("needs_reply");
   const [filter, setFilter] = useState<StateFilter>("all");
   const [selected, setSelected] = useState<Conversation | null>(null);
+  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [lineageUser, setLineageUser] = useState<string | null>(null);
+
+  const dmScope = lens === "needs_reply" ? "needs_reply" : "all";
+  const dmThreadsQ = useQuery<Paginated<DmThreadRow>>({
+    queryKey: ["dm-threads", dmScope],
+    queryFn: () => api<Paginated<DmThreadRow>>(`/dm-threads?scope=${dmScope}`),
+    enabled: lens !== "journeys",
+  });
 
   const conversationsQ = useInfiniteQuery({
     queryKey: ["conversations", filter],
@@ -110,16 +128,43 @@ export function Conversations() {
         </p>
       </div>
 
+      {/* Primary lens: real DMs first, since those are the ones a person is
+          waiting on. The journey filters stay exactly as they were, under their
+          own label, so nothing about the existing workflow moves. */}
       <div className="flex flex-wrap items-center gap-2">
+        {(
+          [
+            { value: "needs_reply", label: "Needs reply" },
+            { value: "dms", label: "DMs" },
+          ] as const
+        ).map((l) => (
+          <button
+            key={l.value}
+            onClick={() => setLens(l.value)}
+            className={cn(
+              "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+              lens === l.value
+                ? "border-foreground/40 bg-accent/40 text-foreground"
+                : "text-muted-foreground hover:bg-accent/20",
+            )}
+            type="button"
+          >
+            {l.label}
+          </button>
+        ))}
+        <span className="ml-2 text-xs text-muted-foreground">Automation journeys</span>
         {FILTERS.map((f) => {
           const count = f.countKey ? counts?.[f.countKey] : undefined;
           return (
             <button
               key={f.value}
-              onClick={() => setFilter(f.value)}
+              onClick={() => {
+                setLens("journeys");
+                setFilter(f.value);
+              }}
               className={cn(
                 "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
-                filter === f.value
+                lens === "journeys" && filter === f.value
                   ? "border-foreground/40 bg-accent/40 text-foreground"
                   : "text-muted-foreground hover:bg-accent/20",
               )}
@@ -149,7 +194,13 @@ export function Conversations() {
         </div>
       )}
 
-      {isLoading ? (
+      {lens !== "journeys" ? (
+        <DmThreadList
+          rows={dmThreadsQ.data?.items ?? []}
+          isLoading={dmThreadsQ.isLoading}
+          onSelect={(row) => setSelectedThreadId(row.id)}
+        />
+      ) : isLoading ? (
         <div className="space-y-2">
           {[0, 1, 2, 3].map((i) => (
             <Skeleton key={i} className="h-16" />
@@ -217,6 +268,14 @@ export function Conversations() {
       >
         {lineageUser && <UserLineage igUserId={lineageUser} />}
       </Drawer>
+
+      {/* sendEnabled is decided server-side by AI_SEND_ENABLED; the route answers
+          403 ai_send_disabled regardless, so this only governs the button state. */}
+      <DmThreadDrawer
+        threadId={selectedThreadId}
+        sendEnabled
+        onClose={() => setSelectedThreadId(null)}
+      />
     </div>
   );
 }

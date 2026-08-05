@@ -24,9 +24,16 @@ vi.mock("../lib/prisma.js", () => ({
   },
 }));
 
-const { queueReplyDraft, claimOneQueuedDraft, completeGeneration, failGeneration } = await import(
-  "./replyDraftService.js"
-);
+const {
+  queueReplyDraft,
+  claimOneQueuedDraft,
+  completeGeneration,
+  failGeneration,
+  claimApprovedDraft,
+  markSent,
+  markSendFailed,
+  markSendUncertain,
+} = await import("./replyDraftService.js");
 
 const INPUT = { threadId: "thread-1", inboundMessageId: "message-1" };
 
@@ -237,5 +244,119 @@ describe("failGeneration", () => {
       status: "generation_failed",
       errorCode: "runtime_rate_limited",
     });
+  });
+});
+
+// --- the approval boundary ---------------------------------------------------
+// This is the only place in the product that causes an Instagram send from an AI
+// suggestion, so the claim semantics are pinned hard.
+describe("claimApprovedDraft", () => {
+  const INPUT = {
+    threadId: "thread-1",
+    draftId: "draft-2",
+    approvedBy: "owner@example.com",
+    workingText: "This is the exact reply 💛",
+  };
+
+  beforeEach(() => {
+    tx.dmThread.findUnique.mockResolvedValue({ latestInboundMessageId: "message-2" });
+    tx.replyDraft.findUnique.mockResolvedValue({
+      id: "draft-2",
+      threadId: "thread-1",
+      inboundMessageId: "message-2",
+      status: "pending_approval",
+    });
+    tx.replyDraft.updateMany.mockResolvedValue({ count: 1 });
+  });
+
+  it("atomically claims only the latest pending draft and copies visible text", async () => {
+    await claimApprovedDraft(INPUT);
+
+    expect(tx.replyDraft.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "draft-2",
+        threadId: "thread-1",
+        inboundMessageId: "message-2",
+        status: "pending_approval",
+      },
+      data: expect.objectContaining({
+        workingText: "This is the exact reply 💛",
+        // approvedText is what actually goes to Instagram: exactly the text the
+        // owner saw, never the model's original suggestion.
+        approvedText: "This is the exact reply 💛",
+        approvedBy: "owner@example.com",
+        status: "sending",
+      }),
+    });
+  });
+
+  it("rejects an approval after a newer inbound message", async () => {
+    tx.dmThread.findUnique.mockResolvedValue({ latestInboundMessageId: "message-3" });
+
+    await expect(claimApprovedDraft(INPUT)).rejects.toMatchObject({ code: "stale_draft" });
+    expect(tx.replyDraft.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects when the draft is no longer pending", async () => {
+    tx.replyDraft.findUnique.mockResolvedValue({
+      id: "draft-2",
+      threadId: "thread-1",
+      inboundMessageId: "message-2",
+      status: "dismissed",
+    });
+
+    await expect(claimApprovedDraft(INPUT)).rejects.toMatchObject({
+      code: "draft_not_pending",
+    });
+  });
+
+  it("rejects the loser of two parallel approvals (count 0)", async () => {
+    // Both requests pass the pre-checks; the conditional updateMany is the arbiter,
+    // so exactly one can win and the other must not send.
+    tx.replyDraft.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(claimApprovedDraft(INPUT)).rejects.toMatchObject({
+      code: "draft_not_pending",
+    });
+  });
+
+  it("does not hold the transaction across any external call", async () => {
+    // The claim transaction must END before Instagram is touched: a Graph request
+    // can hang for a minute, and holding a Postgres transaction open that long
+    // would exhaust the pool.
+    await claimApprovedDraft(INPUT);
+    expect($transaction).toHaveBeenCalledOnce();
+  });
+});
+
+describe("send outcomes", () => {
+  beforeEach(() => {
+    tx.replyDraft.updateMany.mockResolvedValue({ count: 1 });
+  });
+
+  it("marks a confirmed delivery sent", async () => {
+    await markSent("draft-2");
+    const [[call]] = tx.replyDraft.updateMany.mock.calls as [
+      [{ where: { status: string }; data: Record<string, unknown> }],
+    ];
+    expect(call.where).toMatchObject({ id: "draft-2", status: "sending" });
+    expect(call.data).toMatchObject({ status: "sent" });
+  });
+
+  it("marks a definite Graph error send_failed", async () => {
+    await markSendFailed("draft-2", "graph_400");
+    const [[call]] = tx.replyDraft.updateMany.mock.calls as [
+      [{ data: { status: string; errorCode: string } }],
+    ];
+    expect(call.data.status).toBe("send_failed");
+    expect(call.data.errorCode).toBe("graph_400");
+  });
+
+  it("marks an ambiguous timeout send_uncertain", async () => {
+    // The message MAY have been delivered. This state exists so nothing retries
+    // automatically and the owner is told to check Instagram first.
+    await markSendUncertain("draft-2", "timeout");
+    const [[call]] = tx.replyDraft.updateMany.mock.calls as [[{ data: { status: string } }]];
+    expect(call.data.status).toBe("send_uncertain");
   });
 });

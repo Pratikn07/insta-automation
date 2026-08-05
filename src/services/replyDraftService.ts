@@ -220,6 +220,18 @@ export async function completeGeneration(
   });
 }
 
+/** A rejected owner action. The code maps directly to an HTTP status in the route. */
+export type DraftActionCode = "stale_draft" | "draft_not_pending" | "draft_not_found";
+
+export class DraftActionError extends Error {
+  readonly code: DraftActionCode;
+  constructor(code: DraftActionCode) {
+    super(code);
+    this.name = "DraftActionError";
+    this.code = code;
+  }
+}
+
 export interface FailGenerationInput {
   errorCode: string;
   errorMessage: string;
@@ -244,5 +256,95 @@ export async function failGeneration(
       retryAt: input.retryAt,
       failedAt: new Date(),
     },
+  });
+}
+
+/**
+ * Claim a pending draft for sending, on the owner's explicit approval.
+ *
+ * This is the single most safety-critical function in the feature — the only path
+ * that turns an AI suggestion into an Instagram message. Three rules:
+ *
+ * 1. `approvedText` is the text the OWNER SAW, passed in from the editor. Never
+ *    the model's original `suggestedText`, which stays immutable for audit.
+ * 2. The draft must still answer the thread's LATEST inbound. A newer message
+ *    means the reply is stale and must not be sent.
+ * 3. The claim is a conditional `updateMany`, and the transaction ENDS before the
+ *    caller touches Instagram. Two parallel approvals therefore yield one
+ *    `count === 1` and one rejection, and no Postgres transaction is ever held
+ *    open across a Graph request that could hang for a minute.
+ */
+export async function claimApprovedDraft(input: {
+  threadId: string;
+  draftId: string;
+  approvedBy: string;
+  workingText: string;
+}): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    const draft = await tx.replyDraft.findUnique({
+      where: { id: input.draftId },
+      select: { threadId: true, inboundMessageId: true, status: true },
+    });
+    if (!draft || draft.threadId !== input.threadId) {
+      throw new DraftActionError("draft_not_found");
+    }
+    if (draft.status !== "pending_approval") {
+      throw new DraftActionError("draft_not_pending");
+    }
+
+    const thread = await tx.dmThread.findUnique({
+      where: { id: input.threadId },
+      select: { latestInboundMessageId: true },
+    });
+    if (thread?.latestInboundMessageId !== draft.inboundMessageId) {
+      throw new DraftActionError("stale_draft");
+    }
+
+    const claim = await tx.replyDraft.updateMany({
+      where: {
+        id: input.draftId,
+        threadId: input.threadId,
+        inboundMessageId: draft.inboundMessageId,
+        status: "pending_approval",
+      },
+      data: {
+        workingText: input.workingText,
+        approvedText: input.workingText,
+        approvedBy: input.approvedBy,
+        approvedAt: new Date(),
+        status: "sending",
+      },
+    });
+    // Lost the race to a concurrent approval — the winner is already sending.
+    if (claim.count !== 1) throw new DraftActionError("draft_not_pending");
+  });
+}
+
+/** Confirmed delivery. */
+export async function markSent(draftId: string): Promise<void> {
+  await prisma.replyDraft.updateMany({
+    where: { id: draftId, status: "sending" },
+    data: { status: "sent", sentAt: new Date(), errorCode: null, errorMessage: null },
+  });
+}
+
+/** A definite Graph rejection: nothing was delivered, so a retry is safe to offer. */
+export async function markSendFailed(draftId: string, errorCode: string): Promise<void> {
+  await prisma.replyDraft.updateMany({
+    where: { id: draftId, status: "sending" },
+    data: { status: "send_failed", errorCode, failedAt: new Date() },
+  });
+}
+
+/**
+ * A timeout or socket reset: the message MAY have been delivered.
+ *
+ * Never retried automatically — that is the whole reason this state exists. The UI
+ * makes the owner confirm they checked Instagram before offering a retry.
+ */
+export async function markSendUncertain(draftId: string, errorCode: string): Promise<void> {
+  await prisma.replyDraft.updateMany({
+    where: { id: draftId, status: "sending" },
+    data: { status: "send_uncertain", errorCode, failedAt: new Date() },
   });
 }

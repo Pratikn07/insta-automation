@@ -449,3 +449,78 @@ export interface AiLoginStart {
   userCode: string;
   verificationUrl: string;
 }
+
+// --- DM threads + AI reply drafts --------------------------------------------
+export type ReplyDraftStatus =
+  | "queued"
+  | "generating"
+  | "pending_approval"
+  | "generation_failed"
+  | "dismissed"
+  | "superseded"
+  | "sending"
+  | "sent"
+  | "send_failed"
+  | "send_uncertain";
+
+export type DmDirection = "inbound" | "outbound";
+export type DmMessageType = "text" | "image" | "video" | "audio" | "file" | "unknown";
+
+export interface DmMessage {
+  id: string;
+  direction: DmDirection;
+  text: string | null;
+  type: DmMessageType;
+  source: string;
+  mediaUrl: string | null;
+  instagramTimestamp: string;
+}
+
+export interface ReplyDraft {
+  id: string;
+  status: ReplyDraftStatus;
+  revision: number;
+  // The model's original output. Never rewritten — this is the audit record.
+  suggestedText: string | null;
+  // The owner's editable copy, and what Approve & Send actually submits.
+  workingText: string | null;
+  approvedText: string | null;
+  rationale: string | null;
+  confidence: string | null;
+  warnings: unknown;
+  errorCode: string | null;
+  errorMessage: string | null;
+  retryAt: string | null;
+  // Which inbound this answers. If the thread has moved on, the draft is stale.
+  inboundMessageId: string;
+  approvedBy: string | null;
+  approvedAt: string | null;
+  sentAt: string | null;
+  createdAt: string;
+}
+
+export interface DmThreadRow {
+  id: string;
+  igUserId: string;
+  username: string | null;
+  name: string | null;
+  needsReply: boolean;
+  latestInboundMessageId: string | null;
+  lastMessageAt: string;
+  lastInboundAt: string | null;
+  lastOutboundAt: string | null;
+  latestMessage: Omit<DmMessage, "id" | "mediaUrl"> | null;
+  draft: ReplyDraft | null;
+}
+
+export interface DmThreadDetail {
+  id: string;
+  igUserId: string;
+  username: string | null;
+  name: string | null;
+  needsReply: boolean;
+  latestInboundMessageId: string | null;
+  lastMessageAt: string;
+  messages: DmMessage[];
+  draft: ReplyDraft | null;
+}
