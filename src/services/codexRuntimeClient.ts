@@ -59,9 +59,52 @@ const draftSuggestionSchema = z.object({
   modelId: z.string().nullable(),
 });
 
+/**
+ * The advisor's navigation targets, closed on this side too.
+ *
+ * The runtime already constrains these, but this client is the boundary the
+ * browser trusts: if a future runtime ever emitted an arbitrary URL, it must not
+ * become a link the owner can click.
+ */
+const ADVISOR_HREFS = ["/conversations", "/insights", "/keywords", "/sequences"] as const;
+
+const advisorResponseSchema = z.object({
+  answer: z.string().min(1),
+  recommendation: z.string().min(1),
+  evidence: z.array(
+    z.object({
+      label: z.string().min(1),
+      value: z.string().min(1),
+      href: z.enum(ADVISOR_HREFS).nullable(),
+    }),
+  ),
+  confidence: z.enum(["low", "medium", "high"]),
+  nextStep: z.string().min(1),
+  nextStepHref: z.enum(ADVISOR_HREFS).nullable(),
+  dataGaps: z.array(z.string()),
+});
+
+const advisorHistorySchema = z.object({
+  items: z.array(
+    z.object({
+      role: z.enum(["user", "assistant"]),
+      clientMessageId: z.string().nullable(),
+      text: z.string().nullable(),
+      response: advisorResponseSchema.nullable(),
+    }),
+  ),
+});
+
 export type AiConnectionStatus = z.infer<typeof connectionStatusSchema>;
 export type AiLoginStart = z.infer<typeof loginStartSchema>;
 export type DmDraftSuggestion = z.infer<typeof draftSuggestionSchema>;
+export type AdvisorResponse = z.infer<typeof advisorResponseSchema>;
+export type AdvisorHistoryItem = z.infer<typeof advisorHistorySchema>["items"][number];
+
+export interface AdvisorAsk {
+  message: string;
+  clientMessageId: string;
+}
 
 /** The request sent to the runtime's drafter. Shape mirrors runtime schemas.ts. */
 export interface DmDraftRequest {
@@ -83,6 +126,8 @@ export interface CodexRuntimeClient {
   startDeviceLogin(): Promise<AiLoginStart>;
   disconnect(): Promise<void>;
   generateDmDraft(input: DmDraftRequest): Promise<DmDraftSuggestion>;
+  getAdvisorHistory(): Promise<AdvisorHistoryItem[]>;
+  askAdvisor(input: AdvisorAsk): Promise<AdvisorResponse>;
 }
 
 export interface CodexRuntimeClientConfig {
@@ -187,6 +232,22 @@ export function createCodexRuntimeClient(config: CodexRuntimeClientConfig): Code
         draftSuggestionSchema,
         input,
       )) as DmDraftSuggestion;
+    },
+    async getAdvisorHistory() {
+      const payload = (await call(
+        "/internal/advisor/history",
+        "GET",
+        advisorHistorySchema,
+      )) as z.infer<typeof advisorHistorySchema>;
+      return payload.items;
+    },
+    async askAdvisor(input: AdvisorAsk) {
+      // Only the two validated fields are forwarded: the runtime's request schema
+      // is strict, and an extra key here would be a widening attempt.
+      return (await call("/internal/advisor/messages", "POST", advisorResponseSchema, {
+        message: input.message,
+        clientMessageId: input.clientMessageId,
+      })) as AdvisorResponse;
     },
   };
 }

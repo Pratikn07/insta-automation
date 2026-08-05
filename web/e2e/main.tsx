@@ -1,0 +1,238 @@
+import { StrictMode, useEffect, useState } from "react";
+import { createRoot } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
+import { DmThreadDrawer } from "@/components/conversations/DmThreadDrawer";
+import { Assistant } from "@/pages/Assistant";
+import "../src/index.css";
+
+/**
+ * Test-only harness for the Playwright journeys.
+ *
+ * It mounts the REAL components — no reimplementation — and replaces only
+ * `window.fetch` with deterministic handlers for the exact `/api/dm-threads` and
+ * `/api/ai` paths the tests touch. Anything else 404s loudly rather than silently
+ * passing, so a journey cannot appear to work against a route that does not exist.
+ *
+ * This file is never imported by src/main.tsx and index.html does not reference
+ * e2e/index.html, so none of it reaches the production bundle.
+ */
+
+const THREAD = {
+  id: "thread-1",
+  igUserId: "ig-user-1",
+  username: "geri",
+  name: "Geri",
+  needsReply: true,
+  latestInboundMessageId: "message-2",
+  lastMessageAt: "2026-08-04T10:05:00.000Z",
+  messages: [
+    {
+      id: "message-1",
+      direction: "inbound" as const,
+      text: "My 2 year old fights every bedtime. Any ideas?",
+      type: "text" as const,
+      source: "instagram_user",
+      mediaUrl: null,
+      instagramTimestamp: "2026-08-04T10:00:00.000Z",
+    },
+    {
+      id: "message-2",
+      direction: "inbound" as const,
+      text: "Sorry — she also wakes at 5am!",
+      type: "text" as const,
+      source: "instagram_user",
+      mediaUrl: null,
+      instagramTimestamp: "2026-08-04T10:05:00.000Z",
+    },
+  ],
+  draft: {
+    id: "draft-1",
+    status: "pending_approval" as const,
+    revision: 1,
+    suggestedText: "Bedtime battles at two are so common 💛 Try dimming the lights an hour before.",
+    workingText: "Bedtime battles at two are so common 💛 Try dimming the lights an hour before.",
+    approvedText: null,
+    rationale: "Answers the question directly and offers one concrete step.",
+    confidence: "high",
+    warnings: [],
+    errorCode: null,
+    errorMessage: null,
+    retryAt: null,
+    inboundMessageId: "message-2",
+    approvedBy: null,
+    approvedAt: null,
+    sentAt: null,
+    createdAt: "2026-08-04T10:06:00.000Z",
+  },
+};
+
+const ADVISOR_ANSWER = {
+  answer:
+    "Reach is fine; the drop-off is between reach and follow. Your SLEEP keyword pulls the most DMs but the follow-up goes unanswered.",
+  recommendation: "Improve the SLEEP follow-up before adding any new keywords.",
+  evidence: [
+    { label: "Needs reply", value: "3 threads", href: "/conversations" as const },
+    { label: "Top keyword", value: "SLEEP — 14 triggers", href: null },
+  ],
+  confidence: "high" as const,
+  nextStep: "Open Conversations and clear the needs-reply queue.",
+  nextStepHref: "/conversations" as const,
+  dataGaps: ["Circle joins are not instrumented, so community conversion is unknown."],
+};
+
+// --- captured request state ---------------------------------------------------
+// The approve journey asserts on the EXACT bytes the component sent, so the body
+// is captured verbatim and published to the DOM via a subscription.
+
+let capturedBody = "";
+let sentText = "";
+let approved = false;
+const listeners = new Set<() => void>();
+
+function publish(body: string): void {
+  capturedBody = body;
+  try {
+    sentText = String((JSON.parse(body) as { workingText?: unknown }).workingText ?? "");
+  } catch {
+    sentText = "";
+  }
+  approved = true;
+  for (const listener of listeners) listener();
+}
+
+function useCapturedBody(): string {
+  const [value, setValue] = useState(capturedBody);
+  useEffect(() => {
+    const listener = () => setValue(capturedBody);
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  }, []);
+  return value;
+}
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function installFetchStub(): void {
+  window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const method = (init?.method ?? "GET").toUpperCase();
+    // api() builds `${VITE_API_URL}/api${path}`, so strip the origin AND the /api
+    // prefix to get back to the route path the components asked for.
+    const path = (url.replace(/^https?:\/\/[^/]+/, "").split("?")[0] ?? "").replace(
+      /^\/api(?:\/api)*/,
+      "",
+    );
+
+    // Supabase auth: the api helper asks for a session before every call.
+    if (path.includes("/auth/v1/")) {
+      return json({
+        access_token: "e2e-token",
+        token_type: "bearer",
+        expires_in: 3600,
+        expires_at: Math.floor(Date.now() / 1000) + 3600,
+        refresh_token: "e2e-refresh",
+        user: { id: "e2e-user", email: "owner@example.com" },
+      });
+    }
+
+    if (path === "/dm-threads/thread-1" && method === "GET") {
+      if (!approved) return json(THREAD);
+      // What the API really does after a successful approve: records an outbound
+      // message and clears needsReply. `sent` is not a live status, so the
+      // approval card unmounts and the reply shows in the transcript instead.
+      return json({
+        ...THREAD,
+        needsReply: false,
+        draft: { ...THREAD.draft, status: "sent", approvedText: sentText },
+        messages: [
+          ...THREAD.messages,
+          {
+            id: "message-3",
+            direction: "outbound" as const,
+            text: sentText,
+            type: "text" as const,
+            source: "ai_approved",
+            mediaUrl: null,
+            instagramTimestamp: "2026-08-04T10:07:00.000Z",
+          },
+        ],
+      });
+    }
+
+    if (path === "/ai/dm-threads/thread-1/drafts/draft-1/approve" && method === "POST") {
+      publish(typeof init?.body === "string" ? init.body : "");
+      return json({ status: "sent" });
+    }
+
+    if (path === "/ai/connection" && method === "GET") {
+      return json({
+        connected: true,
+        requiresOpenaiAuth: false,
+        account: { email: "owner@example.com", planType: "plus" },
+        rateLimits: { usedPercent: 12, resetsAt: null },
+      });
+    }
+
+    if (path === "/ai/advisor/history" && method === "GET") {
+      return json({ items: [] });
+    }
+
+    if (path === "/ai/advisor/messages" && method === "POST") {
+      return json(ADVISOR_ANSWER);
+    }
+
+    // Deliberately loud: an unhandled path must fail the test, not pass quietly.
+    return json({ error: `e2e_unhandled:${method} ${path}` }, 404);
+  };
+}
+
+function DmApprovalScenario() {
+  const [open, setOpen] = useState(true);
+  const body = useCapturedBody();
+  return (
+    <div>
+      <DmThreadDrawer
+        threadId={open ? "thread-1" : null}
+        sendEnabled
+        onClose={() => setOpen(false)}
+      />
+      <pre data-testid="captured-request-body">{body}</pre>
+    </div>
+  );
+}
+
+function Harness() {
+  const scenario = new URLSearchParams(window.location.search).get("scenario");
+  if (scenario === "dm-approval") return <DmApprovalScenario />;
+  if (scenario === "advisor") {
+    return (
+      <div className="p-4">
+        <Assistant />
+      </div>
+    );
+  }
+  return <p>Unknown scenario: {scenario ?? "(none)"}</p>;
+}
+
+installFetchStub();
+
+// retry: false so an unhandled 404 surfaces immediately instead of after backoff.
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+});
+
+createRoot(document.getElementById("root")!).render(
+  <StrictMode>
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <Harness />
+      </MemoryRouter>
+    </QueryClientProvider>
+  </StrictMode>,
+);

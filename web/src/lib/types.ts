@@ -524,3 +524,34 @@ export interface DmThreadDetail {
   messages: DmMessage[];
   draft: ReplyDraft | null;
 }
+
+// --- AI advisor ---------------------------------------------------------------
+// The advisor's navigation targets are a closed set on the server too, so the
+// browser can render these as links without sanitising an arbitrary URL.
+export type AdvisorHref = "/conversations" | "/insights" | "/keywords" | "/sequences";
+
+export interface AdvisorEvidence {
+  label: string;
+  value: string;
+  href: AdvisorHref | null;
+}
+
+export interface AdvisorResponse {
+  answer: string;
+  // Always present: an advisor that reports numbers without saying what to do
+  // leaves the decision exactly where it was.
+  recommendation: string;
+  evidence: AdvisorEvidence[];
+  confidence: "low" | "medium" | "high";
+  nextStep: string;
+  nextStepHref: AdvisorHref | null;
+  // What the answer could not measure. Stated rather than silently omitted.
+  dataGaps: string[];
+}
+
+export interface AdvisorHistoryItem {
+  role: "user" | "assistant";
+  clientMessageId: string | null;
+  text: string | null;
+  response: AdvisorResponse | null;
+}

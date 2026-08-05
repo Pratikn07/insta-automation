@@ -229,3 +229,106 @@ describe("createCodexRuntimeClient.generateDmDraft", () => {
     });
   });
 });
+
+describe("advisor proxy", () => {
+  const ANSWER = {
+    answer: "Reply rate is the thing to fix first.",
+    recommendation: "Clear the needs-reply queue this week.",
+    evidence: [{ label: "Needs reply", value: "3 threads", href: "/conversations" }],
+    confidence: "medium",
+    nextStep: "Open Conversations.",
+    nextStepHref: "/conversations",
+    dataGaps: [],
+  };
+
+  it("posts the owner's question to the runtime advisor path", async () => {
+    let seen: { url?: string; auth?: string; body: string } = { body: "" };
+    const baseUrl = await stubRuntime((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c) => chunks.push(Buffer.from(c)));
+      req.on("end", () => {
+        seen = {
+          url: req.url,
+          auth: req.headers.authorization,
+          body: Buffer.concat(chunks).toString("utf8"),
+        };
+        jsonResponse(res, 200, ANSWER);
+      });
+    });
+
+    const client = createCodexRuntimeClient({ baseUrl, token: RUNTIME_TOKEN });
+    await expect(
+      client.askAdvisor({ message: "What should I focus on?", clientMessageId: "msg-1" }),
+    ).resolves.toMatchObject({ confidence: "medium", nextStepHref: "/conversations" });
+
+    expect(seen.url).toBe("/internal/advisor/messages");
+    expect(seen.auth).toBe(`Bearer ${RUNTIME_TOKEN}`);
+    expect(JSON.parse(seen.body)).toEqual({
+      message: "What should I focus on?",
+      clientMessageId: "msg-1",
+    });
+  });
+
+  it("reads history from the runtime", async () => {
+    const baseUrl = await stubRuntime((req, res) => {
+      expect(req.url).toBe("/internal/advisor/history");
+      jsonResponse(res, 200, {
+        items: [
+          { role: "user", clientMessageId: "msg-1", text: "hi", response: null },
+          { role: "assistant", clientMessageId: "msg-1", text: null, response: ANSWER },
+        ],
+      });
+    });
+    const client = createCodexRuntimeClient({ baseUrl, token: RUNTIME_TOKEN });
+
+    const items = await client.getAdvisorHistory();
+    expect(items).toHaveLength(2);
+    expect(items[1]?.response?.recommendation).toBe("Clear the needs-reply queue this week.");
+  });
+
+  // An href outside the closed set would become a link the owner could click, so a
+  // response carrying one is rejected rather than partially rendered.
+  it("rejects an advisor response with an arbitrary href", async () => {
+    const baseUrl = await stubRuntime((_req, res) =>
+      jsonResponse(res, 200, { ...ANSWER, nextStepHref: "https://evil.example.com" }),
+    );
+    const client = createCodexRuntimeClient({ baseUrl, token: RUNTIME_TOKEN });
+
+    await expect(
+      client.askAdvisor({ message: "hi", clientMessageId: "msg-1" }),
+    ).rejects.toMatchObject({ code: "invalid_runtime_response" });
+  });
+
+  it("rejects an advisor response missing its recommendation", async () => {
+    const { recommendation: _omitted, ...withoutRecommendation } = ANSWER;
+    const baseUrl = await stubRuntime((_req, res) =>
+      jsonResponse(res, 200, withoutRecommendation),
+    );
+    const client = createCodexRuntimeClient({ baseUrl, token: RUNTIME_TOKEN });
+
+    await expect(
+      client.askAdvisor({ message: "hi", clientMessageId: "msg-1" }),
+    ).rejects.toMatchObject({ code: "invalid_runtime_response" });
+  });
+
+  it("maps an advisor usage limit to a rate-limit error with retryAt", async () => {
+    const baseUrl = await stubRuntime((_req, res) => {
+      res.setHeader("retry-after", "90");
+      jsonResponse(res, 429, { error: "usage_limited", retryAt: null });
+    });
+    const client = createCodexRuntimeClient({ baseUrl, token: RUNTIME_TOKEN });
+
+    const error = (await client
+      .askAdvisor({ message: "hi", clientMessageId: "msg-1" })
+      .catch((e: unknown) => e)) as CodexRuntimeError;
+    expect(error.code).toBe("runtime_rate_limited");
+    expect(error.retryAt).toBeInstanceOf(Date);
+  });
+
+  it("fails without touching the network when the runtime is unconfigured", async () => {
+    const client = createCodexRuntimeClient({ baseUrl: undefined, token: undefined });
+    await expect(client.getAdvisorHistory()).rejects.toMatchObject({
+      code: "ai_not_configured",
+    });
+  });
+});

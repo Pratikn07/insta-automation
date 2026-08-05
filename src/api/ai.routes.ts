@@ -95,6 +95,46 @@ export function createAiRouter(deps: AiRouterDependencies): Router {
     }
   });
 
+  // ---- advisor --------------------------------------------------------------
+  // Read-only: the advisor can answer questions about the business and link to a
+  // page, and there is no route here that sends, writes or changes a setting.
+
+  const advisorGate = (_req: Request, res: Response, next: () => void) => {
+    if (!env.AI_ADVISOR_ENABLED) {
+      res.status(403).json({ error: "ai_advisor_disabled" });
+      return;
+    }
+    next();
+  };
+
+  router.get("/advisor/history", advisorGate, async (_req, res) => {
+    try {
+      res.json({ items: await deps.client.getAdvisorHistory() });
+    } catch (error) {
+      sendRuntimeError(res, error);
+    }
+  });
+
+  // `.strict()`: an unexpected key means the caller is trying to widen what the
+  // runtime receives, so it fails rather than being silently dropped.
+  const advisorAskSchema = z
+    .object({
+      message: z.string().trim().min(1).max(2000),
+      clientMessageId: z.string().min(1).max(128),
+    })
+    .strict();
+
+  router.post("/advisor/messages", advisorGate, async (req, res) => {
+    const parsed = advisorAskSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+
+    try {
+      res.json(await deps.client.askAdvisor(parsed.data));
+    } catch (error) {
+      sendRuntimeError(res, error);
+    }
+  });
+
   // ---- draft mutations ------------------------------------------------------
   // Every route below acts on ONE draft of ONE thread. Approve and retry-send are
   // additionally gated on AI_SEND_ENABLED, because they are the only paths in the

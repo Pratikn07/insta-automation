@@ -171,11 +171,97 @@ If any step fails, see Troubleshooting below.
 
 ---
 
+## 7. AI: Codex runtime and staged rollout
+
+Optional and entirely off by default. Skip this whole section and every existing
+keyword, gate and guide automation behaves exactly as before.
+
+**No OpenAI API key is involved.** The owner links their own ChatGPT subscription
+with a device code. `OPENAI_API_KEY` is never read by any service — do not add it.
+
+### 7.1 Create the runtime service
+
+1. New Railway service in the same project, named `codex-runtime`.
+2. **Root directory** `/codex-runtime` · **build** `npm run build` · **start** `npm start`.
+3. Add a persistent volume mounted at `/data`. Without it the owner must re-link
+   ChatGPT after every deploy.
+4. No public domain. Only the API talks to it.
+
+### 7.2 Runtime variables
+
+```sh
+NODE_ENV=production
+CODEX_HOME=/data/codex          # must be on the volume
+CODEX_WORKSPACE=/data/workspace
+RUNTIME_SHARED_SECRET=<32+ random chars>
+TINY_SOHO_API_URL=http://<api-service>.railway.internal:3000
+TINY_SOHO_INTERNAL_TOKEN=<32+ random chars, different from the above>
+```
+
+Use Railway **private DNS** for `TINY_SOHO_API_URL` so advisor traffic never leaves
+the private network. See `codex-runtime/README.md` for the full table.
+
+### 7.3 API variables
+
+```sh
+CODEX_RUNTIME_URL=http://codex-runtime.railway.internal:3001
+CODEX_RUNTIME_TOKEN=<same value as RUNTIME_SHARED_SECRET>
+TINY_SOHO_INTERNAL_TOKEN=<same value as the runtime's>
+AI_BRAND_VOICE=Warm, practical, concise, and supportive. Never diagnose or shame a parent.
+AI_DRAFTS_ENABLED=false
+AI_SEND_ENABLED=false
+AI_ADVISOR_ENABLED=false
+```
+
+The two tokens are separate on purpose: `CODEX_RUNTIME_TOKEN` secures API → runtime,
+`TINY_SOHO_INTERNAL_TOKEN` secures runtime → API. Each rotates independently.
+
+If `TINY_SOHO_INTERNAL_TOKEN` is unset on the API, `/internal/ai` fails closed with
+503 rather than serving unauthenticated.
+
+### 7.4 Deploy in this order
+
+1. **Runtime first.** `curl https://<runtime>/health` → `{"ok":true,"appServerReady":true}`.
+2. **API next**, all three flags `false`. This applies the Prisma migration that
+   adds the DM thread and reply-draft tables; nothing uses them yet.
+3. **Vercel last**, once the API routes are live, so the Assistant page is not
+   calling routes that 404.
+4. Open `/assistant` → **Connect ChatGPT** → enter the short code. The card flips to
+   connected on its own and shows the plan and remaining quota.
+
+### 7.5 Then enable one flag at a time
+
+| Step | Flag | Gate before moving on |
+|---|---|---|
+| 1 | `AI_DRAFTS_ENABLED=true` | Read **at least 20** shadow drafts in Conversations. Nothing can send — the approve endpoints still 403. |
+| 2 | `AI_SEND_ENABLED=true` | Only after that review. This is the first point at which an AI-derived message can reach a person, and only via the owner's explicit **Approve & Send**. |
+| 3 | `AI_ADVISOR_ENABLED=true` | Only after the three read tools return sane bounded data. |
+
+Verify at step 1 that a **keyword** DM still delivers its guide and queues no
+draft — that is the regression check that automation behaviour did not shift.
+
+### 7.6 Rollback
+
+Set all three flags to `false` first; that stops everything immediately and is
+enough for any AI-related incident.
+
+**Do not** drop the DM tables and **do not** delete the Codex volume. The tables are
+the record of what was said and approved, and the volume holds the ChatGPT sign-in.
+Both are recoverable only by re-doing work the owner already did.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
 | `CORS blocked` on Vercel calling Railway | `WEB_ORIGIN` doesn't include the Vercel URL exactly. Paste it again, no trailing slash. |
+| Local `npm run build` in `web/` emits a suspiciously small bundle | `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` are unset. `src/lib/supabase.ts` throws on import, everything downstream is tree-shaken, and the build still exits 0 with no app code in it. Copy `web/.env.example` to `web/.env.local`. Vercel sets these in production, so deploys are unaffected. |
+| Assistant says "isn't set up on this environment yet" | `CODEX_RUNTIME_URL` or `CODEX_RUNTIME_TOKEN` missing on the API. |
+| Assistant says "is not enabled yet" but ChatGPT is connected | `AI_ADVISOR_ENABLED` is still `false`. Expected until step 3 above. |
+| `appServerReady: false` on the runtime | The app-server child died after boot. `railway logs` on `codex-runtime`. |
+| Owner must re-link ChatGPT after each deploy | `CODEX_HOME` is not on the mounted volume. |
+| Advisor answers but cites no data | `TINY_SOHO_API_URL` / `TINY_SOHO_INTERNAL_TOKEN` unset on the runtime, so it reports unavailable rather than speculating. |
 | Magic link goes to localhost | Supabase Redirect URL not set; add `https://tiny-soho-admin.vercel.app/**`. |
 | `invalid_token` on every API call | Supabase project URL or anon key on Vercel doesn't match Railway's `SUPABASE_URL` / `SUPABASE_SERVICE_KEY`. They must point to the same project. |
 | Webhook not firing | Meta webhook callback still points to old ngrok URL. Update in Meta App Dashboard. |

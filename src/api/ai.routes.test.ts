@@ -3,7 +3,30 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CodexRuntimeError } from "../services/codexRuntimeClient.js";
 import type { CodexRuntimeClient } from "../services/codexRuntimeClient.js";
-import { createAiRouter } from "./ai.routes.js";
+
+// Flags are read through a proxy so a test can flip one without touching the real
+// env, matching the convention in aiDrafts.routes.test.ts.
+const flags = { AI_ADVISOR_ENABLED: true };
+vi.mock("../config/env.js", async (importOriginal) => {
+  const actual = (await importOriginal()) as { env: Record<string, unknown> };
+  return {
+    env: new Proxy(actual.env, {
+      get: (t, p) => (p === "AI_ADVISOR_ENABLED" ? flags.AI_ADVISOR_ENABLED : t[p as string]),
+    }),
+  };
+});
+
+const { createAiRouter } = await import("./ai.routes.js");
+
+const ADVISOR_ANSWER = {
+  answer: "Reply rate is the thing to fix first.",
+  recommendation: "Clear the needs-reply queue this week.",
+  evidence: [{ label: "Needs reply", value: "3 threads", href: "/conversations" as const }],
+  confidence: "medium" as const,
+  nextStep: "Open Conversations.",
+  nextStepHref: "/conversations" as const,
+  dataGaps: [],
+};
 
 function fakeClient(overrides: Partial<CodexRuntimeClient> = {}): CodexRuntimeClient {
   return {
@@ -19,6 +42,8 @@ function fakeClient(overrides: Partial<CodexRuntimeClient> = {}): CodexRuntimeCl
       verificationUrl: "https://auth.openai.com/device",
     })),
     disconnect: vi.fn(async () => undefined),
+    getAdvisorHistory: vi.fn(async () => []),
+    askAdvisor: vi.fn(async () => ADVISOR_ANSWER),
     ...overrides,
   };
 }
@@ -35,6 +60,7 @@ let client: CodexRuntimeClient;
 
 beforeEach(() => {
   client = fakeClient();
+  flags.AI_ADVISOR_ENABLED = true;
 });
 
 describe("aiRouter", () => {
@@ -120,5 +146,110 @@ describe("aiRouter", () => {
     const response = await request(app).get("/api/ai/connection").expect(502);
     expect(response.body).toEqual({ error: "ai_runtime_error" });
     expect(JSON.stringify(response.body)).not.toMatch(/sk-leaked-value/);
+  });
+});
+
+describe("advisor routes", () => {
+  const ASK = { message: "What should I focus on?", clientMessageId: "msg-1" };
+
+  it("keeps the advisor disabled until its rollout flag is enabled", async () => {
+    flags.AI_ADVISOR_ENABLED = false;
+    const app = makeApp(client);
+
+    await request(app)
+      .post("/api/ai/advisor/messages")
+      .send(ASK)
+      .expect(403, { error: "ai_advisor_disabled" });
+    await request(app)
+      .get("/api/ai/advisor/history")
+      .expect(403, { error: "ai_advisor_disabled" });
+    expect(client.askAdvisor).not.toHaveBeenCalled();
+    expect(client.getAdvisorHistory).not.toHaveBeenCalled();
+  });
+
+  it("returns the structured answer when enabled", async () => {
+    const response = await request(makeApp(client))
+      .post("/api/ai/advisor/messages")
+      .send(ASK)
+      .expect(200);
+    expect(response.body).toEqual(ADVISOR_ANSWER);
+    expect(client.askAdvisor).toHaveBeenCalledWith(ASK);
+  });
+
+  // An extra key is an attempt to widen the request the runtime receives, so it is
+  // rejected rather than stripped and forwarded.
+  it("forwards only the validated owner question", async () => {
+    const app = makeApp(client);
+    await request(app)
+      .post("/api/ai/advisor/messages")
+      .send({ ...ASK, tool: "send" })
+      .expect(400);
+    expect(client.askAdvisor).not.toHaveBeenCalled();
+  });
+
+  it("rejects an empty or oversized question", async () => {
+    const app = makeApp(client);
+    await request(app).post("/api/ai/advisor/messages").send({ ...ASK, message: "" }).expect(400);
+    await request(app)
+      .post("/api/ai/advisor/messages")
+      .send({ ...ASK, message: "x".repeat(2001) })
+      .expect(400);
+    await request(app).post("/api/ai/advisor/messages").send({ message: "hi" }).expect(400);
+    expect(client.askAdvisor).not.toHaveBeenCalled();
+  });
+
+  it("returns history items", async () => {
+    const app = makeApp(
+      fakeClient({
+        getAdvisorHistory: vi.fn(async () => [
+          { role: "user" as const, clientMessageId: "msg-1", text: "hi", response: null },
+          {
+            role: "assistant" as const,
+            clientMessageId: "msg-1",
+            text: null,
+            response: ADVISOR_ANSWER,
+          },
+        ]),
+      }),
+    );
+    const response = await request(app).get("/api/ai/advisor/history").expect(200);
+    expect(response.body.items).toHaveLength(2);
+  });
+
+  it("returns ai_not_configured before checking the advisor flag", async () => {
+    const app = makeApp(client, false);
+    await request(app)
+      .post("/api/ai/advisor/messages")
+      .send(ASK)
+      .expect(503, { error: "ai_not_configured" });
+  });
+
+  it("maps an advisor usage limit to 429 with retryAt", async () => {
+    const retryAt = new Date("2026-08-04T12:00:00.000Z");
+    const app = makeApp(
+      fakeClient({
+        askAdvisor: vi.fn(async () => {
+          throw new CodexRuntimeError("runtime_rate_limited", 429, retryAt);
+        }),
+      }),
+    );
+    const response = await request(app).post("/api/ai/advisor/messages").send(ASK).expect(429);
+    expect(response.body).toEqual({
+      error: "runtime_rate_limited",
+      retryAt: retryAt.toISOString(),
+    });
+  });
+
+  it("never leaks runtime detail from an advisor failure", async () => {
+    const app = makeApp(
+      fakeClient({
+        askAdvisor: vi.fn(async () => {
+          throw new Error('relation "ig_token" at postgres://user:pw@host/db');
+        }),
+      }),
+    );
+    const response = await request(app).post("/api/ai/advisor/messages").send(ASK).expect(502);
+    expect(response.body).toEqual({ error: "ai_runtime_error" });
+    expect(JSON.stringify(response.body)).not.toMatch(/postgres:\/\/|ig_token/);
   });
 });
