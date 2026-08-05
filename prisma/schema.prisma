@@ -8,11 +8,11 @@ datasource db {
 }
 
 model Keyword {
-  id             String   @id @default(uuid()) @db.Uuid
+  id             String    @id @default(uuid()) @db.Uuid
   keyword        String
-  mediaId        String?  @map("media_id")
-  mediaCaption   String?  @map("media_caption")
-  mediaPermalink String?  @map("media_permalink")
+  mediaId        String?   @map("media_id")
+  mediaCaption   String?   @map("media_caption")
+  mediaPermalink String?   @map("media_permalink")
   // When the POST was published (Meta's timestamp), snapshotted at attach time —
   // not when the keyword was created. Ranks candidates when a cold DM has to pick
   // between several posts sharing a word: a DM carries no media context, so
@@ -20,12 +20,12 @@ model Keyword {
   // ReelMeta.postedAt covers reels only (140 reels, 0 carousels), so it cannot
   // date a carousel-scoped keyword. Null on the legacy global rows.
   mediaPostedAt  DateTime? @map("media_posted_at")
-  resourceId     String   @map("resource_id") @db.Uuid
-  publicReply    String   @map("public_reply")
-  gateMessage    String   @map("gate_message")
-  active         Boolean  @default(true)
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  resourceId     String    @map("resource_id") @db.Uuid
+  publicReply    String    @map("public_reply")
+  gateMessage    String    @map("gate_message")
+  active         Boolean   @default(true)
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
 
   resource      Resource       @relation(fields: [resourceId], references: [id])
   conversations Conversation[]
@@ -37,13 +37,13 @@ model Keyword {
 }
 
 model Resource {
-  id          String   @id @default(uuid()) @db.Uuid
-  name        String
+  id           String   @id @default(uuid()) @db.Uuid
+  name         String
   // What this guide is for, in prose: the problem it solves, its shape (BOX and
   // Cardboard are COLLECTIONS of several activities, not one), and hard warnings
   // — Link/Book/Dough are bare Amazon affiliate lists and must never be offered
   // as parenting advice. Read by the LLM; the filterable facets are columns below.
-  description String?
+  description  String?
   // What this resource IS: guide | recipes | activity | product_links.
   // The safety facet. `product_links` rows (Link, Book, Dough) are bare Amazon
   // affiliate links, not advice, and must be excluded by SQL — a struggling
@@ -51,19 +51,19 @@ model Resource {
   // it cannot be left to the model's judgment. Null = unclassified (orphan
   // drafts); the router selects kinds it wants rather than excluding ones it
   // doesn't, so null is never routed.
-  kind        String?
+  kind         String?
   // Coarse routing bucket: sleep | eating | behavior | learning. A column, not
   // prose, so candidates narrow in SQL before the LLM reads anything — this is
   // what stops the car-seat guide surfacing on a feeding question.
-  theme       String?
+  theme        String?
   // Age window in MONTHS, from the author's own words ("Sensory Play for
   // Babies", "18-24 MONTHS", "For Ages 1-3"). Months because parents state
   // infant age in months. NULL = no stated age, which means ELIGIBLE FOR
   // EVERYONE — never treat null as excluded, or real content becomes
   // unreachable.
-  ageMinMonths Int?    @map("age_min_months")
-  ageMaxMonths Int?    @map("age_max_months")
-  createdAt   DateTime @default(now()) @map("created_at")
+  ageMinMonths Int?     @map("age_min_months")
+  ageMaxMonths Int?     @map("age_max_months")
+  createdAt    DateTime @default(now()) @map("created_at")
 
   messages ResourceMessage[]
   keywords Keyword[]
@@ -352,6 +352,156 @@ model Experiment {
   @@index([status])
   @@index([origin, mediaId])
   @@map("experiment")
+}
+
+// ── DM capture + AI reply drafts ─────────────────────────────────────────────
+// Conversation (above) models an AUTOMATION JOURNEY: one keyword, one gate, one
+// guide. It is not a thread and never held the participant's own words. These
+// three models add the real message history so an owner can read a conversation
+// and approve a reply. Conversation keeps its current meaning untouched.
+
+enum DmDirection {
+  inbound
+  outbound
+
+  @@map("dm_direction")
+}
+
+enum DmMessageType {
+  text
+  image
+  video
+  audio
+  file
+  unknown
+
+  @@map("dm_message_type")
+}
+
+// Where an outbound message came from. Lets the drawer distinguish "the bot sent
+// this gate" from "the owner approved this reply", and is the audit anchor for
+// anything AI-assisted.
+enum DmMessageSource {
+  instagram_user
+  keyword_automation
+  guide_automation
+  ai_approved
+  manual_external
+  unknown
+
+  @@map("dm_message_source")
+}
+
+enum ReplyDraftStatus {
+  queued
+  generating
+  pending_approval
+  generation_failed
+  dismissed
+  superseded
+  sending
+  sent
+  send_failed
+  send_uncertain
+
+  @@map("reply_draft_status")
+}
+
+model DmThread {
+  id                     String    @id @default(uuid()) @db.Uuid
+  igAccountId            String    @map("ig_account_id")
+  igUserId               String    @map("ig_user_id")
+  username               String?
+  name                   String?
+  // A plain scalar, NOT a relation: DmMessage already points at DmThread, and a
+  // second FK back would make every insert a circular write.
+  latestInboundMessageId String?   @map("latest_inbound_message_id") @db.Uuid
+  // True from the moment an inbound lands until an automation or the owner
+  // answers it. The Conversations "Needs reply" filter reads exactly this.
+  needsReply             Boolean   @default(false) @map("needs_reply")
+  lastMessageAt          DateTime  @map("last_message_at")
+  lastInboundAt          DateTime? @map("last_inbound_at")
+  lastOutboundAt         DateTime? @map("last_outbound_at")
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
+
+  messages DmMessage[]
+  drafts   ReplyDraft[]
+
+  @@unique([igAccountId, igUserId])
+  @@index([needsReply, lastInboundAt])
+  @@index([lastMessageAt])
+  @@index([lastInboundAt])
+  @@map("dm_thread")
+}
+
+model DmMessage {
+  id                 String          @id @default(uuid()) @db.Uuid
+  threadId           String          @map("thread_id") @db.Uuid
+  // Meta's `mid`. Unique, so replaying a webhook cannot double-insert — this is
+  // the whole idempotency story for inbound capture. Null for a send whose
+  // response carried no id.
+  instagramMessageId String?         @unique @map("instagram_message_id")
+  direction          DmDirection
+  type               DmMessageType
+  source             DmMessageSource
+  text               String?
+  mediaUrl           String?         @map("media_url")
+  // Meta's own timestamp, not ours: ordering must survive a delayed webhook.
+  instagramTimestamp DateTime        @map("instagram_timestamp")
+  createdAt          DateTime        @default(now()) @map("created_at")
+
+  thread DmThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@index([threadId, instagramTimestamp])
+  @@index([direction, instagramTimestamp])
+  @@map("dm_message")
+}
+
+// One versioned AI suggestion for one inbound message.
+//
+// The three text columns are deliberately separate. `suggestedText` is what the
+// model produced and is never rewritten; `workingText` is the owner's editable
+// copy; `approvedText` is the exact string a human authorised. Collapsing them
+// would destroy the answer to "what did the owner actually approve?".
+model ReplyDraft {
+  id               String           @id @default(uuid()) @db.Uuid
+  threadId         String           @map("thread_id") @db.Uuid
+  // The inbound this drafts a reply to. If a newer inbound arrives, the draft is
+  // stale by definition and cannot be approved.
+  inboundMessageId String           @map("inbound_message_id") @db.Uuid
+  revision         Int
+  status           ReplyDraftStatus @default(queued)
+
+  suggestedText String? @map("suggested_text")
+  workingText   String? @map("working_text")
+  approvedText  String? @map("approved_text")
+  rationale     String?
+  confidence    String?
+  warnings      Json?
+
+  modelId         String?   @map("model_id")
+  runtimeThreadId String?   @map("runtime_thread_id")
+  errorCode       String?   @map("error_code")
+  errorMessage    String?   @map("error_message")
+  retryAt         DateTime? @map("retry_at")
+  approvedBy      String?   @map("approved_by")
+  approvedAt      DateTime? @map("approved_at")
+  sentAt          DateTime? @map("sent_at")
+  failedAt        DateTime? @map("failed_at")
+  supersededById  String?   @map("superseded_by_id") @db.Uuid
+
+  attempts      Int      @default(0)
+  nextAttemptAt DateTime @default(now()) @map("next_attempt_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  thread DmThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@unique([threadId, revision])
+  @@index([status, nextAttemptAt])
+  @@index([threadId, createdAt])
+  @@map("reply_draft")
 }
 
 // The live Instagram access token, as a single row (id = 1).
