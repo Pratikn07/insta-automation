@@ -1,7 +1,30 @@
 # Personalized DM Ecosystem — Design
 
+> **⚠️ SUPERSEDED — do not build from this document.**
+>
+> Replaced by [DM Personalization Logic](2026-08-04-dm-personalization-logic.md),
+> which folds this design into the
+> [Codex integration](2026-08-04-codex-tiny-soho-integration-design.md) as the
+> plan of record.
+>
+> This was written in a parallel session with no knowledge of the Codex work and
+> duplicated its DM storage design (`event_log` vs `DmThread`/`DmMessage`/
+> `ReplyDraft`). It also under-specified the review queue in one paragraph, where
+> the Codex design has a full nine-state draft lifecycle.
+>
+> **Two things it got wrong or missed:**
+> - It concluded follower bios are impossible. Accurate for Meta's API (verified:
+>   `code=100 nonexisting field (biography)`), but bios are public data and
+>   reachable via Bright Data / Apify. See the correction in the replacement.
+> - It treated the 24-hour messaging window as a constraint to note. It is
+>   actually the reason human approval is mandatory: automated sends outside that
+>   window are prohibited, so any delayed personalized follow-up requires a person
+>   to approve it.
+>
+> Kept for the reasoning and the verified measurements, both of which carry over.
+
 **Date:** 2026-08-04
-**Status:** Design approved; ready for implementation planning
+**Status:** Superseded 2026-08-04
 **Prerequisite (done):** guide catalog — commit `12fe961`
 
 ## The problem
