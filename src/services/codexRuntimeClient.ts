@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { env } from "../config/env.js";
 
 /**
  * The API's only door into the private Codex runtime.
@@ -50,13 +51,38 @@ const loginStartSchema = z.object({
   verificationUrl: z.string().url(),
 });
 
+const draftSuggestionSchema = z.object({
+  reply: z.string().min(1),
+  rationale: z.string(),
+  confidence: z.enum(["low", "medium", "high"]),
+  warnings: z.array(z.string()),
+  modelId: z.string().nullable(),
+});
+
 export type AiConnectionStatus = z.infer<typeof connectionStatusSchema>;
 export type AiLoginStart = z.infer<typeof loginStartSchema>;
+export type DmDraftSuggestion = z.infer<typeof draftSuggestionSchema>;
+
+/** The request sent to the runtime's drafter. Shape mirrors runtime schemas.ts. */
+export interface DmDraftRequest {
+  requestId: string;
+  participant: { igUserId: string; username: string | null; name: string | null };
+  messages: Array<{
+    direction: "inbound" | "outbound";
+    text: string | null;
+    messageType: "text" | "image" | "video" | "audio" | "file" | "unknown";
+    source: string;
+    at: string;
+  }>;
+  brandVoice: string;
+  guideContext: null | { keyword: string; resourceName: string; description: string | null };
+}
 
 export interface CodexRuntimeClient {
   getConnectionStatus(refresh?: boolean): Promise<AiConnectionStatus>;
   startDeviceLogin(): Promise<AiLoginStart>;
   disconnect(): Promise<void>;
+  generateDmDraft(input: DmDraftRequest): Promise<DmDraftSuggestion>;
 }
 
 export interface CodexRuntimeClientConfig {
@@ -83,18 +109,26 @@ export function createCodexRuntimeClient(config: CodexRuntimeClientConfig): Code
     path: string,
     method: "GET" | "POST",
     schema: z.ZodType<T> | null,
+    body?: unknown,
   ): Promise<T | undefined> {
     // Checked before any network work so a misconfigured deploy fails fast and
     // identically on every route, rather than timing out against nothing.
     if (!config.baseUrl || !config.token) throw new CodexRuntimeError("ai_not_configured");
 
+    // A draft turn can take most of a minute; a status check should not. Callers
+    // pass a longer timeout for generation via config.
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     let response: Response;
     try {
       response = await fetch(`${config.baseUrl}${path}`, {
         method,
-        headers: { authorization: `Bearer ${config.token}`, accept: "application/json" },
+        headers: {
+          authorization: `Bearer ${config.token}`,
+          accept: "application/json",
+          ...(body !== undefined ? { "content-type": "application/json" } : {}),
+        },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
         signal: controller.signal,
       });
     } catch (error) {
@@ -122,13 +156,13 @@ export function createCodexRuntimeClient(config: CodexRuntimeClientConfig): Code
 
     if (!schema) return undefined;
 
-    let body: unknown;
+    let payload: unknown;
     try {
-      body = await response.json();
+      payload = await response.json();
     } catch {
       throw new CodexRuntimeError("invalid_runtime_response", response.status);
     }
-    const parsed = schema.safeParse(body);
+    const parsed = schema.safeParse(payload);
     if (!parsed.success) throw new CodexRuntimeError("invalid_runtime_response", response.status);
     return parsed.data;
   }
@@ -146,5 +180,24 @@ export function createCodexRuntimeClient(config: CodexRuntimeClientConfig): Code
     async disconnect() {
       await call("/internal/account/logout", "POST", null);
     },
+    async generateDmDraft(input: DmDraftRequest) {
+      return (await call(
+        "/internal/drafts/generate",
+        "POST",
+        draftSuggestionSchema,
+        input,
+      )) as DmDraftSuggestion;
+    },
   };
 }
+
+/**
+ * The process-wide runtime client, configured from env. A draft turn can run for
+ * most of a minute, so the timeout is generous — well past the runtime's own 90s
+ * turn cap would be pointless, but the default 15s is far too short for a turn.
+ */
+export const runtimeClient: CodexRuntimeClient = createCodexRuntimeClient({
+  baseUrl: env.CODEX_RUNTIME_URL,
+  token: env.CODEX_RUNTIME_TOKEN,
+  timeoutMs: 100_000,
+});

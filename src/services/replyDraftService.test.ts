@@ -6,21 +6,34 @@ const tx = {
     updateMany: vi.fn(),
     create: vi.fn(),
     findFirst: vi.fn(),
+    findMany: vi.fn(),
+    findUnique: vi.fn(),
   },
+  dmThread: { findUnique: vi.fn() },
+  dmMessage: { findMany: vi.fn() },
 };
 
 const $transaction = vi.fn(async (fn: (client: typeof tx) => unknown) => fn(tx));
 
 vi.mock("../lib/prisma.js", () => ({
-  prisma: { $transaction, replyDraft: tx.replyDraft },
+  prisma: {
+    $transaction,
+    replyDraft: tx.replyDraft,
+    dmThread: tx.dmThread,
+    dmMessage: tx.dmMessage,
+  },
 }));
 
-const { queueReplyDraft } = await import("./replyDraftService.js");
+const { queueReplyDraft, claimOneQueuedDraft, completeGeneration, failGeneration } = await import(
+  "./replyDraftService.js"
+);
 
 const INPUT = { threadId: "thread-1", inboundMessageId: "message-1" };
 
 beforeEach(() => {
   for (const fn of Object.values(tx.replyDraft)) fn.mockReset();
+  tx.dmThread.findUnique.mockReset();
+  tx.dmMessage.findMany.mockReset();
   $transaction.mockClear();
   tx.replyDraft.aggregate.mockResolvedValue({ _max: { revision: null } });
   tx.replyDraft.updateMany.mockResolvedValue({ count: 0 });
@@ -103,5 +116,126 @@ describe("queueReplyDraft", () => {
   it("runs revision allocation and supersession in one transaction", async () => {
     await queueReplyDraft(INPUT);
     expect($transaction).toHaveBeenCalledOnce();
+  });
+});
+
+describe("claimOneQueuedDraft", () => {
+  it("claims the oldest due draft by flipping queued -> generating with updateMany", async () => {
+    tx.replyDraft.findFirst.mockResolvedValue({ id: "draft-1", threadId: "thread-1" });
+    tx.replyDraft.updateMany.mockResolvedValue({ count: 1 });
+    tx.replyDraft.findUnique.mockResolvedValue({
+      id: "draft-1",
+      threadId: "thread-1",
+      status: "generating",
+    });
+
+    const claimed = await claimOneQueuedDraft();
+
+    expect(claimed).toMatchObject({ id: "draft-1", status: "generating" });
+    // The claim is a conditional updateMany on status: queued — only the caller
+    // that flips the single row owns it, so two ticks can't double-generate.
+    const [[call]] = tx.replyDraft.updateMany.mock.calls as [
+      [{ where: { id: string; status: string }; data: { status: string } }],
+    ];
+    expect(call.where).toMatchObject({ id: "draft-1", status: "queued" });
+    expect(call.data.status).toBe("generating");
+  });
+
+  it("returns null when no draft is due", async () => {
+    tx.replyDraft.findFirst.mockResolvedValue(null);
+    await expect(claimOneQueuedDraft()).resolves.toBeNull();
+  });
+
+  it("returns null when another worker won the claim (count 0)", async () => {
+    tx.replyDraft.findFirst.mockResolvedValue({ id: "draft-1", threadId: "thread-1" });
+    tx.replyDraft.updateMany.mockResolvedValue({ count: 0 });
+    await expect(claimOneQueuedDraft()).resolves.toBeNull();
+  });
+});
+
+describe("completeGeneration", () => {
+  const payload = {
+    suggestedText: "Most toddlers keep a nap until around 3 💛",
+    workingText: "Most toddlers keep a nap until around 3 💛",
+    rationale: "Direct and warm.",
+    confidence: "high",
+    warnings: [],
+    modelId: "codex-default",
+  };
+
+  it("transitions to pending_approval only while still generating and inbound unchanged", async () => {
+    tx.replyDraft.findUnique.mockResolvedValue({
+      id: "draft-1",
+      status: "generating",
+      threadId: "thread-1",
+      inboundMessageId: "message-1",
+    });
+    tx.dmThread.findUnique.mockResolvedValue({ latestInboundMessageId: "message-1" });
+    tx.replyDraft.updateMany.mockResolvedValue({ count: 1 });
+
+    await completeGeneration("draft-1", payload);
+
+    const [[call]] = tx.replyDraft.updateMany.mock.calls as [
+      [{ where: { id: string; status: string }; data: Record<string, unknown> }],
+    ];
+    expect(call.where).toMatchObject({ id: "draft-1", status: "generating" });
+    expect(call.data).toMatchObject({
+      status: "pending_approval",
+      suggestedText: payload.suggestedText,
+      workingText: payload.workingText,
+    });
+  });
+
+  it("supersedes instead when a newer inbound arrived during generation", async () => {
+    tx.replyDraft.findUnique.mockResolvedValue({
+      id: "draft-1",
+      status: "generating",
+      threadId: "thread-1",
+      inboundMessageId: "message-1",
+    });
+    // The thread has moved on to a later message.
+    tx.dmThread.findUnique.mockResolvedValue({ latestInboundMessageId: "message-2" });
+    tx.replyDraft.updateMany.mockResolvedValue({ count: 1 });
+
+    await completeGeneration("draft-1", payload);
+
+    const statuses = tx.replyDraft.updateMany.mock.calls.map(
+      ([c]) => (c as { data: { status: string } }).data.status,
+    );
+    expect(statuses).toContain("superseded");
+    expect(statuses).not.toContain("pending_approval");
+  });
+
+  it("does nothing if the draft is no longer generating", async () => {
+    tx.replyDraft.findUnique.mockResolvedValue({
+      id: "draft-1",
+      status: "dismissed",
+      threadId: "thread-1",
+      inboundMessageId: "message-1",
+    });
+
+    await completeGeneration("draft-1", payload);
+    expect(tx.replyDraft.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("failGeneration", () => {
+  it("moves generating -> generation_failed with a safe category", async () => {
+    tx.replyDraft.updateMany.mockResolvedValue({ count: 1 });
+
+    await failGeneration("draft-1", {
+      errorCode: "runtime_rate_limited",
+      errorMessage: "ChatGPT usage limit reached",
+      retryAt: new Date("2026-08-04T12:00:00.000Z"),
+    });
+
+    const [[call]] = tx.replyDraft.updateMany.mock.calls as [
+      [{ where: { id: string; status: string }; data: Record<string, unknown> }],
+    ];
+    expect(call.where).toMatchObject({ id: "draft-1", status: "generating" });
+    expect(call.data).toMatchObject({
+      status: "generation_failed",
+      errorCode: "runtime_rate_limited",
+    });
   });
 });

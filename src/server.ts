@@ -10,6 +10,7 @@ import { runSnapshotTick } from "./services/snapshotWorker.js";
 import { runGeminiQueueTick } from "./services/geminiQueueWorker.js";
 import { runFollowRecheckTick } from "./services/followRecheckWorker.js";
 import { runFollowThroughTick } from "./services/followThroughWorker.js";
+import { runReplyDraftTick } from "./services/replyDraftWorker.js";
 import { seedTokenFromEnv } from "./meta/tokenStore.js";
 import { runTokenRefreshTick } from "./meta/tokenRefresher.js";
 import { apiRouter } from "./api/router.js";
@@ -115,6 +116,16 @@ const TOKEN_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 setInterval(() => {
   void runTokenRefreshTick();
 }, TOKEN_REFRESH_INTERVAL_MS);
+
+// Reply-draft worker: turns queued unhandled DMs into pending suggestions for the
+// owner to approve. Gated on AI_DRAFTS_ENABLED (off by default), non-throwing, and
+// it never sends a message — approval is a separate, explicit owner action. Only
+// started when the flag is on, so it costs nothing until the feature is enabled.
+if (env.AI_DRAFTS_ENABLED) {
+  setInterval(() => {
+    void runReplyDraftTick();
+  }, env.AI_DRAFT_INTERVAL_MS);
+}
 
 app.listen(env.PORT, () => {
   logger.info({ port: env.PORT, env: env.NODE_ENV }, "insta-automation listening");

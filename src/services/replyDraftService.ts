@@ -1,6 +1,11 @@
 import type { ReplyDraft } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
+import type { DmDraftRequest } from "./codexRuntimeClient.js";
 import { ACTIVE_DRAFT_STATUSES } from "./replyDraftMachine.js";
+
+/** How much conversation the drafter sees: recent, and bounded. */
+const CONTEXT_MESSAGE_LIMIT = 20;
+const CONTEXT_CHAR_BUDGET = 8_000;
 
 /**
  * Creating and advancing reply drafts.
@@ -70,5 +75,174 @@ export async function queueReplyDraft(input: {
       if (!winner) throw error;
       return winner;
     }
+  });
+}
+
+/**
+ * Claim the oldest due queued draft by flipping it to `generating`.
+ *
+ * The claim is a conditional `updateMany` on `status: queued`: only the worker
+ * whose update actually changes the row owns it, so two overlapping ticks can
+ * never generate the same draft twice. Returns null when nothing is due or the
+ * race was lost.
+ */
+export async function claimOneQueuedDraft(): Promise<ReplyDraft | null> {
+  return prisma.$transaction(async (tx) => {
+    const candidate = await tx.replyDraft.findFirst({
+      where: { status: "queued", nextAttemptAt: { lte: new Date() } },
+      orderBy: { createdAt: "asc" },
+      select: { id: true },
+    });
+    if (!candidate) return null;
+
+    const claim = await tx.replyDraft.updateMany({
+      where: { id: candidate.id, status: "queued" },
+      data: { status: "generating" },
+    });
+    if (claim.count !== 1) return null; // another worker won it
+
+    return tx.replyDraft.findUnique({ where: { id: candidate.id } });
+  });
+}
+
+export interface DraftContext {
+  participant: DmDraftRequest["participant"];
+  messages: DmDraftRequest["messages"];
+  guideContext: DmDraftRequest["guideContext"];
+}
+
+/**
+ * Load the bounded transcript a draft needs. Newest 20 messages, then trimmed to
+ * an 8,000-char budget from the oldest end, and returned oldest-first so the
+ * drafter reads the conversation in order. Returns null if the thread vanished.
+ */
+export async function loadDraftContext(draft: {
+  threadId: string;
+}): Promise<DraftContext | null> {
+  const thread = await prisma.dmThread.findUnique({
+    where: { id: draft.threadId },
+    select: { username: true, name: true, igUserId: true },
+  });
+  if (!thread) return null;
+
+  const recent = await prisma.dmMessage.findMany({
+    where: { threadId: draft.threadId },
+    orderBy: { instagramTimestamp: "desc" },
+    take: CONTEXT_MESSAGE_LIMIT,
+    select: { direction: true, text: true, type: true, source: true, instagramTimestamp: true },
+  });
+
+  // recent is newest-first; walk it keeping a running char budget, then reverse
+  // to oldest-first for the model.
+  const kept: typeof recent = [];
+  let budget = CONTEXT_CHAR_BUDGET;
+  for (const m of recent) {
+    const cost = m.text?.length ?? 0;
+    if (kept.length > 0 && cost > budget) break;
+    kept.push(m);
+    budget -= cost;
+  }
+  kept.reverse();
+
+  return {
+    participant: { igUserId: thread.igUserId, username: thread.username, name: thread.name },
+    messages: kept.map((m) => ({
+      direction: m.direction,
+      text: m.text,
+      messageType: m.type,
+      source: m.source,
+      at: m.instagramTimestamp.toISOString(),
+    })),
+    // Widening to the full catalog is a deliberate follow-on; for now the drafter
+    // gets no guide unless a later task supplies one.
+    guideContext: null,
+  };
+}
+
+export interface CompleteGenerationInput {
+  suggestedText: string;
+  workingText: string;
+  rationale: string;
+  confidence: string;
+  warnings: string[];
+  modelId: string | null;
+}
+
+/**
+ * Finish a generating draft.
+ *
+ * Transitions to `pending_approval` ONLY if the draft is still `generating` AND
+ * the thread's latest inbound is still the one this draft answers. If a newer
+ * inbound arrived mid-generation, the draft is stale and is superseded instead —
+ * the owner must never be shown a reply to a message that is no longer the latest.
+ */
+export async function completeGeneration(
+  draftId: string,
+  input: CompleteGenerationInput,
+): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    const draft = await tx.replyDraft.findUnique({
+      where: { id: draftId },
+      select: { status: true, threadId: true, inboundMessageId: true },
+    });
+    if (!draft || draft.status !== "generating") return; // dismissed/superseded meanwhile
+
+    const thread = await tx.dmThread.findUnique({
+      where: { id: draft.threadId },
+      select: { latestInboundMessageId: true },
+    });
+    const stillLatest = thread?.latestInboundMessageId === draft.inboundMessageId;
+
+    if (!stillLatest) {
+      await tx.replyDraft.updateMany({
+        where: { id: draftId, status: "generating" },
+        data: { status: "superseded" },
+      });
+      return;
+    }
+
+    await tx.replyDraft.updateMany({
+      where: { id: draftId, status: "generating" },
+      data: {
+        status: "pending_approval",
+        suggestedText: input.suggestedText,
+        workingText: input.workingText,
+        rationale: input.rationale,
+        confidence: input.confidence,
+        warnings: input.warnings,
+        modelId: input.modelId,
+        attempts: { increment: 1 },
+        errorCode: null,
+        errorMessage: null,
+        retryAt: null,
+      },
+    });
+  });
+}
+
+export interface FailGenerationInput {
+  errorCode: string;
+  errorMessage: string;
+  retryAt: Date | null;
+}
+
+/**
+ * Record a generation failure. Moves `generating -> generation_failed` and stores
+ * a SHORT safe category — never a raw app-server frame or prompt text. The owner
+ * sees it and can regenerate; no worker retries it automatically.
+ */
+export async function failGeneration(
+  draftId: string,
+  input: FailGenerationInput,
+): Promise<void> {
+  await prisma.replyDraft.updateMany({
+    where: { id: draftId, status: "generating" },
+    data: {
+      status: "generation_failed",
+      errorCode: input.errorCode,
+      errorMessage: input.errorMessage,
+      retryAt: input.retryAt,
+      failedAt: new Date(),
+    },
   });
 }
