@@ -56,9 +56,14 @@ describe("assistantView", () => {
     ).toEqual({ kind: "disconnected" });
   });
 
-  it("asks for re-authorisation when the session is stale", () => {
+  /**
+   * `requiresOpenaiAuth` is a static provider capability, not an expiry signal —
+   * a healthy ChatGPT login reports `true` (verified against a working CLI
+   * session). Gating on it locked a perfectly good connection out of the page.
+   */
+  it("stays ready when requiresOpenaiAuth is true, since every ChatGPT login sets it", () => {
     expect(assistantView({ ...base, status: status({ requiresOpenaiAuth: true }) })).toEqual({
-      kind: "needs-reauth",
+      kind: "ready",
     });
   });
 

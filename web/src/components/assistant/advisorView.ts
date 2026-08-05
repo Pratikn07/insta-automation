@@ -19,7 +19,6 @@ export type AssistantView =
   | { kind: "loading" }
   | { kind: "unavailable"; reason: string }
   | { kind: "disconnected" }
-  | { kind: "needs-reauth" }
   | { kind: "disabled" }
   | { kind: "ready" };
 
@@ -30,6 +29,13 @@ export type AssistantView =
  * because "connect ChatGPT" is the action the owner can actually take; telling
  * them the feature is off first would send them looking for a switch that is not
  * the problem.
+ *
+ * `requiresOpenaiAuth` is deliberately NOT consulted. It is a static provider
+ * capability from app-server's ModelProviderInfo ("this provider authenticates
+ * against OpenAI"), and it is `true` for every healthy ChatGPT login — verified
+ * against a working CLI session. Treating it as an expiry signal blocked a
+ * perfectly good connection behind a "needs re-authorising" wall. `account`
+ * being present is the real proof of a usable session.
  */
 export function assistantView(input: {
   isLoading: boolean;
@@ -54,7 +60,6 @@ export function assistantView(input: {
   }
 
   if (!input.status?.connected) return { kind: "disconnected" };
-  if (input.status.requiresOpenaiAuth) return { kind: "needs-reauth" };
   if (!input.advisorEnabled) return { kind: "disabled" };
   return { kind: "ready" };
 }

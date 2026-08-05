@@ -158,18 +158,6 @@ export function Assistant() {
         </Card>
       )}
 
-      {view.kind === "needs-reauth" && (
-        <Card>
-          <CardContent className="flex flex-col items-center gap-2 py-10 text-center">
-            <AlertCircle className="size-5 text-amber-600" />
-            <p className="text-sm font-medium">Reconnect ChatGPT to continue</p>
-            <p className="max-w-md text-sm text-muted-foreground">
-              The stored sign-in needs re-authorising. Use Reconnect above.
-            </p>
-          </CardContent>
-        </Card>
-      )}
-
       {view.kind === "disabled" && (
         <Card>
           <CardContent className="flex flex-col items-center gap-2 py-10 text-center">

@@ -149,12 +149,10 @@ export function AiConnectionCard() {
               <p className="text-sm text-muted-foreground">{view.status.account.email}</p>
             )}
             <QuotaLine status={view.status} />
-            {view.status.requiresOpenaiAuth && (
-              <div className="flex items-start gap-2 text-sm text-amber-600">
-                <AlertCircle className="mt-0.5 size-4 shrink-0" />
-                <span>This session needs re-authorising before the Assistant can be used.</span>
-              </div>
-            )}
+            {/* `requiresOpenaiAuth` is intentionally not surfaced. It is a static
+                provider capability ("this provider authenticates against OpenAI")
+                and reads `true` for every healthy ChatGPT login, so showing it as a
+                warning told the owner to re-authorise a working connection. */}
             <div className="flex flex-wrap gap-2">
               <Button
                 variant="outline"
