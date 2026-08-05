@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { z } from "zod";
+import { booleanFlag } from "./booleanFlag.js";
 
 const envSchema = z.object({
   PORT: z.coerce.number().default(3000),
@@ -44,7 +45,7 @@ const envSchema = z.object({
   GATE_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(50).default(5),
   // Run the standard-DM experiment on aged/exhausted users (measures whether a
   // cold standard DM is ever accepted). Off by default.
-  GATE_DM_EXPERIMENT: z.coerce.boolean().default(false),
+  GATE_DM_EXPERIMENT: booleanFlag(false),
 
   // --- Insights (reel analysis) ---
   // Newer Graph version for insights/demographics/media_audio_type calls. Kept
@@ -88,9 +89,9 @@ const envSchema = z.object({
   TINY_SOHO_INTERNAL_TOKEN: z.string().min(32).optional(),
   // Every AI capability ships OFF. Each phase is enabled deliberately, and
   // turning one off must never disable existing automation.
-  AI_DRAFTS_ENABLED: z.coerce.boolean().default(false),
-  AI_SEND_ENABLED: z.coerce.boolean().default(false),
-  AI_ADVISOR_ENABLED: z.coerce.boolean().default(false),
+  AI_DRAFTS_ENABLED: booleanFlag(false),
+  AI_SEND_ENABLED: booleanFlag(false),
+  AI_ADVISOR_ENABLED: booleanFlag(false),
   AI_BRAND_VOICE: z
     .string()
     .max(4000)
