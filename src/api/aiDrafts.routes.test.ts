@@ -30,12 +30,17 @@ vi.mock("../services/dmDeliveryService.js", () => ({ sendTrackedText }));
 vi.mock("../services/dmThreadService.js", () => ({ markThreadResolved }));
 vi.mock("../services/eventLogger.js", () => ({ logEvent, describeGraphError: () => ({}) }));
 
-const sendFlags = { AI_SEND_ENABLED: true };
+const sendFlags = { AI_SEND_ENABLED: true, AI_DRAFTS_ENABLED: true };
 vi.mock("../config/env.js", async (importOriginal) => {
   const actual = (await importOriginal()) as { env: Record<string, unknown> };
   return {
     env: new Proxy(actual.env, {
-      get: (t, p) => (p === "AI_SEND_ENABLED" ? sendFlags.AI_SEND_ENABLED : t[p as string]),
+      get: (t, p) =>
+        p === "AI_SEND_ENABLED"
+          ? sendFlags.AI_SEND_ENABLED
+          : p === "AI_DRAFTS_ENABLED"
+            ? sendFlags.AI_DRAFTS_ENABLED
+            : t[p as string],
     }),
   };
 });
@@ -92,6 +97,7 @@ beforeEach(() => {
     fn.mockReset();
   }
   sendFlags.AI_SEND_ENABLED = true;
+  sendFlags.AI_DRAFTS_ENABLED = true;
   replyDraft.findUnique.mockResolvedValue(PENDING);
   replyDraft.updateMany.mockResolvedValue({ count: 1 });
   dmThread.findUnique.mockResolvedValue({
@@ -338,5 +344,45 @@ describe("POST dismiss / regenerate", () => {
     await request(makeApp())
       .post("/api/ai/dm-threads/thread-1/drafts")
       .expect(409, { error: "no_inbound_message" });
+  });
+});
+
+/**
+ * The queueing routes must refuse when the worker that drains the queue is off.
+ *
+ * Otherwise a click writes a `queued` row that nothing will ever process, and the
+ * drawer shows "Writing a suggestion…" forever. A spinner that can never resolve is
+ * worse than a clear refusal.
+ */
+describe("queueing a draft requires the worker to be running", () => {
+  beforeEach(() => {
+    sendFlags.AI_DRAFTS_ENABLED = false;
+    dmThread.findUnique.mockResolvedValue({
+      id: "thread-1",
+      needsReply: true,
+      latestInboundMessageId: "message-2",
+    });
+  });
+
+  it("refuses a first draft with 403 and writes no row", async () => {
+    await request(makeApp())
+      .post("/api/ai/dm-threads/thread-1/drafts")
+      .expect(403, { error: "ai_drafts_disabled" });
+    expect(queueReplyDraft).not.toHaveBeenCalled();
+  });
+
+  it("refuses a regenerate with 403 and writes no row", async () => {
+    replyDraft.findUnique.mockResolvedValue(PENDING);
+    await request(makeApp())
+      .post("/api/ai/dm-threads/thread-1/drafts/draft-2/regenerate")
+      .expect(403, { error: "ai_drafts_disabled" });
+    expect(queueReplyDraft).not.toHaveBeenCalled();
+  });
+
+  it("still queues when the worker is enabled", async () => {
+    sendFlags.AI_DRAFTS_ENABLED = true;
+    queueReplyDraft.mockResolvedValue({ id: "draft-9", status: "queued" });
+    await request(makeApp()).post("/api/ai/dm-threads/thread-1/drafts").expect(202);
+    expect(queueReplyDraft).toHaveBeenCalledOnce();
   });
 });

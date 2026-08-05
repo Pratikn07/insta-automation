@@ -182,8 +182,29 @@ export function createAiRouter(deps: AiRouterDependencies): Router {
     res.status(204).end();
   });
 
+  /**
+   * Queueing is gated on the WORKER's flag, not just on the UI.
+   *
+   * `queueReplyDraft` only writes a `queued` row; the worker drains it, and the
+   * worker returns immediately when AI_DRAFTS_ENABLED is false. Without this check
+   * a click creates work nothing will ever process and the drawer shows
+   * "Writing a suggestion…" permanently. A clear refusal beats a spinner that can
+   * never resolve.
+   *
+   * Checked inline rather than as middleware: a second handler makes Express widen
+   * req.params to `string | string[]`, which breaks the typed Prisma lookups. This
+   * matches how AI_SEND_ENABLED is already checked on approve and retry-send.
+   */
+  function draftsDisabled(res: Response): boolean {
+    if (env.AI_DRAFTS_ENABLED) return false;
+    res.status(403).json({ error: "ai_drafts_disabled" });
+    return true;
+  }
+
   // Generate a first draft for a thread that needs a reply and has no live draft.
   router.post("/dm-threads/:threadId/drafts", async (req, res) => {
+    if (draftsDisabled(res)) return;
+
     const thread = await prisma.dmThread.findUnique({
       where: { id: req.params.threadId },
       select: { id: true, needsReply: true, latestInboundMessageId: true },
@@ -206,6 +227,8 @@ export function createAiRouter(deps: AiRouterDependencies): Router {
 
   // Supersede the current draft and queue a fresh revision for the same inbound.
   router.post("/dm-threads/:threadId/drafts/:draftId/regenerate", async (req, res) => {
+    if (draftsDisabled(res)) return;
+
     const draft = await loadDraft(req.params.threadId, req.params.draftId);
     if (!draft) return res.status(404).json({ error: "draft_not_found" });
 
