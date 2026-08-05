@@ -10,6 +10,7 @@ import { statsRouter } from "./stats.routes.js";
 import { mediaRouter } from "./media.routes.js";
 import { usersRouter } from "./users.routes.js";
 import { insightsRouter } from "./insights.routes.js";
+import { aiRouter } from "./ai.routes.js";
 import { logger } from "../lib/logger.js";
 
 export const apiRouter = Router();
@@ -29,6 +30,7 @@ apiRouter.use("/stats", statsRouter);
 apiRouter.use("/media", mediaRouter);
 apiRouter.use("/users", usersRouter);
 apiRouter.use("/insights", insightsRouter);
+apiRouter.use("/ai", aiRouter);
 
 apiRouter.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   const code = err && typeof err === "object" && "code" in err ? (err as { code: string }).code : undefined;

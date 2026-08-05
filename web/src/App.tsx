@@ -8,6 +8,7 @@ import { Keywords } from "@/pages/Keywords";
 import { Sequences } from "@/pages/Sequences";
 import { SequenceEditor } from "@/pages/SequenceEditor";
 import { Conversations } from "@/pages/Conversations";
+import { Assistant } from "@/pages/Assistant";
 import { Activity } from "@/pages/Activity";
 import { Users } from "@/pages/Users";
 import { Insights } from "@/pages/Insights";
@@ -39,6 +40,7 @@ export default function App() {
             <Route path="sequences" element={<Sequences />} />
             <Route path="sequences/:id" element={<SequenceEditor />} />
             <Route path="conversations" element={<Conversations />} />
+            <Route path="assistant" element={<Assistant />} />
             <Route path="users" element={<Users />} />
             <Route path="insights" element={<Insights />} />
             <Route path="activity" element={<Activity />} />

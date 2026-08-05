@@ -19,6 +19,7 @@ const items = [
   { to: "/keywords", label: "Keywords", icon: Tag },
   { to: "/sequences", label: "Sequences", icon: Layers },
   { to: "/conversations", label: "Conversations", icon: MessageCircle },
+  { to: "/assistant", label: "Assistant", icon: Sparkles },
   { to: "/users", label: "Users", icon: Users },
   { to: "/insights", label: "Insights", icon: BarChart3 },
   { to: "/activity", label: "Activity", icon: Activity },

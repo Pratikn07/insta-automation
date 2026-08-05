@@ -75,6 +75,27 @@ const envSchema = z.object({
   // Distinct convertible users re-read per worker tick (each = one Graph call).
   FOLLOW_RECHECK_BATCH: z.coerce.number().int().min(1).max(100).default(20),
   FOLLOW_RECHECK_INTERVAL_MS: z.coerce.number().int().min(60_000).default(30 * 60 * 1000),
+
+  // --- AI (private Codex runtime) ---------------------------------------------
+  // All optional at boot: the runtime is a separate Railway service, so an API
+  // deploy must keep serving webhooks, gates and guides when it is absent or
+  // still starting. Owner-facing AI routes answer 503 ai_not_configured instead.
+  CODEX_RUNTIME_URL: z.string().url().optional(),
+  CODEX_RUNTIME_TOKEN: z.string().min(32).optional(),
+  // Sent BY the runtime when calling back into this API for advisor tools
+  // (Task 9/10). Distinct from CODEX_RUNTIME_TOKEN so the two directions can be
+  // rotated independently and neither grants the other's access.
+  TINY_SOHO_INTERNAL_TOKEN: z.string().min(32).optional(),
+  // Every AI capability ships OFF. Each phase is enabled deliberately, and
+  // turning one off must never disable existing automation.
+  AI_DRAFTS_ENABLED: z.coerce.boolean().default(false),
+  AI_SEND_ENABLED: z.coerce.boolean().default(false),
+  AI_ADVISOR_ENABLED: z.coerce.boolean().default(false),
+  AI_BRAND_VOICE: z
+    .string()
+    .max(4000)
+    .default("Warm, practical, concise, and supportive. Never diagnose or shame a parent."),
+  AI_DRAFT_INTERVAL_MS: z.coerce.number().int().min(5_000).default(15_000),
 });
 
 const parsed = envSchema.safeParse(process.env);

@@ -430,3 +430,22 @@ export interface FollowerFlowResponse {
   points: FollowerDailyAddsPoint[];
   stock: FollowerStock | null;
 }
+
+// --- AI (ChatGPT connection) -------------------------------------------------
+// Mirrors the runtime's ConnectionStatus exactly. Nulls are meaningful: a null
+// `rateLimits` means "usage unknown", never "0% used", and a null email means the
+// account exposed no address — neither may be rendered as a real value.
+export interface AiConnectionStatus {
+  connected: boolean;
+  requiresOpenaiAuth: boolean;
+  account: null | { email: string | null; planType: string };
+  rateLimits: null | { usedPercent: number | null; resetsAt: number | null };
+}
+
+// Device-code display fields only. There is deliberately no token field here —
+// ChatGPT credentials never leave the runtime's volume.
+export interface AiLoginStart {
+  loginId: string;
+  userCode: string;
+  verificationUrl: string;
+}
