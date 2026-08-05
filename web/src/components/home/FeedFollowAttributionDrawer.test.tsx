@@ -88,6 +88,7 @@ describe("FeedFollowAttributionDrawer", () => {
     const html = renderDrawer({ isLoading: true });
     expect(html).toContain("August 3, 2026");
     expect(html).toContain("Loading feed attribution");
+    expect(html).toContain("Reels and Stories are not included");
   });
 
   it("keeps the selected date and offers retry after a request error", () => {
@@ -95,6 +96,7 @@ describe("FeedFollowAttributionDrawer", () => {
     expect(html).toContain("August 3, 2026");
     expect(html).toContain("Could not load feed attribution");
     expect(html).toContain(">Retry<");
+    expect(html).toContain("Reels and Stories are not included");
   });
 
   it("does not describe dates before tracking as zero", () => {
@@ -164,13 +166,39 @@ describe("FeedFollowAttributionDrawer", () => {
     expect(html).toContain("The five-minute pantry reset");
     expect(html).toContain("Carousel");
     expect(html).toContain("+7");
-    expect(html).toContain("12 lifetime");
+    expect(html).toContain("attributed follows this day");
+    expect(html).toContain("12 lifetime follows");
     expect(html).toContain('href="https://www.instagram.com/p/example/"');
     expect(html).toContain('target="_blank"');
     expect(html).toContain('rel="noopener noreferrer"');
+    expect(html).toContain('loading="lazy"');
+    expect(html).toContain('decoding="async"');
     expect(html).toContain("Directional remainder");
     expect(html).toContain("directional diagnostic");
     expect(html).toContain("Reels and Stories are not included");
     expect(html).not.toMatch(/reel.+caused|caused.+reel/i);
+  });
+
+  it("falls back for an empty thumbnail and rejects a non-Instagram link", () => {
+    const invalidMedia = attributionDay({
+      posts: [
+        {
+          mediaId: "ig-unsafe",
+          mediaType: "IMAGE",
+          caption: null,
+          permalink: "javascript:alert(1)",
+          thumbnailUrl: "",
+          postedAt: null,
+          follows: 2,
+          delta: 1,
+          spanDays: 1,
+        },
+      ],
+    });
+    const html = renderDrawer({ data: response(invalidMedia) });
+    expect(html).toContain("No thumbnail available");
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("javascript:alert(1)");
+    expect(html).not.toContain("Open on Instagram");
   });
 });

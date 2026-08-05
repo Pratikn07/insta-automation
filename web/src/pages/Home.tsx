@@ -4,6 +4,7 @@ import { motion } from "framer-motion";
 import { ArrowUpRight, CalendarDays, Sparkles } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
+import { feedFollowAttributionPath } from "@/lib/feedFollowAttribution";
 import type { FeedFollowAttributionResponse, FollowerFlowResponse, Stats } from "@/lib/types";
 import { summarizeFollowerFlow, summarizeUsWeekOverWeek } from "@/lib/followerFlow";
 import { FollowerFlowPanel } from "@/components/home/FollowerFlowPanel";
@@ -28,9 +29,10 @@ export function Home() {
   });
   const attributionQ = useQuery<FeedFollowAttributionResponse>({
     queryKey: ["insights", "feed-follow-attribution", attributionDay],
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       api<FeedFollowAttributionResponse>(
-        `/insights/feed-follow-attribution?from=${attributionDay}&to=${attributionDay}`,
+        feedFollowAttributionPath(attributionDay!),
+        { signal },
       ),
     enabled: attributionDay !== null,
   });

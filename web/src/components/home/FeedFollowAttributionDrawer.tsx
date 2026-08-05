@@ -1,4 +1,5 @@
 import { ExternalLink, ImageOff } from "lucide-react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Drawer } from "@/components/ui/drawer";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -6,6 +7,7 @@ import {
   feedCollectionCopy,
   feedComparisonExplanation,
   feedMediaLabel,
+  safeInstagramPermalink,
   type FeedCollectionCopy,
 } from "@/lib/feedFollowAttribution";
 import { formatSignedCount } from "@/lib/followerFlow";
@@ -83,7 +85,9 @@ function CollectionStatus({ copy }: { copy: FeedCollectionCopy }) {
 }
 
 function PostThumbnail({ post }: { post: FeedFollowAttributedPost }) {
-  if (post.thumbnailUrl === null) {
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+
+  if (!post.thumbnailUrl || failedUrl === post.thumbnailUrl) {
     return (
       <div className="flex size-20 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
         <ImageOff className="size-5" aria-hidden="true" />
@@ -96,6 +100,9 @@ function PostThumbnail({ post }: { post: FeedFollowAttributedPost }) {
     <img
       src={post.thumbnailUrl}
       alt=""
+      loading="lazy"
+      decoding="async"
+      onError={() => setFailedUrl(post.thumbnailUrl)}
       className="size-20 shrink-0 rounded-lg bg-muted object-cover"
     />
   );
@@ -103,6 +110,7 @@ function PostThumbnail({ post }: { post: FeedFollowAttributedPost }) {
 
 function PostRow({ post }: { post: FeedFollowAttributedPost }) {
   const publishedAt = formatPublishedAt(post.postedAt);
+  const permalink = safeInstagramPermalink(post.permalink);
   return (
     <article className="rounded-xl border p-4">
       <div className="flex gap-4">
@@ -121,15 +129,19 @@ function PostRow({ post }: { post: FeedFollowAttributedPost }) {
             <div className="shrink-0 text-right">
               <p className="text-lg font-semibold tabular-nums">{formatSignedCount(post.delta)}</p>
               <p className="text-[11px] text-muted-foreground">
-                {post.spanDays > 1 ? `across ${post.spanDays} days` : "this day"}
+                {post.spanDays > 1
+                  ? `attributed across ${post.spanDays} days`
+                  : "attributed follows this day"}
               </p>
             </div>
           </div>
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t pt-3">
-            <span className="text-xs font-medium text-foreground">{post.follows} lifetime</span>
-            {post.permalink && (
+            <span className="text-xs font-medium text-foreground">
+              {post.follows} lifetime follows
+            </span>
+            {permalink && (
               <a
-                href={post.permalink}
+                href={permalink}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
@@ -196,6 +208,20 @@ function ErrorState({ onRetry }: { onRetry: () => void }) {
   );
 }
 
+function ScopeNote() {
+  return (
+    <aside className="rounded-xl bg-muted/35 p-4 text-xs leading-relaxed text-muted-foreground">
+      <p>
+        Feed-post follows are gross follows credited by Meta; account change is net follows minus
+        unfollows. The remainder is a directional diagnostic, not an exact source count.
+      </p>
+      <p className="mt-2 font-medium text-foreground">
+        Reels and Stories are not included in this feed-post attribution.
+      </p>
+    </aside>
+  );
+}
+
 function AttributionContent({ day }: { day: FeedFollowAttributionDay }) {
   const comparisonDetail = feedComparisonExplanation(day.comparisonReason);
   return (
@@ -243,15 +269,6 @@ function AttributionContent({ day }: { day: FeedFollowAttributionDay }) {
         )}
       </section>
 
-      <aside className="rounded-xl bg-muted/35 p-4 text-xs leading-relaxed text-muted-foreground">
-        <p>
-          Feed-post follows are gross follows credited by Meta; account change is net follows minus
-          unfollows. The remainder is a directional diagnostic, not an exact source count.
-        </p>
-        <p className="mt-2 font-medium text-foreground">
-          Reels and Stories are not included in this feed-post attribution.
-        </p>
-      </aside>
     </div>
   );
 }
@@ -276,20 +293,23 @@ export function FeedFollowAttributionDrawer({
       description="Feed-post follow attribution"
       widthClass="w-full max-w-xl"
     >
-      {isLoading ? (
-        <LoadingState />
-      ) : isError ? (
-        <ErrorState onRetry={onRetry} />
-      ) : selected ? (
-        <AttributionContent day={selected} />
-      ) : (
-        <div className="rounded-xl border border-dashed p-6 text-center">
-          <p className="text-sm font-medium">Attribution is unavailable for this date.</p>
-          <p className="mt-1 text-sm text-muted-foreground">
-            No day record was returned, so this cannot be treated as zero.
-          </p>
-        </div>
-      )}
+      <div className="space-y-5">
+        {isLoading ? (
+          <LoadingState />
+        ) : isError ? (
+          <ErrorState onRetry={onRetry} />
+        ) : selected ? (
+          <AttributionContent day={selected} />
+        ) : (
+          <div className="rounded-xl border border-dashed p-6 text-center">
+            <p className="text-sm font-medium">Attribution is unavailable for this date.</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              No day record was returned, so this cannot be treated as zero.
+            </p>
+          </div>
+        )}
+        <ScopeNote />
+      </div>
     </Drawer>
   );
 }

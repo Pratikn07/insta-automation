@@ -246,6 +246,8 @@ describe("FollowerFlowPanel", () => {
 
     expect((html.match(/role="button"/g) ?? [])).toHaveLength(4);
     expect((html.match(/tabindex="0"/g) ?? [])).toHaveLength(4);
+    expect((html.match(/data-day-hit-target=/g) ?? [])).toHaveLength(4);
+    expect((html.match(/pointer-events="all"/g) ?? [])).toHaveLength(4);
     expect(html).toContain("View feed-post attribution for August 1, 2026");
     expect(html).toContain("View feed-post attribution for August 4, 2026");
     expect(html).toContain('aria-label="View feed-post attribution for August 3, 2026" aria-pressed="true"');

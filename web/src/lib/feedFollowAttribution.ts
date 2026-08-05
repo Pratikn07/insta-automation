@@ -9,6 +9,24 @@ export interface FeedCollectionCopy {
   tone: "good" | "caution" | "muted";
 }
 
+export function feedFollowAttributionPath(day: string): string {
+  return `/insights/feed-follow-attribution?from=${day}&to=${day}`;
+}
+
+export function safeInstagramPermalink(value: string | null): string | null {
+  if (!value) return null;
+
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase();
+    if (url.protocol !== "https:") return null;
+    if (hostname !== "instagram.com" && !hostname.endsWith(".instagram.com")) return null;
+    return value;
+  } catch {
+    return null;
+  }
+}
+
 export function feedMediaLabel(mediaType: string | null): string {
   if (mediaType === "CAROUSEL_ALBUM") return "Carousel";
   if (mediaType === "IMAGE") return "Image post";

@@ -1,10 +1,34 @@
 import { describe, expect, it } from "vitest";
 import type { FeedFollowAttributionDay, FeedFollowComparisonReason } from "./types";
 import {
+  feedFollowAttributionPath,
   feedCollectionCopy,
   feedComparisonExplanation,
   feedMediaLabel,
+  safeInstagramPermalink,
 } from "./feedFollowAttribution";
+
+describe("feedFollowAttributionPath", () => {
+  it("requests an inclusive one-day range for the selected UTC date", () => {
+    expect(feedFollowAttributionPath("2026-08-05")).toBe(
+      "/insights/feed-follow-attribution?from=2026-08-05&to=2026-08-05",
+    );
+  });
+});
+
+describe("safeInstagramPermalink", () => {
+  it.each([
+    ["https://www.instagram.com/p/example/", "https://www.instagram.com/p/example/"],
+    ["https://instagram.com/p/example/", "https://instagram.com/p/example/"],
+    ["https://m.instagram.com/p/example/", "https://m.instagram.com/p/example/"],
+    ["http://www.instagram.com/p/example/", null],
+    ["javascript:alert(1)", null],
+    ["https://example.com/p/example/", null],
+    [null, null],
+  ])("accepts only HTTPS Instagram URLs: %s", (value, expected) => {
+    expect(safeInstagramPermalink(value)).toBe(expected);
+  });
+});
 
 function day(overrides: Partial<FeedFollowAttributionDay> = {}): FeedFollowAttributionDay {
   return {

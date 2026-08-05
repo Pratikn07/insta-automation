@@ -191,6 +191,7 @@ export function DailyAddsChart({
             return (
               <g key={bar.day} {...selectionProps}>
                 <rect
+                  data-day-hit-target={bar.day}
                   x={bar.x}
                   y={8}
                   width={bar.width}
@@ -198,6 +199,7 @@ export function DailyAddsChart({
                   rx={4}
                   fill="currentColor"
                   fillOpacity={activeDay === bar.day ? 0.12 : 0.06}
+                  pointerEvents="all"
                 />
               </g>
             );
@@ -217,6 +219,15 @@ export function DailyAddsChart({
                     : 1
               }
             >
+              <rect
+                data-day-hit-target={bar.day}
+                x={bar.x}
+                y={8}
+                width={bar.width}
+                height={HEIGHT - 16}
+                fill="transparent"
+                pointerEvents="all"
+              />
               {bar.segments.map((seg) => (
                 <rect
                   key={seg.region}
