@@ -16,6 +16,8 @@ interface FollowerFlowPanelProps {
   isLoading: boolean;
   isError: boolean;
   onRetry: () => void;
+  selectedDay?: string | null;
+  onDaySelect?: (day: string) => void;
   // ISO "now" for the staleness pill (injected, never Date.now(), so the panel
   // stays deterministic under renderToStaticMarkup like the rest of Home).
   now?: string;
@@ -54,6 +56,8 @@ export function FollowerFlowPanel({
   isLoading,
   isError,
   onRetry,
+  selectedDay,
+  onDaySelect,
   now,
 }: FollowerFlowPanelProps) {
   if (isLoading) {
@@ -148,7 +152,11 @@ export function FollowerFlowPanel({
             <span className="font-medium text-foreground">Daily net adds by region</span>
             <span className="text-muted-foreground">Line = 7-day average</span>
           </div>
-          <DailyAddsChart points={points} />
+          <DailyAddsChart
+            points={points}
+            selectedDay={selectedDay}
+            onDaySelect={onDaySelect}
+          />
         </div>
 
         <SpikeCandidates points={points} />

@@ -95,4 +95,19 @@ describe("ChartTooltip", () => {
     expect(html).toContain("pointer-events-none");
     expect(html).toContain('aria-hidden="true"');
   });
+
+  it("shows the feed-attribution action without changing the chart data", () => {
+    const html = renderToStaticMarkup(
+      <ChartTooltip
+        model={model}
+        x={300}
+        y={120}
+        containerWidth={1080}
+        actionHint="Click to see contributing feed posts"
+      />,
+    );
+    expect(html).toContain("Click to see contributing feed posts");
+    expect(html).toContain("+59 net");
+    expect(html).toContain("US");
+  });
 });

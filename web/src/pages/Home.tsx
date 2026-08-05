@@ -1,11 +1,13 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { ArrowUpRight, CalendarDays, Sparkles } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
-import type { FollowerFlowResponse, Stats } from "@/lib/types";
+import type { FeedFollowAttributionResponse, FollowerFlowResponse, Stats } from "@/lib/types";
 import { summarizeFollowerFlow, summarizeUsWeekOverWeek } from "@/lib/followerFlow";
 import { FollowerFlowPanel } from "@/components/home/FollowerFlowPanel";
+import { FeedFollowAttributionDrawer } from "@/components/home/FeedFollowAttributionDrawer";
 import { FollowerKpiRow } from "@/components/home/FollowerKpiRow";
 import { Button } from "@/components/ui/button";
 
@@ -15,6 +17,7 @@ const fadeUp = {
 };
 
 export function Home() {
+  const [attributionDay, setAttributionDay] = useState<string | null>(null);
   const flowQ = useQuery<FollowerFlowResponse>({
     queryKey: ["insights", "follower-daily-adds"],
     queryFn: () => api<FollowerFlowResponse>("/insights/follower-daily-adds"),
@@ -22,6 +25,14 @@ export function Home() {
   const statsQ = useQuery<Stats>({
     queryKey: ["stats"],
     queryFn: () => api<Stats>("/stats"),
+  });
+  const attributionQ = useQuery<FeedFollowAttributionResponse>({
+    queryKey: ["insights", "feed-follow-attribution", attributionDay],
+    queryFn: () =>
+      api<FeedFollowAttributionResponse>(
+        `/insights/feed-follow-attribution?from=${attributionDay}&to=${attributionDay}`,
+      ),
+    enabled: attributionDay !== null,
   });
 
   const flowPoints = flowQ.data?.points ?? [];
@@ -88,9 +99,20 @@ export function Home() {
           isLoading={flowQ.isLoading}
           isError={flowQ.isError}
           onRetry={() => void flowQ.refetch()}
+          selectedDay={attributionDay}
+          onDaySelect={setAttributionDay}
           now={new Date().toISOString()}
         />
       </motion.div>
+
+      <FeedFollowAttributionDrawer
+        day={attributionDay}
+        data={attributionQ.data}
+        isLoading={attributionQ.isLoading}
+        isError={attributionQ.isError}
+        onRetry={() => void attributionQ.refetch()}
+        onClose={() => setAttributionDay(null)}
+      />
     </div>
   );
 }

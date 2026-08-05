@@ -11,13 +11,14 @@ export interface ChartTooltipProps {
   x: number;
   y: number;
   containerWidth: number;
+  actionHint?: string;
 }
 
 const CURSOR_GAP = 12;
 const CARD_WIDTH = 200;
 const FLIP_ABOVE_BELOW_AT = 90;
 
-export function ChartTooltip({ model, x, y, containerWidth }: ChartTooltipProps) {
+export function ChartTooltip({ model, x, y, containerWidth, actionHint }: ChartTooltipProps) {
   // Flip near the right edge so the card never runs off the panel.
   const flipHorizontal = x + CURSOR_GAP + CARD_WIDTH > containerWidth;
   const flipVertical = y < FLIP_ABOVE_BELOW_AT;
@@ -77,6 +78,12 @@ export function ChartTooltip({ model, x, y, containerWidth }: ChartTooltipProps)
             </p>
           ))}
         </div>
+      )}
+
+      {actionHint && (
+        <p className="mt-2 border-t border-white/10 pt-2 text-[10px] font-medium text-sky-200/80">
+          {actionHint}
+        </p>
       )}
     </div>
   );
