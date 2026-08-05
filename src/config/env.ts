@@ -64,6 +64,13 @@ const envSchema = z.object({
   // Worker pacing (ms). Snapshot self-throttles on the newest snapshot age so a
   // small dev interval can't spam the Graph API.
   SNAPSHOT_INTERVAL_MS: z.coerce.number().int().min(60_000).default(6 * 60 * 60 * 1000),
+  // Regular FEED-post follow attribution. The worker can retry throughout the
+  // day, while its composite key keeps storage to one latest row per UTC day.
+  FEED_FOLLOW_SNAPSHOT_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .min(60_000)
+    .default(6 * 60 * 60 * 1000),
   GEMINI_QUEUE_INTERVAL_MS: z.coerce.number().int().min(10_000).default(2 * 60 * 1000),
 
   // --- Follow-recheck worker (fix #11: funnel follower yield) ---

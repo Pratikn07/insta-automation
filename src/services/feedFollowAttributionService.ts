@@ -1,0 +1,102 @@
+import { prisma } from "../lib/prisma.js";
+import { getFollowerDailyAdds } from "./followerFlowService.js";
+import {
+  buildFeedFollowAttribution,
+  type FeedAttributionPost,
+  type FeedAttributionSnapshot,
+  type FeedFollowAttribution,
+} from "./feedFollowAttributionCore.js";
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export interface FeedFollowAttributionResponse extends FeedFollowAttribution {
+  range: { from: string; to: string };
+  tracking: {
+    startedAt: string | null;
+    lastAttemptAt: string | null;
+    lastCompletedAt: string | null;
+    lastStatus: string | null;
+    eligibleCount: number;
+    writtenCount: number;
+    unavailableCount: number;
+    failedCount: number;
+    lastError: string | null;
+    trackedPosts: number;
+    latestSnapshotDay: string | null;
+  };
+  caveats: string[];
+}
+
+/** Read the stored attribution evidence and align it with the existing net-add series. */
+export async function getFeedFollowAttribution(range: {
+  from: string;
+  to: string;
+}): Promise<FeedFollowAttributionResponse> {
+  const toDay = new Date(`${range.to}T00:00:00Z`);
+  const toExclusive = new Date(toDay.getTime() + DAY_MS);
+
+  const state = await prisma.feedFollowCollectorState.findUnique({
+    where: { scope: "feed" },
+  });
+  const posts = await prisma.feedPostMeta.findMany({
+    where: { firstSeenAt: { lt: toExclusive } },
+    orderBy: { firstSeenAt: "asc" },
+    select: {
+      mediaId: true,
+      mediaType: true,
+      caption: true,
+      permalink: true,
+      thumbnailUrl: true,
+      postedAt: true,
+      firstSeenAt: true,
+      baselineFollows: true,
+      baselineCapturedAt: true,
+    },
+  });
+  // Include the most recent successful evidence before `from`; cumulative
+  // counters need that earlier value to derive the first requested day's delta.
+  const snapshots = await prisma.feedFollowDailySnapshot.findMany({
+    where: { day: { lte: toDay } },
+    orderBy: [{ day: "asc" }, { mediaId: "asc" }],
+    select: {
+      mediaId: true,
+      day: true,
+      capturedAt: true,
+      follows: true,
+      status: true,
+    },
+  });
+  const followerFlow = await getFollowerDailyAdds();
+
+  const attribution = buildFeedFollowAttribution({
+    ...range,
+    trackingStartedAt: state?.startedAt ?? null,
+    posts: posts as FeedAttributionPost[],
+    snapshots: snapshots as FeedAttributionSnapshot[],
+    followerPoints: followerFlow.points,
+  });
+  const latestSnapshot = snapshots.at(-1);
+
+  return {
+    range,
+    tracking: {
+      startedAt: state?.startedAt.toISOString() ?? null,
+      lastAttemptAt: state?.lastAttemptAt?.toISOString() ?? null,
+      lastCompletedAt: state?.lastCompletedAt?.toISOString() ?? null,
+      lastStatus: state?.lastStatus ?? null,
+      eligibleCount: state?.eligibleCount ?? 0,
+      writtenCount: state?.writtenCount ?? 0,
+      unavailableCount: state?.unavailableCount ?? 0,
+      failedCount: state?.failedCount ?? 0,
+      lastError: state?.lastError ?? null,
+      trackedPosts: posts.length,
+      latestSnapshotDay: latestSnapshot?.day.toISOString().slice(0, 10) ?? null,
+    },
+    ...attribution,
+    caveats: [
+      "Feed-attributed follows are gross follows credited by Meta to regular feed posts.",
+      "Account daily adds are net follows minus unfollows and can lag by about 48 hours.",
+      "netResidualAfterFeed is directional diagnostic evidence, not an exact unattributed-follower count.",
+    ],
+  };
+}

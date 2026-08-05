@@ -16,6 +16,8 @@ import {
   getGeoWindowTrend,
 } from "../services/experimentService.js";
 import { getFollowerDailyAdds } from "../services/followerFlowService.js";
+import { parseFeedFollowAttributionRange } from "../services/feedFollowAttributionCore.js";
+import { getFeedFollowAttribution } from "../services/feedFollowAttributionService.js";
 import { computeUsFit } from "../services/usFitScore.js";
 import type { ContentProfile } from "../services/geminiAnalysisService.js";
 import { mediaTimestamp } from "./mediaTimestamp.js";
@@ -59,6 +61,21 @@ insightsRouter.get("/geo-window-trend", async (_req, res) => {
 // (diffed from cumulative follower_demographics snapshots) + latest stock.
 insightsRouter.get("/follower-daily-adds", async (_req, res) => {
   res.json(await getFollowerDailyAdds());
+});
+
+// GET /api/insights/feed-follow-attribution — Meta-attributed gross follows for
+// regular FEED posts, aligned cautiously with the existing net-add series.
+insightsRouter.get("/feed-follow-attribution", async (req, res) => {
+  let range: { from: string; to: string };
+  try {
+    range = parseFeedFollowAttributionRange({ from: req.query.from, to: req.query.to });
+  } catch {
+    return res.status(400).json({
+      error: "invalid_date_range",
+      detail: "Use inclusive UTC dates (YYYY-MM-DD), from <= to, with at most 90 days.",
+    });
+  }
+  res.json(await getFeedFollowAttribution(range));
 });
 
 // GET /api/insights/experiments — all experiments, newest first.
