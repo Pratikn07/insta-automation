@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import type { FollowerDailyAddsPoint } from "@/lib/types";
 import { chartGeometry, formatSignedCount, type ChartRegion } from "@/lib/followerFlow";
 import { hitTestDay, shownSpikeDays, tooltipModel } from "@/lib/chartTooltip";
+import { preventChartDayPointerFocus } from "@/lib/chartPointerInteraction";
 import { cn } from "@/lib/utils";
 import { ChartTooltip } from "./ChartTooltip";
 
@@ -180,6 +181,7 @@ export function DailyAddsChart({
                 tabIndex: 0,
                 "aria-label": `View feed-post attribution for ${accessibleDayLabel(bar.day)}`,
                 "aria-pressed": selectedDay === bar.day,
+                onPointerDown: preventChartDayPointerFocus,
                 onClick: () => onDaySelect(bar.day),
                 onKeyDown: (event: React.KeyboardEvent<SVGGElement>) =>
                   handleDayKeyDown(event, bar.day),
