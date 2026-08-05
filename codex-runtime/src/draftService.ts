@@ -43,16 +43,24 @@ export class DraftGenerationError extends Error {
 const THREAD_TIMEOUT_MS = 30_000;
 const TURN_TIMEOUT_MS = 90_000;
 
+/**
+ * app-server nests both the thread and the turn — `{ thread: { id } }` and
+ * `{ turn: { id, status, items } }`. Verified against the real binary in
+ * appServerContract.test.ts; the flat shapes these once assumed do not exist.
+ */
 interface ThreadStartResult {
-  threadId: string;
+  thread?: { id?: string };
 }
 interface TurnStartResult {
-  turnId: string;
+  turn?: { id?: string };
 }
 interface TurnCompletedNotification {
-  turnId: string;
-  status: string;
-  items?: Array<{ type?: string; text?: string }>;
+  threadId?: string;
+  turn?: {
+    id?: string;
+    status?: string;
+    items?: Array<{ type?: string; text?: string }>;
+  };
 }
 
 /** Categorise a raw app-server error into a safe code by its message shape. */
@@ -76,7 +84,7 @@ export function createDraftService(appServer: AppServerClient): DraftService {
       // A fresh ephemeral thread per draft: no tools, no writable workspace, no
       // approval escalation, and NO item/tool/call handler (never registered
       // below). The model cannot act — it can only return text.
-      const thread = (await appServer.request<ThreadStartResult>(
+      const started = await appServer.request<ThreadStartResult>(
         "thread/start",
         {
           ephemeral: true,
@@ -88,7 +96,9 @@ export function createDraftService(appServer: AppServerClient): DraftService {
           developerMessage: DM_DRAFTER_DEVELOPER_PROMPT,
         },
         THREAD_TIMEOUT_MS,
-      )).threadId;
+      );
+      const thread = started?.thread?.id;
+      if (!thread) throw new DraftGenerationError("draft_unavailable");
 
       // The listener MUST be armed before turn/start, because app-server can fire
       // `turn/completed` before that request resolves — before we even know our
@@ -108,7 +118,9 @@ export function createDraftService(appServer: AppServerClient): DraftService {
           "turn/start",
           {
             threadId: thread,
-            input: DM_DRAFTER_TURN_INPUT,
+            // An ARRAY of content items, variant `text`. A bare string is rejected
+            // ("expected a sequence") and `inputText` is rejected by name.
+            input: [{ type: "text", text: DM_DRAFTER_TURN_INPUT }],
             outputSchema: dmDraftOutputJsonSchema,
             // The transcript is the participant's own words: marked untrusted so
             // app-server treats it as data, never as instructions that could
@@ -120,7 +132,8 @@ export function createDraftService(appServer: AppServerClient): DraftService {
           },
           TURN_TIMEOUT_MS,
         );
-        const turnId = turn.turnId;
+        const turnId = turn?.turn?.id;
+        if (!turnId) throw new DraftGenerationError("draft_unavailable");
 
         const note = await new Promise<TurnCompletedNotification>((resolve, reject) => {
           const timer = setTimeout(
@@ -128,21 +141,21 @@ export function createDraftService(appServer: AppServerClient): DraftService {
             TURN_TIMEOUT_MS,
           );
           const accept = (n: TurnCompletedNotification) => {
-            if (n.turnId !== turnId) return; // ignore some other turn
+            if (n.turn?.id !== turnId) return; // ignore some other turn
             clearTimeout(timer);
             deliver = null;
             resolve(n);
           };
           // Drain anything that arrived during turn/start first, then take live ones.
-          const early = buffered.find((n) => n.turnId === turnId);
+          const early = buffered.find((n) => n.turn?.id === turnId);
           if (early) return accept(early);
           deliver = accept;
         });
 
-        if (note.status !== "completed") throw new DraftGenerationError("turn_incomplete");
+        if (note.turn?.status !== "completed") throw new DraftGenerationError("turn_incomplete");
 
         // The reply is the LAST agentMessage item's text.
-        const agentText = [...(note.items ?? [])]
+        const agentText = [...(note.turn.items ?? [])]
           .reverse()
           .find((i) => i.type === "agentMessage")?.text;
         if (!agentText) throw new DraftGenerationError("invalid_draft_output");

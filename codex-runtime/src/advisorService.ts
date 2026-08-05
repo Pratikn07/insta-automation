@@ -55,10 +55,18 @@ export interface AdvisorService {
 const THREAD_TIMEOUT_MS = 30_000;
 const TURN_TIMEOUT_MS = 120_000;
 
+/**
+ * app-server nests the turn: `{ threadId, turn: { id, status, items } }`.
+ * There is no top-level turnId/status/items — verified against the real binary in
+ * appServerContract.test.ts.
+ */
 interface TurnCompletedNotification {
-  turnId: string;
-  status: string;
-  items?: Array<{ type?: string; text?: string }>;
+  threadId?: string;
+  turn?: {
+    id?: string;
+    status?: string;
+    items?: Array<{ type?: string; text?: string }>;
+  };
 }
 
 export function createAdvisorService(deps: {
@@ -130,7 +138,7 @@ export function createAdvisorService(deps: {
       }
     }
 
-    const created = await deps.appServer.request<{ threadId: string }>(
+    const created = await deps.appServer.request<{ thread?: { id?: string } }>(
       "thread/start",
       {
         ephemeral: false,
@@ -145,8 +153,10 @@ export function createAdvisorService(deps: {
       },
       THREAD_TIMEOUT_MS,
     );
-    await deps.store.write(created.threadId);
-    return created.threadId;
+    const threadId = created?.thread?.id;
+    if (!threadId) throw new AdvisorError("advisor_unavailable");
+    await deps.store.write(threadId);
+    return threadId;
   }
 
   let opening: Promise<string> | null = null;
@@ -200,16 +210,21 @@ export function createAdvisorService(deps: {
         });
 
         try {
-          const turn = await deps.appServer.request<{ turnId: string }>(
+          const started = await deps.appServer.request<{ turn?: { id?: string } }>(
             "turn/start",
             {
               threadId: currentThreadId,
-              input: input.message,
+              // An ARRAY of content items. A bare string is rejected with
+              // "invalid type: string, expected a sequence", and the variant is
+              // `text` — not `inputText`, which app-server rejects by name.
+              input: [{ type: "text", text: input.message }],
               clientUserMessageId: input.clientMessageId,
               outputSchema: advisorResponseJsonSchema,
             },
             TURN_TIMEOUT_MS,
           );
+          const turnId = started?.turn?.id;
+          if (!turnId) throw new AdvisorError("advisor_unavailable");
 
           const note = await new Promise<TurnCompletedNotification>((resolve, reject) => {
             const timer = setTimeout(
@@ -217,19 +232,19 @@ export function createAdvisorService(deps: {
               TURN_TIMEOUT_MS,
             );
             const accept = (n: TurnCompletedNotification) => {
-              if (n.turnId !== turn.turnId) return;
+              if (n.turn?.id !== turnId) return;
               clearTimeout(timer);
               deliver = null;
               resolve(n);
             };
-            const early = buffered.find((n) => n.turnId === turn.turnId);
+            const early = buffered.find((n) => n.turn?.id === turnId);
             if (early) return accept(early);
             deliver = accept;
           });
 
-          if (note.status !== "completed") throw new AdvisorError("advisor_unavailable");
+          if (note.turn?.status !== "completed") throw new AdvisorError("advisor_unavailable");
 
-          const text = [...(note.items ?? [])]
+          const text = [...(note.turn.items ?? [])]
             .reverse()
             .find((i) => i.type === "agentMessage")?.text;
           if (!text) throw new AdvisorError("invalid_advisor_output");

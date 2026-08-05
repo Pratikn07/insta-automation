@@ -40,22 +40,28 @@ function makeHarness(options: {
   const request = vi.fn(async (method: string) => {
     if (method === "thread/resume") {
       if (options.resumeFails) throw new Error("thread not found");
-      return { threadId: options.storedThreadId };
+      return { thread: { id: options.storedThreadId } };
     }
-    if (method === "thread/start") return { threadId: "thread-new" };
+    if (method === "thread/start") return { thread: { id: "thread-new" } };
     if (method === "turn/start") {
       if (options.turnStartError) throw options.turnStartError;
       const turnId = `turn-${++turnSeq}`;
       queueMicrotask(() => {
         for (const handler of notificationHandlers.get("turn/completed") ?? []) {
+          // The real notification nests everything under `turn` — see
+          // appServerContract.test.ts. A flat mock endorsed a shape that does not
+          // exist and let the advisor ship broken.
           handler({
-            turnId,
-            status: options.turnStatus ?? "completed",
-            items: [{ type: "agentMessage", text: options.agentText ?? VALID_ANSWER }],
+            threadId: "thread-new",
+            turn: {
+              id: turnId,
+              status: options.turnStatus ?? "completed",
+              items: [{ type: "agentMessage", text: options.agentText ?? VALID_ANSWER }],
+            },
           });
         }
       });
-      return { turnId };
+      return { turn: { id: turnId } };
     }
     if (method === "thread/read") return { turns: [] };
     return null;

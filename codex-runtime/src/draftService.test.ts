@@ -44,21 +44,24 @@ function makeAppServer(overrides: {
     request: vi.fn(async (method: string, params: unknown) => {
       calls.push({ method, params });
       if (overrides.failMethod?.method === method) throw overrides.failMethod.error;
-      if (method === "thread/start") return { threadId: "thread-1" };
+      if (method === "thread/start") return { thread: { id: "thread-1" } };
       if (method === "turn/start") {
         // Fire completion on the next tick, after generate() has registered its
         // notification listener.
         queueMicrotask(() => {
           overrides.onTurnStart?.();
+          // Nested under `turn`, matching the real app-server notification
+          // pinned in appServerContract.test.ts.
           notificationHandlers.get("turn/completed")?.({
-            turnId: "turn-1",
-            status: overrides.turnStatus ?? "completed",
-            items: [
-              { type: "agentMessage", text: overrides.agentText ?? VALID_OUTPUT },
-            ],
+            threadId: "thread-1",
+            turn: {
+              id: "turn-1",
+              status: overrides.turnStatus ?? "completed",
+              items: [{ type: "agentMessage", text: overrides.agentText ?? VALID_OUTPUT }],
+            },
           });
         });
-        return { turnId: "turn-1" };
+        return { turn: { id: "turn-1" } };
       }
       if (method === "thread/delete") return null;
       return null;
