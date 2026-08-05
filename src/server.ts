@@ -7,6 +7,7 @@ import { dispatchWebhook } from "./handlers/webhookRouter.js";
 import { expireOldConversations } from "./services/conversationService.js";
 import { runGateQueueTick } from "./services/gateQueueWorker.js";
 import { runSnapshotTick } from "./services/snapshotWorker.js";
+import { runFeedFollowSnapshotTick } from "./services/feedFollowSnapshotWorker.js";
 import { runGeminiQueueTick } from "./services/geminiQueueWorker.js";
 import { runFollowRecheckTick } from "./services/followRecheckWorker.js";
 import { runFollowThroughTick } from "./services/followThroughWorker.js";
@@ -76,6 +77,13 @@ setInterval(() => {
   void runSnapshotTick();
 }, env.SNAPSHOT_INTERVAL_MS);
 
+// Regular FEED-post attribution is isolated from Reel analytics because Meta
+// supports the lifetime `follows` metric for posts but not Reels. Multiple
+// retries can update today's row without creating more than one daily snapshot.
+setInterval(() => {
+  void runFeedFollowSnapshotTick();
+}, env.FEED_FOLLOW_SNAPSHOT_INTERVAL_MS);
+
 // Gemini analysis worker: drains the queue of reels awaiting a content profile,
 // paced and capped by the daily budget. No-ops when GEMINI_API_KEY is unset.
 setInterval(() => {
@@ -120,5 +128,8 @@ app.listen(env.PORT, () => {
   logger.info({ port: env.PORT, env: env.NODE_ENV }, "insta-automation listening");
   // Make sure ig_token exists (and honours a hand-pasted env override) before
   // any worker tick fires. Non-throwing: getAccessToken falls back to env.
-  void seedTokenFromEnv().then(() => runTokenRefreshTick());
+  void seedTokenFromEnv().then(() => {
+    void runTokenRefreshTick();
+    void runFeedFollowSnapshotTick();
+  });
 });

@@ -19,6 +19,10 @@ export type MediaKind = "reel" | "carousel";
 export interface AccountMedia {
   id: string;
   kind: MediaKind;
+  // Raw Meta classifications. Attribution uses mediaProductType to distinguish
+  // regular FEED videos from Reels without changing the legacy UI `kind` union.
+  mediaType: string | null;
+  mediaProductType: string | null;
   caption: string | null;
   thumbnailUrl: string | null;
   permalink: string | null;
@@ -66,7 +70,12 @@ let allCache: { at: number; media: AccountMedia[] } | null = null;
  * Everything else (FEED carousels, single images) is not a reel.
  */
 function isReel(m: GraphMediaItem): boolean {
-  return m.media_product_type === "REELS" || (!m.media_product_type && m.media_type === "VIDEO");
+  if (m.media_product_type) return m.media_product_type === "REELS";
+  // Older media can omit product_type. Its canonical permalink still preserves
+  // the distinction: regular feed media uses /p/, while Reels use /reel/.
+  if (m.permalink?.includes("/reel/")) return true;
+  if (m.permalink?.includes("/p/")) return false;
+  return m.media_type === "VIDEO";
 }
 
 function toMedia(m: GraphMediaItem): AccountMedia {
@@ -74,6 +83,8 @@ function toMedia(m: GraphMediaItem): AccountMedia {
   return {
     id: m.id,
     kind: reel ? "reel" : "carousel",
+    mediaType: m.media_type ?? null,
+    mediaProductType: m.media_product_type ?? null,
     caption: m.caption ?? null,
     // Reels are VIDEO and carry thumbnail_url (the still frame). Carousels carry
     // NO thumbnail_url at all — verified live on all 33 — but media_url holds the
@@ -138,4 +149,16 @@ export async function fetchAllMedia(): Promise<AccountMedia[]> {
 export async function fetchAllReels(): Promise<AccountMedia[]> {
   const media = await fetchAllMedia();
   return media.filter((m) => m.kind === "reel");
+}
+
+/**
+ * Regular feed posts only: carousel albums, images and non-Reel feed videos.
+ * Older media can omit media_product_type, so the existing reel classifier is
+ * the safe fallback for those rows.
+ */
+export async function fetchAllFeedPosts(): Promise<AccountMedia[]> {
+  const media = await fetchAllMedia();
+  return media.filter(
+    (m) => m.mediaProductType === "FEED" || (m.mediaProductType === null && m.kind !== "reel"),
+  );
 }

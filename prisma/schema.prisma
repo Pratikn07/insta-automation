@@ -284,6 +284,66 @@ model ReelPerformanceSnapshot {
   @@map("reel_performance_snapshot")
 }
 
+// Regular FEED media (carousel albums, images and non-Reel videos). Kept
+// separate from ReelMeta because Meta exposes the lifetime `follows` insight
+// for FEED media but not Reels. The baseline prevents historical lifetime
+// follows from being assigned to the day tracking is first deployed.
+model FeedPostMeta {
+  mediaId            String    @id @map("media_id")
+  mediaType          String?   @map("media_type")
+  mediaProductType   String?   @map("media_product_type")
+  caption            String?
+  permalink          String?
+  thumbnailUrl       String?   @map("thumbnail_url")
+  postedAt           DateTime? @map("posted_at") @db.Timestamptz(3)
+  baselineFollows    Int?      @map("baseline_follows")
+  baselineCapturedAt DateTime? @map("baseline_captured_at") @db.Timestamptz(3)
+  firstSeenAt        DateTime  @default(now()) @map("first_seen_at") @db.Timestamptz(3)
+  lastSeenAt         DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz(3)
+
+  followSnapshots FeedFollowDailySnapshot[]
+
+  @@index([postedAt])
+  @@map("feed_post_meta")
+}
+
+// The cumulative lifetime follow count for one feed post, sampled throughout
+// the day but stored as one latest row per UTC day. A nullable value is
+// deliberate: unavailable/failed is unknown and must never be coerced to zero.
+model FeedFollowDailySnapshot {
+  mediaId    String   @map("media_id")
+  day        DateTime @db.Date
+  capturedAt DateTime @default(now()) @map("captured_at") @db.Timestamptz(3)
+  follows    Int?
+  status     String // ok | unavailable | failed
+
+  feedPost FeedPostMeta @relation(fields: [mediaId], references: [mediaId], onDelete: Cascade)
+
+  @@id([mediaId, day])
+  @@index([day])
+  @@map("feed_follow_daily_snapshot")
+}
+
+// Singleton (`scope = "feed"`) with the immutable attribution start and the
+// latest collection-health summary used by the diagnostic API.
+model FeedFollowCollectorState {
+  scope            String    @id
+  startedAt        DateTime  @map("started_at") @db.Timestamptz(3)
+  lastAttemptAt    DateTime? @map("last_attempt_at") @db.Timestamptz(3)
+  lastCompletedAt  DateTime? @map("last_completed_at") @db.Timestamptz(3)
+  lastStatus       String?   @map("last_status") // running | success | partial | failed
+  eligibleCount    Int       @default(0) @map("eligible_count")
+  writtenCount     Int       @default(0) @map("written_count")
+  unavailableCount Int       @default(0) @map("unavailable_count")
+  failedCount      Int       @default(0) @map("failed_count")
+  lastError        String?   @map("last_error")
+  leaseOwner       String?   @map("lease_owner")
+  leaseExpiresAt   DateTime? @map("lease_expires_at") @db.Timestamptz(3)
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("feed_follow_collector_state")
+}
+
 // Account-level country split over time (no mediaId — Meta gives geo only at the
 // account level). One row per (stage, run). Spine of the geo trend + experiments.
 model GeoDemographicSnapshot {
