@@ -71,7 +71,7 @@ describe("buildDailyPoints", () => {
     expect(pts[0]).toMatchObject({ basis: "no_prior_day", total: null, spanDays: null });
   });
 
-  it("absorbs a stale day into the next real diff as a 2-day span", () => {
+  it("absorbs a full stale analytics day into the next real diff as a 2-day span", () => {
     // Jul 21 byte-identical to Jul 20; Jul 22 carries both days' adds.
     const pts = buildDailyPoints([
       anchor("2026-07-19", { US: 1000 }),

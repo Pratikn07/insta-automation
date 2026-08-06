@@ -53,7 +53,7 @@ export interface SpikeInfo {
 }
 
 export interface FollowerDailyAddsPoint {
-  day: string; // UTC calendar day, "2026-07-21"
+  day: string; // Pacific analytics calendar day, "2026-07-21"
   capturedAt: string | null; // anchor snapshot time, null when no_snapshot
   us: number | null;
   southAsian: number | null;
@@ -192,6 +192,8 @@ export function buildDailyPoints(anchors: AnchorSnapshot[]): FollowerDailyAddsPo
   let prevKept: AnchorSnapshot | null = null;
   let lastRealDiffIndex = -1;
 
+  // Synthetic UTC midnights enumerate abstract day labels only; they are never
+  // capture instants or query bounds.
   for (let ms = Date.parse(`${firstDay}T00:00:00Z`); ms <= newestDayMs; ms += DAY_MS) {
     const day = new Date(ms).toISOString().slice(0, 10);
     const anchor = byDay.get(day);
