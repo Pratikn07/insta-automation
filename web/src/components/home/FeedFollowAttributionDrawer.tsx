@@ -27,6 +27,7 @@ export interface FeedFollowAttributionDrawerProps {
   onClose: () => void;
 }
 
+// This is an abstract Pacific day key; UTC formatting prevents browser date shifting.
 const longDay = new Intl.DateTimeFormat("en-US", {
   dateStyle: "long",
   timeZone: "UTC",
