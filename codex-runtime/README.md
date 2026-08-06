@@ -17,6 +17,10 @@ It can draft a DM reply and answer read-only questions about the business. It ha
 and a test asserts the advisor's three tools contain none of
 `send|write|update|delete|instagram`.
 
+The Codex `app-server` is a stdio-only child process (`app-server --stdio`). It is
+not exposed as another HTTP or TCP service. Only this wrapper accepts private
+Railway HTTP traffic.
+
 Everything that reaches a real person goes through the owner's explicit approval
 in the main API, never from here.
 
@@ -24,7 +28,7 @@ in the main API, never from here.
 
 | Route | Purpose |
 |---|---|
-| `GET /health` | Railway probe. Public. Reports `appServerReady`. |
+| `GET /health` | Private Railway deployment probe. Reports `appServerReady`. |
 | `GET /internal/account/status` | ChatGPT connection, plan and quota. |
 | `POST /internal/account/login/start` | Begin device-code linking. |
 | `POST /internal/account/logout` | Delete the stored sign-in. |
@@ -41,11 +45,11 @@ nullable `retryAt`.
 
 | Variable | Required | Notes |
 |---|---|---|
-| `PORT` | no | Defaults to 3001. Railway sets it. |
+| `PORT` | no | Set to `3001` on Railway; the service listens on `[::]:3001`. |
 | `NODE_ENV` | no | `production` on Railway. |
 | `CODEX_HOME` | yes | Must be on the persistent volume, e.g. `/data/codex`. Holds the ChatGPT sign-in and the advisor thread pointer. |
-| `CODEX_WORKSPACE` | yes | Scratch cwd for app-server. Nothing valuable lives here. |
-| `RUNTIME_SHARED_SECRET` | yes | ≥32 chars. The bearer the API presents to this service. |
+| `CODEX_WORKSPACE` | yes | Set to `/tmp/tinysoho-codex-workspace`. Scratch cwd for app-server; nothing valuable lives here. |
+| `RUNTIME_SHARED_SECRET` | yes | Use a 64-character secret. The bearer the API presents to this service. |
 | `TINY_SOHO_API_URL` | no | Private URL of the API, for the advisor's three read tools. |
 | `TINY_SOHO_INTERNAL_TOKEN` | no | The bearer this service presents back to the API. Must match the API's value of the same name. |
 
@@ -69,18 +73,40 @@ every deploy. Two things live there:
 
 1. New service in the existing project, named `codex-runtime`.
 2. **Root directory** `/codex-runtime`, **build** `npm run build`, **start** `npm start`.
-3. Add a persistent volume mounted at `/data`, then set `CODEX_HOME=/data/codex`.
-4. Set the variables above. Use Railway private DNS for `TINY_SOHO_API_URL`
+3. Add one persistent volume mounted at `/data`, then set `CODEX_HOME=/data/codex`.
+4. Keep the runtime at one replica. Railway cannot run multiple replicas for a
+   service attached to a persistent volume.
+5. Set these exact core variables:
+
+   ```text
+   PORT=3001
+   CODEX_HOME=/data/codex
+   CODEX_WORKSPACE=/tmp/tinysoho-codex-workspace
+   RUNTIME_SHARED_SECRET=<64-character secret>
+   ```
+
+6. Set the remaining variables above. Use Railway private DNS for `TINY_SOHO_API_URL`
    (e.g. `http://tiny-soho-api.railway.internal:3000`) so advisor traffic never
    leaves the private network.
-5. Do **not** expose a public domain. Only the API needs to reach it.
+7. Set the deployment healthcheck path to `/health`. Railway waits for HTTP 200
+   during deployment, but this is not continuous monitoring after deployment.
+8. Do **not** expose a public domain. Only the API needs to reach it.
 
 ## Verify a deploy
 
+There is no public runtime URL. From a shell in the API service on the same
+Railway private network, run:
+
 ```sh
-curl -s https://<runtime>/health
+curl -fsS http://codex-runtime.railway.internal:3001/health
 # {"ok":true,"appServerReady":true}
 ```
+
+The wrapper listens on `[::]:3001` for Railway dual-stack and legacy private
+network compatibility. The deployment healthcheck establishes readiness while
+Railway activates that deployment; inspect deployment status/logs or run the
+private probe above for later checks rather than treating it as continuous
+monitoring.
 
 Then open `/assistant` in the web app and click **Connect ChatGPT**. Enter the
 short code at the URL shown. The card polls and flips to connected on its own; it
@@ -101,6 +127,6 @@ npm run dev
 ```
 
 ```sh
-npm test        # 110 tests
+npm test
 npm run build
 ```

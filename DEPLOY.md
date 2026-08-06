@@ -173,8 +173,8 @@ If any step fails, see Troubleshooting below.
 
 ## 7. AI: Codex runtime and staged rollout
 
-Optional and entirely off by default. Skip this whole section and every existing
-keyword, gate and guide automation behaves exactly as before.
+Optional. If this rollout is not being performed, leave all AI flags `false` and
+every existing keyword, gate and guide automation behaves exactly as before.
 
 **No OpenAI API key is involved.** The owner links their own ChatGPT subscription
 with a device code. `OPENAI_API_KEY` is never read by any service — do not add it.
@@ -183,23 +183,38 @@ with a device code. `OPENAI_API_KEY` is never read by any service — do not add
 
 1. New Railway service in the same project, named `codex-runtime`.
 2. **Root directory** `/codex-runtime` · **build** `npm run build` · **start** `npm start`.
-3. Add a persistent volume mounted at `/data`. Without it the owner must re-link
-   ChatGPT after every deploy.
-4. No public domain. Only the API talks to it.
+3. Add one persistent volume mounted at `/data`. Without it the owner must
+   re-link ChatGPT after every deploy.
+4. Keep exactly **one replica**. Railway services with a persistent volume cannot
+   run multiple replicas.
+5. Do **not** create a public domain. Only the API reaches this service over
+   Railway private DNS.
+6. Set the Railway healthcheck path to `/health`. The service listens on
+   `[::]:3001`, which supports Railway's current dual-stack and legacy private
+   networks. Railway waits for HTTP 200 during deployment; this healthcheck is
+   not continuous monitoring after the deployment becomes active.
 
 ### 7.2 Runtime variables
 
 ```sh
+PORT=3001
+CODEX_HOME=/data/codex
+CODEX_WORKSPACE=/tmp/tinysoho-codex-workspace
+RUNTIME_SHARED_SECRET=<64-character secret>
+```
+
+Also set the runtime-only environment:
+
+```sh
 NODE_ENV=production
-CODEX_HOME=/data/codex          # must be on the volume
-CODEX_WORKSPACE=/data/workspace
-RUNTIME_SHARED_SECRET=<32+ random chars>
 TINY_SOHO_API_URL=http://<api-service>.railway.internal:3000
-TINY_SOHO_INTERNAL_TOKEN=<32+ random chars, different from the above>
+TINY_SOHO_INTERNAL_TOKEN=<different 64-character secret>
 ```
 
 Use Railway **private DNS** for `TINY_SOHO_API_URL` so advisor traffic never leaves
-the private network. See `codex-runtime/README.md` for the full table.
+the private network. The Codex app-server itself remains an internal stdio child;
+it does not listen on a second network port. See `codex-runtime/README.md` for the
+full table.
 
 ### 7.3 API variables
 
@@ -208,7 +223,8 @@ CODEX_RUNTIME_URL=http://codex-runtime.railway.internal:3001
 CODEX_RUNTIME_TOKEN=<same value as RUNTIME_SHARED_SECRET>
 TINY_SOHO_INTERNAL_TOKEN=<same value as the runtime's>
 AI_BRAND_VOICE=Warm, practical, concise, and supportive. Never diagnose or shame a parent.
-AI_DRAFTS_ENABLED=false
+AI_DRAFTS_ENABLED=true
+AI_FOLLOW_UPS_ENABLED=false
 AI_SEND_ENABLED=false
 AI_ADVISOR_ENABLED=false
 ```
@@ -219,31 +235,57 @@ The two tokens are separate on purpose: `CODEX_RUNTIME_TOKEN` secures API → ru
 If `TINY_SOHO_INTERNAL_TOKEN` is unset on the API, `/internal/ai` fails closed with
 503 rather than serving unauthenticated.
 
-### 7.4 Deploy in this order
+These are the initial shadow settings. `AI_SEND_ENABLED` stays `false` for this
+entire checklist. Vercel environment changes affect only new deployments, so any
+Vercel variable change must be followed by a new deployment or redeployment.
 
-1. **Runtime first.** `curl https://<runtime>/health` → `{"ok":true,"appServerReady":true}`.
-2. **API next**, all three flags `false`. This applies the Prisma migration that
-   adds the DM thread and reply-draft tables; nothing uses them yet.
-3. **Vercel last**, once the API routes are live, so the Assistant page is not
-   calling routes that 404.
-4. Open `/assistant` → **Connect ChatGPT** → enter the short code. The card flips to
-   connected on its own and shows the plan and remaining quota.
+### 7.4 Private health verification
 
-### 7.5 Then enable one flag at a time
+There is intentionally no public runtime URL to curl. During deployment, Railway
+uses `/health` and waits for HTTP 200. After deployment, run the following from a
+shell in the API service on the same Railway private network:
 
-| Step | Flag | Gate before moving on |
-|---|---|---|
-| 1 | `AI_DRAFTS_ENABLED=true` | Read **at least 20** shadow drafts in Conversations. Nothing can send — the approve endpoints still 403. |
-| 2 | `AI_SEND_ENABLED=true` | Only after that review. This is the first point at which an AI-derived message can reach a person, and only via the owner's explicit **Approve & Send**. |
-| 3 | `AI_ADVISOR_ENABLED=true` | Only after the three read tools return sane bounded data. |
+```sh
+curl -fsS http://codex-runtime.railway.internal:3001/health
+# {"ok":true,"appServerReady":true}
+```
 
-Verify at step 1 that a **keyword** DM still delivers its guide and queues no
-draft — that is the regression check that automation behaviour did not shift.
+Also inspect the Railway deployment status and logs. A successful deployment
+healthcheck proves readiness during deployment only; it does not mean Railway is
+continuously probing `/health` afterward.
 
-### 7.6 Rollback
+### 7.5 Owner-approved shadow checklist
 
-Set all three flags to `false` first; that stops everything immediately and is
-enough for any AI-related incident.
+Run the rollout in this exact order:
+
+1. Deploy codex-runtime first; existing drafts may fail closed until the API deploy.
+2. Deploy API with AI_SEND_ENABLED=false and AI_FOLLOW_UPS_ENABLED=false.
+3. Confirm the migration superseded every legacy unapproved draft.
+4. Deploy the Vercel interface and verify capabilities show sending disabled.
+5. Inspect ordinary shadow drafts for prompt safety and context correctness.
+6. Set AI_FOLLOW_UPS_ENABLED=true; keep AI_SEND_ENABLED=false.
+7. Deliver a test guide and verify one follow-up appears after the controlled test clock/job run.
+8. Verify new inbound cancellation, duplicate delivery dedupe, and deadline expiry.
+9. Restart codex-runtime and verify account persistence plus healthy app-server recovery.
+10. Stop for owner approval before setting AI_SEND_ENABLED=true.
+
+The implementation task is complete at step 10. Enabling production sending and
+delivering the first real AI-approved DM are separate owner-authorized actions.
+Do not combine them with this deployment or shadow-verification checklist.
+
+### 7.6 Production-send activation (separate authorization)
+
+Do not perform this section during the initial rollout. Only after the owner has
+reviewed the shadow results and separately authorized sending may the API be
+redeployed with `AI_SEND_ENABLED=true`. The first real AI-approved DM is another
+explicit owner action: review the exact visible text and click **Approve & Send**.
+No worker, schedule, retry loop, or Codex process may substitute for that click.
+
+### 7.7 Rollback
+
+Set `AI_DRAFTS_ENABLED=false`, `AI_FOLLOW_UPS_ENABLED=false`,
+`AI_SEND_ENABLED=false`, and `AI_ADVISOR_ENABLED=false`, then redeploy the API.
+This stops the AI surfaces without changing existing keyword and guide delivery.
 
 **Do not** drop the DM tables and **do not** delete the Codex volume. The tables are
 the record of what was said and approved, and the volume holds the ChatGPT sign-in.
