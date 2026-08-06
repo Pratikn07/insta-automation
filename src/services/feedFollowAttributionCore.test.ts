@@ -294,6 +294,31 @@ describe("buildFeedFollowAttribution", () => {
     });
   });
 
+  it("marks a UTC-midnight-adjacent tracking instant partial on its Pacific day", () => {
+    const response = buildFeedFollowAttribution({
+      from: "2026-08-02",
+      to: "2026-08-02",
+      trackingStartedAt: new Date("2026-08-03T00:05:00Z"),
+      posts: [
+        post({
+          firstSeenAt: new Date("2026-08-03T00:06:00Z"),
+          baselineFollows: 5,
+          baselineCapturedAt: new Date("2026-08-03T00:06:00Z"),
+        }),
+      ],
+      snapshots: [snapshot("2026-08-02", 5)],
+      followerPoints: [followerPoint("2026-08-02", 4)],
+    });
+
+    expect(response.days[0]).toMatchObject({
+      day: "2026-08-02",
+      collectionStatus: "partial",
+      eligiblePosts: 1,
+      netResidualAfterFeed: null,
+      comparisonReason: "feed_tracking_partial_day",
+    });
+  });
+
   it("uses Pacific publication and first-seen days for eligibility", () => {
     const response = buildFeedFollowAttribution({
       from: "2026-08-04",
@@ -313,6 +338,36 @@ describe("buildFeedFollowAttribution", () => {
 
     expect(response.days[0]).toMatchObject({ day: "2026-08-04", eligiblePosts: 1 });
   });
+
+  it.each([
+    { postedAtCase: "missing", postedAt: null },
+    { postedAtCase: "before tracking", postedAt: new Date("2026-07-31T12:00:00Z") },
+  ])(
+    "uses a UTC-midnight-adjacent firstSeenAt when postedAt is $postedAtCase",
+    ({ postedAt }) => {
+      const response = buildFeedFollowAttribution({
+        from: "2026-08-04",
+        to: "2026-08-04",
+        trackingStartedAt: new Date("2026-08-01T07:00:00Z"),
+        posts: [
+          post({
+            postedAt,
+            firstSeenAt: new Date("2026-08-05T00:30:00Z"),
+            baselineFollows: 0,
+            baselineCapturedAt: new Date("2026-08-05T00:30:00Z"),
+          }),
+        ],
+        snapshots: [snapshot("2026-08-04", 2)],
+        followerPoints: [followerPoint("2026-08-04", 3)],
+      });
+
+      expect(response.days[0]).toMatchObject({
+        day: "2026-08-04",
+        eligiblePosts: 1,
+        successfulPosts: 1,
+      });
+    },
+  );
 });
 
 describe("parseFeedFollowAttributionRange", () => {

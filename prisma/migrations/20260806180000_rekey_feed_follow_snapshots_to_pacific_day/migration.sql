@@ -1,5 +1,10 @@
 BEGIN;
 
+-- A long unrelated transaction must fail this release attempt instead of
+-- leaving it queued indefinitely. Because this is transaction-local, a timeout
+-- aborts and rolls back the complete re-key cleanly.
+SET LOCAL lock_timeout = '5s';
+
 -- Freeze snapshot writes before reading retained evidence. Waiting collectors
 -- resume only after the re-key and invariant are committed.
 LOCK TABLE "feed_follow_daily_snapshot" IN ACCESS EXCLUSIVE MODE;

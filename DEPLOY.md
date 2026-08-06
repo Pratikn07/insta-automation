@@ -53,11 +53,22 @@ railway variables \
 
 ### Deploy:
 
+Application startup and database migration are separate release steps. `npm start`
+starts only the compiled API; it never changes the database. On a brand-new
+database with no running older application, apply the checked-in migrations once:
+
 ```sh
+railway run --service api --environment production --no-local npm run migrate:deploy
 railway up
 ```
 
-First build: ~2 min. `prisma generate` runs in `postinstall`; `prisma migrate deploy` runs at start. No manual DB step.
+For an existing production database, follow the migration-specific cutover before
+running `migrate:deploy`. A migration that is incompatible with the old process
+must not be put in Railway's Pre-Deploy Command because pre-deploy runs before the
+new application is active.
+
+First build: ~2 min. `prisma generate` runs in `postinstall`; `npm start` starts
+`dist/src/server.js` after the build.
 
 ### Get the public URL:
 
@@ -73,6 +84,184 @@ Save this. You'll need it for `VITE_API_URL` and the Meta webhook callback.
 curl https://YOUR.up.railway.app/health
 # {"ok":true,"env":"production"}
 ```
+
+### One-time Pacific analytics-day cutover
+
+Use this sequence for
+`20260806180000_rekey_feed_follow_snapshots_to_pacific_day`. The migration adds a
+check that rejects the old UTC-key collector, so it must run only after every old
+API replica and worker is gone. Do not configure `npm run migrate:deploy` as a
+Railway Pre-Deploy Command for this release.
+
+#### Release gate
+
+Run from the Pacific analytics-day release commit. Repository-wide frontend lint
+has a temporary waiver for exactly 9 pre-existing errors in unrelated files; the
+feature-scoped command below is the lint release gate for this cutover.
+
+```sh
+npm test
+npm run build
+npx prisma validate
+npm --prefix web test
+(
+  cd web
+  npm exec -- eslint \
+    src/lib/types.ts \
+    src/components/home/FollowerFlowPanel.tsx \
+    src/components/home/HomePanels.test.tsx \
+    src/lib/feedFollowAttribution.ts \
+    src/lib/feedFollowAttribution.test.ts \
+    src/components/home/FeedFollowAttributionDrawer.tsx \
+    src/components/home/FeedFollowAttributionDrawer.test.tsx \
+    src/pages/Home.tsx \
+    src/components/home/DailyAddsChart.tsx \
+    src/lib/chartTooltip.ts \
+    src/components/home/SpikeCandidates.tsx
+)
+npm --prefix web run build
+```
+
+The waived `npm --prefix web run lint` failures are in
+`AiConnectionCard.tsx`, `AppShell.tsx`, `button.tsx`, `Insights.tsx`, and
+`SequenceEditor.tsx`. The waiver is limited to those exact 9 errors. Stop if the
+scoped command fails or if repository-wide lint reports any additional error.
+
+#### Coordinated Railway sequence
+
+Railway uploads the current directory, so deploy from a pristine detached
+worktree. Record the release SHA in the change log.
+
+```sh
+release_sha=$(git rev-parse HEAD)
+release_dir="/tmp/insta-automation-deploy-$release_sha"
+git worktree add --detach "$release_dir" "$release_sha"
+cd "$release_dir"
+test -z "$(git status --short)"
+railway link -p 521a9d91-6a89-48f5-8df6-fa4038bc2c81 -s api -e production
+```
+
+In Railway's `api` service settings, confirm the healthcheck is `/health` and
+the Pre-Deploy Command is empty. Then confirm the production database has exactly
+the expected pending migration. `migrate:status` exits 1 while a migration is
+pending; that exit is expected at this preflight step.
+
+```sh
+railway run --service api --environment production --no-local npm run migrate:status
+# Expected pending migration only:
+# 20260806180000_rekey_feed_follow_snapshots_to_pacific_day
+```
+
+Deploy the compatible application without applying the migration:
+
+```sh
+railway up --service api --environment production --detach
+railway logs --service api --environment production --latest
+```
+
+Do not continue merely because the new deployment is `Active`. In Railway's
+`api` deployment view, wait until both conditions are true:
+
+1. The new deployment for `$release_sha` is `Active` and `/health` passes.
+2. The preceding UTC-key deployment is `Removed`, not `Active` or `Removing`,
+   and none of its replica instances remain.
+
+This is the gate that proves the old in-process collector cannot write after the
+constraint lands. If the new deployment fails before this point, abort the
+cutover and roll back; the database is still unchanged.
+
+Apply the migration exactly once from the active release image, then verify its
+history immediately:
+
+```sh
+railway ssh --service api --environment production -- npm run migrate:deploy
+railway ssh --service api --environment production -- npm run migrate:status
+# Expected: Database schema is up to date!
+```
+
+The migration waits at most 5 seconds for its `ACCESS EXCLUSIVE` table lock. If
+it cannot acquire the lock, PostgreSQL raises `canceling statement due to lock
+timeout`; the explicit transaction rolls back the re-key, delete/insert, and
+constraint together. The API remains on compatible code and can keep serving the
+old table shape while the release operator investigates the conflicting
+transaction.
+
+For a lock-timeout failure, do not edit the migration, remove the timeout, or
+mark it applied. Wait for the conflicting transaction to finish, confirm Prisma
+reports this exact migration as failed, mark that fully rolled-back attempt as
+rolled back, and retry once:
+
+```sh
+railway ssh --service api --environment production -- npm run migrate:status
+railway ssh --service api --environment production -- \
+  npx prisma migrate resolve --rolled-back 20260806180000_rekey_feed_follow_snapshots_to_pacific_day
+railway ssh --service api --environment production -- npm run migrate:deploy
+railway ssh --service api --environment production -- npm run migrate:status
+```
+
+Stop and investigate if the retry also times out. Do not terminate production
+transactions as part of this runbook. A failure for any reason other than the
+documented lock timeout also requires investigation before `migrate resolve`.
+
+After a successful migration, restart the compatible image once. Startup no
+longer invokes Prisma Migrate, and the fresh worker will use Pacific keys.
+
+```sh
+railway restart --service api --yes
+railway logs --service api --environment production --latest --lines 100
+curl -fsS https://YOUR.up.railway.app/health
+```
+
+The collector may initially log that another process still holds its database
+lease if the removed process died during a run; do not clear that lease manually.
+It expires automatically. Stop if logs show a Pacific-day check-constraint error.
+
+#### Read-only HTTP smoke checks
+
+Use a current Supabase access token for an allowlisted `ADMIN_EMAIL`. These are
+authenticated `GET` requests only; they do not start a backend or mutate data.
+
+```sh
+export API_BASE="https://YOUR.up.railway.app"
+export ADMIN_JWT="<allowlisted Supabase access token>"
+
+curl -fsS \
+  -H "Authorization: Bearer $ADMIN_JWT" \
+  "$API_BASE/api/insights/follower-daily-adds" |
+node --input-type=module -e '
+  import fs from "node:fs";
+  const body = JSON.parse(fs.readFileSync(0, "utf8"));
+  if (body.analyticsTimeZone !== "America/Los_Angeles") throw new Error("wrong analytics timezone");
+  const byDay = new Map(body.points.map((point) => [point.day, point]));
+  for (const [day, delta] of [["2026-08-05", 161], ["2026-08-06", 164]]) {
+    const point = byDay.get(day);
+    if (!point || point.reportedTotalDelta !== delta || point.spanDays !== 1 || point.basis !== "diff") {
+      throw new Error(`unexpected follower point for ${day}: ${JSON.stringify(point)}`);
+    }
+  }
+  console.log("PASS follower-daily-adds Pacific split");
+'
+
+curl -fsS \
+  -H "Authorization: Bearer $ADMIN_JWT" \
+  "$API_BASE/api/insights/feed-follow-attribution?from=2026-08-05&to=2026-08-05" |
+node --input-type=module -e '
+  import fs from "node:fs";
+  const body = JSON.parse(fs.readFileSync(0, "utf8"));
+  if (body.range?.from !== "2026-08-05" || body.range?.to !== "2026-08-05") {
+    throw new Error(`unexpected range: ${JSON.stringify(body.range)}`);
+  }
+  if (body.days?.length !== 1 || body.days[0].day !== "2026-08-05") {
+    throw new Error(`unexpected attribution day: ${JSON.stringify(body.days)}`);
+  }
+  console.log("PASS feed-follow-attribution Pacific day", body.days[0].collectionStatus);
+'
+```
+
+After the migration succeeds, do not roll back to a deployment that writes UTC
+day keys: the database constraint will reject those writes. Roll forward with the
+compatible release. Remove the temporary deployment worktree only after the
+smoke checks and deployment log review are complete.
 
 ---
 
