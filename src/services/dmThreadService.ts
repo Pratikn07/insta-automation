@@ -168,6 +168,11 @@ export async function recordInboundMessage(
   throw new Error("unreachable");
 }
 
+export type RecordedOutboundMessage = {
+  threadId: string;
+  messageId: string;
+};
+
 /**
  * Record a message we sent. Never throws.
  *
@@ -175,9 +180,11 @@ export async function recordInboundMessage(
  * `needsReply`. Replying does not make the inbound answered; `markThreadResolved`
  * decides that, and only while the inbound is still the latest.
  */
-export async function recordOutboundMessage(input: RecordOutboundInput): Promise<void> {
+export async function recordOutboundMessage(
+  input: RecordOutboundInput,
+): Promise<RecordedOutboundMessage | null> {
   try {
-    await prisma.$transaction(async (tx) => {
+    return await prisma.$transaction(async (tx) => {
       const thread = await tx.dmThread.upsert({
         where: {
           igAccountId_igUserId: { igAccountId: input.igAccountId, igUserId: input.igUserId },
@@ -191,7 +198,7 @@ export async function recordOutboundMessage(input: RecordOutboundInput): Promise
         select: { id: true },
       });
 
-      await tx.dmMessage.create({
+      const message = await tx.dmMessage.create({
         data: {
           threadId: thread.id,
           instagramMessageId: input.instagramMessageId,
@@ -202,6 +209,7 @@ export async function recordOutboundMessage(input: RecordOutboundInput): Promise
           mediaUrl: input.mediaUrl,
           instagramTimestamp: input.instagramTimestamp,
         },
+        select: { id: true },
       });
 
       await tx.dmThread.update({
@@ -211,6 +219,8 @@ export async function recordOutboundMessage(input: RecordOutboundInput): Promise
           lastMessageAt: input.instagramTimestamp,
         },
       });
+
+      return { threadId: thread.id, messageId: message.id };
     });
   } catch (err) {
     // IDs, source and length only — never the message body.
@@ -224,6 +234,7 @@ export async function recordOutboundMessage(input: RecordOutboundInput): Promise
       },
       "Failed to record outbound DM (message was already delivered)",
     );
+    return null;
   }
 }
 

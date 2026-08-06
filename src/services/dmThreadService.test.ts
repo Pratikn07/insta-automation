@@ -215,7 +215,7 @@ describe("recordOutboundMessage", () => {
     // A logging failure here must not look like a send failure to the caller —
     // that is how a delivered message becomes a duplicate retry.
     $transaction.mockRejectedValueOnce(new Error("database unavailable"));
-    await expect(recordOutboundMessage(OUTBOUND)).resolves.toBeUndefined();
+    await expect(recordOutboundMessage(OUTBOUND)).resolves.toBeNull();
   });
 
   it("does not copy an outbound DM body from a database error into general logs", async () => {

@@ -1,7 +1,14 @@
 import { graph } from "./graphClient.js";
 import { logger } from "../lib/logger.js";
 
-export async function replyToComment(commentId: string, message: string): Promise<void> {
-  await graph.post(`/${commentId}/replies`, { message });
+export type MetaPublicReplyResult = { replyId: string | null };
+
+export async function replyToComment(
+  commentId: string,
+  message: string,
+): Promise<MetaPublicReplyResult> {
+  const response = await graph.post<{ id?: unknown }>(`/${commentId}/replies`, { message });
+  const id = response.data?.id;
   logger.debug({ commentId }, "Posted public reply");
+  return { replyId: typeof id === "string" && id.length > 0 ? id : null };
 }

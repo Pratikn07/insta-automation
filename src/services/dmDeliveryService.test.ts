@@ -153,9 +153,10 @@ describe("sendTrackedText", () => {
 
 describe("sendTrackedPrivateReply", () => {
   it("records against the recipient, not the comment", async () => {
+    recordOutboundMessage.mockResolvedValueOnce({ threadId: "thread-1", messageId: "dm-1" });
     // A private reply is addressed by comment_id, but it lands in the participant's
     // DM thread — so the recorded row must key on the user.
-    await sendTrackedPrivateReply({
+    const receipt = await sendTrackedPrivateReply({
       recipientIgUserId: "ig-user-1",
       commentId: "comment-9",
       text: "Reply to your comment",
@@ -166,18 +167,26 @@ describe("sendTrackedPrivateReply", () => {
     expect(recordOutboundMessage).toHaveBeenCalledWith(
       expect.objectContaining({ igUserId: "ig-user-1", instagramMessageId: "mid-2" }),
     );
+    expect(receipt).toEqual({
+      instagramMessageId: "mid-2",
+      dmMessageId: "dm-1",
+      acceptedAt: expect.any(Date),
+    });
   });
 
   it("survives a recording failure", async () => {
     recordOutboundMessage.mockRejectedValue(new Error("database unavailable"));
-    await expect(
-      sendTrackedPrivateReply({
-        recipientIgUserId: "ig-user-1",
-        commentId: "comment-9",
-        text: "Reply",
-        source: "keyword_automation",
-      }),
-    ).resolves.toEqual({ messageId: "mid-2" });
+    const receipt = await sendTrackedPrivateReply({
+      recipientIgUserId: "ig-user-1",
+      commentId: "comment-9",
+      text: "Reply",
+      source: "keyword_automation",
+    });
+    expect(receipt).toEqual({
+      instagramMessageId: "mid-2",
+      dmMessageId: null,
+      acceptedAt: expect.any(Date),
+    });
   });
 });
 
