@@ -10,6 +10,12 @@ const tx = {
 };
 
 const $transaction = vi.fn(async (fn: (client: typeof tx) => unknown) => fn(tx));
+const logger = {
+  error: vi.fn(),
+  warn: vi.fn(),
+  info: vi.fn(),
+  debug: vi.fn(),
+};
 
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
@@ -19,6 +25,7 @@ vi.mock("../lib/prisma.js", () => ({
     replyDraft: tx.replyDraft,
   },
 }));
+vi.mock("../lib/logger.js", () => ({ logger }));
 
 const {
   recordInboundMessage,
@@ -42,7 +49,8 @@ beforeEach(() => {
     for (const fn of Object.values(model)) fn.mockReset();
   }
   $transaction.mockClear();
-  tx.dmThread.upsert.mockResolvedValue({ id: "thread-1" });
+  for (const fn of Object.values(logger)) fn.mockReset();
+  tx.dmThread.upsert.mockResolvedValue({ id: "thread-1", latestInboundMessageId: null });
   tx.dmMessage.create.mockResolvedValue({ id: "message-1" });
   tx.replyDraft.updateMany.mockResolvedValue({ count: 0 });
   tx.dmThread.update.mockResolvedValue({ id: "thread-1" });
@@ -55,6 +63,7 @@ describe("recordInboundMessage", () => {
 
     await expect(recordInboundMessage(INBOUND)).resolves.toEqual({
       duplicate: true,
+      becameLatest: false,
       threadId: "thread-1",
       messageId: "message-1",
     });
@@ -67,6 +76,7 @@ describe("recordInboundMessage", () => {
 
     await expect(recordInboundMessage(INBOUND)).resolves.toEqual({
       duplicate: false,
+      becameLatest: true,
       threadId: "thread-1",
       messageId: "message-1",
     });
@@ -113,6 +123,67 @@ describe("recordInboundMessage", () => {
     tx.dmMessage.findUnique.mockResolvedValue(null);
     await recordInboundMessage(INBOUND);
     expect($transaction).toHaveBeenCalledOnce();
+    expect($transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: "Serializable",
+    });
+  });
+
+  it("stores a delayed older inbound without regressing latest state or superseding drafts", async () => {
+    tx.dmThread.upsert.mockResolvedValue({
+      id: "thread-1",
+      latestInboundMessageId: "message-newer",
+    });
+    tx.dmMessage.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        instagramMessageId: "mid-newer",
+        instagramTimestamp: new Date("2026-08-05T10:00:00.000Z"),
+      });
+    const older = {
+      ...INBOUND,
+      instagramMessageId: "mid-older",
+      instagramTimestamp: new Date("2026-08-05T09:59:59.000Z"),
+    };
+
+    await expect(recordInboundMessage(older)).resolves.toEqual({
+      duplicate: false,
+      becameLatest: false,
+      threadId: "thread-1",
+      messageId: "message-1",
+    });
+    expect(tx.dmMessage.create).toHaveBeenCalledOnce();
+    expect(tx.replyDraft.updateMany).not.toHaveBeenCalled();
+    expect(tx.dmThread.update).not.toHaveBeenCalled();
+  });
+
+  it("uses the Instagram message ID to choose the latest inbound at equal timestamps", async () => {
+    tx.dmThread.upsert.mockResolvedValue({
+      id: "thread-1",
+      latestInboundMessageId: "message-current",
+    });
+    tx.dmMessage.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        instagramMessageId: "mid-a",
+        instagramTimestamp: INBOUND.instagramTimestamp,
+      });
+
+    await expect(
+      recordInboundMessage({ ...INBOUND, instagramMessageId: "mid-b" }),
+    ).resolves.toMatchObject({ duplicate: false, becameLatest: true });
+    expect(tx.replyDraft.updateMany).toHaveBeenCalledOnce();
+    expect(tx.dmThread.update).toHaveBeenCalledOnce();
+  });
+
+  it("retries a serialization conflict a bounded transaction attempt", async () => {
+    tx.dmMessage.findUnique.mockResolvedValue(null);
+    $transaction.mockRejectedValueOnce({ code: "P2034" });
+
+    await expect(recordInboundMessage(INBOUND)).resolves.toMatchObject({
+      duplicate: false,
+      becameLatest: true,
+    });
+    expect($transaction).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -145,6 +216,22 @@ describe("recordOutboundMessage", () => {
     // that is how a delivered message becomes a duplicate retry.
     $transaction.mockRejectedValueOnce(new Error("database unavailable"));
     await expect(recordOutboundMessage(OUTBOUND)).resolves.toBeUndefined();
+  });
+
+  it("does not copy an outbound DM body from a database error into general logs", async () => {
+    $transaction.mockRejectedValueOnce(new Error(`insert failed for ${OUTBOUND.text}`));
+
+    await recordOutboundMessage(OUTBOUND);
+
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        errorCode: "dm_history_write_failed",
+        igUserId: OUTBOUND.igUserId,
+        length: OUTBOUND.text.length,
+      }),
+      expect.any(String),
+    );
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain(OUTBOUND.text);
   });
 });
 

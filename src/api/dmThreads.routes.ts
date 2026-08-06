@@ -97,7 +97,7 @@ dmThreadsRouter.get("/:threadId", async (req, res) => {
       latestInboundMessageId: true,
       lastMessageAt: true,
       messages: {
-        orderBy: { instagramTimestamp: "asc" },
+        orderBy: [{ instagramTimestamp: "desc" }, { id: "desc" }],
         take: MESSAGE_LIMIT,
         select: {
           id: true,
@@ -114,6 +114,6 @@ dmThreadsRouter.get("/:threadId", async (req, res) => {
   });
   if (!thread) return res.status(404).json({ error: "not_found" });
 
-  const { drafts, ...rest } = thread;
-  res.json({ ...rest, draft: drafts[0] ?? null });
+  const { drafts, messages, ...rest } = thread;
+  res.json({ ...rest, messages: messages.reverse(), draft: drafts[0] ?? null });
 });

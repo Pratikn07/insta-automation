@@ -16,6 +16,13 @@ const sendSequence = vi.fn();
 const sendTrackedText = vi.fn();
 const resolveUsername = vi.fn();
 const logEvent = vi.fn();
+const describeGraphError = vi.fn((e: unknown) => ({ message: String(e) }));
+const logger = {
+  error: vi.fn(),
+  warn: vi.fn(),
+  info: vi.fn(),
+  debug: vi.fn(),
+};
 
 vi.mock("../services/dmThreadService.js", () => ({
   recordInboundMessage,
@@ -36,8 +43,9 @@ vi.mock("../services/dmDeliveryService.js", () => ({ sendTrackedText }));
 vi.mock("../services/igUserService.js", () => ({ resolveUsername }));
 vi.mock("../services/eventLogger.js", () => ({
   logEvent,
-  describeGraphError: (e: unknown) => ({ message: String(e) }),
+  describeGraphError,
 }));
+vi.mock("../lib/logger.js", () => ({ logger }));
 
 // The real env has AI_DRAFTS_ENABLED=false (all AI ships off), so drafting is
 // mocked ON here and toggled per test. `aiDraftsEnabled` is mutable so one test
@@ -92,11 +100,15 @@ beforeEach(() => {
     sendTrackedText,
     resolveUsername,
     logEvent,
+    describeGraphError,
   ]) {
     fn.mockReset();
   }
+  for (const fn of Object.values(logger)) fn.mockReset();
+  describeGraphError.mockImplementation((e: unknown) => ({ message: String(e) }));
   recordInboundMessage.mockResolvedValue({
     duplicate: false,
+    becameLatest: true,
     threadId: "thread-1",
     messageId: "message-1",
   });
@@ -116,6 +128,7 @@ describe("handleMessage — inbound capture", () => {
   it("drops a duplicate webhook before automation or drafting", async () => {
     recordInboundMessage.mockResolvedValue({
       duplicate: true,
+      becameLatest: false,
       threadId: "thread-1",
       messageId: "message-1",
     });
@@ -125,6 +138,26 @@ describe("handleMessage — inbound capture", () => {
     expect(findKeywordInMessage).not.toHaveBeenCalled();
     expect(queueReplyDraft).not.toHaveBeenCalled();
     expect(sendTrackedText).not.toHaveBeenCalled();
+  });
+
+  it("stores a delayed non-latest webhook but skips every downstream side effect", async () => {
+    recordInboundMessage.mockResolvedValue({
+      duplicate: false,
+      becameLatest: false,
+      threadId: "thread-1",
+      messageId: "message-stale",
+    });
+
+    await handleMessage(inbound("SLEEP"));
+
+    expect(resolveUsername).not.toHaveBeenCalled();
+    expect(updateDmThreadProfile).not.toHaveBeenCalled();
+    expect(findKeywordInMessage).not.toHaveBeenCalled();
+    expect(findActiveAwaitingDone).not.toHaveBeenCalled();
+    expect(openConversation).not.toHaveBeenCalled();
+    expect(queueReplyDraft).not.toHaveBeenCalled();
+    expect(sendTrackedText).not.toHaveBeenCalled();
+    expect(sendSequence).not.toHaveBeenCalled();
   });
 
   it("ignores an echo of our own message", async () => {
@@ -225,7 +258,12 @@ describe("handleMessage — unhandled DMs", () => {
     const order: string[] = [];
     recordInboundMessage.mockImplementation(async () => {
       order.push("record");
-      return { duplicate: false, threadId: "thread-1", messageId: "message-1" };
+      return {
+        duplicate: false,
+        becameLatest: true,
+        threadId: "thread-1",
+        messageId: "message-1",
+      };
     });
     queueReplyDraft.mockImplementation(async () => {
       order.push("queue");
@@ -238,6 +276,84 @@ describe("handleMessage — unhandled DMs", () => {
     expect(queueReplyDraft).toHaveBeenCalledWith({
       threadId: "thread-1",
       inboundMessageId: "message-1",
+    });
+  });
+
+  it("records only message metadata in EventLog for an unhandled DM", async () => {
+    const privateBody = "private bedtime details";
+
+    await handleMessage(inbound(privateBody));
+
+    expect(logEvent).toHaveBeenCalledWith("message_received", {
+      senderId: "ig-user-1",
+      mid: "mid-1",
+      messageType: "text",
+      textLength: privateBody.length,
+    });
+    expect(logEvent).toHaveBeenCalledWith("message_unhandled", {
+      senderId: "ig-user-1",
+      mid: "mid-1",
+      textLength: privateBody.length,
+      hadOpenConversation: false,
+    });
+    expect(
+      JSON.stringify({ logs: logger.debug.mock.calls, events: logEvent.mock.calls }),
+    ).not.toContain(privateBody);
+  });
+
+  it("records only message metadata when an open-gate reply is handled", async () => {
+    findActiveAwaitingDone.mockResolvedValue({
+      id: "convo-1",
+      keywordId: "keyword-1",
+      keyword: { keyword: "SLEEP", resource: { messages: [] } },
+    });
+    const privateBody = "Done, my child finally slept";
+
+    await handleMessage(inbound(privateBody));
+
+    expect(logEvent).toHaveBeenCalledWith("done_received", {
+      conversationId: "convo-1",
+      senderId: "ig-user-1",
+      mid: "mid-1",
+      messageType: "text",
+      textLength: privateBody.length,
+      matched: "any_reply",
+      looksLikeDone: false,
+    });
+    expect(
+      JSON.stringify({ logs: logger.info.mock.calls, events: logEvent.mock.calls }),
+    ).not.toContain(privateBody);
+  });
+
+  it("keeps Graph request bodies and backend messages out of error logs and EventLog", async () => {
+    findActiveAwaitingDone.mockResolvedValue({
+      id: "convo-1",
+      keywordId: "keyword-1",
+      keyword: { keyword: "SLEEP", resource: { messages: [] } },
+    });
+    const privateBody = "private model or DM output";
+    const graphError = new Error("graph request failed");
+    describeGraphError.mockReturnValue({
+      httpStatus: 400,
+      code: 10,
+      subcode: 2018278,
+      fbtrace_id: "trace-1",
+      message: privateBody,
+      requestBody: { message: { text: privateBody } },
+    });
+    sendSequence.mockRejectedValue(graphError);
+
+    await handleMessage(inbound("Done"));
+
+    const emitted = JSON.stringify({ logs: logger.error.mock.calls, events: logEvent.mock.calls });
+    expect(emitted).not.toContain(privateBody);
+    expect(logEvent).toHaveBeenCalledWith("sequence_failed", {
+      conversationId: "convo-1",
+      errorCode: "graph_request_failed",
+      httpStatus: 400,
+      code: 10,
+      subcode: 2018278,
+      fbtrace_id: "trace-1",
     });
   });
 

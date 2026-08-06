@@ -2,6 +2,7 @@ import type { DmMessageSource, DmMessageType } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
 import { ACTIVE_DRAFT_STATUSES } from "./replyDraftMachine.js";
+import { compareInboundOrder } from "./dmOrdering.js";
 
 /**
  * Recording of real DM history, alongside the existing automation journey.
@@ -13,9 +14,12 @@ import { ACTIVE_DRAFT_STATUSES } from "./replyDraftMachine.js";
 
 export interface RecordInboundResult {
   duplicate: boolean;
+  becameLatest: boolean;
   threadId: string;
   messageId: string;
 }
+
+const INBOUND_TRANSACTION_ATTEMPTS = 3;
 
 export interface RecordInboundInput {
   igAccountId: string;
@@ -54,62 +58,114 @@ export interface ThreadProfileInput {
 export async function recordInboundMessage(
   input: RecordInboundInput,
 ): Promise<RecordInboundResult> {
-  return prisma.$transaction(async (tx) => {
-    const existing = await tx.dmMessage.findUnique({
-      where: { instagramMessageId: input.instagramMessageId },
-      select: { id: true, threadId: true },
-    });
-    if (existing) {
-      return { duplicate: true, threadId: existing.threadId, messageId: existing.id };
+  for (let attempt = 1; attempt <= INBOUND_TRANSACTION_ATTEMPTS; attempt += 1) {
+    try {
+      return await prisma.$transaction(
+        async (tx) => {
+          const existing = await tx.dmMessage.findUnique({
+            where: { instagramMessageId: input.instagramMessageId },
+            select: { id: true, threadId: true },
+          });
+          if (existing) {
+            return {
+              duplicate: true,
+              becameLatest: false,
+              threadId: existing.threadId,
+              messageId: existing.id,
+            };
+          }
+
+          const thread = await tx.dmThread.upsert({
+            where: {
+              igAccountId_igUserId: {
+                igAccountId: input.igAccountId,
+                igUserId: input.igUserId,
+              },
+            },
+            create: {
+              igAccountId: input.igAccountId,
+              igUserId: input.igUserId,
+              lastMessageAt: input.instagramTimestamp,
+            },
+            update: {},
+            select: { id: true, latestInboundMessageId: true },
+          });
+
+          const currentLatest = thread.latestInboundMessageId
+            ? await tx.dmMessage.findUnique({
+                where: { id: thread.latestInboundMessageId },
+                select: { instagramMessageId: true, instagramTimestamp: true },
+              })
+            : null;
+          const becameLatest =
+            !currentLatest ||
+            !currentLatest.instagramMessageId ||
+            compareInboundOrder(
+              { at: input.instagramTimestamp, id: input.instagramMessageId },
+              {
+                at: currentLatest.instagramTimestamp,
+                id: currentLatest.instagramMessageId,
+              },
+            ) > 0;
+
+          if (becameLatest) {
+            // Supersede BEFORE inserting, so the partial unique index can never
+            // see two active drafts for this thread. A draft already `sending`
+            // stays untouched because its Instagram outcome is still unknown.
+            await tx.replyDraft.updateMany({
+              where: { threadId: thread.id, status: { in: [...ACTIVE_DRAFT_STATUSES] } },
+              data: { status: "superseded" },
+            });
+          }
+
+          // Delayed older webhooks still belong in the transcript. They simply
+          // cannot replace the true latest inbound or cancel its pending draft.
+          const message = await tx.dmMessage.create({
+            data: {
+              threadId: thread.id,
+              instagramMessageId: input.instagramMessageId,
+              direction: "inbound",
+              type: input.messageType,
+              source: "instagram_user",
+              text: input.text,
+              mediaUrl: input.mediaUrl,
+              instagramTimestamp: input.instagramTimestamp,
+            },
+            select: { id: true },
+          });
+
+          if (becameLatest) {
+            await tx.dmThread.update({
+              where: { id: thread.id },
+              data: {
+                latestInboundMessageId: message.id,
+                needsReply: true,
+                lastInboundAt: input.instagramTimestamp,
+                lastMessageAt: input.instagramTimestamp,
+              },
+            });
+          }
+
+          return {
+            duplicate: false,
+            becameLatest,
+            threadId: thread.id,
+            messageId: message.id,
+          };
+        },
+        { isolationLevel: "Serializable" },
+      );
+    } catch (err) {
+      const retryable =
+        err !== null &&
+        typeof err === "object" &&
+        "code" in err &&
+        (err as { code?: unknown }).code === "P2034";
+      if (!retryable || attempt === INBOUND_TRANSACTION_ATTEMPTS) throw err;
     }
+  }
 
-    const thread = await tx.dmThread.upsert({
-      where: {
-        igAccountId_igUserId: { igAccountId: input.igAccountId, igUserId: input.igUserId },
-      },
-      create: {
-        igAccountId: input.igAccountId,
-        igUserId: input.igUserId,
-        lastMessageAt: input.instagramTimestamp,
-      },
-      update: {},
-      select: { id: true },
-    });
-
-    // Supersede BEFORE inserting, so the partial unique index can never see two
-    // active drafts for this thread. A draft already `sending` is left untouched:
-    // its Instagram request is in flight and its outcome is still unknown.
-    await tx.replyDraft.updateMany({
-      where: { threadId: thread.id, status: { in: [...ACTIVE_DRAFT_STATUSES] } },
-      data: { status: "superseded" },
-    });
-
-    const message = await tx.dmMessage.create({
-      data: {
-        threadId: thread.id,
-        instagramMessageId: input.instagramMessageId,
-        direction: "inbound",
-        type: input.messageType,
-        source: "instagram_user",
-        text: input.text,
-        mediaUrl: input.mediaUrl,
-        instagramTimestamp: input.instagramTimestamp,
-      },
-      select: { id: true },
-    });
-
-    await tx.dmThread.update({
-      where: { id: thread.id },
-      data: {
-        latestInboundMessageId: message.id,
-        needsReply: true,
-        lastInboundAt: input.instagramTimestamp,
-        lastMessageAt: input.instagramTimestamp,
-      },
-    });
-
-    return { duplicate: false, threadId: thread.id, messageId: message.id };
-  });
+  throw new Error("unreachable");
 }
 
 /**
@@ -160,7 +216,7 @@ export async function recordOutboundMessage(input: RecordOutboundInput): Promise
     // IDs, source and length only — never the message body.
     logger.error(
       {
-        err,
+        errorCode: "dm_history_write_failed",
         igUserId: input.igUserId,
         instagramMessageId: input.instagramMessageId,
         source: input.source,
@@ -188,7 +244,10 @@ export async function markThreadResolved(input: {
       data: { needsReply: false },
     });
   } catch (err) {
-    logger.error({ err, threadId: input.threadId }, "Failed to mark DM thread resolved");
+    logger.error(
+      { errorCode: "dm_thread_resolve_failed", threadId: input.threadId },
+      "Failed to mark DM thread resolved",
+    );
   }
 }
 
@@ -200,6 +259,9 @@ export async function updateDmThreadProfile(input: ThreadProfileInput): Promise<
       data: { username: input.username, name: input.name },
     });
   } catch (err) {
-    logger.error({ err, threadId: input.threadId }, "Failed to update DM thread profile");
+    logger.error(
+      { errorCode: "dm_profile_update_failed", threadId: input.threadId },
+      "Failed to update DM thread profile",
+    );
   }
 }

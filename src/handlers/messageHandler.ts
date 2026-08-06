@@ -40,6 +40,15 @@ const REDELIVERY_INTRO = "You've already got this one — here it is again 💛"
 const FOLLOW_GATE =
   "You're one step away! 💛 Follow @tinysoho, then reply DONE here and I'll send it right over. (Just followed? Give it a few seconds and reply DONE again.)";
 
+function graphFailureMetadata(err: unknown): Record<string, unknown> {
+  const detail = describeGraphError(err);
+  const metadata: Record<string, unknown> = { errorCode: "graph_request_failed" };
+  for (const key of ["httpStatus", "code", "subcode", "fbtrace_id"] as const) {
+    if (detail[key] !== undefined) metadata[key] = detail[key];
+  }
+  return metadata;
+}
+
 /**
  * Classify an inbound message for the DmMessage row.
  *
@@ -76,13 +85,16 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
 
   const text = msg.text ?? "";
 
-  // Record every inbound DM from a user, before any matching.
-  await logEvent("message_received", { senderId, text, mid: msg.mid });
-
   // Capture the real message into its thread. Idempotent on Meta's `mid`: Meta
   // retries webhooks, and a replay must not re-run automation, re-send a guide, or
   // re-open a thread the owner already answered.
   const { messageType, mediaUrl } = classifyInbound(msg);
+  await logEvent("message_received", {
+    senderId,
+    mid: msg.mid,
+    messageType,
+    textLength: text.length,
+  });
   const inbound = await recordInboundMessage({
     igAccountId: env.IG_USER_ID,
     igUserId: senderId,
@@ -93,8 +105,11 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     // Meta's timestamp, not ours, so a delayed webhook still orders correctly.
     instagramTimestamp: new Date(entry.timestamp),
   });
-  if (inbound.duplicate) {
-    logger.debug({ senderId, mid: msg.mid }, "Duplicate inbound webhook ignored");
+  if (inbound.duplicate || !inbound.becameLatest) {
+    logger.debug(
+      { senderId, mid: msg.mid, duplicate: inbound.duplicate },
+      "Inbound webhook ignored",
+    );
     return;
   }
 
@@ -102,7 +117,10 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
   // so it can't break message handling). The same call also returns follow intel
   // (is_user_follow_business), which we use to personalize the guide delivery below.
   const profile = await resolveUsername(senderId).catch((err: unknown) => {
-    logger.warn({ err, senderId }, "Profile resolve failed — continuing without it");
+    logger.warn(
+      { errorCode: "profile_resolve_failed", senderId },
+      "Profile resolve failed — continuing without it",
+    );
     return { isFollower: null, username: null, name: null };
   });
   await updateDmThreadProfile({
@@ -185,18 +203,21 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
           });
         } catch (err) {
           logger.warn(
-            { ...describeGraphError(err), conversationId: convo.id },
+            { ...graphFailureMetadata(err), conversationId: convo.id },
             "Follow-aware closing message failed (guide already delivered)",
           );
         }
       } catch (err) {
         // Conversation stays awaiting_done, so any follow-up reply from the user
         // re-attempts delivery via the open-gate branch below.
-        logger.error({ ...describeGraphError(err), conversationId: convo.id }, "Instant DM sequence failed");
+        logger.error(
+          { ...graphFailureMetadata(err), conversationId: convo.id },
+          "Instant DM sequence failed",
+        );
         await logEvent("sequence_failed", {
           conversationId: convo.id,
           source: "dm_instant",
-          ...describeGraphError(err),
+          ...graphFailureMetadata(err),
         });
       }
       return;
@@ -219,12 +240,12 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
       });
       await logEvent("dm_sent", { conversationId: convo.id, kind: "gate", source: "dm" });
     } catch (err) {
-      logger.warn(describeGraphError(err), "Gate DM (from inbound message) failed");
+      logger.warn(graphFailureMetadata(err), "Gate DM (from inbound message) failed");
       await logEvent("dm_failed", {
         conversationId: convo.id,
         stage: "gate_inbound_dm",
         senderId,
-        ...describeGraphError(err),
+        ...graphFailureMetadata(err),
       });
     }
     return;
@@ -267,11 +288,14 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
           redelivery: true,
         });
       } catch (err) {
-        logger.error({ ...describeGraphError(err), conversationId: convo.id }, "Redelivery failed");
+        logger.error(
+          { ...graphFailureMetadata(err), conversationId: convo.id },
+          "Redelivery failed",
+        );
         await logEvent("sequence_failed", {
           conversationId: convo.id,
           redelivery: true,
-          ...describeGraphError(err),
+          ...graphFailureMetadata(err),
         });
       }
       return;
@@ -308,7 +332,7 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
         });
       } catch (err) {
         logger.warn(
-          { ...describeGraphError(err), conversationId: convo.id },
+          { ...graphFailureMetadata(err), conversationId: convo.id },
           "Follow-required message failed",
         );
       }
@@ -316,12 +340,15 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     }
 
     logger.info(
-      { conversationId: convo.id, keyword: convo.keyword.keyword, text },
+      { conversationId: convo.id, keyword: convo.keyword.keyword, senderId, mid: msg.mid },
       "Open-gate reply — delivering sequence",
     );
     await logEvent("done_received", {
       conversationId: convo.id,
-      text,
+      senderId,
+      mid: msg.mid,
+      messageType,
+      textLength: text.length,
       matched: "any_reply",
       looksLikeDone: DONE_RE.test(text),
     });
@@ -359,13 +386,19 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
         });
       } catch (err) {
         logger.warn(
-          { ...describeGraphError(err), conversationId: convo.id },
+          { ...graphFailureMetadata(err), conversationId: convo.id },
           "Follow-aware closing message failed (guide already delivered)",
         );
       }
     } catch (err) {
-      logger.error({ ...describeGraphError(err), conversationId: convo.id }, "Sequence failed");
-      await logEvent("sequence_failed", { conversationId: convo.id, ...describeGraphError(err) });
+      logger.error(
+        { ...graphFailureMetadata(err), conversationId: convo.id },
+        "Sequence failed",
+      );
+      await logEvent("sequence_failed", {
+        conversationId: convo.id,
+        ...graphFailureMetadata(err),
+      });
     }
     return;
   }
@@ -375,8 +408,16 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
   // nothing back. It now queues an AI draft for the owner to approve. Nothing is
   // sent from here — approval is a separate, explicit action, which is also what
   // keeps a considered reply inside Meta's rules.
-  logger.debug({ senderId, text }, "Inbound DM with no keyword and no open gate");
-  await logEvent("message_unhandled", { senderId, text, hadOpenConversation: false });
+  logger.debug(
+    { senderId, mid: msg.mid, messageType, textLength: text.length },
+    "Inbound DM with no keyword and no open gate",
+  );
+  await logEvent("message_unhandled", {
+    senderId,
+    mid: msg.mid,
+    textLength: text.length,
+    hadOpenConversation: false,
+  });
 
   if (!env.AI_DRAFTS_ENABLED) return;
   try {
@@ -387,6 +428,9 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
   } catch (err) {
     // A draft is an assist, never a requirement. Failing here must not fail the
     // webhook — Meta would retry it and we would re-run everything above.
-    logger.error({ err, threadId: inbound.threadId }, "Failed to queue reply draft");
+    logger.error(
+      { errorCode: "draft_queue_failed", threadId: inbound.threadId },
+      "Failed to queue reply draft",
+    );
   }
 }
