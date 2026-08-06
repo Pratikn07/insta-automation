@@ -473,9 +473,10 @@ export async function claimApprovedDraft(input: {
     }
     if (draft.kind === "engagement_follow_up") {
       if (now < draft.eligibleAt) throw new DraftActionError("follow_up_not_ready");
-      if (draft.expiresAt === null || now >= draft.expiresAt) {
-        throw new DraftActionError("follow_up_window_closed");
-      }
+      // A real follow-up always has expiresAt (enforced by the database check
+      // constraint). Do not reject an elapsed deadline here: the row must first
+      // be locked and atomically persisted as expired inside this transaction.
+      if (draft.expiresAt === null) throw new DraftActionError("follow_up_window_closed");
     }
 
     const thread = await tx.dmThread.findUnique({
@@ -487,67 +488,84 @@ export async function claimApprovedDraft(input: {
     }
 
     const approvedText = input.workingText.trim();
-    const claim =
-      draft.kind === "engagement_follow_up"
-        ? {
-            count: await tx.$executeRaw`
-              WITH locked AS MATERIALIZED (
-                SELECT draft."id"
-                FROM "reply_draft" AS draft
-                WHERE draft."id" = ${input.draftId}::uuid
-                  AND draft."thread_id" = ${input.threadId}::uuid
-                  AND draft."inbound_message_id" = ${draft.inboundMessageId}::uuid
-                  AND draft."status" = 'pending_approval'
-                  AND draft."prompt_version" = ${CURRENT_DM_PROMPT_VERSION}
-                  AND draft."kind" = 'engagement_follow_up'
-                FOR UPDATE
-              )
-              UPDATE "reply_draft" AS draft
-              SET
-                "working_text" = ${approvedText},
-                "approved_text" = ${approvedText},
-                "approved_by" = ${input.approvedBy},
-                "approved_at" = ${now},
-                "status" = 'sending',
-                "updated_at" = clock_timestamp()
-              FROM locked
-              WHERE draft."id" = locked."id"
-                AND draft."eligible_at" <= clock_timestamp()
-                AND draft."expires_at" > clock_timestamp()
-                AND EXISTS (
-                  SELECT 1
-                  FROM "dm_thread" AS thread
-                  WHERE thread."id" = draft."thread_id"
-                    AND thread."latest_inbound_message_id" = draft."inbound_message_id"
-                )
-            `,
-          }
-        : await tx.replyDraft.updateMany({
-            where: {
-              id: input.draftId,
-              threadId: input.threadId,
-              inboundMessageId: draft.inboundMessageId,
-              status: "pending_approval",
-              kind: "reply",
-              promptVersion: CURRENT_DM_PROMPT_VERSION,
-              thread: { latestInboundMessageId: draft.inboundMessageId },
-            },
-            data: {
-              workingText: approvedText,
-              approvedText,
-              approvedBy: input.approvedBy,
-              approvedAt: now,
-              status: "sending",
-            },
-          });
+    let claim: { count: number };
+    if (draft.kind === "engagement_follow_up") {
+      // This statement must complete before the guarded UPDATE starts. A
+      // materialized CTE is not sufficient: PostgreSQL may evaluate outer
+      // predicates before demanding the CTE and waiting on its row lock.
+      await tx.$queryRaw`
+        SELECT "id"
+        FROM "reply_draft"
+        WHERE "id" = ${input.draftId}::uuid
+        FOR UPDATE
+      `;
+      claim = {
+        count: await tx.$executeRaw`
+          UPDATE "reply_draft" AS draft
+          SET
+            "working_text" = ${approvedText},
+            "approved_text" = ${approvedText},
+            "approved_by" = ${input.approvedBy},
+            "approved_at" = ${now},
+            "status" = 'sending',
+            "updated_at" = clock_timestamp()
+          WHERE draft."id" = ${input.draftId}::uuid
+            AND draft."thread_id" = ${input.threadId}::uuid
+            AND draft."inbound_message_id" = ${draft.inboundMessageId}::uuid
+            AND draft."status" = 'pending_approval'
+            AND draft."prompt_version" = ${CURRENT_DM_PROMPT_VERSION}
+            AND draft."kind" = 'engagement_follow_up'
+            AND draft."eligible_at" <= clock_timestamp()
+            AND draft."expires_at" > clock_timestamp()
+            AND EXISTS (
+              SELECT 1
+              FROM "dm_thread" AS thread
+              WHERE thread."id" = draft."thread_id"
+                AND thread."latest_inbound_message_id" = draft."inbound_message_id"
+            )
+        `,
+      };
+    } else {
+      claim = await tx.replyDraft.updateMany({
+        where: {
+          id: input.draftId,
+          threadId: input.threadId,
+          inboundMessageId: draft.inboundMessageId,
+          status: "pending_approval",
+          kind: "reply",
+          promptVersion: CURRENT_DM_PROMPT_VERSION,
+          thread: { latestInboundMessageId: draft.inboundMessageId },
+        },
+        data: {
+          workingText: approvedText,
+          approvedText,
+          approvedBy: input.approvedBy,
+          approvedAt: now,
+          status: "sending",
+        },
+      });
+    }
     // Lost the race to a concurrent approval — the winner is already sending.
     if (claim.count !== 1) {
       const current = await tx.replyDraft.findUnique({
         where: { id: input.draftId },
-        select: { status: true },
+        select: {
+          inboundMessageId: true,
+          status: true,
+          kind: true,
+          promptVersion: true,
+          eligibleAt: true,
+          expiresAt: true,
+        },
       });
       if (current?.status !== "pending_approval") {
         throw new DraftActionError("draft_not_pending");
+      }
+      if (current.kind !== draft.kind || current.inboundMessageId !== draft.inboundMessageId) {
+        throw new DraftActionError("stale_draft");
+      }
+      if (current.promptVersion !== CURRENT_DM_PROMPT_VERSION) {
+        throw new DraftActionError("prompt_policy_outdated");
       }
       const currentThread = await tx.dmThread.findUnique({
         where: { id: input.threadId },
@@ -569,13 +587,16 @@ export async function claimApprovedDraft(input: {
             "updated_at" = clock_timestamp()
           WHERE "id" = ${input.draftId}::uuid
             AND "thread_id" = ${input.threadId}::uuid
+            AND "inbound_message_id" = ${draft.inboundMessageId}::uuid
             AND "status" = 'pending_approval'
             AND "kind" = 'engagement_follow_up'
+            AND "prompt_version" = ${CURRENT_DM_PROMPT_VERSION}
             AND "expires_at" <= clock_timestamp()
         `;
         if (expired === 1) {
           return { rejected: "follow_up_window_closed" as const };
         }
+        if (now < current.eligibleAt) throw new DraftActionError("follow_up_not_ready");
         throw new DraftActionError("follow_up_window_closed");
       }
       throw new DraftActionError("draft_not_pending");
@@ -631,9 +652,7 @@ export async function claimRetryDraft(input: {
     }
     if (draft.kind === "engagement_follow_up") {
       if (now < draft.eligibleAt) throw new DraftActionError("follow_up_not_ready");
-      if (draft.expiresAt === null || now >= draft.expiresAt) {
-        throw new DraftActionError("follow_up_window_closed");
-      }
+      if (draft.expiresAt === null) throw new DraftActionError("follow_up_window_closed");
     }
 
     const thread = await tx.dmThread.findUnique({
@@ -645,57 +664,77 @@ export async function claimRetryDraft(input: {
     }
 
     const retryableStatuses = ["send_failed", "send_uncertain"] as const;
-    const claim =
-      draft.kind === "engagement_follow_up"
-        ? {
-            count: await tx.$executeRaw`
-              WITH locked AS MATERIALIZED (
-                SELECT draft."id"
-                FROM "reply_draft" AS draft
-                WHERE draft."id" = ${input.draftId}::uuid
-                  AND draft."thread_id" = ${input.threadId}::uuid
-                  AND draft."inbound_message_id" = ${draft.inboundMessageId}::uuid
-                  AND draft."status" IN ('send_failed', 'send_uncertain')
-                  AND draft."prompt_version" = ${CURRENT_DM_PROMPT_VERSION}
-                  AND draft."kind" = 'engagement_follow_up'
-                FOR UPDATE
-              )
-              UPDATE "reply_draft" AS draft
-              SET
-                "status" = 'sending',
-                "error_code" = NULL,
-                "updated_at" = clock_timestamp()
-              FROM locked
-              WHERE draft."id" = locked."id"
-                AND draft."eligible_at" <= clock_timestamp()
-                AND draft."expires_at" > clock_timestamp()
-                AND EXISTS (
-                  SELECT 1
-                  FROM "dm_thread" AS thread
-                  WHERE thread."id" = draft."thread_id"
-                    AND thread."latest_inbound_message_id" = draft."inbound_message_id"
-                )
-            `,
-          }
-        : await tx.replyDraft.updateMany({
-            where: {
-              id: input.draftId,
-              threadId: input.threadId,
-              inboundMessageId: draft.inboundMessageId,
-              status: { in: [...retryableStatuses] },
-              kind: "reply",
-              promptVersion: CURRENT_DM_PROMPT_VERSION,
-              thread: { latestInboundMessageId: draft.inboundMessageId },
-            },
-            data: { status: "sending", errorCode: null },
-          });
+    let claim: { count: number };
+    if (draft.kind === "engagement_follow_up") {
+      await tx.$queryRaw`
+        SELECT "id"
+        FROM "reply_draft"
+        WHERE "id" = ${input.draftId}::uuid
+        FOR UPDATE
+      `;
+      claim = {
+        count: await tx.$executeRaw`
+          UPDATE "reply_draft" AS draft
+          SET
+            "status" = 'sending',
+            "error_code" = NULL,
+            "updated_at" = clock_timestamp()
+          WHERE draft."id" = ${input.draftId}::uuid
+            AND draft."thread_id" = ${input.threadId}::uuid
+            AND draft."inbound_message_id" = ${draft.inboundMessageId}::uuid
+            AND draft."status" IN ('send_failed', 'send_uncertain')
+            AND draft."prompt_version" = ${CURRENT_DM_PROMPT_VERSION}
+            AND draft."kind" = 'engagement_follow_up'
+            AND draft."approved_text" = ${draft.approvedText}
+            AND draft."eligible_at" <= clock_timestamp()
+            AND draft."expires_at" > clock_timestamp()
+            AND EXISTS (
+              SELECT 1
+              FROM "dm_thread" AS thread
+              WHERE thread."id" = draft."thread_id"
+                AND thread."latest_inbound_message_id" = draft."inbound_message_id"
+            )
+        `,
+      };
+    } else {
+      claim = await tx.replyDraft.updateMany({
+        where: {
+          id: input.draftId,
+          threadId: input.threadId,
+          inboundMessageId: draft.inboundMessageId,
+          status: { in: [...retryableStatuses] },
+          kind: "reply",
+          promptVersion: CURRENT_DM_PROMPT_VERSION,
+          thread: { latestInboundMessageId: draft.inboundMessageId },
+        },
+        data: { status: "sending", errorCode: null },
+      });
+    }
     if (claim.count !== 1) {
       const current = await tx.replyDraft.findUnique({
         where: { id: input.draftId },
-        select: { status: true },
+        select: {
+          inboundMessageId: true,
+          status: true,
+          kind: true,
+          promptVersion: true,
+          eligibleAt: true,
+          expiresAt: true,
+          approvedText: true,
+        },
       });
       if (current?.status !== "send_failed" && current?.status !== "send_uncertain") {
         throw new DraftActionError("draft_not_retryable");
+      }
+      if (
+        current.kind !== draft.kind ||
+        current.inboundMessageId !== draft.inboundMessageId ||
+        current.approvedText !== draft.approvedText
+      ) {
+        throw new DraftActionError("draft_not_retryable");
+      }
+      if (current.promptVersion !== CURRENT_DM_PROMPT_VERSION) {
+        throw new DraftActionError("prompt_policy_outdated");
       }
       const currentThread = await tx.dmThread.findUnique({
         where: { id: input.threadId },
@@ -713,13 +752,16 @@ export async function claimRetryDraft(input: {
             "updated_at" = clock_timestamp()
           WHERE "id" = ${input.draftId}::uuid
             AND "thread_id" = ${input.threadId}::uuid
+            AND "inbound_message_id" = ${draft.inboundMessageId}::uuid
             AND "status" IN ('send_failed', 'send_uncertain')
             AND "kind" = 'engagement_follow_up'
+            AND "prompt_version" = ${CURRENT_DM_PROMPT_VERSION}
             AND "expires_at" <= clock_timestamp()
         `;
         if (expired === 1) {
           return { rejected: "follow_up_window_closed" as const };
         }
+        if (now < current.eligibleAt) throw new DraftActionError("follow_up_not_ready");
         throw new DraftActionError("follow_up_window_closed");
       }
       throw new DraftActionError("draft_not_retryable");

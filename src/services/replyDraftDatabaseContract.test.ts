@@ -37,6 +37,113 @@ type TimestampColumn = {
   data_type: string;
 };
 
+type FollowUpFixture = {
+  threadId: string;
+  inboundMessageId: string;
+  draftId: string;
+  resourceId: string;
+  keywordId: string;
+  conversationId: string;
+};
+
+async function createFollowUpFixture(
+  prisma: PrismaClient,
+  input: {
+    databaseNow: Date;
+    expiresAt: Date;
+    promptVersion?: number;
+  },
+): Promise<FollowUpFixture> {
+  const fixture = {
+    threadId: randomUUID(),
+    inboundMessageId: randomUUID(),
+    draftId: randomUUID(),
+    resourceId: randomUUID(),
+    keywordId: randomUUID(),
+    conversationId: randomUUID(),
+  };
+
+  await prisma.resource.create({
+    data: { id: fixture.resourceId, name: "Task 6 atomicity test resource" },
+  });
+  await prisma.keyword.create({
+    data: {
+      id: fixture.keywordId,
+      keyword: `task6-${fixture.keywordId}`,
+      resourceId: fixture.resourceId,
+      publicReply: "test",
+      gateMessage: "test",
+    },
+  });
+  await prisma.conversation.create({
+    data: {
+      id: fixture.conversationId,
+      igUserId: `conversation-user-${fixture.threadId}`,
+      keywordId: fixture.keywordId,
+      state: "completed",
+    },
+  });
+  await prisma.dmThread.create({
+    data: {
+      id: fixture.threadId,
+      igAccountId: `account-${fixture.threadId}`,
+      igUserId: `user-${fixture.threadId}`,
+      latestInboundMessageId: fixture.inboundMessageId,
+      needsReply: true,
+      lastMessageAt: input.databaseNow,
+      lastInboundAt: input.databaseNow,
+    },
+  });
+  await prisma.replyDraft.create({
+    data: {
+      id: fixture.draftId,
+      threadId: fixture.threadId,
+      inboundMessageId: fixture.inboundMessageId,
+      revision: 1,
+      status: "pending_approval",
+      kind: "engagement_follow_up",
+      sourceConversationId: fixture.conversationId,
+      promptVersion: input.promptVersion ?? CURRENT_DM_PROMPT_VERSION,
+      suggestedText: "Follow-up suggestion",
+      workingText: "Original owner follow-up",
+      eligibleAt: new Date(input.databaseNow.getTime() - 60_000),
+      expiresAt: input.expiresAt,
+    },
+  });
+
+  return fixture;
+}
+
+async function deleteFollowUpFixture(
+  prisma: PrismaClient,
+  fixture: FollowUpFixture,
+): Promise<void> {
+  await prisma.dmThread.deleteMany({ where: { id: fixture.threadId } });
+  await prisma.conversation.deleteMany({ where: { id: fixture.conversationId } });
+  await prisma.keyword.deleteMany({ where: { id: fixture.keywordId } });
+  await prisma.resource.deleteMany({ where: { id: fixture.resourceId } });
+}
+
+async function waitForBlockedClaim(prisma: PrismaClient, timeoutMs = 3_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const rows = await prisma.$queryRaw<Array<{ blocked: boolean }>>`
+      SELECT EXISTS (
+        SELECT 1
+        FROM pg_stat_activity
+        WHERE datname = current_database()
+          AND pid <> pg_backend_pid()
+          AND wait_event_type = 'Lock'
+          AND query LIKE '%FROM "reply_draft"%'
+          AND query LIKE '%FOR UPDATE%'
+      ) AS blocked
+    `;
+    if (rows[0]?.blocked) return true;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return false;
+}
+
 describeWithLocalDatabase("owner-approved follow-up database contract", () => {
   it("stores scheduling and deadline instants with time zones in migrations and the Prisma schema", async () => {
     const parsedUrl = new URL(databaseUrl!);
@@ -367,6 +474,123 @@ describeWithLocalDatabase("owner-approved follow-up database contract", () => {
         await prisma.keyword.deleteMany({ where: { id: keywordId } });
         await prisma.resource.deleteMany({ where: { id: resourceId } });
         await Promise.all([prisma.$disconnect(), lockClient.$disconnect()]);
+      }
+    },
+    15_000,
+  );
+
+  it("rejects an already-expired follow-up and commits its terminal expired state", async () => {
+    const prisma = new PrismaClient({ datasources: { db: { url: databaseUrl! } } });
+    const databaseNow = (
+      await prisma.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AS now`
+    )[0]!.now;
+    const fixture = await createFollowUpFixture(prisma, {
+      databaseNow,
+      expiresAt: new Date(databaseNow.getTime() - 1_000),
+    });
+
+    try {
+      await expect(
+        claimApprovedDraft(
+          {
+            threadId: fixture.threadId,
+            draftId: fixture.draftId,
+            approvedBy: "owner@example.com",
+            workingText: "Text that must not be approved after expiry",
+          },
+          databaseNow,
+        ),
+      ).rejects.toMatchObject({ code: "follow_up_window_closed" });
+
+      await expect(
+        prisma.replyDraft.findUniqueOrThrow({ where: { id: fixture.draftId } }),
+      ).resolves.toMatchObject({
+        status: "expired",
+        workingText: "Original owner follow-up",
+        approvedText: null,
+        errorCode: "follow_up_window_closed",
+      });
+    } finally {
+      await deleteFollowUpFixture(prisma, fixture);
+      await prisma.$disconnect();
+    }
+  });
+
+  it(
+    "rejects a prompt policy changed while the production claim waits on a real row lock",
+    async () => {
+      const prisma = new PrismaClient({ datasources: { db: { url: databaseUrl! } } });
+      const mutationClient = new PrismaClient({ datasources: { db: { url: databaseUrl! } } });
+      const databaseNow = (
+        await prisma.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AS now`
+      )[0]!.now;
+      const fixture = await createFollowUpFixture(prisma, {
+        databaseNow,
+        expiresAt: new Date(databaseNow.getTime() + 60_000),
+      });
+      let signalLockAcquired!: () => void;
+      const lockAcquired = new Promise<void>((resolve) => {
+        signalLockAcquired = resolve;
+      });
+      let releasePolicyMutation!: () => void;
+      const mayMutatePolicy = new Promise<void>((resolve) => {
+        releasePolicyMutation = resolve;
+      });
+      const mutationTransaction = mutationClient.$transaction(
+        async (tx) => {
+          await tx.$queryRawUnsafe(
+            `SELECT "id" FROM "reply_draft" WHERE "id" = $1::uuid FOR UPDATE`,
+            fixture.draftId,
+          );
+          signalLockAcquired();
+          await mayMutatePolicy;
+          await tx.replyDraft.update({
+            where: { id: fixture.draftId },
+            data: { promptVersion: CURRENT_DM_PROMPT_VERSION - 1 },
+          });
+        },
+        { timeout: 10_000 },
+      );
+
+      try {
+        await lockAcquired;
+        const outcome = claimApprovedDraft(
+          {
+            threadId: fixture.threadId,
+            draftId: fixture.draftId,
+            approvedBy: "owner@example.com",
+            workingText: "Policy-stale text that must never be approved",
+          },
+          databaseNow,
+        ).then(
+          (value) => ({ status: "fulfilled" as const, value }),
+          (reason: unknown) => ({ status: "rejected" as const, reason }),
+        );
+
+        const observedRealLockWait = await waitForBlockedClaim(prisma);
+        releasePolicyMutation();
+        expect(observedRealLockWait).toBe(true);
+        await mutationTransaction;
+
+        const result = await outcome;
+        expect(result.status).toBe("rejected");
+        if (result.status !== "rejected") throw new Error("policy-stale claim unexpectedly won");
+        expect(result.reason).toBeInstanceOf(DraftActionError);
+        expect(result.reason).toMatchObject({ code: "prompt_policy_outdated" });
+
+        await expect(
+          prisma.replyDraft.findUniqueOrThrow({ where: { id: fixture.draftId } }),
+        ).resolves.toMatchObject({
+          status: "pending_approval",
+          promptVersion: CURRENT_DM_PROMPT_VERSION - 1,
+          workingText: "Original owner follow-up",
+          approvedText: null,
+        });
+      } finally {
+        releasePolicyMutation();
+        await mutationTransaction.catch(() => undefined);
+        await deleteFollowUpFixture(prisma, fixture);
+        await Promise.all([prisma.$disconnect(), mutationClient.$disconnect()]);
       }
     },
     15_000,

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const tx = {
   $executeRaw: vi.fn(),
+  $queryRaw: vi.fn(),
   replyDraft: {
     aggregate: vi.fn(),
     updateMany: vi.fn(),
@@ -51,6 +52,7 @@ const INPUT = { threadId: "thread-1", inboundMessageId: "message-1" };
 
 beforeEach(() => {
   tx.$executeRaw.mockReset();
+  tx.$queryRaw.mockReset();
   for (const fn of Object.values(tx.replyDraft)) fn.mockReset();
   rootReplyDraft.findFirst.mockReset();
   tx.dmThread.findUnique.mockReset();
@@ -60,6 +62,7 @@ beforeEach(() => {
   tx.replyDraft.aggregate.mockResolvedValue({ _max: { revision: null } });
   tx.replyDraft.updateMany.mockResolvedValue({ count: 0 });
   tx.$executeRaw.mockResolvedValue(1);
+  tx.$queryRaw.mockResolvedValue([{ id: "draft-2" }]);
   tx.replyDraft.create.mockResolvedValue({ id: "draft-1", revision: 1, status: "queued" });
 });
 
@@ -730,11 +733,12 @@ describe("claimApprovedDraft", () => {
       eligibleAt: new Date("2026-08-05T12:00:00.000Z"),
       expiresAt: AFTER_EXPIRY,
     });
+    tx.$executeRaw.mockResolvedValueOnce(0).mockResolvedValueOnce(1);
 
     await expect(claimApprovedDraft(INPUT, attemptedAt)).rejects.toMatchObject({
       code: "follow_up_window_closed",
     });
-    expect(tx.$executeRaw).not.toHaveBeenCalled();
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(2);
   });
 
   it("uses the database clock in the final follow-up claim so a deadline race cannot send", async () => {
@@ -754,10 +758,22 @@ describe("claimApprovedDraft", () => {
       code: "follow_up_window_closed",
     });
     expect(tx.$executeRaw).toHaveBeenCalledTimes(2);
+    expect(tx.$queryRaw).toHaveBeenCalledOnce();
     const claimSql = (tx.$executeRaw.mock.calls[0]?.[0] as TemplateStringsArray).join("?");
-    expect(claimSql).toContain("FOR UPDATE");
-    expect(claimSql).toContain('"expires_at" > clock_timestamp()');
-    expect(claimSql).toContain('"eligible_at" <= clock_timestamp()');
+    const lockSql = (tx.$queryRaw.mock.calls[0]?.[0] as TemplateStringsArray).join("?");
+    const finalBoundarySql = claimSql;
+    expect(lockSql).toContain("FOR UPDATE");
+    expect(lockSql).not.toContain('draft."status"');
+    expect(lockSql).not.toContain('draft."prompt_version"');
+    expect(lockSql).not.toContain('draft."kind"');
+    expect(finalBoundarySql).toContain('draft."thread_id" = ?::uuid');
+    expect(finalBoundarySql).toContain('draft."inbound_message_id" = ?::uuid');
+    expect(finalBoundarySql).toContain('draft."status" = \'pending_approval\'');
+    expect(finalBoundarySql).toContain('draft."prompt_version" = ?');
+    expect(finalBoundarySql).toContain('draft."kind" = \'engagement_follow_up\'');
+    expect(finalBoundarySql).toContain('draft."expires_at" > clock_timestamp()');
+    expect(finalBoundarySql).toContain('draft."eligible_at" <= clock_timestamp()');
+    expect(finalBoundarySql).toContain('thread."latest_inbound_message_id" = draft."inbound_message_id"');
     const expirySql = (tx.$executeRaw.mock.calls[1]?.[0] as TemplateStringsArray).join("?");
     expect(expirySql).toContain('"status" = \'expired\'');
     expect(expirySql).toContain('"expires_at" <= clock_timestamp()');
@@ -856,11 +872,50 @@ describe("claimRetryDraft", () => {
       expiresAt: AFTER_EXPIRY,
       approvedText: "Follow-up text",
     });
+    tx.$executeRaw.mockResolvedValueOnce(0).mockResolvedValueOnce(1);
 
     await expect(claimRetryDraft(RETRY_INPUT, AFTER_EXPIRY)).rejects.toMatchObject({
       code: "follow_up_window_closed",
     });
-    expect(tx.$executeRaw).not.toHaveBeenCalled();
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(2);
+  });
+
+  it("checks every mutable retry requirement after acquiring the follow-up row lock", async () => {
+    tx.replyDraft.findUnique.mockResolvedValue({
+      id: "draft-2",
+      threadId: "thread-1",
+      inboundMessageId: "message-2",
+      status: "send_uncertain",
+      kind: "engagement_follow_up",
+      promptVersion: CURRENT_DM_PROMPT_VERSION,
+      eligibleAt: new Date("2026-08-05T11:00:00.000Z"),
+      expiresAt: AFTER_EXPIRY,
+      approvedText: "Follow-up text",
+    });
+    tx.$executeRaw.mockResolvedValueOnce(1);
+
+    await expect(claimRetryDraft(RETRY_INPUT, NOW)).resolves.toEqual({
+      approvedText: "Follow-up text",
+      inboundMessageId: "message-2",
+    });
+
+    expect(tx.$queryRaw).toHaveBeenCalledOnce();
+    const claimSql = (tx.$executeRaw.mock.calls[0]?.[0] as TemplateStringsArray).join("?");
+    const lockSql = (tx.$queryRaw.mock.calls[0]?.[0] as TemplateStringsArray).join("?");
+    const finalBoundarySql = claimSql;
+    expect(lockSql).toContain("FOR UPDATE");
+    expect(lockSql).not.toContain('draft."status"');
+    expect(lockSql).not.toContain('draft."prompt_version"');
+    expect(lockSql).not.toContain('draft."kind"');
+    expect(finalBoundarySql).toContain('draft."thread_id" = ?::uuid');
+    expect(finalBoundarySql).toContain('draft."inbound_message_id" = ?::uuid');
+    expect(finalBoundarySql).toContain('draft."status" IN (\'send_failed\', \'send_uncertain\')');
+    expect(finalBoundarySql).toContain('draft."prompt_version" = ?');
+    expect(finalBoundarySql).toContain('draft."kind" = \'engagement_follow_up\'');
+    expect(finalBoundarySql).toContain('draft."approved_text" = ?');
+    expect(finalBoundarySql).toContain('draft."expires_at" > clock_timestamp()');
+    expect(finalBoundarySql).toContain('draft."eligible_at" <= clock_timestamp()');
+    expect(finalBoundarySql).toContain('thread."latest_inbound_message_id" = draft."inbound_message_id"');
   });
 
   it("rejects a retry after a newer genuine inbound", async () => {
