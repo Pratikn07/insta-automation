@@ -4,12 +4,12 @@ import type {
   SpikeCandidateInfo,
   SpikeInfo,
 } from "./followerFlowCore.js";
+import { analyticsDayBounds, shiftDayKey } from "./analyticsDay.js";
 import { detectSpikes, rankCandidates, type ReelSnapshot } from "./spikeCore.js";
 
 // DB-facing wrapper around spikeCore. All detection/ranking semantics live in the
 // core; this file only loads rows and joins reel metadata for display.
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 // Attribution window around the spike day. ±1 day, because Meta's demographics
 // lag means the reach that produced a spike may be logged the day before or the
 // day the spike surfaces.
@@ -21,9 +21,24 @@ const BASELINE_LOOKBACK_DAYS = 2;
 // re-exported here for callers that only import this service.
 export type { SpikeCandidateInfo, SpikeInfo };
 
+export function spikeAttributionWindow(day: string): {
+  queryStart: Date;
+  windowStartMs: number;
+  windowEndMs: number;
+} {
+  const windowStartDay = shiftDayKey(day, -WINDOW_PAD_DAYS);
+  const windowEndExclusiveDay = shiftDayKey(day, WINDOW_PAD_DAYS + 1);
+  const queryStartDay = shiftDayKey(windowStartDay, -BASELINE_LOOKBACK_DAYS);
+  return {
+    queryStart: analyticsDayBounds(queryStartDay).start,
+    windowStartMs: analyticsDayBounds(windowStartDay).start.getTime(),
+    windowEndMs: analyticsDayBounds(windowEndExclusiveDay).start.getTime() - 1,
+  };
+}
+
 /**
- * Spike info keyed by UTC day, for the days that qualify. Days absent from the
- * map are normal.
+ * Spike info keyed by Pacific analytics day, for the days that qualify. Days
+ * absent from the map are normal.
  *
  * One snapshot query per spike day. Spikes are rare by construction (4 across a
  * month of live data), so this stays a handful of queries rather than an N+1
@@ -38,15 +53,13 @@ export async function getSpikesByDay(
   const out = new Map<string, SpikeInfo>();
 
   for (const spike of spikes) {
-    const dayStartMs = Date.parse(`${spike.day}T00:00:00.000Z`);
-    const windowStartMs = dayStartMs - WINDOW_PAD_DAYS * DAY_MS;
-    const windowEndMs = dayStartMs + (WINDOW_PAD_DAYS + 1) * DAY_MS - 1;
+    const { queryStart, windowStartMs, windowEndMs } = spikeAttributionWindow(spike.day);
 
     const rows = await prisma.reelPerformanceSnapshot.findMany({
       where: {
         capturedAt: {
           // Reach back past the window so the core can find a baseline reading.
-          gte: new Date(windowStartMs - BASELINE_LOOKBACK_DAYS * DAY_MS),
+          gte: queryStart,
           lte: new Date(windowEndMs),
         },
       },
