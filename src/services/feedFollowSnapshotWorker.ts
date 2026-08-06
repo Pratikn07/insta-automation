@@ -415,5 +415,5 @@ export const runFeedFollowSnapshotTick = createFeedFollowSnapshotRunner(
     if (result.status === "success") logger.info(context, "Feed follow snapshot complete");
     else logger.warn(context, "Feed follow snapshot incomplete");
   },
-  (error) => logger.error({ error }, "feedFollowSnapshotWorker tick failed"),
+  (error) => logger.error(describeGraphError(error), "feedFollowSnapshotWorker tick failed"),
 );

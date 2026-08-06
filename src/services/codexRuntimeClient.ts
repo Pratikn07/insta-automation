@@ -51,13 +51,15 @@ const loginStartSchema = z.object({
   verificationUrl: z.string().url(),
 });
 
-const draftSuggestionSchema = z.object({
-  reply: z.string().min(1),
-  rationale: z.string(),
-  confidence: z.enum(["low", "medium", "high"]),
-  warnings: z.array(z.string()),
-  modelId: z.string().nullable(),
-});
+const draftSuggestionSchema = z
+  .object({
+    reply: z.string().min(1).max(1000),
+    rationale: z.string().min(1).max(1000),
+    confidence: z.enum(["low", "medium", "high"]),
+    warnings: z.array(z.string().max(300)).max(8),
+    modelId: z.string().nullable(),
+  })
+  .strict();
 
 /**
  * The advisor's navigation targets, closed on this side too.

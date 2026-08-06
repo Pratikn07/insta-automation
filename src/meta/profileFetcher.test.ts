@@ -1,11 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
 
+const loggerWarn = vi.fn();
+
 vi.mock("./insightsGraphClient.js", () => ({
   insightsGraph: { get: vi.fn() },
 }));
 vi.mock("../config/env.js", () => ({ env: { IG_USER_ID: "123", INSIGHTS_GRAPH_VERSION: "v23.0" } }));
-vi.mock("../lib/logger.js", () => ({ logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() } }));
-vi.mock("../services/eventLogger.js", () => ({ describeGraphError: () => ({ status: 400 }) }));
+vi.mock("../lib/logger.js", () => ({ logger: { warn: loggerWarn, error: vi.fn(), info: vi.fn() } }));
+vi.mock("../services/eventLogger.js", () => ({
+  describeGraphError: () => ({
+    category: "unknown_error",
+    httpStatus: null,
+    graphCode: null,
+    graphSubcode: null,
+    traceId: null,
+  }),
+}));
 
 const { insightsGraph } = await import("./insightsGraphClient.js");
 const { fetchProfileTotals } = await import("./profileFetcher.js");
@@ -48,5 +58,18 @@ describe("fetchProfileTotals", () => {
   it("returns null when the field is non-numeric", async () => {
     mockGet(() => Promise.resolve({ data: { followers_count: "lots" } }));
     expect(await fetchProfileTotals()).toEqual({ followersTotal: null });
+  });
+
+  it("does not log a secret-bearing non-numeric provider value", async () => {
+    loggerWarn.mockClear();
+    const sentinel = "PROVIDER-MESSAGE-SENTINEL ACCESS-TOKEN-SENTINEL";
+    mockGet(() => Promise.resolve({ data: { followers_count: sentinel } }));
+
+    expect(await fetchProfileTotals()).toEqual({ followersTotal: null });
+    expect(loggerWarn).toHaveBeenCalledWith(
+      { errorCode: "followers_count_invalid", valueType: "string" },
+      "followers_count missing or non-numeric",
+    );
+    expect(JSON.stringify(loggerWarn.mock.calls)).not.toContain(sentinel);
   });
 });

@@ -117,17 +117,22 @@ let sentText = "";
 let approved = false;
 let windowClosed = false;
 let hydrationRefreshes = 0;
+let staleReplyDraftCreated = false;
 const listeners = new Set<() => void>();
 
-function publish(body: string): void {
+function capture(body: string): void {
   capturedBody = body;
+  for (const listener of listeners) listener();
+}
+
+function publish(body: string): void {
+  capture(body);
   try {
     sentText = String((JSON.parse(body) as { workingText?: unknown }).workingText ?? "");
   } catch {
     sentText = "";
   }
   approved = true;
-  for (const listener of listeners) listener();
 }
 
 function useCapturedBody(): string {
@@ -248,9 +253,20 @@ function installFetchStub(): void {
         });
       }
       if (scenario === "stale-reply") {
+        const currentDraft = staleReplyDraftCreated
+          ? {
+              ...THREAD.draft,
+              id: "draft-2",
+              revision: 2,
+              inboundMessageId: "message-3",
+              suggestedText: "Reply to the newest inbound",
+              workingText: "Reply to the newest inbound",
+            }
+          : THREAD.draft;
         return json({
           ...THREAD,
           latestInboundMessageId: "message-3",
+          draft: currentDraft,
           messages: [
             ...THREAD.messages,
             {
@@ -313,6 +329,18 @@ function installFetchStub(): void {
         followUpsEnabled: true,
         sendEnabled: scenario === "capabilities-enabled",
       });
+    }
+
+    if (path === "/ai/dm-threads/thread-1/drafts" && method === "POST") {
+      staleReplyDraftCreated = true;
+      capture(
+        JSON.stringify({
+          method,
+          path,
+          body: typeof init?.body === "string" ? init.body : null,
+        }),
+      );
+      return json({ draftId: "draft-2", status: "queued" }, 202);
     }
 
     if (path === "/ai/dm-threads/thread-1/drafts/draft-1/approve" && method === "POST") {

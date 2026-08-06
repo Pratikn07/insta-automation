@@ -9,7 +9,7 @@ const claimApprovedDraft = vi.fn();
 const claimRetryDraft = vi.fn();
 const queueReplyDraft = vi.fn();
 const regenerateReplyDraft = vi.fn();
-const markSent = vi.fn();
+const finalizeApprovedDraftSend = vi.fn();
 const markSendFailed = vi.fn();
 const markSendUncertain = vi.fn();
 const sendTrackedText = vi.fn();
@@ -26,7 +26,7 @@ vi.mock("../services/replyDraftService.js", async (importOriginal) => {
     claimRetryDraft,
     queueReplyDraft,
     regenerateReplyDraft,
-    markSent,
+    finalizeApprovedDraftSend,
     markSendFailed,
     markSendUncertain,
   };
@@ -98,7 +98,7 @@ beforeEach(() => {
     claimRetryDraft,
     queueReplyDraft,
     regenerateReplyDraft,
-    markSent,
+    finalizeApprovedDraftSend,
     markSendFailed,
     markSendUncertain,
     sendTrackedText,
@@ -126,6 +126,7 @@ beforeEach(() => {
     inboundMessageId: "message-2",
   });
   sendTrackedText.mockResolvedValue({ messageId: "mid-out" });
+  finalizeApprovedDraftSend.mockResolvedValue(undefined);
   logEvent.mockResolvedValue(undefined);
 });
 
@@ -210,20 +211,25 @@ describe("POST approve", () => {
       recipientIgUserId: "ig-user-1",
       text: "This is the exact reply 💛",
       source: "ai_approved",
+      history: "deferred",
     });
-    expect(markSent).toHaveBeenCalledWith("draft-2");
-    expect(markThreadResolved).toHaveBeenCalledWith({
+    expect(finalizeApprovedDraftSend).toHaveBeenCalledWith({
+      draftId: "draft-2",
       threadId: "thread-1",
       inboundMessageId: "message-2",
+      instagramMessageId: "mid-out",
+      approvedText: "This is the exact reply 💛",
+      approvedBy: "owner@example.com",
+      sentAt: expect.any(Date),
     });
-    expect(logEvent).toHaveBeenCalledWith("ai_reply_sent", {
-      threadId: "thread-1",
-      draftId: "draft-2",
-      by: "owner@example.com",
-      length: 26,
-    });
-    expect(JSON.stringify(logEvent.mock.calls)).not.toContain("This is the exact reply");
-    expect(JSON.stringify(logEvent.mock.calls)).not.toContain("Model text that the owner replaced");
+    expect(sendTrackedText.mock.invocationCallOrder[0]).toBeLessThan(
+      finalizeApprovedDraftSend.mock.invocationCallOrder[0]!,
+    );
+    expect(markThreadResolved).not.toHaveBeenCalled();
+    expect(logEvent).not.toHaveBeenCalled();
+    expect(JSON.stringify(finalizeApprovedDraftSend.mock.calls)).not.toContain(
+      "Model text that the owner replaced",
+    );
   });
 
   it("returns 409 stale_draft and never sends when a newer inbound arrived", async () => {
@@ -330,7 +336,30 @@ describe("POST approve", () => {
     expect(markSendUncertain).toHaveBeenCalledOnce();
     // The costly mistake would be sending twice to a real person.
     expect(sendTrackedText).toHaveBeenCalledTimes(1);
-    expect(markSent).not.toHaveBeenCalled();
+    expect(finalizeApprovedDraftSend).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [408, "graph_timeout"],
+    [500, "graph_server_error"],
+    [502, "graph_server_error"],
+    [503, "graph_server_error"],
+    [504, "graph_server_error"],
+  ] as const)("marks an HTTP %i response uncertain and never retries", async (status, code) => {
+    sendTrackedText.mockRejectedValue(
+      Object.assign(new Error("ambiguous Graph response"), {
+        isAxiosError: true,
+        response: { status },
+      }),
+    );
+
+    await request(makeApp())
+      .post(`${base}/approve`)
+      .send({ workingText: "Reply" })
+      .expect(202, { status: "send_uncertain", errorCode: code });
+    expect(markSendUncertain).toHaveBeenCalledWith("draft-2", code);
+    expect(markSendFailed).not.toHaveBeenCalled();
+    expect(sendTrackedText).toHaveBeenCalledTimes(1);
   });
 
   it("maps an arbitrary secret-bearing transport code to safe metadata everywhere", async () => {
@@ -366,7 +395,9 @@ describe("POST approve", () => {
   });
 
   it("returns terminal send_uncertain when success recording cannot be confirmed", async () => {
-    markSent.mockRejectedValue(new Error("database write failed with private detail"));
+    finalizeApprovedDraftSend.mockRejectedValue(
+      new Error("database write failed with private detail"),
+    );
 
     const res = await request(makeApp())
       .post(`${base}/approve`)
@@ -379,7 +410,30 @@ describe("POST approve", () => {
     });
     expect(JSON.stringify(res.body)).not.toContain("private detail");
     expect(sendTrackedText).toHaveBeenCalledTimes(1);
+    expect(markSendUncertain).toHaveBeenCalledWith(
+      "draft-2",
+      "send_recording_unconfirmed",
+    );
     expect(markThreadResolved).not.toHaveBeenCalled();
+  });
+
+  it("treats a successful Graph response without a confirmed message id as uncertain", async () => {
+    sendTrackedText.mockResolvedValue({ messageId: null });
+
+    await request(makeApp())
+      .post(`${base}/approve`)
+      .send({ workingText: "Reply" })
+      .expect(202, {
+        status: "send_uncertain",
+        errorCode: "send_recording_unconfirmed",
+      });
+
+    expect(finalizeApprovedDraftSend).not.toHaveBeenCalled();
+    expect(markSendUncertain).toHaveBeenCalledWith(
+      "draft-2",
+      "send_recording_unconfirmed",
+    );
+    expect(sendTrackedText).toHaveBeenCalledTimes(1);
   });
 
   it("returns a stable internal error when the atomic claim itself fails", async () => {
@@ -574,27 +628,21 @@ describe("POST dismiss / regenerate", () => {
   );
 
   it("generate returns 202 for a thread with an inbound message", async () => {
-    dmThread.findUnique.mockResolvedValue({
-      id: "thread-1",
-      needsReply: true,
-      latestInboundMessageId: "message-2",
-    });
     queueReplyDraft.mockResolvedValue({ id: "draft-9", status: "queued" });
 
     await request(makeApp())
       .post("/api/ai/dm-threads/thread-1/drafts")
       .expect(202, { draftId: "draft-9", status: "queued" });
+    expect(queueReplyDraft).toHaveBeenCalledWith({ threadId: "thread-1" });
+    expect(dmThread.findUnique).not.toHaveBeenCalled();
   });
 
-  it("generate 409s when the thread has no inbound message", async () => {
-    dmThread.findUnique.mockResolvedValue({
-      id: "thread-1",
-      needsReply: false,
-      latestInboundMessageId: null,
-    });
+  it("returns the locked creation primitive's controlled refusal", async () => {
+    queueReplyDraft.mockRejectedValue(new DraftActionError("stale_draft"));
     await request(makeApp())
       .post("/api/ai/dm-threads/thread-1/drafts")
-      .expect(409, { error: "no_inbound_message" });
+      .expect(409, { error: "stale_draft" });
+    expect(dmThread.findUnique).not.toHaveBeenCalled();
   });
 });
 

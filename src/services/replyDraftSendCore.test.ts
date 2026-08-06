@@ -21,11 +21,36 @@ function noResponse(code: string): AxiosError {
 }
 
 describe("classifySendError", () => {
-  // Meta answered, so the message was NOT delivered — retrying is safe.
-  it.each([400, 401, 403, 429, 500, 502])("treats an HTTP %i response as a definite failure", (status) => {
+  // Deterministic client rejections mean the message was not delivered.
+  it.each([400, 401, 403, 404, 409, 422, 429])(
+    "treats an HTTP %i response as a definite failure",
+    (status) => {
+      expect(classifySendError(graphResponse(status))).toEqual({
+        outcome: "failed",
+        errorCode: "graph_rejected",
+      });
+    },
+  );
+
+  // A timeout/gateway/server response can arrive after Graph accepted the
+  // message. Retrying those blindly can duplicate a real DM.
+  it.each([
+    [408, "graph_timeout"],
+    [500, "graph_server_error"],
+    [502, "graph_server_error"],
+    [503, "graph_server_error"],
+    [504, "graph_server_error"],
+  ] as const)("treats an HTTP %i response as uncertain", (status, errorCode) => {
     expect(classifySendError(graphResponse(status))).toEqual({
-      outcome: "failed",
-      errorCode: "graph_rejected",
+      outcome: "uncertain",
+      errorCode,
+    });
+  });
+
+  it.each([301])("treats an unexpected HTTP %i response as uncertain", (status) => {
+    expect(classifySendError(graphResponse(status))).toEqual({
+      outcome: "uncertain",
+      errorCode: "graph_response_uncertain",
     });
   });
 
@@ -62,19 +87,19 @@ describe("classifySendError", () => {
     });
   });
 
-  it("treats a non-Axios throw as a definite failure", () => {
-    // A bug in our own send path never reached Instagram.
+  it("treats a non-Axios throw after handoff as uncertain", () => {
+    // At this boundary we cannot prove whether an unknown throw happened before
+    // or after Graph accepted the request.
     expect(classifySendError(new TypeError("undefined is not a function"))).toEqual({
-      outcome: "failed",
-      errorCode: "send_error",
+      outcome: "uncertain",
+      errorCode: "send_outcome_unknown",
     });
   });
 
-  it("never reports uncertain for an error carrying a status", () => {
-    // The costly mistake would be marking a definite rejection as uncertain and
-    // making the owner check Instagram for a message that was never sent.
-    for (const status of [400, 404, 429, 503]) {
-      expect(classifySendError(graphResponse(status)).outcome).toBe("failed");
+  it("only reports definite failure for deterministic 4xx responses", () => {
+    expect(classifySendError(graphResponse(400)).outcome).toBe("failed");
+    for (const status of [301, 408, 500, 502, 503, 504, 599]) {
+      expect(classifySendError(graphResponse(status)).outcome).toBe("uncertain");
     }
   });
 });

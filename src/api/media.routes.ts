@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { fetchAllMedia, fetchAllReels } from "../meta/fetchMedia.js";
 import { logger } from "../lib/logger.js";
+import { describeGraphError } from "../services/eventLogger.js";
 
 export const mediaRouter = Router();
 
@@ -19,7 +20,7 @@ mediaRouter.get("/content", async (_req, res) => {
     const items = await fetchAllMedia();
     res.json({ items, nextCursor: null });
   } catch (err) {
-    logger.error({ err }, "Failed to fetch media from Graph API");
+    logger.error(describeGraphError(err), "Failed to fetch media from Graph API");
     res.status(502).json({ error: "media_fetch_failed" });
   }
 });
@@ -35,7 +36,7 @@ mediaRouter.get("/reels", async (_req, res) => {
     const items = await fetchAllReels();
     res.json({ items, nextCursor: null });
   } catch (err) {
-    logger.error({ err }, "Failed to fetch reels from Graph API");
+    logger.error(describeGraphError(err), "Failed to fetch reels from Graph API");
     res.status(502).json({ error: "reels_fetch_failed" });
   }
 });

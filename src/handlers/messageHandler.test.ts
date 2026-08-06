@@ -17,7 +17,14 @@ const sendSequence = vi.fn();
 const sendTrackedText = vi.fn();
 const resolveUsername = vi.fn();
 const logEvent = vi.fn();
-const describeGraphError = vi.fn((e: unknown) => ({ message: String(e) }));
+const SAFE_UNKNOWN = {
+  category: "unknown_error",
+  httpStatus: null,
+  graphCode: null,
+  graphSubcode: null,
+  traceId: null,
+};
+const describeGraphError = vi.fn(() => SAFE_UNKNOWN);
 const logger = {
   error: vi.fn(),
   warn: vi.fn(),
@@ -111,7 +118,7 @@ beforeEach(() => {
     fn.mockReset();
   }
   for (const fn of Object.values(logger)) fn.mockReset();
-  describeGraphError.mockImplementation((e: unknown) => ({ message: String(e) }));
+  describeGraphError.mockReturnValue(SAFE_UNKNOWN);
   recordInboundMessage.mockResolvedValue({
     duplicate: false,
     becameLatest: true,
@@ -504,12 +511,11 @@ describe("handleMessage — unhandled DMs", () => {
     const privateBody = "private model or DM output";
     const graphError = new Error("graph request failed");
     describeGraphError.mockReturnValue({
+      category: "graph_response",
       httpStatus: 400,
-      code: 10,
-      subcode: 2018278,
-      fbtrace_id: "trace-1",
-      message: privateBody,
-      requestBody: { message: { text: privateBody } },
+      graphCode: 10,
+      graphSubcode: 2018278,
+      traceId: "trace-1",
     });
     sendSequence.mockRejectedValue(graphError);
 
@@ -520,10 +526,11 @@ describe("handleMessage — unhandled DMs", () => {
     expect(logEvent).toHaveBeenCalledWith("sequence_failed", {
       conversationId: "convo-1",
       errorCode: "graph_request_failed",
+      category: "graph_response",
       httpStatus: 400,
-      code: 10,
-      subcode: 2018278,
-      fbtrace_id: "trace-1",
+      graphCode: 10,
+      graphSubcode: 2018278,
+      traceId: "trace-1",
     });
   });
 

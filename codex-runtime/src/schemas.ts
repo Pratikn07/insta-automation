@@ -64,15 +64,17 @@ export type DmDraftRequest = z.infer<typeof dmDraftRequestSchema>;
 
 /**
  * What the model must return. The reply cap is 1000 chars — an Instagram DM the
- * owner will actually skim, not an essay. Extra keys are stripped by Zod, so a
- * model that tries to smuggle a field cannot.
+ * owner will actually skim, not an essay. Extra keys are rejected rather than
+ * silently stripped, keeping the Zod and JSON Schema boundaries identical.
  */
-export const dmDraftOutputSchema = z.object({
-  reply: z.string().min(1).max(1000),
-  rationale: z.string().min(1).max(1000),
-  confidence: z.enum(["low", "medium", "high"]),
-  warnings: z.array(z.string().max(300)).max(8),
-});
+export const dmDraftOutputSchema = z
+  .object({
+    reply: z.string().min(1).max(1000),
+    rationale: z.string().min(1).max(1000),
+    confidence: z.enum(["low", "medium", "high"]),
+    warnings: z.array(z.string().max(300)).max(8),
+  })
+  .strict();
 
 export type DmDraftOutput = z.infer<typeof dmDraftOutputSchema>;
 

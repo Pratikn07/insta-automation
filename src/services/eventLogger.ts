@@ -10,43 +10,53 @@ import { logger } from "../lib/logger.js";
 export async function logEvent(kind: string, payload: object): Promise<void> {
   try {
     await prisma.eventLog.create({ data: { kind, payload: payload as object } });
-  } catch (err) {
-    logger.error({ err, kind }, "Failed to write eventLog");
+  } catch {
+    logger.error({ errorCode: "event_log_write_failed", kind }, "Failed to write eventLog");
   }
 }
 
 /**
- * Flatten an Axios/Graph error into a structured, queryable record. This is what
- * turns an opaque "AxiosError: ...400" into the actual Instagram reason
- * (code / subcode / message / fbtrace_id) plus the request we sent — so failures
- * like subcode 2534025 become facts we can group and count in the DB.
+ * The complete metadata vocabulary allowed to leave a Graph-error boundary.
+ * Provider messages, request bodies/URLs, Axios codes, and raw errors are never
+ * returned because each can contain tokens or private DM text.
  */
-export function describeGraphError(err: unknown): Record<string, unknown> {
+export interface GraphErrorMetadata extends Record<string, unknown> {
+  category: "graph_response" | "graph_transport" | "unknown_error";
+  httpStatus: number | null;
+  graphCode: number | null;
+  graphSubcode: number | null;
+  traceId: string | null;
+}
+
+function finiteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function safeTraceId(value: unknown): string | null {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value) ? value : null;
+}
+
+export function describeGraphError(err: unknown): GraphErrorMetadata {
   if (isAxiosError(err)) {
     const data = err.response?.data as
-      | { error?: { code?: number; error_subcode?: number; message?: string; fbtrace_id?: string } }
+      | { error?: { code?: unknown; error_subcode?: unknown; fbtrace_id?: unknown } }
       | undefined;
     const apiError = data?.error;
 
-    let requestBody: unknown = err.config?.data;
-    if (typeof requestBody === "string") {
-      try {
-        requestBody = JSON.parse(requestBody);
-      } catch {
-        // leave as the raw string if it isn't JSON
-      }
-    }
-
     return {
-      httpStatus: err.response?.status ?? null,
-      code: apiError?.code ?? null,
-      subcode: apiError?.error_subcode ?? null,
-      message: apiError?.message ?? err.message,
-      fbtrace_id: apiError?.fbtrace_id ?? null,
-      endpoint: err.config?.url ?? null,
-      requestBody: requestBody ?? null,
+      category: err.response ? "graph_response" : "graph_transport",
+      httpStatus: finiteNumber(err.response?.status),
+      graphCode: finiteNumber(apiError?.code),
+      graphSubcode: finiteNumber(apiError?.error_subcode),
+      traceId: safeTraceId(apiError?.fbtrace_id),
     };
   }
 
-  return { message: err instanceof Error ? err.message : String(err) };
+  return {
+    category: "unknown_error",
+    httpStatus: null,
+    graphCode: null,
+    graphSubcode: null,
+    traceId: null,
+  };
 }

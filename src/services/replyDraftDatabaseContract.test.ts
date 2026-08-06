@@ -7,8 +7,11 @@ import {
   claimApprovedDraft,
   claimRetryDraft,
   DraftActionError,
+  queueReplyDraft,
 } from "./replyDraftService.js";
 import { CURRENT_DM_PROMPT_VERSION } from "./replyDraftPolicy.js";
+import { recordInboundMessage } from "./dmThreadService.js";
+import { scheduleEngagementFollowUp } from "./engagementFollowUpService.js";
 
 const databaseUrl = process.env.MIGRATION_TEST_DATABASE_URL;
 const describeWithLocalDatabase = databaseUrl ? describe.sequential : describe.skip;
@@ -144,7 +147,260 @@ async function waitForBlockedClaim(prisma: PrismaClient, timeoutMs = 3_000): Pro
   return false;
 }
 
+async function waitForBlockedQuery(
+  prisma: PrismaClient,
+  fragments: string[],
+  timeoutMs = 3_000,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const rows = await prisma.$queryRaw<Array<{ query: string }>>`
+      SELECT query
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND pid <> pg_backend_pid()
+        AND wait_event_type = 'Lock'
+    `;
+    if (rows.some(({ query }) => fragments.every((fragment) => query.includes(fragment)))) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return false;
+}
+
 describeWithLocalDatabase("owner-approved follow-up database contract", () => {
+  it("prevents a slow older handler from superseding the newer inbound's production draft", async () => {
+    const observer = new PrismaClient({ datasources: { db: { url: databaseUrl! } } });
+    const igAccountId = `creation-account-${randomUUID()}`;
+    const igUserId = `creation-user-${randomUUID()}`;
+    const oldAt = new Date("2026-08-05T10:00:00.000Z");
+    let releaseOlderHandler!: () => void;
+    const olderHandlerMayFinish = new Promise<void>((resolve) => {
+      releaseOlderHandler = resolve;
+    });
+
+    try {
+      const olderInbound = await recordInboundMessage({
+        igAccountId,
+        igUserId,
+        instagramMessageId: `mid-old-${randomUUID()}`,
+        text: "Older inbound handled slowly",
+        messageType: "text",
+        mediaUrl: null,
+        instagramTimestamp: oldAt,
+      });
+      const olderOutcome = (async () => {
+        await olderHandlerMayFinish;
+        return queueReplyDraft({
+          threadId: olderInbound.threadId,
+          inboundMessageId: olderInbound.messageId,
+        });
+      })().then(
+        (value) => ({ status: "fulfilled" as const, value }),
+        (reason: unknown) => ({ status: "rejected" as const, reason }),
+      );
+
+      const newerInbound = await recordInboundMessage({
+        igAccountId,
+        igUserId,
+        instagramMessageId: `mid-new-${randomUUID()}`,
+        text: "Newer current inbound",
+        messageType: "text",
+        mediaUrl: null,
+        instagramTimestamp: new Date(oldAt.getTime() + 1_000),
+      });
+      const newerDraft = await queueReplyDraft({
+        threadId: newerInbound.threadId,
+        inboundMessageId: newerInbound.messageId,
+      });
+      releaseOlderHandler();
+
+      const result = await olderOutcome;
+      expect(result.status).toBe("rejected");
+      if (result.status !== "rejected") throw new Error("older handler unexpectedly created");
+      expect(result.reason).toBeInstanceOf(DraftActionError);
+      expect(result.reason).toMatchObject({ code: "stale_draft" });
+
+      const active = await observer.replyDraft.findMany({
+        where: {
+          threadId: newerInbound.threadId,
+          status: { in: ["queued", "generating", "pending_approval"] },
+        },
+      });
+      expect(active).toHaveLength(1);
+      expect(active[0]).toMatchObject({
+        id: newerDraft.id,
+        kind: "reply",
+        inboundMessageId: newerInbound.messageId,
+      });
+    } finally {
+      releaseOlderHandler();
+      await observer.dmThread.deleteMany({ where: { igAccountId, igUserId } });
+      await observer.$disconnect();
+    }
+  });
+
+  it(
+    "blocks ordinary production creation on the thread before any draft mutation",
+    async () => {
+      const observer = new PrismaClient({ datasources: { db: { url: databaseUrl! } } });
+      const locker = new PrismaClient({ datasources: { db: { url: databaseUrl! } } });
+      const igAccountId = `lock-account-${randomUUID()}`;
+      const igUserId = `lock-user-${randomUUID()}`;
+      const inbound = await recordInboundMessage({
+        igAccountId,
+        igUserId,
+        instagramMessageId: `mid-lock-${randomUUID()}`,
+        text: "Thread-first lock proof",
+        messageType: "text",
+        mediaUrl: null,
+        instagramTimestamp: new Date(),
+      });
+      let signalLocked!: () => void;
+      const locked = new Promise<void>((resolve) => {
+        signalLocked = resolve;
+      });
+      let releaseLock!: () => void;
+      const mayRelease = new Promise<void>((resolve) => {
+        releaseLock = resolve;
+      });
+      const lockTransaction = locker.$transaction(
+        async (tx) => {
+          await tx.$queryRawUnsafe(
+            `SELECT "id" FROM "dm_thread" WHERE "id" = $1::uuid FOR UPDATE`,
+            inbound.threadId,
+          );
+          signalLocked();
+          await mayRelease;
+        },
+        { timeout: 10_000 },
+      );
+
+      try {
+        await locked;
+        const creation = queueReplyDraft({
+          threadId: inbound.threadId,
+          inboundMessageId: inbound.messageId,
+        });
+        expect(
+          await waitForBlockedQuery(observer, ['FROM "dm_thread"', "FOR UPDATE"]),
+        ).toBe(true);
+        await expect(
+          observer.replyDraft.count({ where: { threadId: inbound.threadId } }),
+        ).resolves.toBe(0);
+
+        releaseLock();
+        await expect(creation).resolves.toMatchObject({
+          threadId: inbound.threadId,
+          inboundMessageId: inbound.messageId,
+          kind: "reply",
+        });
+        await lockTransaction;
+      } finally {
+        releaseLock();
+        await lockTransaction.catch(() => undefined);
+        await observer.dmThread.deleteMany({ where: { id: inbound.threadId } });
+        await Promise.all([observer.$disconnect(), locker.$disconnect()]);
+      }
+    },
+    15_000,
+  );
+
+  it(
+    "locks the production follow-up scheduler's thread before conversation and draft writes",
+    async () => {
+      const observer = new PrismaClient({ datasources: { db: { url: databaseUrl! } } });
+      const locker = new PrismaClient({ datasources: { db: { url: databaseUrl! } } });
+      const resourceId = randomUUID();
+      const keywordId = randomUUID();
+      const conversationId = randomUUID();
+      const igAccountId = `follow-lock-account-${randomUUID()}`;
+      const igUserId = `follow-lock-user-${randomUUID()}`;
+      const inboundAt = new Date();
+      const inbound = await recordInboundMessage({
+        igAccountId,
+        igUserId,
+        instagramMessageId: `mid-follow-lock-${randomUUID()}`,
+        text: "Guide delivery inbound",
+        messageType: "text",
+        mediaUrl: null,
+        instagramTimestamp: inboundAt,
+      });
+      await observer.resource.create({ data: { id: resourceId, name: "Lock proof guide" } });
+      await observer.keyword.create({
+        data: {
+          id: keywordId,
+          keyword: `lock-${keywordId}`,
+          resourceId,
+          publicReply: "test",
+          gateMessage: "test",
+        },
+      });
+      await observer.conversation.create({
+        data: {
+          id: conversationId,
+          igUserId,
+          keywordId,
+          state: "completed",
+          completedAt: inboundAt,
+        },
+      });
+      let signalLocked!: () => void;
+      const locked = new Promise<void>((resolve) => {
+        signalLocked = resolve;
+      });
+      let releaseLock!: () => void;
+      const mayRelease = new Promise<void>((resolve) => {
+        releaseLock = resolve;
+      });
+      const lockTransaction = locker.$transaction(
+        async (tx) => {
+          await tx.$queryRawUnsafe(
+            `SELECT "id" FROM "dm_thread" WHERE "id" = $1::uuid FOR UPDATE`,
+            inbound.threadId,
+          );
+          signalLocked();
+          await mayRelease;
+        },
+        { timeout: 10_000 },
+      );
+
+      try {
+        await locked;
+        const scheduling = scheduleEngagementFollowUp({
+          conversationId,
+          threadId: inbound.threadId,
+          inboundMessageId: inbound.messageId,
+          inboundAt,
+          deliveredAt: inboundAt,
+        });
+        expect(
+          await waitForBlockedQuery(observer, ['FROM "dm_thread"', "FOR UPDATE"]),
+        ).toBe(true);
+        await expect(
+          observer.conversation.findUniqueOrThrow({ where: { id: conversationId } }),
+        ).resolves.toMatchObject({ engagementFollowUpScheduledAt: null });
+        await expect(
+          observer.replyDraft.count({ where: { threadId: inbound.threadId } }),
+        ).resolves.toBe(0);
+
+        releaseLock();
+        await expect(scheduling).resolves.toMatchObject({ scheduled: true });
+        await lockTransaction;
+      } finally {
+        releaseLock();
+        await lockTransaction.catch(() => undefined);
+        await observer.dmThread.deleteMany({ where: { id: inbound.threadId } });
+        await observer.conversation.deleteMany({ where: { id: conversationId } });
+        await observer.keyword.deleteMany({ where: { id: keywordId } });
+        await observer.resource.deleteMany({ where: { id: resourceId } });
+        await Promise.all([observer.$disconnect(), locker.$disconnect()]);
+      }
+    },
+    15_000,
+  );
+
   it("stores scheduling and deadline instants with time zones in migrations and the Prisma schema", async () => {
     const parsedUrl = new URL(databaseUrl!);
     expect(["127.0.0.1", "localhost", "::1"]).toContain(parsedUrl.hostname);

@@ -93,7 +93,7 @@ export async function runFollowRecheckTick(): Promise<void> {
       { users: convosByUser.size, apiCalls, nowFollowing },
       "Follow-recheck tick complete",
     );
-  } catch (err) {
-    logger.error({ err }, "followRecheckWorker tick failed");
+  } catch {
+    logger.error({ errorCode: "follow_recheck_tick_failed" }, "followRecheckWorker tick failed");
   }
 }

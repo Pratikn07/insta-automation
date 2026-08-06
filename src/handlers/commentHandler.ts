@@ -138,7 +138,7 @@ export async function handleComment(comment: CommentValue): Promise<void> {
     await logEvent("dm_sent", { conversationId: convo.id, kind: "gate" });
   } catch (err) {
     // This is the gate private reply — the call that fails with subcode 2534025.
-    // Capture the full structured reason plus parentId/commentId, tied to the
+    // Capture the closed safe descriptor plus parentId/commentId, tied to the
     // conversation so it surfaces in the Conversations timeline.
     const detail = describeGraphError(err);
     log.warn(detail, "Gate private reply failed");
@@ -156,7 +156,7 @@ export async function handleComment(comment: CommentValue): Promise<void> {
       igUserId: senderId,
       commentId: comment.id,
       gateMessage: keyword.gateMessage,
-      lastError: typeof detail.message === "string" ? detail.message : undefined,
+      lastError: detail.category,
     });
   }
 }

@@ -54,8 +54,8 @@ app.post("/webhook", verifyMetaSignature, async (req, res) => {
   res.sendStatus(200);
   try {
     await dispatchWebhook(req.body);
-  } catch (err) {
-    logger.error({ err }, "dispatchWebhook failed after ack");
+  } catch {
+    logger.error({ errorCode: "webhook_dispatch_failed" }, "dispatchWebhook failed after ack");
   }
 });
 

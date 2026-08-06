@@ -37,7 +37,7 @@ describe("Graph client error logging", () => {
               error_subcode: 2534025,
               message: providerSecret,
               error_user_msg: editorSecret,
-              fbtrace_id: "trace-id-not-needed",
+              fbtrace_id: "trace_SAFE-123",
             },
           },
           status: 400,
@@ -54,10 +54,11 @@ describe("Graph client error logging", () => {
 
     expect(loggerError).toHaveBeenCalledWith(
       {
-        errorCode: "graph_api_error",
+        category: "graph_response",
         httpStatus: 400,
         graphCode: 100,
         graphSubcode: 2534025,
+        traceId: "trace_SAFE-123",
       },
       "Graph API error",
     );
@@ -67,7 +68,6 @@ describe("Graph client error logging", () => {
       editorSecret,
       urlSecret,
       "IG-ACCESS-TOKEN-SECRET",
-      "trace-id-not-needed",
       "ERR_BAD_RESPONSE",
     ]) {
       expect(captured).not.toContain(secret);

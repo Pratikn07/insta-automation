@@ -130,7 +130,7 @@ export async function runGateQueueTick(): Promise<void> {
       } catch (err) {
         const detail = describeGraphError(err);
         const attempts = row.attempts + 1;
-        const lastError = typeof detail.message === "string" ? detail.message : "error";
+        const lastError = detail.category;
         if (attempts >= env.GATE_MAX_ATTEMPTS) {
           // Cap reached: stop for good. Either the target is gone (dead IGSID)
           // or Meta is delivering-but-erroring — both mean more sends only harm.
@@ -164,7 +164,7 @@ export async function runGateQueueTick(): Promise<void> {
 
     if (sent > 0) logger.info({ sent }, "Gate retry worker delivered queued gates");
   } catch (err) {
-    logger.error({ err }, "gateQueueWorker tick failed");
+    logger.error(describeGraphError(err), "gateQueueWorker tick failed");
   }
 }
 
@@ -207,6 +207,6 @@ async function maybeRunExperiment(): Promise<void> {
       await sleep(PER_SEND_GAP_MS);
     }
   } catch (err) {
-    logger.error({ err }, "gate DM experiment failed");
+    logger.error(describeGraphError(err), "gate DM experiment failed");
   }
 }

@@ -24,7 +24,6 @@ export interface RefreshOutcome {
   kind: RefreshFailureKind;
   /** Whether this deserves an operator's attention. */
   alarming: boolean;
-  message: string;
 }
 
 /**
@@ -62,10 +61,10 @@ export function classifyRefreshOutcome(err: unknown): RefreshOutcome {
 
   const lower = message.toLowerCase();
 
-  if (lower.includes("24 hours")) return { kind: "too_young", alarming: false, message };
-  if (lower.includes("has expired")) return { kind: "expired", alarming: true, message };
-  if (lower.includes("invalidated")) return { kind: "invalidated", alarming: true, message };
-  return { kind: "unknown", alarming: true, message };
+  if (lower.includes("24 hours")) return { kind: "too_young", alarming: false };
+  if (lower.includes("has expired")) return { kind: "expired", alarming: true };
+  if (lower.includes("invalidated")) return { kind: "invalidated", alarming: true };
+  return { kind: "unknown", alarming: true };
 }
 
 /**
@@ -100,7 +99,10 @@ export async function runTokenRefreshTick(now = new Date()): Promise<void> {
     if (!data.access_token) {
       // A 200 with no token is not something Meta documents; treat it as a
       // failure rather than persisting undefined over a working credential.
-      logger.error({ data }, "token refresh returned no access_token");
+      logger.error(
+        { errorCode: "token_refresh_missing_access_token" },
+        "token refresh returned no access_token",
+      );
       await logEvent("ig_token_refresh_failed", { reason: "no_access_token" });
       return;
     }
@@ -126,10 +128,11 @@ export async function runTokenRefreshTick(now = new Date()): Promise<void> {
       return;
     }
 
-    logger.error({ err: describeGraphError(err), kind: outcome.kind }, "ig token refresh failed");
+    const detail = describeGraphError(err);
+    logger.error({ kind: outcome.kind, ...detail }, "ig token refresh failed");
     await logEvent("ig_token_refresh_failed", {
       kind: outcome.kind,
-      message: outcome.message,
+      ...detail,
     });
   }
 }

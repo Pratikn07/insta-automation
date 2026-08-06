@@ -75,7 +75,7 @@ export function ReplyDraftCard(props: ReplyDraftCardProps) {
   const canEdit = draft.status === "pending_approval" && !stale && !terminal && !policyOutdated;
   const canRegenerate =
     (draft.status === "pending_approval" || draft.status === "generation_failed") &&
-    (!stale || !followUp) &&
+    !stale &&
     !terminal &&
     !policyOutdated;
   const visibleStatus = expired ? "expired" : draft.status;

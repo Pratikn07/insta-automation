@@ -8,12 +8,7 @@ function handlerFailureMetadata(
   err: unknown,
   errorCode: "comment_handler_failed" | "message_handler_failed",
 ): Record<string, unknown> {
-  const detail = describeGraphError(err);
-  const metadata: Record<string, unknown> = { errorCode };
-  for (const key of ["httpStatus", "code", "subcode", "fbtrace_id"] as const) {
-    if (detail[key] !== undefined) metadata[key] = detail[key];
-  }
-  return metadata;
+  return { errorCode, ...describeGraphError(err) };
 }
 
 export async function dispatchWebhook(payload: WebhookPayload): Promise<void> {

@@ -52,8 +52,11 @@ export async function rememberUsername(
       create: { id: igUserId, username, name: name ?? null, resolvedAt: new Date() },
       update: { username, name: name ?? null, resolvedAt: new Date() },
     });
-  } catch (err) {
-    logger.error({ err, igUserId }, "rememberUsername failed");
+  } catch {
+    logger.error(
+      { errorCode: "remember_username_failed", igUserId },
+      "rememberUsername failed",
+    );
   }
 }
 

@@ -37,10 +37,10 @@ const MESSAGE_TYPE: Record<AttachmentType, "image" | "video" | "audio" | "file">
 async function recordDelivered(input: RecordOutboundInput): Promise<void> {
   try {
     await recordOutboundMessage(input);
-  } catch (err) {
+  } catch {
     logger.error(
       {
-        err,
+        errorCode: "dm_history_write_failed",
         igUserId: input.igUserId,
         instagramMessageId: input.instagramMessageId,
         source: input.source,
@@ -55,18 +55,22 @@ export async function sendTrackedText(input: {
   recipientIgUserId: string;
   text: string;
   source: DmMessageSource;
+  /** AI-approved sends are recorded later with draft state and audit atomically. */
+  history?: "best_effort" | "deferred";
 }): Promise<MetaSendResult> {
   const result = await sendTextMessage(input.recipientIgUserId, input.text);
-  await recordDelivered({
-    igAccountId: env.IG_USER_ID,
-    igUserId: input.recipientIgUserId,
-    instagramMessageId: result.messageId,
-    text: input.text,
-    messageType: "text",
-    mediaUrl: null,
-    source: input.source,
-    instagramTimestamp: new Date(),
-  });
+  if (input.history !== "deferred") {
+    await recordDelivered({
+      igAccountId: env.IG_USER_ID,
+      igUserId: input.recipientIgUserId,
+      instagramMessageId: result.messageId,
+      text: input.text,
+      messageType: "text",
+      mediaUrl: null,
+      source: input.source,
+      instagramTimestamp: new Date(),
+    });
+  }
   return result;
 }
 

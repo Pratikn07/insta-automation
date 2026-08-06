@@ -1,5 +1,6 @@
 import axios, { AxiosError, AxiosInstance } from "axios";
 import { logger } from "../lib/logger.js";
+import { describeGraphError } from "../services/eventLogger.js";
 import { getAccessToken } from "./tokenStore.js";
 
 const GRAPH_VERSION = "v21.0";
@@ -22,34 +23,10 @@ graph.interceptors.request.use((config) => {
 graph.interceptors.response.use(
   (res) => res,
   (err: AxiosError) => {
-    const data = err.response?.data;
-    const graphError =
-      typeof data === "object" && data !== null && "error" in data && typeof data.error === "object"
-        ? data.error
-        : null;
-    const graphCode =
-      graphError !== null && "code" in graphError && typeof graphError.code === "number"
-        ? graphError.code
-        : undefined;
-    const graphSubcode =
-      graphError !== null &&
-      "error_subcode" in graphError &&
-      typeof graphError.error_subcode === "number"
-        ? graphError.error_subcode
-        : undefined;
-
     // Provider payloads, request URLs, and Axios error strings can all contain
     // access tokens or private message text. Keep this log entry numeric and
     // allowlist-only so logging cannot become a second data-exfiltration path.
-    logger.error(
-      {
-        errorCode: "graph_api_error",
-        httpStatus: err.response?.status,
-        graphCode,
-        graphSubcode,
-      },
-      "Graph API error",
-    );
+    logger.error(describeGraphError(err), "Graph API error");
     return Promise.reject(err);
   },
 );

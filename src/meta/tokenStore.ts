@@ -66,8 +66,11 @@ async function warmCache(): Promise<void> {
           readAt: Date.now(),
         };
       }
-    } catch (err) {
-      logger.error({ err }, "ig token cache warm failed; using env fallback");
+    } catch {
+      logger.error(
+        { errorCode: "ig_token_cache_warm_failed" },
+        "ig token cache warm failed; using env fallback",
+      );
     } finally {
       inflight = null;
     }
@@ -135,10 +138,10 @@ export async function seedTokenFromEnv(now = new Date()): Promise<void> {
 
     cache = null;
     await warmCache();
-  } catch (err) {
+  } catch {
     // Non-fatal: getAccessToken still falls back to env, so the app boots and
     // serves traffic even if this table is unreachable.
-    logger.error({ err }, "seedTokenFromEnv failed");
+    logger.error({ errorCode: "ig_token_seed_failed" }, "seedTokenFromEnv failed");
   }
 }
 

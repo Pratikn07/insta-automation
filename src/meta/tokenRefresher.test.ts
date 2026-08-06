@@ -1,5 +1,50 @@
-import { describe, expect, it, vi } from "vitest";
-import { classifyRefreshOutcome, expiryFromExpiresIn } from "./tokenRefresher.js";
+import { AxiosError } from "axios";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({
+  axiosGet: vi.fn(),
+  getAccessToken: vi.fn(() => "ACCESS-TOKEN-SENTINEL"),
+  persistRefreshedToken: vi.fn(),
+  readTokenTiming: vi.fn(),
+  logEvent: vi.fn(),
+  loggerError: vi.fn(),
+  loggerDebug: vi.fn(),
+  loggerWarn: vi.fn(),
+  loggerInfo: vi.fn(),
+}));
+
+vi.mock("axios", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("axios")>();
+  return {
+    ...actual,
+    default: {
+      ...actual.default,
+      get: mocks.axiosGet,
+      isAxiosError: actual.isAxiosError,
+    },
+  };
+});
+vi.mock("./tokenStore.js", () => ({
+  getAccessToken: mocks.getAccessToken,
+  persistRefreshedToken: mocks.persistRefreshedToken,
+  readTokenTiming: mocks.readTokenTiming,
+}));
+vi.mock("../services/eventLogger.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/eventLogger.js")>();
+  return { ...actual, logEvent: mocks.logEvent };
+});
+vi.mock("../lib/logger.js", () => ({
+  logger: {
+    error: mocks.loggerError,
+    debug: mocks.loggerDebug,
+    warn: mocks.loggerWarn,
+    info: mocks.loggerInfo,
+  },
+}));
+
+const { classifyRefreshOutcome, expiryFromExpiresIn, runTokenRefreshTick } = await import(
+  "./tokenRefresher.js"
+);
 
 // The DB/HTTP wiring of runTokenRefreshTick is covered by the live smoke test in
 // TK4's verification (it needs a real ig_token row and a real Meta call). What is
@@ -78,7 +123,95 @@ describe("classifyRefreshOutcome", () => {
     const o = classifyRefreshOutcome(new Error("ETIMEDOUT"));
     expect(o.kind).toBe("unknown");
     expect(o.alarming).toBe(true);
-    expect(typeof o.message).toBe("string");
+    expect(o).not.toHaveProperty("message");
+  });
+});
+
+describe("runTokenRefreshTick privacy", () => {
+  const NOW = new Date("2026-08-05T12:00:00.000Z");
+  const sentinels = [
+    "PRIVATE-DM-SENTINEL",
+    "ACCESS-TOKEN-SENTINEL",
+    "https://graph.instagram.com/refresh_access_token?access_token=ACCESS-TOKEN-SENTINEL",
+    "PROVIDER-MESSAGE-SENTINEL",
+    "REQUEST-BODY-SENTINEL",
+    "ARBITRARY-AXIOS-CODE-SENTINEL",
+  ];
+
+  beforeEach(() => {
+    for (const fn of Object.values(mocks)) fn.mockReset();
+    mocks.getAccessToken.mockReturnValue("ACCESS-TOKEN-SENTINEL");
+    mocks.readTokenTiming.mockResolvedValue({
+      refreshedAt: new Date("2026-07-01T00:00:00.000Z"),
+      expiresAt: new Date("2026-08-10T00:00:00.000Z"),
+    });
+    mocks.logEvent.mockResolvedValue(undefined);
+  });
+
+  it("persists and logs only the closed Graph descriptor on refresh failure", async () => {
+    const error = new AxiosError(
+      "Session has expired — PROVIDER-MESSAGE-SENTINEL PRIVATE-DM-SENTINEL",
+      "ARBITRARY-AXIOS-CODE-SENTINEL",
+    );
+    error.config = {
+      headers: {} as never,
+      url: sentinels[2],
+      data: "REQUEST-BODY-SENTINEL",
+    };
+    error.response = {
+      status: 400,
+      statusText: "Bad Request",
+      headers: {},
+      config: error.config,
+      data: {
+        error: {
+          code: 190,
+          error_subcode: 463,
+          message: "Session has expired — PROVIDER-MESSAGE-SENTINEL",
+          fbtrace_id: "trace_REFRESH-1",
+        },
+      },
+    };
+    mocks.axiosGet.mockRejectedValue(error);
+
+    await runTokenRefreshTick(NOW);
+
+    const safe = {
+      kind: "expired",
+      category: "graph_response",
+      httpStatus: 400,
+      graphCode: 190,
+      graphSubcode: 463,
+      traceId: "trace_REFRESH-1",
+    };
+    expect(mocks.loggerError).toHaveBeenCalledWith(safe, "ig token refresh failed");
+    expect(mocks.logEvent).toHaveBeenCalledWith("ig_token_refresh_failed", safe);
+    const captured = JSON.stringify({
+      logs: mocks.loggerError.mock.calls,
+      events: mocks.logEvent.mock.calls,
+    });
+    for (const sentinel of sentinels) expect(captured).not.toContain(sentinel);
+  });
+
+  it("does not log a secret-bearing 200 response that omitted access_token", async () => {
+    mocks.axiosGet.mockResolvedValue({
+      data: {
+        marker: "REQUEST-BODY-SENTINEL",
+        providerMessage: "PROVIDER-MESSAGE-SENTINEL",
+      },
+    });
+
+    await runTokenRefreshTick(NOW);
+
+    expect(mocks.loggerError).toHaveBeenCalledWith(
+      { errorCode: "token_refresh_missing_access_token" },
+      "token refresh returned no access_token",
+    );
+    expect(mocks.logEvent).toHaveBeenCalledWith("ig_token_refresh_failed", {
+      reason: "no_access_token",
+    });
+    const captured = JSON.stringify(mocks.loggerError.mock.calls);
+    for (const sentinel of sentinels) expect(captured).not.toContain(sentinel);
   });
 });
 

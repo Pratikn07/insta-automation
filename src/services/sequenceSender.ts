@@ -1,6 +1,7 @@
 import type { DmMessageSource, ResourceMessage } from "@prisma/client";
 import { logger } from "../lib/logger.js";
 import { sendTrackedMedia, sendTrackedText } from "./dmDeliveryService.js";
+import { describeGraphError } from "./eventLogger.js";
 
 const STEP_DELAY_MS = 800;
 
@@ -50,7 +51,10 @@ export async function sendSequence(input: {
       }
       await sleep(STEP_DELAY_MS);
     } catch (err) {
-      logger.error({ err, step: m.id, type: m.type }, "Sequence step failed");
+      logger.error(
+        { step: m.id, type: m.type, ...describeGraphError(err) },
+        "Sequence step failed",
+      );
       throw err;
     }
   }

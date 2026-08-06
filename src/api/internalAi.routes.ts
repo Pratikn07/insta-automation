@@ -45,7 +45,7 @@ function tool<T>(name: string, run: (body: unknown) => Promise<T>) {
         res.status(400).json({ error: "invalid_arguments" });
         return;
       }
-      logger.error({ err: error, tool: name }, "Advisor tool failed");
+      logger.error({ errorCode: "advisor_tool_failed", tool: name }, "Advisor tool failed");
       res.status(503).json({ error: "tool_unavailable" });
     }
   };

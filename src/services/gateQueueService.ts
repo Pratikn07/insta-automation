@@ -40,7 +40,10 @@ export async function enqueueGate(args: {
         nextAttemptAt: new Date(now + FIRST_RETRY_DELAY_MS),
       },
     });
-  } catch (err) {
-    logger.error({ err, commentId: args.commentId }, "Failed to enqueue gate retry");
+  } catch {
+    logger.error(
+      { errorCode: "gate_retry_enqueue_failed", commentId: args.commentId },
+      "Failed to enqueue gate retry",
+    );
   }
 }

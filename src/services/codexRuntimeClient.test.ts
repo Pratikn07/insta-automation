@@ -284,6 +284,46 @@ describe("createCodexRuntimeClient.generateDmDraft", () => {
       code: "invalid_runtime_response",
     });
   });
+
+  it.each([
+    {
+      label: "reply longer than 1000 characters",
+      override: { reply: "x".repeat(1001) },
+    },
+    { label: "empty rationale", override: { rationale: "" } },
+    {
+      label: "rationale longer than 1000 characters",
+      override: { rationale: "x".repeat(1001) },
+    },
+    {
+      label: "more than 8 warnings",
+      override: { warnings: Array.from({ length: 9 }, (_, index) => `warning-${index}`) },
+    },
+    {
+      label: "a warning longer than 300 characters",
+      override: { warnings: ["x".repeat(301)] },
+    },
+    {
+      label: "an unexpected response field",
+      override: { unexpected: "must not be silently stripped" },
+    },
+  ])("rejects $label at the backend runtime boundary", async ({ override }) => {
+    const baseUrl = await stubRuntime((_req, res) => {
+      jsonResponse(res, 200, {
+        reply: "A concise answer",
+        rationale: "Answers directly.",
+        confidence: "high",
+        warnings: [],
+        modelId: "codex-default",
+        ...override,
+      });
+    });
+    const client = createCodexRuntimeClient({ baseUrl, token: RUNTIME_TOKEN });
+
+    await expect(client.generateDmDraft(draftRequest)).rejects.toMatchObject({
+      code: "invalid_runtime_response",
+    });
+  });
 });
 
 describe("advisor proxy", () => {

@@ -3,30 +3,40 @@ import { isAxiosError } from "axios";
 /**
  * Did Instagram definitely reject this send, or do we genuinely not know?
  *
- * This distinction decides whether a retry is safe to offer. A Graph *response* —
- * any HTTP status — means Meta processed the request and refused it, so nothing was
- * delivered and retrying is safe. No response at all (timeout, socket reset, DNS)
- * means the message may well have arrived, and a blind retry would double-send to a
- * real person.
+ * This distinction decides whether a retry is safe to offer. Only a deterministic
+ * 4xx rejection proves that Graph refused the message. A 408, gateway/server
+ * response, missing response, or unknown post-handoff throw can happen after Graph
+ * accepted it, so a blind retry could double-send to a real person.
  *
  * Pure so both outcomes are testable without a network or a database.
  */
 export type SendOutcome = "failed" | "uncertain";
 export type SendErrorCode =
   | "graph_rejected"
+  | "graph_timeout"
+  | "graph_server_error"
+  | "graph_response_uncertain"
   | "transport_timeout"
   | "transport_connection_reset"
   | "transport_dns_failure"
   | "transport_unavailable"
   | "transport_error"
-  | "send_error";
+  | "send_outcome_unknown";
 
 export function classifySendError(err: unknown): { outcome: SendOutcome; errorCode: SendErrorCode } {
   if (isAxiosError(err)) {
     const status = err.response?.status;
     if (typeof status === "number") {
-      // Meta answered. The send did not happen.
-      return { outcome: "failed", errorCode: "graph_rejected" };
+      if (status >= 400 && status < 500 && status !== 408) {
+        return { outcome: "failed", errorCode: "graph_rejected" };
+      }
+      if (status === 408) {
+        return { outcome: "uncertain", errorCode: "graph_timeout" };
+      }
+      if (status >= 500 && status < 600) {
+        return { outcome: "uncertain", errorCode: "graph_server_error" };
+      }
+      return { outcome: "uncertain", errorCode: "graph_response_uncertain" };
     }
 
     // Axios error codes are not a trusted vocabulary. Map the few useful
@@ -53,7 +63,7 @@ export function classifySendError(err: unknown): { outcome: SendOutcome; errorCo
     // No response: the message may have arrived, so a blind retry is unsafe.
     return { outcome: "uncertain", errorCode };
   }
-  // A non-Axios throw from inside our own send path (e.g. a bug) never reached
-  // Instagram, so it is a definite failure rather than an unknown.
-  return { outcome: "failed", errorCode: "send_error" };
+  // Once the send boundary has been entered, an unknown throw cannot prove where
+  // handoff stopped. Preserve uncertainty instead of authorizing a blind retry.
+  return { outcome: "uncertain", errorCode: "send_outcome_unknown" };
 }

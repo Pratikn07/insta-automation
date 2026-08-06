@@ -4,7 +4,14 @@ import type { WebhookPayload } from "../types/meta.js";
 const handleComment = vi.fn();
 const handleMessage = vi.fn();
 const logEvent = vi.fn();
-const describeGraphError = vi.fn((error: unknown) => ({ message: String(error) }));
+const SAFE_UNKNOWN = {
+  category: "unknown_error",
+  httpStatus: null,
+  graphCode: null,
+  graphSubcode: null,
+  traceId: null,
+};
+const describeGraphError = vi.fn(() => SAFE_UNKNOWN);
 const logger = {
   error: vi.fn(),
   warn: vi.fn(),
@@ -26,7 +33,7 @@ beforeEach(() => {
   handleComment.mockReset().mockResolvedValue(undefined);
   handleMessage.mockReset().mockResolvedValue(undefined);
   logEvent.mockReset().mockResolvedValue(undefined);
-  describeGraphError.mockReset().mockImplementation((error: unknown) => ({ message: String(error) }));
+  describeGraphError.mockReset().mockReturnValue(SAFE_UNKNOWN);
   for (const fn of Object.values(logger)) fn.mockReset();
 });
 
@@ -98,6 +105,7 @@ describe("dispatchWebhook", () => {
       stage: "messageHandler",
       senderId: "ig-user-1",
       errorCode: "message_handler_failed",
+      ...SAFE_UNKNOWN,
     });
     expect(JSON.stringify({ logs: logger.error.mock.calls, errorEvent })).not.toContain(privateBody);
   });

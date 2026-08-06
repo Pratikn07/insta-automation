@@ -20,6 +20,7 @@ const CONTEXT_MESSAGE_CHAR_LIMIT = 2_000;
 
 /** Prisma's unique-constraint code — the partial index rejecting a second active draft. */
 const UNIQUE_VIOLATION = "P2002";
+const DRAFT_CREATION_TRANSACTION_ATTEMPTS = 3;
 
 function isUniqueViolation(error: unknown): boolean {
   return (
@@ -37,65 +38,107 @@ function isUniqueViolation(error: unknown): boolean {
  * regenerate after a dismissal still gets a fresh number and the audit trail
  * stays ordered.
  *
- * Two webhooks for the same thread can race here. Rather than lock, we let the
- * database's partial unique index arbitrate: the loser catches the violation and
- * returns the winning active draft, because both callers only want "the active
- * draft for this thread".
+ * Two webhooks for the same thread can race here. The thread row is the shared
+ * serialization point for inbound capture and every draft-producing path; the
+ * partial unique index remains a final database backstop for one active draft.
  */
 export interface QueueReplyDraftInput {
   threadId: string;
-  inboundMessageId: string;
-  kind?: "reply" | "engagement_follow_up";
-  sourceConversationId?: string | null;
-  eligibleAt?: Date;
-  expiresAt?: Date | null;
+  /**
+   * A webhook handler supplies the inbound it processed. The collection route
+   * omits it and drafts for the authoritative latest inbound read under lock.
+   */
+  inboundMessageId?: string;
 }
 
 export async function queueReplyDraft(input: QueueReplyDraftInput): Promise<ReplyDraft> {
-  const eligibleAt = input.eligibleAt ?? new Date();
+  for (let attempt = 1; attempt <= DRAFT_CREATION_TRANSACTION_ATTEMPTS; attempt += 1) {
+    try {
+      return await prisma.$transaction(
+        async (tx) => {
+          // This is the global creation lock order: thread first, drafts second.
+          // It serializes ordinary creation with inbound capture, regeneration,
+          // and follow-up scheduling before any active draft is mutated.
+          const threads = await tx.$queryRaw<
+            Array<{
+              id: string;
+              latestInboundMessageId: string | null;
+              needsReply: boolean;
+            }>
+          >`
+            SELECT
+              thread."id",
+              thread."latest_inbound_message_id" AS "latestInboundMessageId",
+              thread."needs_reply" AS "needsReply"
+            FROM "dm_thread" AS thread
+            WHERE thread."id" = ${input.threadId}::uuid
+            FOR UPDATE
+          `;
+          const thread = threads[0];
+          if (!thread) throw new DraftActionError("draft_not_found");
+          if (!thread.latestInboundMessageId) {
+            throw new DraftActionError("no_inbound_message");
+          }
+          if (!thread.needsReply) {
+            throw new DraftActionError("thread_not_needing_reply");
+          }
+          if (
+            input.inboundMessageId !== undefined &&
+            input.inboundMessageId !== thread.latestInboundMessageId
+          ) {
+            throw new DraftActionError("stale_draft");
+          }
 
-  try {
-    return await prisma.$transaction(async (tx) => {
-      const highest = await tx.replyDraft.aggregate({
-        where: { threadId: input.threadId },
-        _max: { revision: true },
-      });
-      const revision = (highest._max.revision ?? 0) + 1;
+          const inboundMessageId = thread.latestInboundMessageId;
+          const highest = await tx.replyDraft.aggregate({
+            where: { threadId: input.threadId },
+            _max: { revision: true },
+          });
+          const revision = (highest._max.revision ?? 0) + 1;
 
-      // Supersede first so the partial unique index has room for the new row.
-      await tx.replyDraft.updateMany({
-        where: { threadId: input.threadId, status: { in: [...ACTIVE_DRAFT_STATUSES] } },
-        data: { status: "superseded" },
-      });
+          // Supersede first so the partial unique index has room for the new row.
+          await tx.replyDraft.updateMany({
+            where: { threadId: input.threadId, status: { in: [...ACTIVE_DRAFT_STATUSES] } },
+            data: { status: "superseded" },
+          });
 
-      return await tx.replyDraft.create({
-        data: {
-          threadId: input.threadId,
-          inboundMessageId: input.inboundMessageId,
-          revision,
-          status: "queued",
-          kind: input.kind ?? "reply",
-          sourceConversationId: input.sourceConversationId ?? null,
-          eligibleAt,
-          nextAttemptAt: eligibleAt,
-          expiresAt: input.expiresAt ?? null,
-          promptVersion: CURRENT_DM_PROMPT_VERSION,
+          const eligibleAt = new Date();
+          return await tx.replyDraft.create({
+            data: {
+              threadId: input.threadId,
+              inboundMessageId,
+              revision,
+              status: "queued",
+              kind: "reply",
+              sourceConversationId: null,
+              eligibleAt,
+              nextAttemptAt: eligibleAt,
+              expiresAt: null,
+              promptVersion: CURRENT_DM_PROMPT_VERSION,
+            },
+          });
         },
-      });
-    });
-  } catch (error) {
-    if (!isUniqueViolation(error)) throw error;
+        { isolationLevel: "Serializable" },
+      );
+    } catch (error) {
+      if (hasPrismaCode(error, "P2034") && attempt < DRAFT_CREATION_TRANSACTION_ATTEMPTS) {
+        continue;
+      }
+      if (!isUniqueViolation(error)) throw error;
 
-    // Prisma marks a transaction that hit P2002 as aborted. The transaction has
-    // fully rolled back before this root-client lookup runs, so it can see the
-    // concurrent winner without issuing another query on the failed transaction.
-    const winner = await prisma.replyDraft.findFirst({
-      where: { threadId: input.threadId, status: { in: [...ACTIVE_DRAFT_STATUSES] } },
-      orderBy: { revision: "desc" },
-    });
-    if (!winner) throw error;
-    return winner;
+      // Prisma marks a transaction that hit P2002 as aborted. The transaction has
+      // fully rolled back before this root-client lookup runs, so it can see the
+      // concurrent winner without issuing another query on the failed transaction.
+      const winner = await prisma.replyDraft.findFirst({
+        where: { threadId: input.threadId, status: { in: [...ACTIVE_DRAFT_STATUSES] } },
+        orderBy: { revision: "desc" },
+      });
+      if (!winner) throw error;
+      return winner;
+    }
   }
+
+  throw new Error("unreachable");
 }
 
 /**
@@ -388,6 +431,8 @@ export type DraftActionCode =
   | "stale_draft"
   | "draft_not_pending"
   | "draft_not_found"
+  | "no_inbound_message"
+  | "thread_not_needing_reply"
   | "prompt_policy_outdated"
   | "follow_up_not_ready"
   | "follow_up_window_closed"
@@ -1114,6 +1159,125 @@ export async function claimRetryDraft(input: {
     throw new DraftActionError(result.rejected);
   }
   return result;
+}
+
+export interface FinalizeApprovedDraftSendInput {
+  draftId: string;
+  threadId: string;
+  inboundMessageId: string;
+  instagramMessageId: string;
+  approvedText: string;
+  approvedBy: string | null;
+  sentAt: Date;
+}
+
+type LockedFinalizationDraft = {
+  id: string;
+  threadId: string;
+  inboundMessageId: string;
+  status: string;
+  approvedText: string | null;
+};
+
+/**
+ * Strictly finalize an AI-approved send after Graph returns a confirmed message id.
+ *
+ * There is deliberately no network call in this transaction. Thread and draft
+ * locks make the outbound history row, guarded sending -> sent transition,
+ * conditional needs-reply resolution, and body-free audit one all-or-nothing
+ * database fact.
+ */
+export async function finalizeApprovedDraftSend(
+  input: FinalizeApprovedDraftSendInput,
+): Promise<void> {
+  if (!input.instagramMessageId) throw new Error("send_state_not_recorded");
+
+  await prisma.$transaction(async (tx) => {
+    // Match the global lock order used by inbound capture and draft creation.
+    const threads = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT thread."id"
+      FROM "dm_thread" AS thread
+      WHERE thread."id" = ${input.threadId}::uuid
+      FOR UPDATE
+    `;
+    if (!threads[0]) throw new Error("send_state_not_recorded");
+
+    const drafts = await tx.$queryRaw<LockedFinalizationDraft[]>`
+      SELECT
+        draft."id",
+        draft."thread_id" AS "threadId",
+        draft."inbound_message_id" AS "inboundMessageId",
+        draft."status"::text AS "status",
+        draft."approved_text" AS "approvedText"
+      FROM "reply_draft" AS draft
+      WHERE draft."id" = ${input.draftId}::uuid
+      FOR UPDATE
+    `;
+    const draft = drafts[0];
+    if (
+      !draft ||
+      draft.threadId !== input.threadId ||
+      draft.inboundMessageId !== input.inboundMessageId ||
+      draft.status !== "sending" ||
+      draft.approvedText !== input.approvedText
+    ) {
+      throw new Error("send_state_not_recorded");
+    }
+
+    await tx.dmMessage.create({
+      data: {
+        threadId: input.threadId,
+        instagramMessageId: input.instagramMessageId,
+        direction: "outbound",
+        type: "text",
+        source: "ai_approved",
+        text: input.approvedText,
+        mediaUrl: null,
+        instagramTimestamp: input.sentAt,
+      },
+    });
+
+    const sent = await tx.replyDraft.updateMany({
+      where: {
+        id: input.draftId,
+        threadId: input.threadId,
+        inboundMessageId: input.inboundMessageId,
+        status: "sending",
+        approvedText: input.approvedText,
+      },
+      data: {
+        status: "sent",
+        sentAt: input.sentAt,
+        errorCode: null,
+        errorMessage: null,
+      },
+    });
+    if (sent.count !== 1) throw new Error("send_state_not_recorded");
+
+    await tx.dmThread.update({
+      where: { id: input.threadId },
+      data: {
+        lastOutboundAt: input.sentAt,
+        lastMessageAt: input.sentAt,
+      },
+    });
+    await tx.dmThread.updateMany({
+      where: { id: input.threadId, latestInboundMessageId: input.inboundMessageId },
+      data: { needsReply: false },
+    });
+    await tx.eventLog.create({
+      data: {
+        kind: "ai_reply_sent",
+        payload: {
+          threadId: input.threadId,
+          draftId: input.draftId,
+          by: input.approvedBy,
+          length: input.approvedText.length,
+          instagramMessageId: input.instagramMessageId,
+        },
+      },
+    });
+  });
 }
 
 /** Confirmed delivery. */

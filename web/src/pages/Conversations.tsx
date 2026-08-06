@@ -702,8 +702,8 @@ const FAILURE_KINDS = new Set([
 
 /**
  * A single event in a timeline. Failure events render in destructive styling and
- * surface the Instagram reason (subcode + message) inline so e.g. the 2534025
- * "comment is invalid for a private reply" cause is visible without digging.
+ * surface the numeric Instagram subcode inline. Provider messages are excluded
+ * because they can echo request text or account/token details.
  */
 export function EventRow({
   event,
@@ -752,24 +752,23 @@ export function EventRow({
       <div className="text-xs text-muted-foreground">{formatAbsolute(event.createdAt)}</div>
       {detail && (
         <div className="mt-1 rounded border border-destructive/30 bg-destructive/5 px-2 py-1 text-xs text-destructive">
-          {detail.subcode != null && (
-            <span className="font-mono">subcode {detail.subcode}</span>
-          )}
-          {detail.subcode != null && detail.message ? " · " : ""}
-          {detail.message}
+          <span className="font-mono">subcode {detail.subcode}</span>
         </div>
       )}
     </li>
   );
 }
 
-function failureDetail(payload: unknown): { subcode: number | null; message: string } | null {
+function failureDetail(payload: unknown): { subcode: number } | null {
   if (!payload || typeof payload !== "object") return null;
   const p = payload as Record<string, unknown>;
-  const subcode = typeof p.subcode === "number" ? p.subcode : null;
-  const message = typeof p.message === "string" ? p.message : null;
-  if (subcode == null && !message) return null;
-  return { subcode, message: message ?? "" };
+  const subcode =
+    typeof p.graphSubcode === "number"
+      ? p.graphSubcode
+      : typeof p.subcode === "number"
+        ? p.subcode
+        : null;
+  return subcode === null ? null : { subcode };
 }
 
 function formatRelative(iso: string): string {

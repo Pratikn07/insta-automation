@@ -1,5 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const e2ePort = Number(process.env.E2E_PORT ?? "5174");
+const e2eOrigin = `http://localhost:${e2ePort}`;
+
 /**
  * Browser journeys for the two AI surfaces that put text in front of a person.
  *
@@ -19,7 +22,7 @@ export default defineConfig({
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? "line" : [["list"]],
   use: {
-    baseURL: "http://localhost:5174",
+    baseURL: e2eOrigin,
     trace: "retain-on-failure",
   },
   projects: [
@@ -31,14 +34,16 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "npm run dev -- --port 5174 --strictPort",
-    url: "http://localhost:5174/e2e/index.html?scenario=advisor",
-    reuseExistingServer: !process.env.CI,
+    command: `npm run dev -- --port ${e2ePort} --strictPort`,
+    url: `${e2eOrigin}/e2e/index.html?scenario=advisor`,
+    // An explicit port is used by concurrent worktrees and must start this
+    // worktree's own server rather than silently reusing another branch.
+    reuseExistingServer: !process.env.CI && process.env.E2E_PORT === undefined,
     timeout: 60_000,
     env: {
       VITE_SUPABASE_URL: "https://e2e.supabase.co",
       VITE_SUPABASE_ANON_KEY: "e2e-anon-key",
-      VITE_API_URL: "http://localhost:5174/api",
+      VITE_API_URL: `${e2eOrigin}/api`,
     },
   },
 });

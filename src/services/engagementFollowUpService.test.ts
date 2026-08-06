@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const tx = {
+  $queryRaw: vi.fn(),
   dmThread: { findUnique: vi.fn() },
   conversation: { updateMany: vi.fn() },
   replyDraft: {
@@ -29,10 +30,14 @@ const INPUT = {
 beforeEach(() => {
   $transaction.mockClear();
   rootReplyDraft.findFirst.mockReset();
-  for (const group of Object.values(tx)) {
+  tx.$queryRaw.mockReset();
+  for (const group of [tx.dmThread, tx.conversation, tx.replyDraft]) {
     for (const fn of Object.values(group)) fn.mockReset();
   }
   tx.conversation.updateMany.mockResolvedValue({ count: 1 });
+  tx.$queryRaw.mockResolvedValue([
+    { id: "thread-1", latestInboundMessageId: "message-1" },
+  ]);
   tx.dmThread.findUnique.mockResolvedValue({ latestInboundMessageId: "message-1" });
   tx.replyDraft.aggregate.mockResolvedValue({ _max: { revision: null } });
   tx.replyDraft.updateMany.mockResolvedValue({ count: 1 });
@@ -40,6 +45,33 @@ beforeEach(() => {
 });
 
 describe("scheduleEngagementFollowUp", () => {
+  it("locks the thread before claiming the conversation or mutating drafts", async () => {
+    const order: string[] = [];
+    tx.$queryRaw.mockImplementation(async (strings: TemplateStringsArray) => {
+      const sql = strings.join("?");
+      if (sql.includes('FROM "dm_thread"') && sql.includes("FOR UPDATE")) {
+        order.push("thread_lock");
+        return [{ id: "thread-1", latestInboundMessageId: "message-1" }];
+      }
+      return [];
+    });
+    tx.conversation.updateMany.mockImplementation(async () => {
+      order.push("conversation_claim");
+      return { count: 1 };
+    });
+    tx.replyDraft.updateMany.mockImplementation(async () => {
+      order.push("draft_supersede");
+      return { count: 1 };
+    });
+
+    await scheduleEngagementFollowUp(INPUT);
+
+    expect(order).toEqual(["thread_lock", "conversation_claim", "draft_supersede"]);
+    const lockSql = (tx.$queryRaw.mock.calls[0]?.[0] as TemplateStringsArray).join("?");
+    expect(lockSql).toContain('FROM "dm_thread"');
+    expect(lockSql).toContain("FOR UPDATE");
+  });
+
   it("queues one versioned follow-up linked to the delivered conversation at the policy times", async () => {
     await expect(scheduleEngagementFollowUp(INPUT)).resolves.toEqual({
       scheduled: true,
@@ -85,7 +117,7 @@ describe("scheduleEngagementFollowUp", () => {
       }),
     ).resolves.toEqual({ scheduled: false, draftId: null });
 
-    expect(tx.dmThread.findUnique).toHaveBeenCalledOnce();
+    expect(tx.$queryRaw).toHaveBeenCalledOnce();
     expect(tx.conversation.updateMany).not.toHaveBeenCalled();
     expect(tx.replyDraft.create).not.toHaveBeenCalled();
   });
@@ -110,17 +142,16 @@ describe("scheduleEngagementFollowUp", () => {
   it("does not claim or derive timing from an inbound that is no longer latest", async () => {
     // The older handler finished a slow guide send after Task 3 had already
     // accepted a newer genuine inbound for the same thread.
-    tx.dmThread.findUnique.mockResolvedValue({ latestInboundMessageId: "message-new" });
+    tx.$queryRaw.mockResolvedValue([
+      { id: "thread-1", latestInboundMessageId: "message-new" },
+    ]);
 
     await expect(scheduleEngagementFollowUp(INPUT)).resolves.toEqual({
       scheduled: false,
       draftId: null,
     });
 
-    expect(tx.dmThread.findUnique).toHaveBeenCalledWith({
-      where: { id: "thread-1" },
-      select: { latestInboundMessageId: true },
-    });
+    expect(tx.$queryRaw).toHaveBeenCalledOnce();
     expect(tx.conversation.updateMany).not.toHaveBeenCalled();
     expect(tx.replyDraft.updateMany).not.toHaveBeenCalled();
     expect(tx.replyDraft.aggregate).not.toHaveBeenCalled();
@@ -131,7 +162,9 @@ describe("scheduleEngagementFollowUp", () => {
     const serializationConflict = Object.assign(new Error("write conflict"), { code: "P2034" });
     $transaction.mockImplementationOnce(async (fn: (client: typeof tx) => unknown) => {
       await fn(tx); // writes are rolled back when the serializable transaction aborts
-      tx.dmThread.findUnique.mockResolvedValue({ latestInboundMessageId: "message-new" });
+      tx.$queryRaw.mockResolvedValue([
+        { id: "thread-1", latestInboundMessageId: "message-new" },
+      ]);
       throw serializationConflict;
     });
 
@@ -141,7 +174,7 @@ describe("scheduleEngagementFollowUp", () => {
     });
 
     expect($transaction).toHaveBeenCalledTimes(2);
-    expect(tx.dmThread.findUnique).toHaveBeenCalledTimes(2);
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
     // Only the rolled-back first attempt reached creation; the retry saw the
     // newer inbound before claim/timing writes and returned without another one.
     expect(tx.replyDraft.create).toHaveBeenCalledOnce();

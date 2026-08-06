@@ -5,7 +5,7 @@ import { fetchAllReels } from "../meta/fetchMedia.js";
 import { fetchReelInsights } from "../meta/mediaInsightsFetcher.js";
 import { fetchAllCountrySplits } from "../meta/demographicsFetcher.js";
 import { autoCreateExperimentsForNewReels, autoMeasureDueExperiments } from "./experimentService.js";
-import { logEvent } from "./eventLogger.js";
+import { describeGraphError, logEvent } from "./eventLogger.js";
 
 // Gentle spacing between per-reel insight calls, same spirit as the gate worker's
 // PER_SEND_GAP_MS — stay well under any account rate limit.
@@ -102,7 +102,10 @@ export async function runSnapshotTick(): Promise<void> {
         });
         perfWritten++;
       } catch (err) {
-        logger.warn({ err, mediaId: r.id }, "perf snapshot failed for reel");
+        logger.warn(
+          { mediaId: r.id, ...describeGraphError(err) },
+          "perf snapshot failed for reel",
+        );
       }
       await sleep(PER_REEL_GAP_MS);
     }
@@ -131,8 +134,8 @@ export async function runSnapshotTick(): Promise<void> {
     try {
       autoCreated = await autoCreateExperimentsForNewReels();
       autoMeasured = await autoMeasureDueExperiments();
-    } catch (err) {
-      logger.warn({ err }, "auto-experiment step failed");
+    } catch {
+      logger.warn({ errorCode: "auto_experiment_step_failed" }, "auto-experiment step failed");
     }
 
     await logEvent("snapshot_run", {
@@ -148,6 +151,6 @@ export async function runSnapshotTick(): Promise<void> {
       "Snapshot tick complete",
     );
   } catch (err) {
-    logger.error({ err }, "snapshotWorker tick failed");
+    logger.error(describeGraphError(err), "snapshotWorker tick failed");
   }
 }

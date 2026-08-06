@@ -8,7 +8,7 @@ import { Drawer } from "@/components/ui/drawer";
 import { IncomingBubble, OutgoingBubble } from "@/components/ChatBubbles";
 import { displayUser } from "@/lib/utils";
 import { ReplyDraftCard } from "./ReplyDraftCard";
-import { draftActionErrorMessage, isVisibleDraft } from "./replyDraftView";
+import { draftActionErrorMessage, isStale, isVisibleDraft } from "./replyDraftView";
 
 /**
  * The real message thread plus its approval surface.
@@ -119,6 +119,7 @@ export function DmThreadDrawer({
   const terminalFollowUp =
     draft?.kind === "engagement_follow_up" &&
     (draft.status === "expired" || draft.status === "superseded");
+  const staleDraft = thread ? isStale(thread, draft) : false;
 
   return (
     <Drawer open={threadId !== null} onClose={onClose}>
@@ -158,7 +159,7 @@ export function DmThreadDrawer({
               onRetry={() => retry.mutate()}
             />
           )}
-          {thread.needsReply && (!isVisibleDraft(draft) || terminalFollowUp) ? (
+          {thread.needsReply && (!isVisibleDraft(draft) || terminalFollowUp || staleDraft) ? (
             <Button
               variant="outline"
               disabled={mutationPending}

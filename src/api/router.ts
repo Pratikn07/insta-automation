@@ -38,6 +38,6 @@ apiRouter.use((err: unknown, _req: Request, res: Response, _next: NextFunction) 
   const code = err && typeof err === "object" && "code" in err ? (err as { code: string }).code : undefined;
   if (code === "P2025") return res.status(404).json({ error: "not_found" });
   if (code === "P2002") return res.status(409).json({ error: "unique_violation" });
-  logger.error({ err }, "API error");
+  logger.error({ errorCode: "api_unhandled_error" }, "API error");
   res.status(500).json({ error: "internal_error" });
 });

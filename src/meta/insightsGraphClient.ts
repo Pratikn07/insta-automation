@@ -1,6 +1,7 @@
 import axios, { AxiosError, AxiosInstance } from "axios";
 import { env } from "../config/env.js";
 import { logger } from "../lib/logger.js";
+import { describeGraphError } from "../services/eventLogger.js";
 import { getAccessToken } from "./tokenStore.js";
 
 // A SECOND Graph client, deliberately separate from graphClient.ts.
@@ -28,9 +29,7 @@ insightsGraph.interceptors.request.use((config) => {
 insightsGraph.interceptors.response.use(
   (res) => res,
   (err: AxiosError) => {
-    const status = err.response?.status;
-    const data = err.response?.data;
-    logger.error({ status, data, url: err.config?.url }, "Insights Graph API error");
+    logger.error(describeGraphError(err), "Insights Graph API error");
     return Promise.reject(err);
   },
 );

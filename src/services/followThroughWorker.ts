@@ -89,7 +89,10 @@ export async function runFollowThroughTick(): Promise<void> {
       { users: due.length, stillFollowing, unfollowed },
       "Follow-through tick complete",
     );
-  } catch (err) {
-    logger.error({ err }, "followThroughWorker tick failed");
+  } catch {
+    logger.error(
+      { errorCode: "follow_through_tick_failed" },
+      "followThroughWorker tick failed",
+    );
   }
 }

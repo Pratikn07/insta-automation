@@ -14,9 +14,9 @@ import {
   DraftActionError,
   claimApprovedDraft,
   claimRetryDraft,
+  finalizeApprovedDraftSend,
   markSendFailed,
   markSendUncertain,
-  markSent,
   queueReplyDraft,
   regenerateReplyDraft,
 } from "../services/replyDraftService.js";
@@ -167,6 +167,8 @@ export function createAiRouter(deps: AiRouterDependencies): Router {
     if (error instanceof DraftActionError) {
       const statusByCode: Record<DraftActionCode, number> = {
         draft_not_found: 404,
+        no_inbound_message: 409,
+        thread_not_needing_reply: 409,
         stale_draft: 409,
         draft_not_pending: 409,
         draft_not_retryable: 409,
@@ -242,19 +244,9 @@ export function createAiRouter(deps: AiRouterDependencies): Router {
     if (draftsDisabled(res)) return;
 
     try {
-      const thread = await prisma.dmThread.findUnique({
-        where: { id: req.params.threadId },
-        select: { id: true, needsReply: true, latestInboundMessageId: true },
-      });
-      if (!thread) return res.status(404).json({ error: "not_found" });
-      if (!thread.latestInboundMessageId) {
-        return res.status(409).json({ error: "no_inbound_message" });
-      }
-
-      const draft = await queueReplyDraft({
-        threadId: thread.id,
-        inboundMessageId: thread.latestInboundMessageId,
-      });
+      // The service locks the thread and derives the authoritative inbound plus
+      // needs-reply state inside the same serializable creation transaction.
+      const draft = await queueReplyDraft({ threadId: req.params.threadId });
       res.status(202).json({ draftId: draft.id, status: draft.status });
     } catch (error) {
       sendActionError(res, error);
@@ -396,9 +388,9 @@ export function createAiRouter(deps: AiRouterDependencies): Router {
  * Perform the one Instagram send for an already-claimed draft, and record the
  * outcome. Called with NO transaction open.
  *
- * A Graph response means Meta refused it — nothing was delivered, so `send_failed`
- * and a retry is safe. No response means we genuinely do not know, so
- * `send_uncertain`, which is NEVER retried automatically.
+ * Only a deterministic Graph 4xx proves refusal. Timeouts, gateway/server
+ * responses, and unknown post-handoff throws are `send_uncertain`, which is
+ * NEVER retried automatically.
  */
 async function deliverApprovedDraft(input: {
   draftId: string;
@@ -444,11 +436,13 @@ async function deliverApprovedDraft(input: {
     return;
   }
 
+  let delivered: Awaited<ReturnType<typeof sendTrackedText>>;
   try {
-    await sendTrackedText({
+    delivered = await sendTrackedText({
       recipientIgUserId: thread.igUserId,
       text: input.approvedText,
       source: "ai_approved",
+      history: "deferred",
     });
   } catch (error) {
     const { outcome, errorCode } = classifySendError(error);
@@ -492,23 +486,48 @@ async function deliverApprovedDraft(input: {
     return;
   }
 
+  if (!delivered.messageId) {
+    try {
+      await markSendUncertain(input.draftId, "send_recording_unconfirmed");
+    } catch {
+      logger.error(
+        { errorCode: "ai_reply_send_state_write_failed", draftId: input.draftId },
+        "AI reply send state write failed",
+      );
+    }
+    input.res.status(202).json({
+      status: "send_uncertain",
+      errorCode: "send_recording_unconfirmed",
+    });
+    return;
+  }
+
   try {
-    await markSent(input.draftId);
-    await markThreadResolved({
+    await finalizeApprovedDraftSend({
+      draftId: input.draftId,
       threadId: input.threadId,
       inboundMessageId: input.inboundMessageId,
-    });
-    await logEvent("ai_reply_sent", {
-      threadId: input.threadId,
-      draftId: input.draftId,
-      by: input.by,
-      length: input.approvedText.length,
+      instagramMessageId: delivered.messageId,
+      approvedText: input.approvedText,
+      approvedBy: input.by,
+      sentAt: new Date(),
     });
   } catch {
     logger.error(
       { errorCode: "ai_reply_send_recording_unconfirmed", draftId: input.draftId },
       "AI reply delivery recording could not be confirmed",
     );
+    try {
+      // If the strict transaction rolled back this changes sending -> uncertain.
+      // If it committed but the acknowledgement was lost, the guarded write
+      // fails and leaves the authoritative sent state untouched.
+      await markSendUncertain(input.draftId, "send_recording_unconfirmed");
+    } catch {
+      logger.error(
+        { errorCode: "ai_reply_send_state_write_failed", draftId: input.draftId },
+        "AI reply send state write failed",
+      );
+    }
     input.res.status(202).json({
       status: "send_uncertain",
       errorCode: "send_recording_unconfirmed",

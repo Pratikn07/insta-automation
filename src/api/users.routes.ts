@@ -118,8 +118,14 @@ usersRouter.get("/:igUserId/lineage", async (req, res) => {
       text: typeof p.text === "string" ? p.text : null,
       keyword: typeof p.keyword === "string" ? p.keyword : null,
       source: typeof p.source === "string" ? p.source : null,
-      subcode: typeof p.subcode === "number" ? p.subcode : null,
-      message: typeof p.message === "string" ? p.message : null,
+      subcode:
+        typeof p.graphSubcode === "number"
+          ? p.graphSubcode
+          : typeof p.subcode === "number"
+            ? p.subcode
+            : null,
+      // Historical Graph payloads may contain provider text. Never expose it.
+      message: null,
       conversationId: typeof p.conversationId === "string" ? p.conversationId : null,
     };
   });

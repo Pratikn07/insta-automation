@@ -87,8 +87,8 @@ export async function backfillKeyword(keywordId: string): Promise<number> {
       logger.info({ keyword: kw.keyword, enqueued }, "Backfilled gates for late keyword");
     }
     return enqueued;
-  } catch (err) {
-    logger.error({ err, keywordId }, "keyword backfill failed");
+  } catch {
+    logger.error({ errorCode: "keyword_backfill_failed", keywordId }, "keyword backfill failed");
     return 0;
   }
 }

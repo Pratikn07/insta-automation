@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dmDraftRequestSchema } from "./schemas.js";
+import { dmDraftOutputSchema, dmDraftRequestSchema } from "./schemas.js";
 
 const VALID_REQUEST = {
   requestId: "11111111-1111-1111-1111-111111111111",
@@ -112,5 +112,29 @@ describe("dmDraftRequestSchema", () => {
         unexpected: "not accepted",
       }),
     ).toThrow();
+  });
+});
+
+describe("dmDraftOutputSchema", () => {
+  const valid = {
+    reply: "A concise answer",
+    rationale: "Answers directly.",
+    confidence: "high" as const,
+    warnings: [],
+  };
+
+  it.each([
+    { label: "empty reply", output: { ...valid, reply: "" } },
+    { label: "long reply", output: { ...valid, reply: "x".repeat(1001) } },
+    { label: "empty rationale", output: { ...valid, rationale: "" } },
+    { label: "long rationale", output: { ...valid, rationale: "x".repeat(1001) } },
+    {
+      label: "too many warnings",
+      output: { ...valid, warnings: Array.from({ length: 9 }, (_, index) => `warning-${index}`) },
+    },
+    { label: "long warning", output: { ...valid, warnings: ["x".repeat(301)] } },
+    { label: "unexpected field", output: { ...valid, unexpected: "not accepted" } },
+  ])("rejects $label", ({ output }) => {
+    expect(() => dmDraftOutputSchema.parse(output)).toThrow();
   });
 });

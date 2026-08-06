@@ -18,6 +18,11 @@ export interface ScheduleEngagementFollowUpResult {
   draftId: string | null;
 }
 
+type LockedThreadRow = {
+  id: string;
+  latestInboundMessageId: string | null;
+};
+
 const SCHEDULING_TRANSACTION_ATTEMPTS = 3;
 
 function hasPrismaCode(error: unknown, code: string): boolean {
@@ -40,10 +45,18 @@ export async function scheduleEngagementFollowUp(
           // Task 3 maintains this scalar using Meta timestamp + message-ID total
           // ordering. Read it before deriving timing or claiming the conversation:
           // a slow older guide handler must not schedule after a newer inbound.
-          const thread = await tx.dmThread.findUnique({
-            where: { id: input.threadId },
-            select: { latestInboundMessageId: true },
-          });
+          // Match every draft-producing path's lock order. A plain read here let
+          // conversation/draft writes happen before the insert FK later touched
+          // the thread, which inverted inbound capture's thread-first order.
+          const threads = await tx.$queryRaw<LockedThreadRow[]>`
+            SELECT
+              thread."id",
+              thread."latest_inbound_message_id" AS "latestInboundMessageId"
+            FROM "dm_thread" AS thread
+            WHERE thread."id" = ${input.threadId}::uuid
+            FOR UPDATE
+          `;
+          const thread = threads[0];
           if (thread?.latestInboundMessageId !== input.inboundMessageId) {
             return { scheduled: false, draftId: null };
           }

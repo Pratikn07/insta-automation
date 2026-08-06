@@ -11,9 +11,10 @@ const tx = {
     findMany: vi.fn(),
     findUnique: vi.fn(),
   },
-  dmThread: { findUnique: vi.fn() },
-  dmMessage: { findMany: vi.fn() },
+  dmThread: { findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
+  dmMessage: { findMany: vi.fn(), create: vi.fn() },
   conversation: { findUnique: vi.fn() },
+  eventLog: { create: vi.fn() },
 };
 
 const rootReplyDraft = {
@@ -32,6 +33,7 @@ vi.mock("../lib/prisma.js", () => ({
     dmThread: tx.dmThread,
     dmMessage: tx.dmMessage,
     conversation: tx.conversation,
+    eventLog: tx.eventLog,
   },
 }));
 
@@ -45,6 +47,7 @@ const {
   failGeneration,
   claimApprovedDraft,
   claimRetryDraft,
+  finalizeApprovedDraftSend,
   markSent,
   markSendFailed,
   markSendUncertain,
@@ -59,9 +62,10 @@ beforeEach(() => {
   for (const fn of Object.values(tx.replyDraft)) fn.mockReset();
   rootReplyDraft.findFirst.mockReset();
   rootExecuteRaw.mockReset().mockResolvedValue(0);
-  tx.dmThread.findUnique.mockReset();
-  tx.dmMessage.findMany.mockReset();
+  for (const fn of Object.values(tx.dmThread)) fn.mockReset();
+  for (const fn of Object.values(tx.dmMessage)) fn.mockReset();
   tx.conversation.findUnique.mockReset();
+  tx.eventLog.create.mockReset();
   $transaction.mockReset().mockImplementation(async (fn: (client: typeof tx) => unknown) => fn(tx));
   tx.replyDraft.aggregate.mockResolvedValue({ _max: { revision: null } });
   tx.replyDraft.updateMany.mockResolvedValue({ count: 0 });
@@ -71,6 +75,95 @@ beforeEach(() => {
 });
 
 describe("queueReplyDraft", () => {
+  const LOCKED_THREAD = {
+    id: "thread-1",
+    latestInboundMessageId: "message-1",
+    needsReply: true,
+  };
+
+  beforeEach(() => {
+    tx.$queryRaw.mockImplementation(async (strings: TemplateStringsArray) => {
+      const sql = strings.join("?");
+      if (sql.includes('FROM "dm_thread"') && sql.includes("FOR UPDATE")) {
+        return [LOCKED_THREAD];
+      }
+      return [];
+    });
+  });
+
+  it("locks the thread first and creates from its authoritative latest inbound", async () => {
+    const order: string[] = [];
+    tx.$queryRaw.mockImplementation(async (strings: TemplateStringsArray) => {
+      const sql = strings.join("?");
+      if (sql.includes('FROM "dm_thread"') && sql.includes("FOR UPDATE")) {
+        order.push("thread_lock");
+        return [{ ...LOCKED_THREAD, latestInboundMessageId: "message-current" }];
+      }
+      return [];
+    });
+    tx.replyDraft.aggregate.mockImplementation(async () => {
+      order.push("revision");
+      return { _max: { revision: null } };
+    });
+    tx.replyDraft.updateMany.mockImplementation(async () => {
+      order.push("supersede");
+      return { count: 0 };
+    });
+    tx.replyDraft.create.mockImplementation(async ({ data }) => {
+      order.push("create");
+      return { id: "draft-current", ...data };
+    });
+
+    await expect(queueReplyDraft({ threadId: "thread-1" })).resolves.toMatchObject({
+      id: "draft-current",
+      inboundMessageId: "message-current",
+    });
+
+    expect(order).toEqual(["thread_lock", "revision", "supersede", "create"]);
+    expect($transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: "Serializable",
+    });
+  });
+
+  it("rejects a slow older handler after a newer inbound becomes authoritative", async () => {
+    tx.$queryRaw.mockResolvedValue([
+      { ...LOCKED_THREAD, latestInboundMessageId: "message-new" },
+    ]);
+
+    await expect(queueReplyDraft(INPUT)).rejects.toMatchObject({ code: "stale_draft" });
+
+    expect(tx.replyDraft.aggregate).not.toHaveBeenCalled();
+    expect(tx.replyDraft.updateMany).not.toHaveBeenCalled();
+    expect(tx.replyDraft.create).not.toHaveBeenCalled();
+  });
+
+  it("refuses creation when the locked thread no longer needs a reply", async () => {
+    tx.$queryRaw.mockResolvedValue([{ ...LOCKED_THREAD, needsReply: false }]);
+
+    await expect(queueReplyDraft(INPUT)).rejects.toMatchObject({
+      code: "thread_not_needing_reply",
+    });
+
+    expect(tx.replyDraft.aggregate).not.toHaveBeenCalled();
+    expect(tx.replyDraft.updateMany).not.toHaveBeenCalled();
+    expect(tx.replyDraft.create).not.toHaveBeenCalled();
+  });
+
+  it("bounds serializable retries and rechecks the locked thread each time", async () => {
+    const serializationFailure = Object.assign(new Error("serialization failure"), {
+      code: "P2034",
+    });
+    $transaction.mockRejectedValueOnce(serializationFailure);
+
+    await expect(queueReplyDraft(INPUT)).resolves.toMatchObject({ id: "draft-1" });
+    expect($transaction).toHaveBeenCalledTimes(2);
+    expect(tx.$queryRaw).toHaveBeenCalledOnce();
+
+    $transaction.mockReset().mockRejectedValue(serializationFailure);
+    await expect(queueReplyDraft(INPUT)).rejects.toBe(serializationFailure);
+    expect($transaction).toHaveBeenCalledTimes(3);
+  });
+
   it("allocates revision 1 for a thread's first draft", async () => {
     await queueReplyDraft(INPUT);
 
@@ -1112,6 +1205,174 @@ describe("claimRetryDraft", () => {
     await expect(claimRetryDraft(RETRY_INPUT, NOW)).rejects.toMatchObject({
       code: "draft_not_retryable",
     });
+  });
+});
+
+describe("finalizeApprovedDraftSend", () => {
+  const sentAt = new Date("2026-08-05T12:34:56.000Z");
+  const approvedText = "The exact owner-approved reply 💛";
+  const input = {
+    draftId: "draft-2",
+    threadId: "thread-1",
+    inboundMessageId: "message-2",
+    instagramMessageId: "mid-confirmed-1",
+    approvedText,
+    approvedBy: "owner@example.com",
+    sentAt,
+  };
+
+  beforeEach(() => {
+    tx.$queryRaw.mockImplementation(async (strings: TemplateStringsArray) => {
+      const sql = strings.join("?");
+      if (sql.includes('FROM "dm_thread"')) {
+        return [{ id: "thread-1", latestInboundMessageId: "message-2" }];
+      }
+      if (sql.includes('FROM "reply_draft"')) {
+        return [
+          {
+            id: "draft-2",
+            threadId: "thread-1",
+            inboundMessageId: "message-2",
+            status: "sending",
+            approvedText,
+          },
+        ];
+      }
+      return [];
+    });
+    tx.dmMessage.create.mockResolvedValue({ id: "outbound-row-1" });
+    tx.replyDraft.updateMany.mockResolvedValue({ count: 1 });
+    tx.dmThread.update.mockResolvedValue({ id: "thread-1" });
+    tx.dmThread.updateMany.mockResolvedValue({ count: 1 });
+    tx.eventLog.create.mockResolvedValue({ id: "event-1" });
+  });
+
+  it("atomically stores the exact outbound, sent state, conditional resolution, and body-free audit", async () => {
+    const order: string[] = [];
+    tx.$queryRaw.mockImplementation(async (strings: TemplateStringsArray) => {
+      const sql = strings.join("?");
+      if (sql.includes('FROM "dm_thread"')) {
+        order.push("thread_lock");
+        return [{ id: "thread-1", latestInboundMessageId: "message-2" }];
+      }
+      order.push("draft_lock");
+      return [
+        {
+          id: "draft-2",
+          threadId: "thread-1",
+          inboundMessageId: "message-2",
+          status: "sending",
+          approvedText,
+        },
+      ];
+    });
+    tx.dmMessage.create.mockImplementation(async () => {
+      order.push("outbound");
+      return { id: "outbound-row-1" };
+    });
+    tx.replyDraft.updateMany.mockImplementation(async () => {
+      order.push("sent");
+      return { count: 1 };
+    });
+    tx.dmThread.update.mockImplementation(async () => {
+      order.push("thread_timestamps");
+      return { id: "thread-1" };
+    });
+    tx.dmThread.updateMany.mockImplementation(async () => {
+      order.push("conditional_resolve");
+      return { count: 1 };
+    });
+    tx.eventLog.create.mockImplementation(async () => {
+      order.push("audit");
+      return { id: "event-1" };
+    });
+
+    await finalizeApprovedDraftSend(input);
+
+    expect(order).toEqual([
+      "thread_lock",
+      "draft_lock",
+      "outbound",
+      "sent",
+      "thread_timestamps",
+      "conditional_resolve",
+      "audit",
+    ]);
+    expect(tx.dmMessage.create).toHaveBeenCalledWith({
+      data: {
+        threadId: "thread-1",
+        instagramMessageId: "mid-confirmed-1",
+        direction: "outbound",
+        type: "text",
+        source: "ai_approved",
+        text: approvedText,
+        mediaUrl: null,
+        instagramTimestamp: sentAt,
+      },
+    });
+    expect(tx.replyDraft.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "draft-2",
+        threadId: "thread-1",
+        inboundMessageId: "message-2",
+        status: "sending",
+        approvedText,
+      },
+      data: {
+        status: "sent",
+        sentAt,
+        errorCode: null,
+        errorMessage: null,
+      },
+    });
+    expect(tx.dmThread.updateMany).toHaveBeenCalledWith({
+      where: { id: "thread-1", latestInboundMessageId: "message-2" },
+      data: { needsReply: false },
+    });
+    expect(tx.eventLog.create).toHaveBeenCalledWith({
+      data: {
+        kind: "ai_reply_sent",
+        payload: {
+          threadId: "thread-1",
+          draftId: "draft-2",
+          by: "owner@example.com",
+          length: approvedText.length,
+          instagramMessageId: "mid-confirmed-1",
+        },
+      },
+    });
+    expect(JSON.stringify(tx.eventLog.create.mock.calls)).not.toContain(approvedText);
+  });
+
+  it("rejects before writing when the locked draft no longer exactly matches", async () => {
+    tx.$queryRaw.mockImplementation(async (strings: TemplateStringsArray) => {
+      const sql = strings.join("?");
+      if (sql.includes('FROM "dm_thread"')) {
+        return [{ id: "thread-1", latestInboundMessageId: "message-2" }];
+      }
+      return [
+        {
+          id: "draft-2",
+          threadId: "thread-1",
+          inboundMessageId: "message-2",
+          status: "send_uncertain",
+          approvedText,
+        },
+      ];
+    });
+
+    await expect(finalizeApprovedDraftSend(input)).rejects.toThrow("send_state_not_recorded");
+    expect(tx.dmMessage.create).not.toHaveBeenCalled();
+    expect(tx.eventLog.create).not.toHaveBeenCalled();
+  });
+
+  it("propagates an audit failure so the whole strict finalization transaction rolls back", async () => {
+    tx.eventLog.create.mockRejectedValue(new Error("audit unavailable"));
+
+    await expect(finalizeApprovedDraftSend(input)).rejects.toThrow("audit unavailable");
+    expect(tx.dmMessage.create).toHaveBeenCalledOnce();
+    expect(tx.replyDraft.updateMany).toHaveBeenCalledOnce();
+    expect(tx.eventLog.create).toHaveBeenCalledOnce();
   });
 });
 

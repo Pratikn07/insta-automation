@@ -161,12 +161,24 @@ test("follow-up cancelled by new inbound offers a fresh reply only", async ({ pa
   await expect(page.getByRole("button", { name: "Try another" })).toHaveCount(0);
 });
 
-test("stale reply blocks approval but keeps new-draft regeneration available", async ({ page }) => {
+test("stale reply creates a new draft for the current inbound", async ({ page }) => {
   await page.goto("/e2e/index.html?scenario=stale-reply");
 
   await expect(page.getByText("New message received — generate a new draft.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Approve & Send" })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Try another" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Try another" })).toHaveCount(0);
+
+  const create = page.getByRole("button", { name: "Draft a reply" });
+  await expect(create).toBeVisible();
+  await create.click();
+
+  const captured = page.getByTestId("captured-request-body");
+  await expect(captured).toContainText('"method":"POST"');
+  await expect(captured).toContainText('"path":"/ai/dm-threads/thread-1/drafts"');
+  await expect(captured).toContainText('"body":null');
+  await expect(captured).not.toContainText("inboundMessageId");
+  await expect(page.getByLabel("Reply draft")).toHaveValue("Reply to the newest inbound");
+  await expect(page.getByText("New message received — generate a new draft.")).toHaveCount(0);
 });
 
 test("the DM drawer fits a phone with its actions reachable", async ({ page }) => {

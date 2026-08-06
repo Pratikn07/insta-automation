@@ -42,12 +42,7 @@ const FOLLOW_GATE =
   "You're one step away! 💛 Follow @tinysoho, then reply DONE here and I'll send it right over. (Just followed? Give it a few seconds and reply DONE again.)";
 
 function graphFailureMetadata(err: unknown): Record<string, unknown> {
-  const detail = describeGraphError(err);
-  const metadata: Record<string, unknown> = { errorCode: "graph_request_failed" };
-  for (const key of ["httpStatus", "code", "subcode", "fbtrace_id"] as const) {
-    if (detail[key] !== undefined) metadata[key] = detail[key];
-  }
-  return metadata;
+  return { errorCode: "graph_request_failed", ...describeGraphError(err) };
 }
 
 async function scheduleFollowUpAfterDelivery(input: {

@@ -30,7 +30,10 @@ export async function fetchProfileTotals(): Promise<ProfileTotals> {
     const raw = data.followers_count;
     const followersTotal = typeof raw === "number" && Number.isFinite(raw) ? raw : null;
     if (followersTotal === null) {
-      logger.warn({ raw }, "followers_count missing or non-numeric");
+      logger.warn(
+        { errorCode: "followers_count_invalid", valueType: typeof raw },
+        "followers_count missing or non-numeric",
+      );
     }
     return { followersTotal };
   } catch (err) {

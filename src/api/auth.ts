@@ -19,7 +19,7 @@ export async function requireAdmin(req: Request, res: Response, next: NextFuncti
 
   const { data, error } = await supabase.auth.getUser(token);
   if (error || !data.user) {
-    logger.warn({ err: error?.message }, "Admin token rejected by Supabase");
+    logger.warn({ errorCode: "admin_token_rejected" }, "Admin token rejected by Supabase");
     return res.status(401).json({ error: "invalid_token" });
   }
 

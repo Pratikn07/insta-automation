@@ -4,10 +4,12 @@ const sendTextMessage = vi.fn();
 const sendPrivateReply = vi.fn();
 const sendMedia = vi.fn();
 const recordOutboundMessage = vi.fn();
+const loggerError = vi.fn();
 
 vi.mock("../meta/sendMessage.js", () => ({ sendTextMessage, sendPrivateReply }));
 vi.mock("../meta/sendMedia.js", () => ({ sendMedia }));
 vi.mock("./dmThreadService.js", () => ({ recordOutboundMessage }));
+vi.mock("../lib/logger.js", () => ({ logger: { error: loggerError } }));
 
 const { sendTrackedText, sendTrackedPrivateReply, sendTrackedMedia } = await import(
   "./dmDeliveryService.js"
@@ -18,6 +20,7 @@ beforeEach(() => {
   sendPrivateReply.mockReset().mockResolvedValue({ messageId: "mid-2" });
   sendMedia.mockReset().mockResolvedValue({ messageId: "mid-3" });
   recordOutboundMessage.mockReset().mockResolvedValue(undefined);
+  loggerError.mockReset();
 });
 
 describe("sendTrackedText", () => {
@@ -46,6 +49,37 @@ describe("sendTrackedText", () => {
 
     expect(sendTextMessage).toHaveBeenCalledOnce();
     expect(recordOutboundMessage).toHaveBeenCalledOnce();
+  });
+
+  it("logs only stable delivery metadata when the fallback itself catches a secret error", async () => {
+    const sentinels = [
+      "PRIVATE-DM-SENTINEL",
+      "ACCESS-TOKEN-SENTINEL",
+      "https://graph.instagram.com/messages?access_token=ACCESS-TOKEN-SENTINEL",
+      "PROVIDER-MESSAGE-SENTINEL",
+      "REQUEST-BODY-SENTINEL",
+      "ARBITRARY-AXIOS-CODE-SENTINEL",
+    ];
+    recordOutboundMessage.mockRejectedValue(new Error(sentinels.join(" ")));
+
+    await sendTrackedText({
+      recipientIgUserId: "ig-user-1",
+      text: "PRIVATE-DM-SENTINEL",
+      source: "keyword_automation",
+    });
+
+    expect(loggerError).toHaveBeenCalledWith(
+      {
+        errorCode: "dm_history_write_failed",
+        igUserId: "ig-user-1",
+        instagramMessageId: "mid-1",
+        source: "keyword_automation",
+        length: "PRIVATE-DM-SENTINEL".length,
+      },
+      "Outbound DM was delivered but could not be recorded",
+    );
+    const captured = JSON.stringify(loggerError.mock.calls);
+    for (const sentinel of sentinels) expect(captured).not.toContain(sentinel);
   });
 
   it("sends to Instagram BEFORE recording", async () => {
@@ -99,6 +133,21 @@ describe("sendTrackedText", () => {
         source: "ai_approved",
       }),
     );
+  });
+
+  it("can defer history so an AI send is finalized in one strict transaction", async () => {
+    await expect(
+      sendTrackedText({
+        recipientIgUserId: "ig-user-1",
+        text: "Exact owner-approved text",
+        source: "ai_approved",
+        history: "deferred",
+      }),
+    ).resolves.toEqual({ messageId: "mid-1" });
+
+    expect(sendTextMessage).toHaveBeenCalledOnce();
+    expect(sendTextMessage).toHaveBeenCalledWith("ig-user-1", "Exact owner-approved text");
+    expect(recordOutboundMessage).not.toHaveBeenCalled();
   });
 });
 
