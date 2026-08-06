@@ -35,6 +35,7 @@ vi.mock("../lib/prisma.js", () => ({
 
 const {
   queueReplyDraft,
+  regenerateReplyDraft,
   claimOneQueuedDraft,
   expireDueFollowUps,
   loadDraftContext,
@@ -162,6 +163,114 @@ describe("queueReplyDraft", () => {
   it("runs revision allocation and supersession in one transaction", async () => {
     await queueReplyDraft(INPUT);
     expect($transaction).toHaveBeenCalledOnce();
+  });
+});
+
+describe("regenerateReplyDraft", () => {
+  const INPUT = { threadId: "thread-1", draftId: "draft-1" };
+  const FOLLOW_UP_ROW = {
+    threadId: "thread-1",
+    inboundMessageId: "message-1",
+    status: "pending_approval",
+    kind: "engagement_follow_up",
+    sourceConversationId: "conversation-1",
+    eligibleAt: new Date("2026-08-05T22:00:00.000Z"),
+    expiresAt: new Date("2026-08-06T09:15:00.000Z"),
+    promptVersion: CURRENT_DM_PROMPT_VERSION,
+    latestInboundMessageId: "message-1",
+    threadIgUserId: "ig-user-1",
+    sourceIgUserId: "ig-user-1",
+    sourceCompletedAt: new Date("2026-08-05T10:00:00.000Z"),
+    isEligible: true,
+    isUnexpired: true,
+  };
+
+  beforeEach(() => {
+    tx.$queryRaw.mockResolvedValue([FOLLOW_UP_ROW]);
+    tx.replyDraft.findFirst.mockResolvedValue(null);
+    tx.replyDraft.updateMany.mockResolvedValue({ count: 1 });
+    tx.replyDraft.aggregate.mockResolvedValue({ _max: { revision: 3 } });
+    tx.replyDraft.create.mockResolvedValue({ id: "draft-4", status: "queued" });
+  });
+
+  it("atomically preserves the validated follow-up source and timing", async () => {
+    await expect(regenerateReplyDraft(INPUT)).resolves.toMatchObject({
+      id: "draft-4",
+      status: "queued",
+    });
+
+    expect($transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: "Serializable",
+    });
+    expect(tx.replyDraft.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "draft-1",
+        threadId: "thread-1",
+        inboundMessageId: "message-1",
+        status: "pending_approval",
+        kind: "engagement_follow_up",
+        promptVersion: CURRENT_DM_PROMPT_VERSION,
+      },
+      data: { status: "superseded" },
+    });
+    expect(tx.replyDraft.create).toHaveBeenCalledWith({
+      data: {
+        threadId: "thread-1",
+        inboundMessageId: "message-1",
+        revision: 4,
+        status: "queued",
+        kind: "engagement_follow_up",
+        sourceConversationId: "conversation-1",
+        eligibleAt: new Date("2026-08-05T22:00:00.000Z"),
+        nextAttemptAt: new Date("2026-08-05T22:00:00.000Z"),
+        expiresAt: new Date("2026-08-06T09:15:00.000Z"),
+        promptVersion: CURRENT_DM_PROMPT_VERSION,
+      },
+    });
+    const validationSql = (tx.$queryRaw.mock.calls[0]?.[0] as TemplateStringsArray).join("?");
+    expect(validationSql).toContain("FOR UPDATE OF draft, thread");
+    expect(validationSql).toContain("clock_timestamp()");
+    expect(validationSql).toContain('thread."latest_inbound_message_id"');
+    expect(validationSql).toContain('source."ig_user_id"');
+  });
+
+  it.each([
+    ["superseded", FOLLOW_UP_ROW, "draft_not_pending"],
+    ["stale inbound", { ...FOLLOW_UP_ROW, latestInboundMessageId: "message-2" }, "stale_draft"],
+    ["old policy", { ...FOLLOW_UP_ROW, promptVersion: CURRENT_DM_PROMPT_VERSION - 1 }, "prompt_policy_outdated"],
+    ["not eligible", { ...FOLLOW_UP_ROW, isEligible: false }, "follow_up_not_ready"],
+    ["wrong source user", { ...FOLLOW_UP_ROW, sourceIgUserId: "ig-user-2" }, "stale_draft"],
+    ["unfinished source", { ...FOLLOW_UP_ROW, sourceCompletedAt: null }, "stale_draft"],
+  ])("rejects %s before superseding any draft", async (_case, row, code) => {
+    if (_case === "superseded") row = { ...row, status: "superseded" };
+    tx.$queryRaw.mockResolvedValue([row]);
+
+    await expect(regenerateReplyDraft(INPUT)).rejects.toMatchObject({ code });
+    expect(tx.replyDraft.updateMany).not.toHaveBeenCalled();
+    expect(tx.replyDraft.create).not.toHaveBeenCalled();
+  });
+
+  it("commits expiry without superseding or creating a replacement", async () => {
+    tx.$queryRaw.mockResolvedValue([{ ...FOLLOW_UP_ROW, isUnexpired: false }]);
+    tx.$executeRaw.mockResolvedValue(1);
+
+    await expect(regenerateReplyDraft(INPUT)).rejects.toMatchObject({
+      code: "follow_up_window_closed",
+    });
+    expect(tx.replyDraft.updateMany).not.toHaveBeenCalled();
+    expect(tx.replyDraft.create).not.toHaveBeenCalled();
+    const expirySql = (tx.$executeRaw.mock.calls[0]?.[0] as TemplateStringsArray).join("?");
+    expect(expirySql).toContain('"status" = \'expired\'');
+    expect(expirySql).toContain('"expires_at" <= clock_timestamp()');
+  });
+
+  it("does not supersede a newer active reply when a failed follow-up is retried", async () => {
+    tx.$queryRaw.mockResolvedValue([{ ...FOLLOW_UP_ROW, status: "generation_failed" }]);
+    tx.replyDraft.findFirst.mockResolvedValue({ id: "reply-new" });
+
+    await expect(regenerateReplyDraft(INPUT)).rejects.toMatchObject({ code: "stale_draft" });
+    expect(tx.replyDraft.updateMany).not.toHaveBeenCalled();
+    expect(tx.replyDraft.create).not.toHaveBeenCalled();
   });
 });
 

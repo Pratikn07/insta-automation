@@ -3,6 +3,7 @@ import type { DmThreadDetail, ReplyDraft, ReplyDraftStatus } from "@/lib/types";
 import {
   MAX_REPLY_LENGTH,
   approvalGate,
+  draftActionErrorMessage,
   draftStatusLabel,
   isVisibleDraft,
   isStale,
@@ -28,6 +29,8 @@ function draft(overrides: Partial<ReplyDraft> = {}): ReplyDraft {
     eligibleAt: "2026-08-04T10:00:00.000Z",
     expiresAt: null,
     promptVersion: 2,
+    promptPolicyCurrent: true,
+    sourceGuide: null,
     inboundMessageId: "message-2",
     approvedBy: null,
     approvedAt: null,
@@ -157,6 +160,13 @@ describe("approvalGate", () => {
     ).toBe("send_disabled");
   });
 
+  it("blocks a server-marked outdated prompt policy", () => {
+    const outdated = Object.assign(draft(), { promptPolicyCurrent: false });
+    expect(
+      approvalGate({ thread: thread(), draft: outdated, text: "hi", ...OK }),
+    ).toEqual({ canApprove: false, reason: "prompt_policy_outdated" });
+  });
+
   it("allows a ready follow-up until the exact expiry boundary", () => {
     expect(
       approvalGate({
@@ -216,6 +226,23 @@ describe("approvalGate", () => {
       ).toBe(false);
     },
   );
+});
+
+describe("draftActionErrorMessage", () => {
+  it.each([
+    ["prompt_policy_outdated", "This draft uses an older prompt policy and can no longer be used."],
+    ["stale_draft", "A newer Instagram message arrived before this action completed."],
+    ["follow_up_not_ready", "This follow-up is not ready yet."],
+    ["follow_up_window_closed", "The Instagram reply window closed before this could be sent."],
+  ])("maps %s to a closed safe message", (code, message) => {
+    expect(draftActionErrorMessage(code)).toBe(message);
+  });
+
+  it("never displays an unknown backend message", () => {
+    expect(draftActionErrorMessage("SECRET raw Graph failure")).toBe(
+      "This action could not be completed. Refresh and try again.",
+    );
+  });
 });
 
 describe("draftStatusLabel", () => {

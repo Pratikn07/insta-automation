@@ -73,6 +73,9 @@ test("follow-up ready shows deadline and current prompt policy", async ({ page }
   await expect(page.getByText("Follow-up ready")).toBeVisible();
   await expect(page.getByText(/Send by/)).toBeVisible();
   await expect(page.getByText("Prompt policy v2")).toBeVisible();
+  await expect(page.getByText("Toddler Sleep Guide")).toBeVisible();
+  await expect(page.getByText("A gentle bedtime routine guide.")).toBeVisible();
+  await expect(page.getByText(/SLEEP/)).toBeVisible();
   await expect(page.getByLabel("Follow-up draft")).toHaveValue(
     "How did bedtime go after trying the guide?",
   );
@@ -88,10 +91,40 @@ test("follow-up expiry disables an already open editor at the deadline", async (
   await expect(page.getByRole("button", { name: "Approve & Send" })).toBeEnabled();
 
   await page.clock.fastForward(30_000);
+  await expect(page.getByText("Follow-up expired")).toBeVisible();
   await expect(editor).toBeDisabled();
   await expect(page.getByText("The Instagram reply window has closed.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Approve & Send" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Try another" })).toHaveCount(0);
+});
+
+test("same-id follow-up hydrates once and preserves dirty owner text", async ({ page }) => {
+  await page.clock.install({ time: new Date("2026-08-05T22:00:00.000Z") });
+  await page.goto("/e2e/index.html?scenario=follow-up-hydration");
+
+  await expect(page.getByText("Writing follow-up", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Follow-up draft")).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Refresh test draft" }).click();
+  const editor = page.getByLabel("Follow-up draft");
+  await expect(editor).toHaveValue("How did bedtime go after trying the guide?");
+
+  await editor.fill("My exact local edit");
+  await page.getByRole("button", { name: "Refresh test draft" }).click();
+  await expect(editor).toHaveValue("My exact local edit");
+});
+
+test("outdated server policy disables every draft action", async ({ page }) => {
+  await page.clock.install({ time: new Date("2026-08-05T22:00:00.000Z") });
+  await page.goto("/e2e/index.html?scenario=follow-up-outdated-policy");
+
+  await expect(
+    page.getByText("This draft uses an older prompt policy and can no longer be used."),
+  ).toBeVisible();
+  await expect(page.getByLabel("Follow-up draft")).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Approve & Send" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Try another" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Retry send" })).toHaveCount(0);
 });
 
 test("follow-up window race refreshes to the controlled expired state", async ({ page }) => {
@@ -104,6 +137,17 @@ test("follow-up window race refreshes to the controlled expired state", async ({
   ).toBeVisible();
   await expect(page.getByText("Follow-up expired")).toBeVisible();
   await expect(page.getByRole("button", { name: "Approve & Send" })).toHaveCount(0);
+});
+
+test("an action error does not leak onto a replacement draft", async ({ page }) => {
+  await page.clock.install({ time: new Date("2026-08-05T22:00:00.000Z") });
+  await page.goto("/e2e/index.html?scenario=follow-up-error-scope");
+
+  await page.getByRole("button", { name: "Approve & Send" }).click();
+  await expect(page.getByLabel("Follow-up draft")).toHaveValue("Replacement follow-up text");
+  await expect(
+    page.getByText("The Instagram reply window closed before this could be sent."),
+  ).toHaveCount(0);
 });
 
 test("follow-up cancelled by new inbound offers a fresh reply only", async ({ page }) => {

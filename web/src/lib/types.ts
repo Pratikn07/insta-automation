@@ -506,6 +506,14 @@ export interface ReplyDraft {
   eligibleAt: string;
   expiresAt: string | null;
   promptVersion: number | null;
+  /** Server-authoritative comparison against the currently deployable policy. */
+  promptPolicyCurrent: boolean;
+  sourceGuide: {
+    name: string;
+    description: string | null;
+    kind: string | null;
+    keyword: string;
+  } | null;
   approvedBy: string | null;
   approvedAt: string | null;
   sentAt: string | null;

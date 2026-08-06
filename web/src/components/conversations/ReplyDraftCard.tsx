@@ -22,7 +22,7 @@ export interface ReplyDraftCardProps {
   draft: ReplyDraft;
   sendEnabled: boolean;
   mutationPending: boolean;
-  windowClosedError?: boolean;
+  actionErrorMessage?: string | null;
   onEdit: (workingText: string) => void;
   onRegenerate: () => void;
   onDismiss: () => void;
@@ -39,12 +39,15 @@ const GATE_MESSAGE: Record<string, string> = {
   uncertain_needs_check: "Check Instagram before retrying.",
   follow_up_not_ready: "This follow-up is not ready yet.",
   follow_up_window_closed: "The Instagram reply window has closed.",
+  prompt_policy_outdated: "This draft uses an older prompt policy and can no longer be used.",
   not_pending: "This draft can't be sent.",
 };
 
 export function ReplyDraftCard(props: ReplyDraftCardProps) {
   const { thread, draft, sendEnabled, mutationPending } = props;
-  const [text, setText] = useState(draft.workingText ?? draft.suggestedText ?? "");
+  // null means pristine: keep following server hydration for this same draft ID.
+  // Once the owner types, their local copy wins over background refetches.
+  const [localText, setLocalText] = useState<string | null>(null);
   const [confirmedNotDelivered, setConfirmedNotDelivered] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
@@ -56,6 +59,7 @@ export function ReplyDraftCard(props: ReplyDraftCardProps) {
   }, []);
 
   const now = new Date(nowMs);
+  const text = localText ?? draft.workingText ?? draft.suggestedText ?? "";
   const gate = approvalGate({ thread, draft, text, sendEnabled, mutationPending, now });
   const stale = isStale(thread, draft);
   const drafting = draft.status === "queued" || draft.status === "generating";
@@ -67,11 +71,14 @@ export function ReplyDraftCard(props: ReplyDraftCardProps) {
     (followUp && draft.expiresAt !== null && now >= new Date(draft.expiresAt));
   const cancelled = followUp && draft.status === "superseded";
   const terminal = expired || cancelled;
-  const canEdit = draft.status === "pending_approval" && !stale && !terminal;
+  const policyOutdated = !draft.promptPolicyCurrent;
+  const canEdit = draft.status === "pending_approval" && !stale && !terminal && !policyOutdated;
   const canRegenerate =
     (draft.status === "pending_approval" || draft.status === "generation_failed") &&
     (!stale || !followUp) &&
-    !terminal;
+    !terminal &&
+    !policyOutdated;
+  const visibleStatus = expired ? "expired" : draft.status;
 
   return (
     <Card className="border-brand/30">
@@ -79,7 +86,7 @@ export function ReplyDraftCard(props: ReplyDraftCardProps) {
         <div className="flex items-center justify-between gap-2">
           <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             <Sparkles className="size-3.5" />
-            {draftStatusLabel(draft.status, draft.kind)}
+            {draftStatusLabel(visibleStatus, draft.kind)}
             {draft.revision > 1 && <span className="opacity-60">· v{draft.revision}</span>}
           </span>
           {draft.confidence && !drafting && (
@@ -110,10 +117,28 @@ export function ReplyDraftCard(props: ReplyDraftCardProps) {
           </p>
         )}
 
-        {props.windowClosedError && (
+        {followUp && draft.sourceGuide && (
+          <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+            <p>
+              Following up on <strong className="text-foreground">{draft.sourceGuide.name}</strong>
+              {draft.sourceGuide.keyword ? ` · ${draft.sourceGuide.keyword}` : ""}
+              {draft.sourceGuide.kind ? ` · ${draft.sourceGuide.kind}` : ""}
+            </p>
+            {draft.sourceGuide.description && <p className="mt-1">{draft.sourceGuide.description}</p>}
+          </div>
+        )}
+
+        {props.actionErrorMessage && (
           <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
             <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
-            <span>The Instagram reply window closed before this could be sent.</span>
+            <span>{props.actionErrorMessage}</span>
+          </div>
+        )}
+
+        {policyOutdated && (
+          <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
+            <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
+            <span>This draft uses an older prompt policy and can no longer be used.</span>
           </div>
         )}
 
@@ -161,7 +186,7 @@ export function ReplyDraftCard(props: ReplyDraftCardProps) {
           <>
             <textarea
               value={text}
-              onChange={(e) => setText(e.target.value)}
+              onChange={(e) => setLocalText(e.target.value)}
               onBlur={() => {
                 const trimmed = text.trim();
                 if (canEdit && trimmed !== (draft.workingText ?? "")) props.onEdit(trimmed);
@@ -197,7 +222,7 @@ export function ReplyDraftCard(props: ReplyDraftCardProps) {
           </p>
         )}
 
-        {terminal || drafting ? null : uncertain || failedSend ? (
+        {terminal || drafting ? null : (uncertain || failedSend) && !policyOutdated ? (
           <div className="space-y-2">
             <label className="flex items-start gap-2 text-xs">
               <input

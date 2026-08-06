@@ -18,6 +18,7 @@ import {
   markSendUncertain,
   markSent,
   queueReplyDraft,
+  regenerateReplyDraft,
 } from "../services/replyDraftService.js";
 import type { DraftActionCode } from "../services/replyDraftService.js";
 
@@ -265,31 +266,13 @@ export function createAiRouter(deps: AiRouterDependencies): Router {
     if (draftsDisabled(res)) return;
 
     try {
-      const draft = await loadDraft(req.params.threadId, req.params.draftId);
-      if (!draft) return res.status(404).json({ error: "draft_not_found" });
-
-      const thread = await prisma.dmThread.findUnique({
-        where: { id: draft.threadId },
-        select: { latestInboundMessageId: true },
-      });
-      if (!thread?.latestInboundMessageId) {
-        return res.status(409).json({ error: "no_inbound_message" });
-      }
-
-      // queueReplyDraft supersedes any active draft and allocates the next revision.
-      const next = await queueReplyDraft({
-        threadId: draft.threadId,
-        inboundMessageId: thread.latestInboundMessageId,
-        ...(draft.kind === "engagement_follow_up" && {
-          kind: draft.kind,
-          sourceConversationId: draft.sourceConversationId,
-          eligibleAt: draft.eligibleAt,
-          expiresAt: draft.expiresAt,
-        }),
+      const next = await regenerateReplyDraft({
+        threadId: req.params.threadId,
+        draftId: req.params.draftId,
       });
       await writeDraftAudit("ai_draft_regenerated", {
-        threadId: draft.threadId,
-        previousDraftId: draft.id,
+        threadId: req.params.threadId,
+        previousDraftId: req.params.draftId,
         draftId: next.id,
         by: req.adminEmail ?? null,
       });

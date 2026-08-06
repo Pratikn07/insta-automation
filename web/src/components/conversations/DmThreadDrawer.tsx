@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Sparkles } from "lucide-react";
 import { ApiError, api } from "@/lib/api";
@@ -7,7 +8,7 @@ import { Drawer } from "@/components/ui/drawer";
 import { IncomingBubble, OutgoingBubble } from "@/components/ChatBubbles";
 import { displayUser } from "@/lib/utils";
 import { ReplyDraftCard } from "./ReplyDraftCard";
-import { isVisibleDraft } from "./replyDraftView";
+import { draftActionErrorMessage, isVisibleDraft } from "./replyDraftView";
 
 /**
  * The real message thread plus its approval surface.
@@ -26,6 +27,11 @@ export function DmThreadDrawer({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
+  const [actionError, setActionError] = useState<{
+    threadId: string | null;
+    draftId: string | null;
+    code: string | null;
+  } | null>(null);
 
   const detailQ = useQuery<DmThreadDetail>({
     queryKey: ["dm-thread", threadId],
@@ -45,7 +51,13 @@ export function DmThreadDrawer({
   }
 
   function handleMutationError(error: Error) {
-    if (isErrorCode(error, "follow_up_window_closed")) void refreshAll();
+    setActionError({ threadId, draftId: draft?.id ?? null, code: apiErrorCode(error) });
+    void refreshAll();
+  }
+
+  async function handleMutationSuccess() {
+    setActionError(null);
+    await refreshAll();
   }
 
   const draftPath = (action: string) =>
@@ -54,32 +66,32 @@ export function DmThreadDrawer({
   const edit = useMutation({
     mutationFn: (workingText: string) =>
       api<void>(draftPath(""), { method: "PATCH", body: JSON.stringify({ workingText }) }),
-    onSuccess: refreshAll,
+    onSuccess: handleMutationSuccess,
     onError: handleMutationError,
   });
 
   const regenerate = useMutation({
     mutationFn: () => api<void>(draftPath("/regenerate"), { method: "POST" }),
-    onSuccess: refreshAll,
+    onSuccess: handleMutationSuccess,
     onError: handleMutationError,
   });
 
   const dismiss = useMutation({
     mutationFn: () => api<void>(draftPath("/dismiss"), { method: "POST" }),
-    onSuccess: refreshAll,
+    onSuccess: handleMutationSuccess,
     onError: handleMutationError,
   });
 
   const generate = useMutation({
     mutationFn: () => api<void>(`/ai/dm-threads/${threadId}/drafts`, { method: "POST" }),
-    onSuccess: refreshAll,
+    onSuccess: handleMutationSuccess,
     onError: handleMutationError,
   });
 
   const approve = useMutation({
     mutationFn: (workingText: string) =>
       api<void>(draftPath("/approve"), { method: "POST", body: JSON.stringify({ workingText }) }),
-    onSuccess: refreshAll,
+    onSuccess: handleMutationSuccess,
     onError: handleMutationError,
   });
 
@@ -89,7 +101,7 @@ export function DmThreadDrawer({
         method: "POST",
         body: JSON.stringify({ confirmedNotDelivered: true }),
       }),
-    onSuccess: refreshAll,
+    onSuccess: handleMutationSuccess,
     onError: handleMutationError,
   });
 
@@ -100,14 +112,10 @@ export function DmThreadDrawer({
     approve.isPending ||
     retry.isPending ||
     generate.isPending;
-  const windowClosedError = [
-    edit.error,
-    regenerate.error,
-    dismiss.error,
-    approve.error,
-    retry.error,
-    generate.error,
-  ].some((error) => isErrorCode(error, "follow_up_window_closed"));
+  const actionErrorMessage =
+    actionError?.threadId === threadId && actionError.draftId === draft?.id
+      ? draftActionErrorMessage(actionError.code)
+      : null;
   const terminalFollowUp =
     draft?.kind === "engagement_follow_up" &&
     (draft.status === "expired" || draft.status === "superseded");
@@ -142,7 +150,7 @@ export function DmThreadDrawer({
               draft={draft}
               sendEnabled={sendEnabled}
               mutationPending={mutationPending}
-              windowClosedError={windowClosedError}
+              actionErrorMessage={actionErrorMessage}
               onEdit={(t) => edit.mutate(t)}
               onRegenerate={() => regenerate.mutate()}
               onDismiss={() => dismiss.mutate()}
@@ -166,12 +174,11 @@ export function DmThreadDrawer({
   );
 }
 
-function isErrorCode(error: unknown, code: string): error is ApiError {
-  if (!(error instanceof ApiError)) return false;
-  return (
-    typeof error.body === "object" &&
-    error.body !== null &&
-    "error" in error.body &&
-    (error.body as { error: unknown }).error === code
-  );
+function apiErrorCode(error: unknown): string | null {
+  if (!(error instanceof ApiError)) return null;
+  if (typeof error.body !== "object" || error.body === null || !("error" in error.body)) {
+    return null;
+  }
+  const code = (error.body as { error: unknown }).error;
+  return typeof code === "string" ? code : null;
 }

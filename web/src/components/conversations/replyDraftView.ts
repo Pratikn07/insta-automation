@@ -53,6 +53,7 @@ export interface ApprovalGate {
     | "too_long"
     | "in_flight"
     | "send_disabled"
+    | "prompt_policy_outdated"
     | "uncertain_needs_check"
     | "follow_up_not_ready"
     | "follow_up_window_closed";
@@ -79,6 +80,9 @@ export function approvalGate(input: {
 
   if (!sendEnabled) return { canApprove: false, reason: "send_disabled" };
   if (!draft) return { canApprove: false, reason: "not_pending" };
+  if (!draft.promptPolicyCurrent) {
+    return { canApprove: false, reason: "prompt_policy_outdated" };
+  }
   if (draft.kind === "engagement_follow_up") {
     if (draft.expiresAt && now >= new Date(draft.expiresAt)) {
       return { canApprove: false, reason: "follow_up_window_closed" };
@@ -101,6 +105,22 @@ export function approvalGate(input: {
   if (trimmed.length > MAX_REPLY_LENGTH) return { canApprove: false, reason: "too_long" };
 
   return { canApprove: true, reason: null };
+}
+
+/** Map only stable server codes; raw backend/provider text never reaches the UI. */
+export function draftActionErrorMessage(code: string | null): string {
+  switch (code) {
+    case "prompt_policy_outdated":
+      return "This draft uses an older prompt policy and can no longer be used.";
+    case "stale_draft":
+      return "A newer Instagram message arrived before this action completed.";
+    case "follow_up_not_ready":
+      return "This follow-up is not ready yet.";
+    case "follow_up_window_closed":
+      return "The Instagram reply window closed before this could be sent.";
+    default:
+      return "This action could not be completed. Refresh and try again.";
+  }
 }
 
 /** Row/badge label for a status. Plain English, no internal jargon. */

@@ -87,4 +87,88 @@ describe("GET /api/dm-threads/:threadId", () => {
       }),
     );
   });
+
+  it("returns only bounded guide identity context for a follow-up", async () => {
+    findUnique.mockResolvedValueOnce({
+      id: "thread-1",
+      igUserId: "ig-user-1",
+      username: "geri",
+      name: "Geri",
+      needsReply: false,
+      latestInboundMessageId: "message-201",
+      lastMessageAt: messages[200]!.instagramTimestamp,
+      messages: [],
+      drafts: [
+        {
+          id: "follow-up-1",
+          kind: "engagement_follow_up",
+          status: "pending_approval",
+          revision: 1,
+          suggestedText: "How did bedtime go?",
+          workingText: "How did bedtime go?",
+          approvedText: null,
+          rationale: "Asks one question.",
+          confidence: "high",
+          warnings: [],
+          errorCode: null,
+          errorMessage: null,
+          retryAt: null,
+          inboundMessageId: "message-201",
+          sourceConversationId: "conversation-1",
+          eligibleAt: new Date("2026-08-05T22:00:00.000Z"),
+          expiresAt: new Date("2026-08-06T09:15:00.000Z"),
+          promptVersion: 1,
+          approvedBy: null,
+          approvedAt: null,
+          sentAt: null,
+          createdAt: new Date("2026-08-05T10:00:00.000Z"),
+          sourceConversation: {
+            id: "conversation-1",
+            igUserId: "ig-user-1",
+            keyword: {
+              keyword: "S".repeat(120),
+              resource: {
+                name: "N".repeat(250),
+                description: "D".repeat(700),
+                kind: "K".repeat(80),
+              },
+            },
+          },
+        },
+      ],
+    });
+
+    const response = await request(makeApp()).get("/api/dm-threads/thread-1").expect(200);
+
+    expect(response.body.draft.sourceGuide).toEqual({
+      name: "N".repeat(200),
+      description: "D".repeat(500),
+      kind: "K".repeat(64),
+      keyword: "S".repeat(100),
+    });
+    expect(response.body.draft.promptPolicyCurrent).toBe(false);
+    expect(response.body.draft).not.toHaveProperty("sourceConversation");
+    expect(findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({
+          drafts: expect.objectContaining({
+            select: expect.objectContaining({
+              sourceConversation: {
+                select: {
+                  keyword: {
+                    select: {
+                      keyword: true,
+                      resource: {
+                        select: { name: true, description: true, kind: true },
+                      },
+                    },
+                  },
+                },
+              },
+            }),
+          }),
+        }),
+      }),
+    );
+  });
 });

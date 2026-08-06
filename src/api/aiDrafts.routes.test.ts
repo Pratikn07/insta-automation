@@ -8,6 +8,7 @@ const dmThread = { findUnique: vi.fn() };
 const claimApprovedDraft = vi.fn();
 const claimRetryDraft = vi.fn();
 const queueReplyDraft = vi.fn();
+const regenerateReplyDraft = vi.fn();
 const markSent = vi.fn();
 const markSendFailed = vi.fn();
 const markSendUncertain = vi.fn();
@@ -24,6 +25,7 @@ vi.mock("../services/replyDraftService.js", async (importOriginal) => {
     claimApprovedDraft,
     claimRetryDraft,
     queueReplyDraft,
+    regenerateReplyDraft,
     markSent,
     markSendFailed,
     markSendUncertain,
@@ -95,6 +97,7 @@ beforeEach(() => {
     claimApprovedDraft,
     claimRetryDraft,
     queueReplyDraft,
+    regenerateReplyDraft,
     markSent,
     markSendFailed,
     markSendUncertain,
@@ -546,39 +549,29 @@ describe("POST dismiss / regenerate", () => {
     expect(JSON.stringify(res.body)).not.toContain("private body");
   });
 
-  it("regenerate queues a new revision for the latest inbound", async () => {
-    queueReplyDraft.mockResolvedValue({ id: "draft-3", status: "queued" });
+  it("delegates regeneration to the atomic service", async () => {
+    regenerateReplyDraft.mockResolvedValue({ id: "draft-3", status: "queued" });
     await request(makeApp())
       .post(`${base}/regenerate`)
       .expect(202, { draftId: "draft-3", status: "queued" });
 
-    expect(queueReplyDraft).toHaveBeenCalledWith({
+    expect(regenerateReplyDraft).toHaveBeenCalledWith({
       threadId: "thread-1",
-      inboundMessageId: "message-2",
+      draftId: "draft-2",
     });
+    expect(replyDraft.findUnique).not.toHaveBeenCalled();
+    expect(dmThread.findUnique).not.toHaveBeenCalled();
   });
 
-  it("regenerate preserves the follow-up schedule and source", async () => {
-    replyDraft.findUnique.mockResolvedValue({
-      ...PENDING,
-      kind: "engagement_follow_up",
-      sourceConversationId: "conversation-1",
-      eligibleAt: new Date("2026-08-05T22:00:00.000Z"),
-      expiresAt: new Date("2026-08-06T09:15:00.000Z"),
-    });
-    queueReplyDraft.mockResolvedValue({ id: "draft-3", status: "queued" });
+  it.each(["stale_draft", "prompt_policy_outdated", "follow_up_window_closed"] as const)(
+    "returns the atomic service's stable %s rejection",
+    async (code) => {
+      regenerateReplyDraft.mockRejectedValue(new DraftActionError(code));
 
-    await request(makeApp()).post(`${base}/regenerate`).expect(202);
-
-    expect(queueReplyDraft).toHaveBeenCalledWith({
-      threadId: "thread-1",
-      inboundMessageId: "message-2",
-      kind: "engagement_follow_up",
-      sourceConversationId: "conversation-1",
-      eligibleAt: new Date("2026-08-05T22:00:00.000Z"),
-      expiresAt: new Date("2026-08-06T09:15:00.000Z"),
-    });
-  });
+      await request(makeApp()).post(`${base}/regenerate`).expect(409, { error: code });
+      expect(queueReplyDraft).not.toHaveBeenCalled();
+    },
+  );
 
   it("generate returns 202 for a thread with an inbound message", async () => {
     dmThread.findUnique.mockResolvedValue({
@@ -634,7 +627,7 @@ describe("queueing a draft requires the worker to be running", () => {
     await request(makeApp())
       .post("/api/ai/dm-threads/thread-1/drafts/draft-2/regenerate")
       .expect(403, { error: "ai_drafts_disabled" });
-    expect(queueReplyDraft).not.toHaveBeenCalled();
+    expect(regenerateReplyDraft).not.toHaveBeenCalled();
   });
 
   it("still queues when the worker is enabled", async () => {

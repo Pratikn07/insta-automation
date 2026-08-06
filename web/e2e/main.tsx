@@ -1,6 +1,6 @@
 import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { DmThreadDrawer } from "@/components/conversations/DmThreadDrawer";
 import { Assistant } from "@/pages/Assistant";
@@ -66,6 +66,8 @@ const THREAD = {
     eligibleAt: "2026-08-04T10:06:00.000Z",
     expiresAt: null,
     promptVersion: 2,
+    promptPolicyCurrent: true,
+    sourceGuide: null,
     approvedBy: null,
     approvedAt: null,
     sentAt: null,
@@ -84,6 +86,12 @@ const FOLLOW_UP = {
   suggestedText: "How did bedtime go after trying the guide?",
   workingText: "How did bedtime go after trying the guide?",
   rationale: "References the delivered guide and asks one easy question.",
+  sourceGuide: {
+    name: "Toddler Sleep Guide",
+    description: "A gentle bedtime routine guide.",
+    kind: "guide",
+    keyword: "SLEEP",
+  },
 };
 
 const ADVISOR_ANSWER = {
@@ -108,6 +116,7 @@ let capturedBody = "";
 let sentText = "";
 let approved = false;
 let windowClosed = false;
+let hydrationRefreshes = 0;
 const listeners = new Set<() => void>();
 
 function publish(body: string): void {
@@ -169,6 +178,22 @@ function installFetchStub(): void {
       if (scenario === "follow-up-ready") {
         return json({ ...THREAD, draft: FOLLOW_UP });
       }
+      if (scenario === "follow-up-hydration") {
+        return json({
+          ...THREAD,
+          draft: {
+            ...FOLLOW_UP,
+            status: hydrationRefreshes === 0 ? ("generating" as const) : ("pending_approval" as const),
+            workingText:
+              hydrationRefreshes < 2
+                ? "How did bedtime go after trying the guide?"
+                : "Server replacement that must not overwrite typing",
+          },
+        });
+      }
+      if (scenario === "follow-up-outdated-policy") {
+        return json({ ...THREAD, draft: { ...FOLLOW_UP, promptPolicyCurrent: false } });
+      }
       if (scenario === "follow-up-expiry") {
         return json({
           ...THREAD,
@@ -187,6 +212,20 @@ function installFetchStub(): void {
             status: windowClosed ? ("expired" as const) : ("pending_approval" as const),
             expiresAt: "2026-08-05T22:01:00.000Z",
           },
+        });
+      }
+      if (scenario === "follow-up-error-scope") {
+        return json({
+          ...THREAD,
+          draft: windowClosed
+            ? {
+                ...FOLLOW_UP,
+                id: "follow-up-2",
+                revision: 2,
+                workingText: "Replacement follow-up text",
+                suggestedText: "Replacement follow-up text",
+              }
+            : FOLLOW_UP,
         });
       }
       if (scenario === "follow-up-cancelled") {
@@ -283,12 +322,16 @@ function installFetchStub(): void {
 
     if (path === "/ai/dm-threads/thread-1/drafts/follow-up-1/approve" && method === "POST") {
       const scenario = new URLSearchParams(window.location.search).get("scenario");
-      if (scenario === "follow-up-window-race") {
+      if (scenario === "follow-up-window-race" || scenario === "follow-up-error-scope") {
         windowClosed = true;
         return json({ error: "follow_up_window_closed" }, 409);
       }
       publish(typeof init?.body === "string" ? init.body : "");
       return json({ status: "sent" });
+    }
+
+    if (path === "/ai/dm-threads/thread-1/drafts/follow-up-1" && method === "PATCH") {
+      return new Response(null, { status: 204 });
     }
 
     if (path === "/ai/connection" && method === "GET") {
@@ -316,6 +359,8 @@ function installFetchStub(): void {
 export function DmApprovalScenario() {
   const [open, setOpen] = useState(true);
   const body = useCapturedBody();
+  const queryClient = useQueryClient();
+  const scenario = new URLSearchParams(window.location.search).get("scenario");
   return (
     <div>
       <DmThreadDrawer
@@ -323,6 +368,18 @@ export function DmApprovalScenario() {
         sendEnabled
         onClose={() => setOpen(false)}
       />
+      {scenario === "follow-up-hydration" && (
+        <button
+          type="button"
+          className="fixed bottom-2 left-2 z-[60]"
+          onClick={() => {
+            hydrationRefreshes += 1;
+            void queryClient.invalidateQueries({ queryKey: ["dm-thread", "thread-1"] });
+          }}
+        >
+          Refresh test draft
+        </button>
+      )}
       <pre data-testid="captured-request-body">{body}</pre>
     </div>
   );

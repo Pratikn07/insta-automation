@@ -401,6 +401,153 @@ export class DraftActionError extends Error {
   }
 }
 
+type RegenerationRow = {
+  threadId: string;
+  inboundMessageId: string;
+  status: string;
+  kind: "reply" | "engagement_follow_up";
+  sourceConversationId: string | null;
+  eligibleAt: Date;
+  expiresAt: Date | null;
+  promptVersion: number | null;
+  latestInboundMessageId: string | null;
+  threadIgUserId: string;
+  sourceIgUserId: string | null;
+  sourceCompletedAt: Date | null;
+  isEligible: boolean;
+  isUnexpired: boolean;
+};
+
+/**
+ * Replace one reviewable draft without changing what it replies to or, for a
+ * follow-up, which completed guide delivery and send window authorised it.
+ *
+ * The draft and thread are locked and every safety decision uses the database
+ * clock. This prevents a route-level read followed by a broad queue operation
+ * from superseding a newer reactive reply that arrived in between.
+ */
+export async function regenerateReplyDraft(input: {
+  threadId: string;
+  draftId: string;
+}): Promise<ReplyDraft> {
+  const result = await prisma.$transaction(
+    async (tx) => {
+      const rows = await tx.$queryRaw<RegenerationRow[]>`
+        SELECT
+          draft."thread_id" AS "threadId",
+          draft."inbound_message_id" AS "inboundMessageId",
+          draft."status"::text AS "status",
+          draft."kind"::text AS "kind",
+          draft."source_conversation_id" AS "sourceConversationId",
+          draft."eligible_at" AS "eligibleAt",
+          draft."expires_at" AS "expiresAt",
+          draft."prompt_version" AS "promptVersion",
+          thread."latest_inbound_message_id" AS "latestInboundMessageId",
+          thread."ig_user_id" AS "threadIgUserId",
+          source."ig_user_id" AS "sourceIgUserId",
+          source."completed_at" AS "sourceCompletedAt",
+          draft."eligible_at" <= clock_timestamp() AS "isEligible",
+          (draft."expires_at" IS NULL OR draft."expires_at" > clock_timestamp()) AS "isUnexpired"
+        FROM "reply_draft" AS draft
+        JOIN "dm_thread" AS thread ON thread."id" = draft."thread_id"
+        LEFT JOIN "conversations" AS source ON source."id" = draft."source_conversation_id"
+        WHERE draft."id" = ${input.draftId}::uuid
+          AND draft."thread_id" = ${input.threadId}::uuid
+        FOR UPDATE OF draft, thread
+      `;
+      const draft = rows[0];
+      if (!draft) throw new DraftActionError("draft_not_found");
+      if (draft.status !== "pending_approval" && draft.status !== "generation_failed") {
+        throw new DraftActionError("draft_not_pending");
+      }
+      if (draft.promptVersion !== CURRENT_DM_PROMPT_VERSION) {
+        throw new DraftActionError("prompt_policy_outdated");
+      }
+      if (draft.latestInboundMessageId !== draft.inboundMessageId) {
+        throw new DraftActionError("stale_draft");
+      }
+
+      if (draft.kind === "engagement_follow_up") {
+        if (
+          !draft.sourceConversationId ||
+          draft.sourceIgUserId !== draft.threadIgUserId ||
+          draft.sourceCompletedAt === null
+        ) {
+          throw new DraftActionError("stale_draft");
+        }
+        if (!draft.isEligible) throw new DraftActionError("follow_up_not_ready");
+        if (!draft.expiresAt || !draft.isUnexpired) {
+          const expired = await tx.$executeRaw`
+            UPDATE "reply_draft"
+            SET
+              "status" = 'expired',
+              "error_code" = 'follow_up_window_closed',
+              "updated_at" = clock_timestamp()
+            WHERE "id" = ${input.draftId}::uuid
+              AND "thread_id" = ${input.threadId}::uuid
+              AND "status" IN ('pending_approval', 'generation_failed')
+              AND "kind" = 'engagement_follow_up'
+              AND "expires_at" <= clock_timestamp()
+          `;
+          if (expired === 1) return { rejected: "follow_up_window_closed" as const };
+          throw new DraftActionError("follow_up_window_closed");
+        }
+      } else if (draft.sourceConversationId !== null || draft.expiresAt !== null) {
+        throw new DraftActionError("stale_draft");
+      }
+
+      // A generation_failed row is not covered by the one-active-draft index. A
+      // newer inbound can therefore already have its own active reply; never
+      // clear that winner just to make room for this historical retry.
+      const newerActive = await tx.replyDraft.findFirst({
+        where: {
+          threadId: input.threadId,
+          id: { not: input.draftId },
+          status: { in: [...ACTIVE_DRAFT_STATUSES] },
+        },
+        select: { id: true },
+      });
+      if (newerActive) throw new DraftActionError("stale_draft");
+
+      const superseded = await tx.replyDraft.updateMany({
+        where: {
+          id: input.draftId,
+          threadId: input.threadId,
+          inboundMessageId: draft.inboundMessageId,
+          status: draft.status as "pending_approval" | "generation_failed",
+          kind: draft.kind,
+          promptVersion: CURRENT_DM_PROMPT_VERSION,
+        },
+        data: { status: "superseded" },
+      });
+      if (superseded.count !== 1) throw new DraftActionError("draft_not_pending");
+
+      const highest = await tx.replyDraft.aggregate({
+        where: { threadId: input.threadId },
+        _max: { revision: true },
+      });
+      return tx.replyDraft.create({
+        data: {
+          threadId: input.threadId,
+          inboundMessageId: draft.inboundMessageId,
+          revision: (highest._max.revision ?? 0) + 1,
+          status: "queued",
+          kind: draft.kind,
+          sourceConversationId: draft.sourceConversationId,
+          eligibleAt: draft.eligibleAt,
+          nextAttemptAt: draft.eligibleAt,
+          expiresAt: draft.expiresAt,
+          promptVersion: CURRENT_DM_PROMPT_VERSION,
+        },
+      });
+    },
+    { isolationLevel: "Serializable" },
+  );
+
+  if ("rejected" in result) throw new DraftActionError(result.rejected);
+  return result;
+}
+
 export interface FailGenerationInput {
   errorCode: string;
   errorMessage: string;

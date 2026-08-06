@@ -1,6 +1,8 @@
 import { Router } from "express";
+import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
+import { CURRENT_DM_PROMPT_VERSION } from "../services/replyDraftPolicy.js";
 
 /**
  * Read models for the Conversations DM views.
@@ -38,11 +40,47 @@ const DRAFT_SELECT = {
   eligibleAt: true,
   expiresAt: true,
   promptVersion: true,
+  sourceConversation: {
+    select: {
+      keyword: {
+        select: {
+          keyword: true,
+          resource: { select: { name: true, description: true, kind: true } },
+        },
+      },
+    },
+  },
   approvedBy: true,
   approvedAt: true,
   sentAt: true,
   createdAt: true,
 } as const;
+
+type SelectedDraft = Prisma.ReplyDraftGetPayload<{ select: typeof DRAFT_SELECT }>;
+
+const GUIDE_NAME_LIMIT = 200;
+const GUIDE_DESCRIPTION_LIMIT = 500;
+const GUIDE_KIND_LIMIT = 64;
+const GUIDE_KEYWORD_LIMIT = 100;
+
+function serializeDraft(draft: SelectedDraft | undefined): object | null {
+  if (!draft) return null;
+  const { sourceConversation, ...safeDraft } = draft;
+  const resource = sourceConversation?.keyword.resource;
+  return {
+    ...safeDraft,
+    promptPolicyCurrent: draft.promptVersion === CURRENT_DM_PROMPT_VERSION,
+    sourceGuide:
+      draft.kind === "engagement_follow_up" && sourceConversation && resource
+        ? {
+            name: resource.name.slice(0, GUIDE_NAME_LIMIT),
+            description: resource.description?.slice(0, GUIDE_DESCRIPTION_LIMIT) ?? null,
+            kind: resource.kind?.slice(0, GUIDE_KIND_LIMIT) ?? null,
+            keyword: sourceConversation.keyword.keyword.slice(0, GUIDE_KEYWORD_LIMIT),
+          }
+        : null,
+  };
+}
 
 dmThreadsRouter.get("/", async (req, res) => {
   const parsed = listQuerySchema.safeParse(req.query);
@@ -83,7 +121,7 @@ dmThreadsRouter.get("/", async (req, res) => {
     items: items.map(({ messages, drafts, ...thread }) => ({
       ...thread,
       latestMessage: messages[0] ?? null,
-      draft: drafts[0] ?? null,
+      draft: serializeDraft(drafts[0]),
     })),
     nextCursor: hasMore ? items[items.length - 1]!.id : null,
   });
@@ -120,5 +158,5 @@ dmThreadsRouter.get("/:threadId", async (req, res) => {
   if (!thread) return res.status(404).json({ error: "not_found" });
 
   const { drafts, messages, ...rest } = thread;
-  res.json({ ...rest, messages: messages.reverse(), draft: drafts[0] ?? null });
+  res.json({ ...rest, messages: messages.reverse(), draft: serializeDraft(drafts[0]) });
 });
