@@ -1,3 +1,9 @@
+BEGIN;
+
+-- Freeze snapshot writes before reading retained evidence. Waiting collectors
+-- resume only after the re-key and invariant are committed.
+LOCK TABLE "feed_follow_daily_snapshot" IN ACCESS EXCLUSIVE MODE;
+
 -- Exercise the collision ordering before touching retained evidence: a success
 -- beats a later failure, while an all-failure group keeps its latest attempt.
 DO $$
@@ -91,3 +97,10 @@ BEGIN
     RAISE EXCEPTION 'Pacific feed-follow snapshot backfill verification failed';
   END IF;
 END $$;
+
+-- Reject stale workers that resume after cutover with a former UTC-derived key.
+ALTER TABLE "feed_follow_daily_snapshot"
+ADD CONSTRAINT "feed_follow_daily_snapshot_pacific_day_check"
+CHECK ("day" = ("captured_at" AT TIME ZONE 'America/Los_Angeles')::date);
+
+COMMIT;
