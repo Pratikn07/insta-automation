@@ -40,6 +40,7 @@ const {
   completeGeneration,
   failGeneration,
   claimApprovedDraft,
+  claimRetryDraft,
   markSent,
   markSendFailed,
   markSendUncertain,
@@ -581,6 +582,9 @@ describe("failGeneration", () => {
 // This is the only place in the product that causes an Instagram send from an AI
 // suggestion, so the claim semantics are pinned hard.
 describe("claimApprovedDraft", () => {
+  const NOW = new Date("2026-08-05T12:00:00.000Z");
+  const BEFORE_ELIGIBILITY = new Date("2026-08-05T11:59:59.999Z");
+  const AFTER_EXPIRY = new Date("2026-08-05T13:00:00.000Z");
   const INPUT = {
     threadId: "thread-1",
     draftId: "draft-2",
@@ -595,12 +599,19 @@ describe("claimApprovedDraft", () => {
       threadId: "thread-1",
       inboundMessageId: "message-2",
       status: "pending_approval",
+      kind: "reply",
+      promptVersion: CURRENT_DM_PROMPT_VERSION,
+      eligibleAt: new Date("2026-08-05T00:00:00.000Z"),
+      expiresAt: null,
     });
     tx.replyDraft.updateMany.mockResolvedValue({ count: 1 });
   });
 
   it("atomically claims only the latest pending draft and copies visible text", async () => {
-    await claimApprovedDraft(INPUT);
+    await expect(claimApprovedDraft(INPUT, NOW)).resolves.toEqual({
+      approvedText: "This is the exact reply 💛",
+      inboundMessageId: "message-2",
+    });
 
     expect(tx.replyDraft.updateMany).toHaveBeenCalledWith({
       where: {
@@ -608,6 +619,9 @@ describe("claimApprovedDraft", () => {
         threadId: "thread-1",
         inboundMessageId: "message-2",
         status: "pending_approval",
+        kind: "reply",
+        promptVersion: CURRENT_DM_PROMPT_VERSION,
+        thread: { latestInboundMessageId: "message-2" },
       },
       data: expect.objectContaining({
         workingText: "This is the exact reply 💛",
@@ -633,6 +647,10 @@ describe("claimApprovedDraft", () => {
       threadId: "thread-1",
       inboundMessageId: "message-2",
       status: "dismissed",
+      kind: "reply",
+      promptVersion: CURRENT_DM_PROMPT_VERSION,
+      eligibleAt: new Date("2026-08-05T00:00:00.000Z"),
+      expiresAt: null,
     });
 
     await expect(claimApprovedDraft(INPUT)).rejects.toMatchObject({
@@ -657,6 +675,216 @@ describe("claimApprovedDraft", () => {
     await claimApprovedDraft(INPUT);
     expect($transaction).toHaveBeenCalledOnce();
   });
+
+  it.each([null, CURRENT_DM_PROMPT_VERSION - 1, CURRENT_DM_PROMPT_VERSION + 1])(
+    "rejects non-current prompt policy version %s",
+    async (promptVersion) => {
+      tx.replyDraft.findUnique.mockResolvedValue({
+        id: "draft-2",
+        threadId: "thread-1",
+        inboundMessageId: "message-2",
+        status: "pending_approval",
+        kind: "reply",
+        promptVersion,
+        eligibleAt: new Date("2026-08-05T00:00:00.000Z"),
+        expiresAt: null,
+      });
+
+      await expect(claimApprovedDraft(INPUT, NOW)).rejects.toMatchObject({
+        code: "prompt_policy_outdated",
+      });
+      expect(tx.replyDraft.updateMany).not.toHaveBeenCalled();
+      expect(tx.$executeRaw).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects a follow-up before eligibility", async () => {
+    tx.replyDraft.findUnique.mockResolvedValue({
+      id: "draft-2",
+      threadId: "thread-1",
+      inboundMessageId: "message-2",
+      status: "pending_approval",
+      kind: "engagement_follow_up",
+      promptVersion: CURRENT_DM_PROMPT_VERSION,
+      eligibleAt: new Date("2026-08-05T12:00:00.000Z"),
+      expiresAt: AFTER_EXPIRY,
+    });
+
+    await expect(claimApprovedDraft(INPUT, BEFORE_ELIGIBILITY)).rejects.toMatchObject({
+      code: "follow_up_not_ready",
+    });
+    expect(tx.$executeRaw).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    new Date("2026-08-05T13:00:00.000Z"),
+    new Date("2026-08-05T13:00:00.001Z"),
+  ])("rejects a follow-up at or after expiry (%s)", async (attemptedAt) => {
+    tx.replyDraft.findUnique.mockResolvedValue({
+      id: "draft-2",
+      threadId: "thread-1",
+      inboundMessageId: "message-2",
+      status: "pending_approval",
+      kind: "engagement_follow_up",
+      promptVersion: CURRENT_DM_PROMPT_VERSION,
+      eligibleAt: new Date("2026-08-05T12:00:00.000Z"),
+      expiresAt: AFTER_EXPIRY,
+    });
+
+    await expect(claimApprovedDraft(INPUT, attemptedAt)).rejects.toMatchObject({
+      code: "follow_up_window_closed",
+    });
+    expect(tx.$executeRaw).not.toHaveBeenCalled();
+  });
+
+  it("uses the database clock in the final follow-up claim so a deadline race cannot send", async () => {
+    tx.replyDraft.findUnique.mockResolvedValue({
+      id: "draft-2",
+      threadId: "thread-1",
+      inboundMessageId: "message-2",
+      status: "pending_approval",
+      kind: "engagement_follow_up",
+      promptVersion: CURRENT_DM_PROMPT_VERSION,
+      eligibleAt: new Date("2026-08-05T11:00:00.000Z"),
+      expiresAt: AFTER_EXPIRY,
+    });
+    tx.$executeRaw.mockResolvedValue(0);
+
+    await expect(claimApprovedDraft(INPUT, NOW)).rejects.toMatchObject({
+      code: "follow_up_window_closed",
+    });
+    expect(tx.$executeRaw).toHaveBeenCalledOnce();
+    const sql = (tx.$executeRaw.mock.calls[0]?.[0] as TemplateStringsArray).join("?");
+    expect(sql).toContain('"expires_at" > clock_timestamp()');
+    expect(sql).toContain('"eligible_at" <= clock_timestamp()');
+  });
+
+  it("allows only one of two parallel approval claims", async () => {
+    tx.replyDraft.updateMany
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 0 });
+
+    const results = await Promise.allSettled([
+      claimApprovedDraft(INPUT, NOW),
+      claimApprovedDraft(INPUT, NOW),
+    ]);
+
+    expect(results[0]).toMatchObject({ status: "fulfilled" });
+    expect(results[1]).toMatchObject({
+      status: "rejected",
+      reason: expect.objectContaining({ code: "draft_not_pending" }),
+    });
+  });
+});
+
+describe("claimRetryDraft", () => {
+  const NOW = new Date("2026-08-05T12:00:00.000Z");
+  const AFTER_EXPIRY = new Date("2026-08-05T13:00:00.000Z");
+  const RETRY_INPUT = {
+    threadId: "thread-1",
+    draftId: "draft-2",
+    confirmedNotDelivered: true as const,
+  };
+
+  beforeEach(() => {
+    tx.dmThread.findUnique.mockResolvedValue({ latestInboundMessageId: "message-2" });
+    tx.replyDraft.findUnique.mockResolvedValue({
+      id: "draft-2",
+      threadId: "thread-1",
+      inboundMessageId: "message-2",
+      status: "send_uncertain",
+      kind: "reply",
+      promptVersion: CURRENT_DM_PROMPT_VERSION,
+      eligibleAt: new Date("2026-08-05T00:00:00.000Z"),
+      expiresAt: null,
+      approvedText: "Previously approved exact text",
+    });
+    tx.replyDraft.updateMany.mockResolvedValue({ count: 1 });
+  });
+
+  it("atomically reclaims a retryable draft and returns only its approved text", async () => {
+    await expect(claimRetryDraft(RETRY_INPUT, NOW)).resolves.toEqual({
+      approvedText: "Previously approved exact text",
+      inboundMessageId: "message-2",
+    });
+    expect(tx.replyDraft.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "draft-2",
+        threadId: "thread-1",
+        inboundMessageId: "message-2",
+        status: { in: ["send_failed", "send_uncertain"] },
+        kind: "reply",
+        promptVersion: CURRENT_DM_PROMPT_VERSION,
+        thread: { latestInboundMessageId: "message-2" },
+      },
+      data: { status: "sending", errorCode: null },
+    });
+  });
+
+  it("rejects a legacy retry before changing state", async () => {
+    tx.replyDraft.findUnique.mockResolvedValue({
+      id: "draft-2",
+      threadId: "thread-1",
+      inboundMessageId: "message-2",
+      status: "send_failed",
+      kind: "reply",
+      promptVersion: null,
+      eligibleAt: new Date("2026-08-05T00:00:00.000Z"),
+      expiresAt: null,
+      approvedText: "Legacy approved text",
+    });
+
+    await expect(claimRetryDraft(RETRY_INPUT, NOW)).rejects.toMatchObject({
+      code: "prompt_policy_outdated",
+    });
+    expect(tx.replyDraft.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects a follow-up retry after expiry", async () => {
+    tx.replyDraft.findUnique.mockResolvedValue({
+      id: "draft-2",
+      threadId: "thread-1",
+      inboundMessageId: "message-2",
+      status: "send_failed",
+      kind: "engagement_follow_up",
+      promptVersion: CURRENT_DM_PROMPT_VERSION,
+      eligibleAt: new Date("2026-08-05T11:00:00.000Z"),
+      expiresAt: AFTER_EXPIRY,
+      approvedText: "Follow-up text",
+    });
+
+    await expect(claimRetryDraft(RETRY_INPUT, AFTER_EXPIRY)).rejects.toMatchObject({
+      code: "follow_up_window_closed",
+    });
+    expect(tx.$executeRaw).not.toHaveBeenCalled();
+  });
+
+  it("rejects a retry after a newer genuine inbound", async () => {
+    tx.dmThread.findUnique.mockResolvedValue({ latestInboundMessageId: "message-3" });
+
+    await expect(claimRetryDraft(RETRY_INPUT, NOW)).rejects.toMatchObject({
+      code: "stale_draft",
+    });
+    expect(tx.replyDraft.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects a draft outside the explicit failure states", async () => {
+    tx.replyDraft.findUnique.mockResolvedValue({
+      id: "draft-2",
+      threadId: "thread-1",
+      inboundMessageId: "message-2",
+      status: "sent",
+      kind: "reply",
+      promptVersion: CURRENT_DM_PROMPT_VERSION,
+      eligibleAt: new Date("2026-08-05T00:00:00.000Z"),
+      expiresAt: null,
+      approvedText: "Already sent",
+    });
+
+    await expect(claimRetryDraft(RETRY_INPUT, NOW)).rejects.toMatchObject({
+      code: "draft_not_retryable",
+    });
+  });
 });
 
 describe("send outcomes", () => {
@@ -671,6 +899,11 @@ describe("send outcomes", () => {
     ];
     expect(call.where).toMatchObject({ id: "draft-2", status: "sending" });
     expect(call.data).toMatchObject({ status: "sent" });
+  });
+
+  it("rejects when confirmed delivery cannot be recorded from sending", async () => {
+    tx.replyDraft.updateMany.mockResolvedValue({ count: 0 });
+    await expect(markSent("draft-2")).rejects.toThrow("send_state_not_recorded");
   });
 
   it("marks a definite Graph error send_failed", async () => {

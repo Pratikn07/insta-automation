@@ -6,6 +6,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const replyDraft = { findUnique: vi.fn(), updateMany: vi.fn() };
 const dmThread = { findUnique: vi.fn() };
 const claimApprovedDraft = vi.fn();
+const claimRetryDraft = vi.fn();
 const queueReplyDraft = vi.fn();
 const markSent = vi.fn();
 const markSendFailed = vi.fn();
@@ -20,6 +21,7 @@ vi.mock("../services/replyDraftService.js", async (importOriginal) => {
   return {
     ...actual,
     claimApprovedDraft,
+    claimRetryDraft,
     queueReplyDraft,
     markSent,
     markSendFailed,
@@ -54,13 +56,14 @@ const PENDING = {
   inboundMessageId: "message-2",
   status: "pending_approval",
   approvedText: null,
+  suggestedText: "Model text that the owner replaced",
 };
 
-function makeApp() {
+function makeApp(authenticated = true) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    req.adminEmail = "owner@example.com";
+    if (authenticated) req.adminEmail = "owner@example.com";
     next();
   });
   app.use(
@@ -86,6 +89,7 @@ beforeEach(() => {
     replyDraft.updateMany,
     dmThread.findUnique,
     claimApprovedDraft,
+    claimRetryDraft,
     queueReplyDraft,
     markSent,
     markSendFailed,
@@ -105,7 +109,14 @@ beforeEach(() => {
     latestInboundMessageId: "message-2",
     needsReply: true,
   });
-  claimApprovedDraft.mockResolvedValue(undefined);
+  claimApprovedDraft.mockImplementation(async (input: { workingText: string }) => ({
+    approvedText: input.workingText,
+    inboundMessageId: "message-2",
+  }));
+  claimRetryDraft.mockResolvedValue({
+    approvedText: "Previously approved text",
+    inboundMessageId: "message-2",
+  });
   sendTrackedText.mockResolvedValue({ messageId: "mid-out" });
   logEvent.mockResolvedValue(undefined);
 });
@@ -120,11 +131,17 @@ describe("PATCH draft (edit)", () => {
   });
 
   it("rejects blank text", async () => {
-    await request(makeApp()).patch(base).send({ workingText: "   " }).expect(400);
+    await request(makeApp())
+      .patch(base)
+      .send({ workingText: "   " })
+      .expect(400, { error: "invalid_working_text" });
   });
 
   it("rejects text over 1000 characters", async () => {
-    await request(makeApp()).patch(base).send({ workingText: "x".repeat(1001) }).expect(400);
+    await request(makeApp())
+      .patch(base)
+      .send({ workingText: "x".repeat(1001) })
+      .expect(400, { error: "invalid_working_text" });
   });
 
   it("refuses to edit a draft that is no longer pending", async () => {
@@ -138,9 +155,27 @@ describe("PATCH draft (edit)", () => {
     replyDraft.findUnique.mockResolvedValue({ ...PENDING, threadId: "other-thread" });
     await request(makeApp()).patch(base).send({ workingText: "nope" }).expect(404);
   });
+
+  it("returns a controlled safe error when persistence fails", async () => {
+    replyDraft.updateMany.mockRejectedValue(new Error("database error containing private text"));
+    const res = await request(makeApp())
+      .patch(base)
+      .send({ workingText: "Private editor text" })
+      .expect(500, { error: "internal_error" });
+    expect(JSON.stringify(res.body)).not.toContain("private text");
+  });
 });
 
 describe("POST approve", () => {
+  it("requires an authenticated owner identity", async () => {
+    await request(makeApp(false))
+      .post(`${base}/approve`)
+      .send({ workingText: "Reply" })
+      .expect(401, { error: "owner_auth_required" });
+    expect(claimApprovedDraft).not.toHaveBeenCalled();
+    expect(sendTrackedText).not.toHaveBeenCalled();
+  });
+
   it("requires AI_SEND_ENABLED", async () => {
     sendFlags.AI_SEND_ENABLED = false;
     await request(makeApp())
@@ -150,12 +185,18 @@ describe("POST approve", () => {
     expect(sendTrackedText).not.toHaveBeenCalled();
   });
 
-  it("sends the exact approved text once and marks it sent", async () => {
+  it("sends the exact trimmed editor text once, never the model suggestion", async () => {
     await request(makeApp())
       .post(`${base}/approve`)
-      .send({ workingText: "This is the exact reply 💛" })
+      .send({ workingText: "  This is the exact reply 💛\n" })
       .expect(200, { status: "sent" });
 
+    expect(claimApprovedDraft).toHaveBeenCalledWith({
+      threadId: "thread-1",
+      draftId: "draft-2",
+      approvedBy: "owner@example.com",
+      workingText: "This is the exact reply 💛",
+    });
     expect(sendTrackedText).toHaveBeenCalledTimes(1);
     expect(sendTrackedText).toHaveBeenCalledWith({
       recipientIgUserId: "ig-user-1",
@@ -167,6 +208,14 @@ describe("POST approve", () => {
       threadId: "thread-1",
       inboundMessageId: "message-2",
     });
+    expect(logEvent).toHaveBeenCalledWith("ai_reply_sent", {
+      threadId: "thread-1",
+      draftId: "draft-2",
+      by: "owner@example.com",
+      length: 26,
+    });
+    expect(JSON.stringify(logEvent.mock.calls)).not.toContain("This is the exact reply");
+    expect(JSON.stringify(logEvent.mock.calls)).not.toContain("Model text that the owner replaced");
   });
 
   it("returns 409 stale_draft and never sends when a newer inbound arrived", async () => {
@@ -186,6 +235,20 @@ describe("POST approve", () => {
       .post(`${base}/approve`)
       .send({ workingText: "Reply" })
       .expect(409, { error: "draft_not_pending" });
+    expect(sendTrackedText).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "prompt_policy_outdated",
+    "follow_up_not_ready",
+    "follow_up_window_closed",
+  ] as const)("returns 409 %s and never sends", async (code) => {
+    claimApprovedDraft.mockRejectedValue(new DraftActionError(code));
+
+    await request(makeApp())
+      .post(`${base}/approve`)
+      .send({ workingText: "Reply" })
+      .expect(409, { error: code });
     expect(sendTrackedText).not.toHaveBeenCalled();
   });
 
@@ -224,9 +287,60 @@ describe("POST approve", () => {
     expect(markSent).not.toHaveBeenCalled();
   });
 
+  it("returns terminal send_uncertain when success recording cannot be confirmed", async () => {
+    markSent.mockRejectedValue(new Error("database write failed with private detail"));
+
+    const res = await request(makeApp())
+      .post(`${base}/approve`)
+      .send({ workingText: "Private editor text" })
+      .expect(202);
+
+    expect(res.body).toEqual({
+      status: "send_uncertain",
+      errorCode: "send_recording_unconfirmed",
+    });
+    expect(JSON.stringify(res.body)).not.toContain("private detail");
+    expect(sendTrackedText).toHaveBeenCalledTimes(1);
+    expect(markThreadResolved).not.toHaveBeenCalled();
+  });
+
+  it("returns a stable internal error when the atomic claim itself fails", async () => {
+    claimApprovedDraft.mockRejectedValue(new Error("database DSN and private editor text"));
+
+    const res = await request(makeApp())
+      .post(`${base}/approve`)
+      .send({ workingText: "Private editor text" })
+      .expect(500, { error: "internal_error" });
+    expect(JSON.stringify(res.body)).not.toContain("database DSN");
+    expect(sendTrackedText).not.toHaveBeenCalled();
+  });
+
+  it("records a definite pre-send lookup failure without calling Instagram", async () => {
+    dmThread.findUnique.mockRejectedValue(new Error("database lookup failed"));
+
+    await request(makeApp())
+      .post(`${base}/approve`)
+      .send({ workingText: "Private editor text" })
+      .expect(500, { error: "internal_error" });
+    expect(markSendFailed).toHaveBeenCalledWith("draft-2", "thread_lookup_failed");
+    expect(sendTrackedText).not.toHaveBeenCalled();
+  });
+
   it("rejects blank approved text", async () => {
-    await request(makeApp()).post(`${base}/approve`).send({ workingText: "" }).expect(400);
+    await request(makeApp())
+      .post(`${base}/approve`)
+      .send({ workingText: "" })
+      .expect(400, { error: "invalid_working_text" });
     expect(claimApprovedDraft).not.toHaveBeenCalled();
+  });
+
+  it("rejects approved text over 1000 characters", async () => {
+    await request(makeApp())
+      .post(`${base}/approve`)
+      .send({ workingText: "x".repeat(1001) })
+      .expect(400, { error: "invalid_working_text" });
+    expect(claimApprovedDraft).not.toHaveBeenCalled();
+    expect(sendTrackedText).not.toHaveBeenCalled();
   });
 });
 
@@ -247,6 +361,15 @@ describe("POST retry-send", () => {
     expect(sendTrackedText).not.toHaveBeenCalled();
   });
 
+  it("requires an authenticated owner identity", async () => {
+    await request(makeApp(false))
+      .post(`${base}/retry-send`)
+      .send({ confirmedNotDelivered: true })
+      .expect(401, { error: "owner_auth_required" });
+    expect(claimRetryDraft).not.toHaveBeenCalled();
+    expect(sendTrackedText).not.toHaveBeenCalled();
+  });
+
   it("rejects confirmedNotDelivered: false", async () => {
     await request(makeApp())
       .post(`${base}/retry-send`)
@@ -263,10 +386,16 @@ describe("POST retry-send", () => {
     expect(sendTrackedText).toHaveBeenCalledWith(
       expect.objectContaining({ text: "Previously approved text", source: "ai_approved" }),
     );
+    expect(claimRetryDraft).toHaveBeenCalledWith({
+      threadId: "thread-1",
+      draftId: "draft-2",
+      confirmedNotDelivered: true,
+    });
+    expect(replyDraft.updateMany).not.toHaveBeenCalled();
   });
 
   it("refuses to retry a draft that is not in a failure state", async () => {
-    replyDraft.findUnique.mockResolvedValue({ ...PENDING, status: "sent" });
+    claimRetryDraft.mockRejectedValue(new DraftActionError("draft_not_retryable"));
     await request(makeApp())
       .post(`${base}/retry-send`)
       .send({ confirmedNotDelivered: true })
@@ -274,7 +403,7 @@ describe("POST retry-send", () => {
   });
 
   it("refuses the loser of two parallel retries", async () => {
-    replyDraft.updateMany.mockResolvedValue({ count: 0 });
+    claimRetryDraft.mockRejectedValue(new DraftActionError("draft_not_retryable"));
     await request(makeApp())
       .post(`${base}/retry-send`)
       .send({ confirmedNotDelivered: true })
@@ -282,12 +411,36 @@ describe("POST retry-send", () => {
     expect(sendTrackedText).not.toHaveBeenCalled();
   });
 
+  it.each(["prompt_policy_outdated", "follow_up_window_closed", "stale_draft"] as const)(
+    "returns 409 %s and never retries",
+    async (code) => {
+      claimRetryDraft.mockRejectedValue(new DraftActionError(code));
+      await request(makeApp())
+        .post(`${base}/retry-send`)
+        .send({ confirmedNotDelivered: true })
+        .expect(409, { error: code });
+      expect(sendTrackedText).not.toHaveBeenCalled();
+    },
+  );
+
   it("requires AI_SEND_ENABLED", async () => {
     sendFlags.AI_SEND_ENABLED = false;
     await request(makeApp())
       .post(`${base}/retry-send`)
       .send({ confirmedNotDelivered: true })
       .expect(403, { error: "ai_send_disabled" });
+    expect(claimRetryDraft).not.toHaveBeenCalled();
+    expect(sendTrackedText).not.toHaveBeenCalled();
+  });
+
+  it("does not let an audit write failure create an unhandled owner retry", async () => {
+    logEvent.mockRejectedValueOnce(new Error("audit database unavailable"));
+
+    await request(makeApp())
+      .post(`${base}/retry-send`)
+      .send({ confirmedNotDelivered: true })
+      .expect(200, { status: "sent" });
+    expect(sendTrackedText).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -308,6 +461,14 @@ describe("POST dismiss / regenerate", () => {
   it("refuses to dismiss a sent draft", async () => {
     replyDraft.findUnique.mockResolvedValue({ ...PENDING, status: "sent" });
     await request(makeApp()).post(`${base}/dismiss`).expect(409);
+  });
+
+  it("returns a controlled safe error when dismissal persistence fails", async () => {
+    replyDraft.updateMany.mockRejectedValue(new Error("database failure with private body"));
+    const res = await request(makeApp()).post(`${base}/dismiss`).expect(500, {
+      error: "internal_error",
+    });
+    expect(JSON.stringify(res.body)).not.toContain("private body");
   });
 
   it("regenerate queues a new revision for the latest inbound", async () => {

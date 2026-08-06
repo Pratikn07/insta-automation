@@ -12,6 +12,7 @@ import { runGeminiQueueTick } from "./services/geminiQueueWorker.js";
 import { runFollowRecheckTick } from "./services/followRecheckWorker.js";
 import { runFollowThroughTick } from "./services/followThroughWorker.js";
 import { runReplyDraftTick } from "./services/replyDraftWorker.js";
+import { runReplyDraftRecoveryTick } from "./services/replyDraftRecoveryWorker.js";
 import { internalAiRouter } from "./api/internalAi.routes.js";
 import { seedTokenFromEnv } from "./meta/tokenStore.js";
 import { runTokenRefreshTick } from "./meta/tokenRefresher.js";
@@ -142,6 +143,26 @@ if (env.AI_DRAFTS_ENABLED) {
   }, env.AI_DRAFT_INTERVAL_MS);
 }
 
+// A crash after Instagram accepted a send but before local state was finalized
+// leaves `sending` ambiguous. Reconcile it to a terminal, owner-check-required
+// state; this worker never retries or calls Instagram.
+const REPLY_DRAFT_RECOVERY_INTERVAL_MS = 15 * 60 * 1000;
+function recoverStaleReplyDraftSends(): void {
+  void runReplyDraftRecoveryTick()
+    .then((count) => {
+      if (count > 0) {
+        logger.warn({ recovered: count }, "Stale AI reply sends marked uncertain");
+      }
+    })
+    .catch(() => {
+      logger.error(
+        { errorCode: "reply_draft_recovery_failed" },
+        "Reply draft recovery failed",
+      );
+    });
+}
+setInterval(recoverStaleReplyDraftSends, REPLY_DRAFT_RECOVERY_INTERVAL_MS);
+
 app.listen(env.PORT, () => {
   logger.info({ port: env.PORT, env: env.NODE_ENV }, "insta-automation listening");
   // Make sure ig_token exists (and honours a hand-pasted env override) before
@@ -150,4 +171,5 @@ app.listen(env.PORT, () => {
     void runTokenRefreshTick();
     void runFeedFollowSnapshotTick();
   });
+  recoverStaleReplyDraftSends();
 });

@@ -13,11 +13,13 @@ import { classifySendError } from "../services/replyDraftSendCore.js";
 import {
   DraftActionError,
   claimApprovedDraft,
+  claimRetryDraft,
   markSendFailed,
   markSendUncertain,
   markSent,
   queueReplyDraft,
 } from "../services/replyDraftService.js";
+import type { DraftActionCode } from "../services/replyDraftService.js";
 
 /**
  * Owner-facing AI routes. Mounted under the apiRouter, so `requireAdmin` has
@@ -53,7 +55,7 @@ function sendRuntimeError(res: Response, error: unknown): void {
   }
   // Unexpected failures are logged server-side only. The message can embed a
   // token or account detail, so the browser gets a generic code.
-  logger.error({ err: error }, "AI route failed");
+  logger.error({ errorCode: "ai_runtime_error" }, "AI route failed");
   res.status(502).json({ error: "ai_runtime_error" });
 }
 
@@ -151,35 +153,57 @@ export function createAiRouter(deps: AiRouterDependencies): Router {
 
   function sendActionError(res: Response, error: unknown): void {
     if (error instanceof DraftActionError) {
-      const status = error.code === "draft_not_found" ? 404 : 409;
-      res.status(status).json({ error: error.code });
+      const statusByCode: Record<DraftActionCode, number> = {
+        draft_not_found: 404,
+        stale_draft: 409,
+        draft_not_pending: 409,
+        draft_not_retryable: 409,
+        prompt_policy_outdated: 409,
+        follow_up_not_ready: 409,
+        follow_up_window_closed: 409,
+      };
+      res.status(statusByCode[error.code]).json({ error: error.code });
       return;
     }
-    logger.error({ err: error }, "Draft action failed");
+    logger.error({ errorCode: "draft_action_failed" }, "Draft action failed");
     res.status(500).json({ error: "internal_error" });
+  }
+
+  async function writeDraftAudit(kind: string, payload: object): Promise<void> {
+    try {
+      await logEvent(kind, payload);
+    } catch {
+      // logEvent is intentionally non-throwing, but keep the HTTP boundary safe
+      // if that implementation contract ever regresses. Never log the payload.
+      logger.error({ errorCode: "draft_audit_failed", kind }, "Draft audit write failed");
+    }
   }
 
   // Edit the owner's working copy. `suggestedText` is never touched.
   router.patch("/dm-threads/:threadId/drafts/:draftId", async (req, res) => {
     const parsed = textSchema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+    if (!parsed.success) return res.status(400).json({ error: "invalid_working_text" });
 
-    const draft = await loadDraft(req.params.threadId, req.params.draftId);
-    if (!draft) return res.status(404).json({ error: "draft_not_found" });
-    if (draft.status !== "pending_approval") {
-      return res.status(409).json({ error: "draft_not_pending" });
+    try {
+      const draft = await loadDraft(req.params.threadId, req.params.draftId);
+      if (!draft) return res.status(404).json({ error: "draft_not_found" });
+      if (draft.status !== "pending_approval") {
+        return res.status(409).json({ error: "draft_not_pending" });
+      }
+
+      await prisma.replyDraft.updateMany({
+        where: { id: draft.id, status: "pending_approval" },
+        data: { workingText: parsed.data.workingText },
+      });
+      await writeDraftAudit("ai_draft_edited", {
+        threadId: draft.threadId,
+        draftId: draft.id,
+        by: req.adminEmail ?? null,
+      });
+      res.status(204).end();
+    } catch (error) {
+      sendActionError(res, error);
     }
-
-    await prisma.replyDraft.updateMany({
-      where: { id: draft.id, status: "pending_approval" },
-      data: { workingText: parsed.data.workingText },
-    });
-    await logEvent("ai_draft_edited", {
-      threadId: draft.threadId,
-      draftId: draft.id,
-      by: req.adminEmail ?? null,
-    });
-    res.status(204).end();
   });
 
   /**
@@ -205,16 +229,16 @@ export function createAiRouter(deps: AiRouterDependencies): Router {
   router.post("/dm-threads/:threadId/drafts", async (req, res) => {
     if (draftsDisabled(res)) return;
 
-    const thread = await prisma.dmThread.findUnique({
-      where: { id: req.params.threadId },
-      select: { id: true, needsReply: true, latestInboundMessageId: true },
-    });
-    if (!thread) return res.status(404).json({ error: "not_found" });
-    if (!thread.latestInboundMessageId) {
-      return res.status(409).json({ error: "no_inbound_message" });
-    }
-
     try {
+      const thread = await prisma.dmThread.findUnique({
+        where: { id: req.params.threadId },
+        select: { id: true, needsReply: true, latestInboundMessageId: true },
+      });
+      if (!thread) return res.status(404).json({ error: "not_found" });
+      if (!thread.latestInboundMessageId) {
+        return res.status(409).json({ error: "no_inbound_message" });
+      }
+
       const draft = await queueReplyDraft({
         threadId: thread.id,
         inboundMessageId: thread.latestInboundMessageId,
@@ -229,24 +253,24 @@ export function createAiRouter(deps: AiRouterDependencies): Router {
   router.post("/dm-threads/:threadId/drafts/:draftId/regenerate", async (req, res) => {
     if (draftsDisabled(res)) return;
 
-    const draft = await loadDraft(req.params.threadId, req.params.draftId);
-    if (!draft) return res.status(404).json({ error: "draft_not_found" });
-
-    const thread = await prisma.dmThread.findUnique({
-      where: { id: draft.threadId },
-      select: { latestInboundMessageId: true },
-    });
-    if (!thread?.latestInboundMessageId) {
-      return res.status(409).json({ error: "no_inbound_message" });
-    }
-
     try {
+      const draft = await loadDraft(req.params.threadId, req.params.draftId);
+      if (!draft) return res.status(404).json({ error: "draft_not_found" });
+
+      const thread = await prisma.dmThread.findUnique({
+        where: { id: draft.threadId },
+        select: { latestInboundMessageId: true },
+      });
+      if (!thread?.latestInboundMessageId) {
+        return res.status(409).json({ error: "no_inbound_message" });
+      }
+
       // queueReplyDraft supersedes any active draft and allocates the next revision.
       const next = await queueReplyDraft({
         threadId: draft.threadId,
         inboundMessageId: thread.latestInboundMessageId,
       });
-      await logEvent("ai_draft_regenerated", {
+      await writeDraftAudit("ai_draft_regenerated", {
         threadId: draft.threadId,
         previousDraftId: draft.id,
         draftId: next.id,
@@ -259,28 +283,32 @@ export function createAiRouter(deps: AiRouterDependencies): Router {
   });
 
   router.post("/dm-threads/:threadId/drafts/:draftId/dismiss", async (req, res) => {
-    const draft = await loadDraft(req.params.threadId, req.params.draftId);
-    if (!draft) return res.status(404).json({ error: "draft_not_found" });
-    if (draft.status !== "pending_approval" && draft.status !== "generation_failed") {
-      return res.status(409).json({ error: "draft_not_pending" });
-    }
+    try {
+      const draft = await loadDraft(req.params.threadId, req.params.draftId);
+      if (!draft) return res.status(404).json({ error: "draft_not_found" });
+      if (draft.status !== "pending_approval" && draft.status !== "generation_failed") {
+        return res.status(409).json({ error: "draft_not_pending" });
+      }
 
-    await prisma.replyDraft.updateMany({
-      where: { id: draft.id, status: draft.status },
-      data: { status: "dismissed" },
-    });
-    // Dismissing means "I've handled this myself", so the thread stops asking —
-    // but only if this is still the latest inbound.
-    await markThreadResolved({
-      threadId: draft.threadId,
-      inboundMessageId: draft.inboundMessageId,
-    });
-    await logEvent("ai_draft_dismissed", {
-      threadId: draft.threadId,
-      draftId: draft.id,
-      by: req.adminEmail ?? null,
-    });
-    res.status(204).end();
+      await prisma.replyDraft.updateMany({
+        where: { id: draft.id, status: draft.status },
+        data: { status: "dismissed" },
+      });
+      // Dismissing means "I've handled this myself", so the thread stops asking —
+      // but only if this is still the latest inbound.
+      await markThreadResolved({
+        threadId: draft.threadId,
+        inboundMessageId: draft.inboundMessageId,
+      });
+      await writeDraftAudit("ai_draft_dismissed", {
+        threadId: draft.threadId,
+        draftId: draft.id,
+        by: req.adminEmail ?? null,
+      });
+      res.status(204).end();
+    } catch (error) {
+      sendActionError(res, error);
+    }
   });
 
   /**
@@ -292,18 +320,17 @@ export function createAiRouter(deps: AiRouterDependencies): Router {
    */
   router.post("/dm-threads/:threadId/drafts/:draftId/approve", async (req, res) => {
     if (!env.AI_SEND_ENABLED) return res.status(403).json({ error: "ai_send_disabled" });
+    if (!req.adminEmail) return res.status(401).json({ error: "owner_auth_required" });
 
     const parsed = textSchema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+    if (!parsed.success) return res.status(400).json({ error: "invalid_working_text" });
 
-    const draft = await loadDraft(req.params.threadId, req.params.draftId);
-    if (!draft) return res.status(404).json({ error: "draft_not_found" });
-
+    let claimed: { approvedText: string; inboundMessageId: string };
     try {
-      await claimApprovedDraft({
-        threadId: draft.threadId,
-        draftId: draft.id,
-        approvedBy: req.adminEmail ?? "unknown",
+      claimed = await claimApprovedDraft({
+        threadId: req.params.threadId,
+        draftId: req.params.draftId,
+        approvedBy: req.adminEmail,
         workingText: parsed.data.workingText,
       });
     } catch (error) {
@@ -311,11 +338,11 @@ export function createAiRouter(deps: AiRouterDependencies): Router {
     }
 
     await deliverApprovedDraft({
-      draftId: draft.id,
-      threadId: draft.threadId,
-      inboundMessageId: draft.inboundMessageId,
-      approvedText: parsed.data.workingText,
-      by: req.adminEmail ?? null,
+      draftId: req.params.draftId,
+      threadId: req.params.threadId,
+      inboundMessageId: claimed.inboundMessageId,
+      approvedText: claimed.approvedText,
+      by: req.adminEmail,
       res,
     });
   });
@@ -329,39 +356,35 @@ export function createAiRouter(deps: AiRouterDependencies): Router {
    */
   router.post("/dm-threads/:threadId/drafts/:draftId/retry-send", async (req, res) => {
     if (!env.AI_SEND_ENABLED) return res.status(403).json({ error: "ai_send_disabled" });
+    if (!req.adminEmail) return res.status(401).json({ error: "owner_auth_required" });
 
     const schema = z.object({ confirmedNotDelivered: z.literal(true) });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: "confirmation_required" });
 
-    const draft = await loadDraft(req.params.threadId, req.params.draftId);
-    if (!draft) return res.status(404).json({ error: "draft_not_found" });
-    if (draft.status !== "send_failed" && draft.status !== "send_uncertain") {
-      return res.status(409).json({ error: "draft_not_retryable" });
+    let claimed: { approvedText: string; inboundMessageId: string };
+    try {
+      claimed = await claimRetryDraft({
+        threadId: req.params.threadId,
+        draftId: req.params.draftId,
+        confirmedNotDelivered: parsed.data.confirmedNotDelivered,
+      });
+    } catch (error) {
+      return sendActionError(res, error);
     }
-    const text = draft.approvedText;
-    if (!text) return res.status(409).json({ error: "no_approved_text" });
 
-    // Re-claim into `sending` so a double retry cannot double-send.
-    const claim = await prisma.replyDraft.updateMany({
-      where: { id: draft.id, status: draft.status },
-      data: { status: "sending", errorCode: null },
-    });
-    if (claim.count !== 1) return res.status(409).json({ error: "draft_not_retryable" });
-
-    await logEvent("ai_reply_retry_confirmed", {
-      threadId: draft.threadId,
-      draftId: draft.id,
-      previousStatus: draft.status,
-      by: req.adminEmail ?? null,
+    await writeDraftAudit("ai_reply_retry_confirmed", {
+      threadId: req.params.threadId,
+      draftId: req.params.draftId,
+      by: req.adminEmail,
     });
 
     await deliverApprovedDraft({
-      draftId: draft.id,
-      threadId: draft.threadId,
-      inboundMessageId: draft.inboundMessageId,
-      approvedText: text,
-      by: req.adminEmail ?? null,
+      draftId: req.params.draftId,
+      threadId: req.params.threadId,
+      inboundMessageId: claimed.inboundMessageId,
+      approvedText: claimed.approvedText,
+      by: req.adminEmail,
       res,
     });
   });
@@ -385,12 +408,38 @@ async function deliverApprovedDraft(input: {
   by: string | null;
   res: Response;
 }): Promise<void> {
-  const thread = await prisma.dmThread.findUnique({
-    where: { id: input.threadId },
-    select: { igUserId: true },
-  });
+  let thread: { igUserId: string } | null;
+  try {
+    thread = await prisma.dmThread.findUnique({
+      where: { id: input.threadId },
+      select: { igUserId: true },
+    });
+  } catch {
+    logger.error(
+      { errorCode: "ai_reply_recipient_lookup_failed", draftId: input.draftId },
+      "AI reply recipient lookup failed",
+    );
+    try {
+      // Instagram was never called, so this outcome is definitely retryable.
+      await markSendFailed(input.draftId, "thread_lookup_failed");
+    } catch {
+      logger.error(
+        { errorCode: "ai_reply_send_state_write_failed", draftId: input.draftId },
+        "AI reply send state write failed",
+      );
+    }
+    input.res.status(500).json({ error: "internal_error" });
+    return;
+  }
   if (!thread) {
-    await markSendFailed(input.draftId, "thread_missing");
+    try {
+      await markSendFailed(input.draftId, "thread_missing");
+    } catch {
+      logger.error(
+        { errorCode: "ai_reply_send_state_write_failed", draftId: input.draftId },
+        "AI reply send state write failed",
+      );
+    }
     input.res.status(409).json({ error: "thread_missing" });
     return;
   }
@@ -404,37 +453,68 @@ async function deliverApprovedDraft(input: {
   } catch (error) {
     const { outcome, errorCode } = classifySendError(error);
     if (outcome === "uncertain") {
-      await markSendUncertain(input.draftId, errorCode);
-      await logEvent("ai_reply_send_uncertain", {
-        threadId: input.threadId,
-        draftId: input.draftId,
-        errorCode,
-      });
+      try {
+        await markSendUncertain(input.draftId, errorCode);
+        await logEvent("ai_reply_send_uncertain", {
+          threadId: input.threadId,
+          draftId: input.draftId,
+          errorCode,
+        });
+      } catch {
+        logger.error(
+          { errorCode: "ai_reply_send_state_write_failed", draftId: input.draftId },
+          "AI reply send state write failed",
+        );
+      }
       // 202: we accepted the request but cannot confirm delivery.
       input.res.status(202).json({ status: "send_uncertain", errorCode });
       return;
     }
-    await markSendFailed(input.draftId, errorCode);
-    await logEvent("ai_reply_send_failed", {
-      threadId: input.threadId,
-      draftId: input.draftId,
-      errorCode,
-    });
+    try {
+      await markSendFailed(input.draftId, errorCode);
+      await logEvent("ai_reply_send_failed", {
+        threadId: input.threadId,
+        draftId: input.draftId,
+        errorCode,
+      });
+    } catch {
+      logger.error(
+        { errorCode: "ai_reply_send_state_write_failed", draftId: input.draftId },
+        "AI reply send state write failed",
+      );
+      input.res.status(202).json({
+        status: "send_uncertain",
+        errorCode: "send_recording_unconfirmed",
+      });
+      return;
+    }
     input.res.status(502).json({ status: "send_failed", errorCode });
     return;
   }
 
-  await markSent(input.draftId);
-  await markThreadResolved({
-    threadId: input.threadId,
-    inboundMessageId: input.inboundMessageId,
-  });
-  await logEvent("ai_reply_sent", {
-    threadId: input.threadId,
-    draftId: input.draftId,
-    by: input.by,
-    length: input.approvedText.length,
-  });
+  try {
+    await markSent(input.draftId);
+    await markThreadResolved({
+      threadId: input.threadId,
+      inboundMessageId: input.inboundMessageId,
+    });
+    await logEvent("ai_reply_sent", {
+      threadId: input.threadId,
+      draftId: input.draftId,
+      by: input.by,
+      length: input.approvedText.length,
+    });
+  } catch {
+    logger.error(
+      { errorCode: "ai_reply_send_recording_unconfirmed", draftId: input.draftId },
+      "AI reply delivery recording could not be confirmed",
+    );
+    input.res.status(202).json({
+      status: "send_uncertain",
+      errorCode: "send_recording_unconfirmed",
+    });
+    return;
+  }
   input.res.status(200).json({ status: "sent" });
 }
 

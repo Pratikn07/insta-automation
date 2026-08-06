@@ -383,7 +383,14 @@ export async function completeGeneration(
 }
 
 /** A rejected owner action. The code maps directly to an HTTP status in the route. */
-export type DraftActionCode = "stale_draft" | "draft_not_pending" | "draft_not_found";
+export type DraftActionCode =
+  | "stale_draft"
+  | "draft_not_pending"
+  | "draft_not_found"
+  | "prompt_policy_outdated"
+  | "follow_up_not_ready"
+  | "follow_up_window_closed"
+  | "draft_not_retryable";
 
 export class DraftActionError extends Error {
   readonly code: DraftActionCode;
@@ -441,17 +448,34 @@ export async function claimApprovedDraft(input: {
   draftId: string;
   approvedBy: string;
   workingText: string;
-}): Promise<void> {
-  await prisma.$transaction(async (tx) => {
+}, now = new Date()): Promise<{ approvedText: string; inboundMessageId: string }> {
+  return prisma.$transaction(async (tx) => {
     const draft = await tx.replyDraft.findUnique({
       where: { id: input.draftId },
-      select: { threadId: true, inboundMessageId: true, status: true },
+      select: {
+        threadId: true,
+        inboundMessageId: true,
+        status: true,
+        kind: true,
+        promptVersion: true,
+        eligibleAt: true,
+        expiresAt: true,
+      },
     });
     if (!draft || draft.threadId !== input.threadId) {
       throw new DraftActionError("draft_not_found");
     }
     if (draft.status !== "pending_approval") {
       throw new DraftActionError("draft_not_pending");
+    }
+    if (draft.promptVersion !== CURRENT_DM_PROMPT_VERSION) {
+      throw new DraftActionError("prompt_policy_outdated");
+    }
+    if (draft.kind === "engagement_follow_up") {
+      if (now < draft.eligibleAt) throw new DraftActionError("follow_up_not_ready");
+      if (draft.expiresAt === null || now >= draft.expiresAt) {
+        throw new DraftActionError("follow_up_window_closed");
+      }
     }
 
     const thread = await tx.dmThread.findUnique({
@@ -462,40 +486,214 @@ export async function claimApprovedDraft(input: {
       throw new DraftActionError("stale_draft");
     }
 
-    const claim = await tx.replyDraft.updateMany({
-      where: {
-        id: input.draftId,
-        threadId: input.threadId,
-        inboundMessageId: draft.inboundMessageId,
-        status: "pending_approval",
-      },
-      data: {
-        workingText: input.workingText,
-        approvedText: input.workingText,
-        approvedBy: input.approvedBy,
-        approvedAt: new Date(),
-        status: "sending",
+    const approvedText = input.workingText.trim();
+    const claim =
+      draft.kind === "engagement_follow_up"
+        ? {
+            count: await tx.$executeRaw`
+              UPDATE "reply_draft" AS draft
+              SET
+                "working_text" = ${approvedText},
+                "approved_text" = ${approvedText},
+                "approved_by" = ${input.approvedBy},
+                "approved_at" = ${now},
+                "status" = 'sending',
+                "updated_at" = clock_timestamp()
+              WHERE draft."id" = ${input.draftId}::uuid
+                AND draft."thread_id" = ${input.threadId}::uuid
+                AND draft."inbound_message_id" = ${draft.inboundMessageId}::uuid
+                AND draft."status" = 'pending_approval'
+                AND draft."prompt_version" = ${CURRENT_DM_PROMPT_VERSION}
+                AND draft."kind" = 'engagement_follow_up'
+                AND draft."eligible_at" <= clock_timestamp()
+                AND draft."expires_at" > clock_timestamp()
+                AND EXISTS (
+                  SELECT 1
+                  FROM "dm_thread" AS thread
+                  WHERE thread."id" = draft."thread_id"
+                    AND thread."latest_inbound_message_id" = draft."inbound_message_id"
+                )
+            `,
+          }
+        : await tx.replyDraft.updateMany({
+            where: {
+              id: input.draftId,
+              threadId: input.threadId,
+              inboundMessageId: draft.inboundMessageId,
+              status: "pending_approval",
+              kind: "reply",
+              promptVersion: CURRENT_DM_PROMPT_VERSION,
+              thread: { latestInboundMessageId: draft.inboundMessageId },
+            },
+            data: {
+              workingText: approvedText,
+              approvedText,
+              approvedBy: input.approvedBy,
+              approvedAt: now,
+              status: "sending",
+            },
+          });
+    // Lost the race to a concurrent approval — the winner is already sending.
+    if (claim.count !== 1) {
+      const current = await tx.replyDraft.findUnique({
+        where: { id: input.draftId },
+        select: { status: true },
+      });
+      if (current?.status !== "pending_approval") {
+        throw new DraftActionError("draft_not_pending");
+      }
+      const currentThread = await tx.dmThread.findUnique({
+        where: { id: input.threadId },
+        select: { latestInboundMessageId: true },
+      });
+      if (currentThread?.latestInboundMessageId !== draft.inboundMessageId) {
+        throw new DraftActionError("stale_draft");
+      }
+      // The remaining follow-up-only predicate is the database clock. If it
+      // crossed expiresAt after the application pre-check, fail closed.
+      if (draft.kind === "engagement_follow_up") {
+        throw new DraftActionError("follow_up_window_closed");
+      }
+      throw new DraftActionError("draft_not_pending");
+    }
+
+    return { approvedText, inboundMessageId: draft.inboundMessageId };
+  });
+}
+
+/**
+ * Reclaim a definitely-undelivered or owner-checked uncertain send.
+ *
+ * This is the only retry entrypoint. It repeats the same prompt, freshness and
+ * follow-up deadline checks as first approval and returns only the immutable text
+ * the owner previously approved. The transaction ends before Instagram is called.
+ */
+export async function claimRetryDraft(input: {
+  threadId: string;
+  draftId: string;
+  confirmedNotDelivered: true;
+}, now = new Date()): Promise<{ approvedText: string; inboundMessageId: string }> {
+  return prisma.$transaction(async (tx) => {
+    const draft = await tx.replyDraft.findUnique({
+      where: { id: input.draftId },
+      select: {
+        threadId: true,
+        inboundMessageId: true,
+        status: true,
+        kind: true,
+        promptVersion: true,
+        eligibleAt: true,
+        expiresAt: true,
+        approvedText: true,
       },
     });
-    // Lost the race to a concurrent approval — the winner is already sending.
-    if (claim.count !== 1) throw new DraftActionError("draft_not_pending");
+    if (!draft || draft.threadId !== input.threadId) {
+      throw new DraftActionError("draft_not_found");
+    }
+    if (
+      input.confirmedNotDelivered !== true ||
+      (draft.status !== "send_failed" && draft.status !== "send_uncertain") ||
+      !draft.approvedText
+    ) {
+      throw new DraftActionError("draft_not_retryable");
+    }
+    if (draft.promptVersion !== CURRENT_DM_PROMPT_VERSION) {
+      throw new DraftActionError("prompt_policy_outdated");
+    }
+    if (draft.kind === "engagement_follow_up") {
+      if (now < draft.eligibleAt) throw new DraftActionError("follow_up_not_ready");
+      if (draft.expiresAt === null || now >= draft.expiresAt) {
+        throw new DraftActionError("follow_up_window_closed");
+      }
+    }
+
+    const thread = await tx.dmThread.findUnique({
+      where: { id: input.threadId },
+      select: { latestInboundMessageId: true },
+    });
+    if (thread?.latestInboundMessageId !== draft.inboundMessageId) {
+      throw new DraftActionError("stale_draft");
+    }
+
+    const retryableStatuses = ["send_failed", "send_uncertain"] as const;
+    const claim =
+      draft.kind === "engagement_follow_up"
+        ? {
+            count: await tx.$executeRaw`
+              UPDATE "reply_draft" AS draft
+              SET
+                "status" = 'sending',
+                "error_code" = NULL,
+                "updated_at" = clock_timestamp()
+              WHERE draft."id" = ${input.draftId}::uuid
+                AND draft."thread_id" = ${input.threadId}::uuid
+                AND draft."inbound_message_id" = ${draft.inboundMessageId}::uuid
+                AND draft."status" IN ('send_failed', 'send_uncertain')
+                AND draft."prompt_version" = ${CURRENT_DM_PROMPT_VERSION}
+                AND draft."kind" = 'engagement_follow_up'
+                AND draft."eligible_at" <= clock_timestamp()
+                AND draft."expires_at" > clock_timestamp()
+                AND EXISTS (
+                  SELECT 1
+                  FROM "dm_thread" AS thread
+                  WHERE thread."id" = draft."thread_id"
+                    AND thread."latest_inbound_message_id" = draft."inbound_message_id"
+                )
+            `,
+          }
+        : await tx.replyDraft.updateMany({
+            where: {
+              id: input.draftId,
+              threadId: input.threadId,
+              inboundMessageId: draft.inboundMessageId,
+              status: { in: [...retryableStatuses] },
+              kind: "reply",
+              promptVersion: CURRENT_DM_PROMPT_VERSION,
+              thread: { latestInboundMessageId: draft.inboundMessageId },
+            },
+            data: { status: "sending", errorCode: null },
+          });
+    if (claim.count !== 1) {
+      const current = await tx.replyDraft.findUnique({
+        where: { id: input.draftId },
+        select: { status: true },
+      });
+      if (current?.status !== "send_failed" && current?.status !== "send_uncertain") {
+        throw new DraftActionError("draft_not_retryable");
+      }
+      const currentThread = await tx.dmThread.findUnique({
+        where: { id: input.threadId },
+        select: { latestInboundMessageId: true },
+      });
+      if (currentThread?.latestInboundMessageId !== draft.inboundMessageId) {
+        throw new DraftActionError("stale_draft");
+      }
+      if (draft.kind === "engagement_follow_up") {
+        throw new DraftActionError("follow_up_window_closed");
+      }
+      throw new DraftActionError("draft_not_retryable");
+    }
+
+    return { approvedText: draft.approvedText, inboundMessageId: draft.inboundMessageId };
   });
 }
 
 /** Confirmed delivery. */
 export async function markSent(draftId: string): Promise<void> {
-  await prisma.replyDraft.updateMany({
+  const result = await prisma.replyDraft.updateMany({
     where: { id: draftId, status: "sending" },
     data: { status: "sent", sentAt: new Date(), errorCode: null, errorMessage: null },
   });
+  if (result.count !== 1) throw new Error("send_state_not_recorded");
 }
 
 /** A definite Graph rejection: nothing was delivered, so a retry is safe to offer. */
 export async function markSendFailed(draftId: string, errorCode: string): Promise<void> {
-  await prisma.replyDraft.updateMany({
+  const result = await prisma.replyDraft.updateMany({
     where: { id: draftId, status: "sending" },
     data: { status: "send_failed", errorCode, failedAt: new Date() },
   });
+  if (result.count !== 1) throw new Error("send_state_not_recorded");
 }
 
 /**
@@ -505,8 +703,9 @@ export async function markSendFailed(draftId: string, errorCode: string): Promis
  * makes the owner confirm they checked Instagram before offering a retry.
  */
 export async function markSendUncertain(draftId: string, errorCode: string): Promise<void> {
-  await prisma.replyDraft.updateMany({
+  const result = await prisma.replyDraft.updateMany({
     where: { id: draftId, status: "sending" },
     data: { status: "send_uncertain", errorCode, failedAt: new Date() },
   });
+  if (result.count !== 1) throw new Error("send_state_not_recorded");
 }
