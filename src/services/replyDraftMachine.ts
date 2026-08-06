@@ -13,20 +13,21 @@ import type { ReplyDraftStatus } from "@prisma/client";
  *     status, because a "failure" may in fact have been delivered.
  */
 const TRANSITIONS: Readonly<Record<ReplyDraftStatus, readonly ReplyDraftStatus[]>> = {
-  queued: ["generating", "dismissed", "superseded"],
-  generating: ["pending_approval", "generation_failed", "superseded"],
-  pending_approval: ["sending", "dismissed", "superseded"],
+  queued: ["generating", "dismissed", "superseded", "expired"],
+  generating: ["pending_approval", "generation_failed", "superseded", "expired"],
+  pending_approval: ["sending", "dismissed", "superseded", "expired"],
   // A generation failure is surfaced to the owner and never retried by a worker.
   // The ways out are regenerating (which creates a NEW revision and supersedes
-  // this one) or dismissing it.
-  generation_failed: ["dismissed", "superseded"],
+  // this one), dismissing it, or expiring it at the messaging deadline.
+  generation_failed: ["dismissed", "superseded", "expired"],
   sending: ["sent", "send_failed", "send_uncertain"],
-  // Owner-confirmed retry only — see the note above.
-  send_failed: ["sending", "dismissed"],
+  // Retrying is owner-confirmed only; deadline enforcement may instead expire it.
+  send_failed: ["sending", "dismissed", "expired"],
   send_uncertain: ["sending", "dismissed"],
   sent: [],
   dismissed: [],
   superseded: [],
+  expired: [],
 };
 
 /**

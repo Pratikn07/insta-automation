@@ -111,27 +111,29 @@ enum ConversationState {
 }
 
 model Conversation {
-  id                      String            @id @default(uuid()) @db.Uuid
-  igUserId                String            @map("ig_user_id")
-  keywordId               String            @map("keyword_id") @db.Uuid
-  state                   ConversationState @default(awaiting_done)
-  createdAt               DateTime          @default(now()) @map("created_at")
-  completedAt             DateTime?         @map("completed_at")
+  id                            String            @id @default(uuid()) @db.Uuid
+  igUserId                      String            @map("ig_user_id")
+  keywordId                     String            @map("keyword_id") @db.Uuid
+  state                         ConversationState @default(awaiting_done)
+  createdAt                     DateTime          @default(now()) @map("created_at")
+  completedAt                   DateTime?         @map("completed_at")
   // When the gate DM was actually delivered (live or via retry). The DONE-window
   // and expiry are measured from this, not createdAt, so a gate delivered days
   // after the comment (retry) still opens a valid window. Null for legacy rows.
-  gatedAt                 DateTime?         @map("gated_at")
+  gatedAt                       DateTime?         @map("gated_at")
   // When the follow-recheck worker measured this completed conversation's
   // follower outcome (fix #11). Null = not yet rechecked / not eligible.
-  followRecheckedAt       DateTime?         @map("follow_rechecked_at")
+  followRecheckedAt             DateTime?         @map("follow_rechecked_at")
   // Second, LATER reading of the same user (fix: does the guide follower stay?).
   // Tracked separately from followRecheckedAt so the two measurements never
   // overwrite each other — the whole point is comparing them.
-  followThroughAt         DateTime?         @map("follow_through_at")
+  followThroughAt               DateTime?         @map("follow_through_at")
   // Follow status AT that later reading. Null until measured.
-  followThroughIsFollower Boolean?          @map("follow_through_is_follower")
+  followThroughIsFollower       Boolean?          @map("follow_through_is_follower")
+  engagementFollowUpScheduledAt DateTime?         @map("engagement_follow_up_scheduled_at")
 
-  keyword Keyword @relation(fields: [keywordId], references: [id])
+  keyword        Keyword      @relation(fields: [keywordId], references: [id])
+  followUpDrafts ReplyDraft[] @relation("FollowUpSource")
 
   @@index([igUserId, state])
   @@index([state, createdAt])
@@ -463,8 +465,16 @@ enum ReplyDraftStatus {
   sent
   send_failed
   send_uncertain
+  expired
 
   @@map("reply_draft_status")
+}
+
+enum ReplyDraftKind {
+  reply
+  engagement_follow_up
+
+  @@map("reply_draft_kind")
 }
 
 model DmThread {
@@ -525,13 +535,18 @@ model DmMessage {
 // copy; `approvedText` is the exact string a human authorised. Collapsing them
 // would destroy the answer to "what did the owner actually approve?".
 model ReplyDraft {
-  id               String           @id @default(uuid()) @db.Uuid
-  threadId         String           @map("thread_id") @db.Uuid
+  id                   String           @id @default(uuid()) @db.Uuid
+  threadId             String           @map("thread_id") @db.Uuid
   // The inbound this drafts a reply to. If a newer inbound arrives, the draft is
   // stale by definition and cannot be approved.
-  inboundMessageId String           @map("inbound_message_id") @db.Uuid
-  revision         Int
-  status           ReplyDraftStatus @default(queued)
+  inboundMessageId     String           @map("inbound_message_id") @db.Uuid
+  revision             Int
+  status               ReplyDraftStatus @default(queued)
+  kind                 ReplyDraftKind   @default(reply)
+  sourceConversationId String?          @map("source_conversation_id") @db.Uuid
+  eligibleAt           DateTime         @default(now()) @map("eligible_at")
+  expiresAt            DateTime?        @map("expires_at")
+  promptVersion        Int?             @map("prompt_version")
 
   suggestedText String? @map("suggested_text")
   workingText   String? @map("working_text")
@@ -556,11 +571,13 @@ model ReplyDraft {
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
 
-  thread DmThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  thread             DmThread      @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  sourceConversation Conversation? @relation("FollowUpSource", fields: [sourceConversationId], references: [id], onDelete: Restrict)
 
   @@unique([threadId, revision])
   @@index([status, nextAttemptAt])
   @@index([threadId, createdAt])
+  @@index([sourceConversationId, kind])
   @@map("reply_draft")
 }
 

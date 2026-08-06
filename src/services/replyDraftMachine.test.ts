@@ -18,6 +18,11 @@ describe("reply draft transitions", () => {
     ["sending", "send_uncertain"],
     ["send_failed", "sending"],
     ["send_uncertain", "sending"],
+    ["queued", "expired"],
+    ["generating", "expired"],
+    ["pending_approval", "expired"],
+    ["generation_failed", "expired"],
+    ["send_failed", "expired"],
   ] as const)("allows %s -> %s", (from, to) => {
     expect(canTransition(from, to)).toBe(true);
   });
@@ -37,10 +42,10 @@ describe("reply draft transitions", () => {
     expect(isApprovable("send_failed")).toBe(false);
   });
 
-  // `sent` is the terminal success state: a delivered Instagram message cannot be
-  // un-delivered, so nothing may move out of it.
-  it("treats sent, dismissed and superseded as terminal", () => {
-    for (const terminal of ["sent", "dismissed", "superseded"] as const) {
+  // A delivered Instagram message cannot be un-delivered, and drafts closed by
+  // owner action, supersession, or deadline cannot re-enter the send lifecycle.
+  it("treats sent, dismissed, superseded and expired as terminal", () => {
+    for (const terminal of ["sent", "dismissed", "superseded", "expired"] as const) {
       for (const to of [
         "queued",
         "generating",
@@ -48,6 +53,7 @@ describe("reply draft transitions", () => {
         "sending",
         "sent",
         "send_failed",
+        "expired",
       ] as const) {
         expect(canTransition(terminal, to)).toBe(false);
       }
@@ -55,7 +61,8 @@ describe("reply draft transitions", () => {
   });
 
   // A generation failure is surfaced to the owner, never retried by a worker, so
-  // the only ways out are the owner regenerating (a NEW revision) or dismissing.
+  // the only ways out are supersession by a NEW revision, owner dismissal, or
+  // deadline expiration.
   it("lets a failed generation be dismissed or superseded but never sent", () => {
     expect(canTransition("generation_failed", "dismissed")).toBe(true);
     expect(canTransition("generation_failed", "superseded")).toBe(true);
@@ -85,5 +92,6 @@ describe("reply draft transitions", () => {
     // A draft mid-flight to Instagram must NOT be superseded — its outcome is
     // still unknown, and rewriting it would lose the audit trail.
     expect(ACTIVE_DRAFT_STATUSES).not.toContain("sending");
+    expect(ACTIVE_DRAFT_STATUSES).not.toContain("expired");
   });
 });
