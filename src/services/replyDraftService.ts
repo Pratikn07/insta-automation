@@ -2,6 +2,7 @@ import type { ReplyDraft } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import type { DmDraftRequest } from "./codexRuntimeClient.js";
 import { ACTIVE_DRAFT_STATUSES } from "./replyDraftMachine.js";
+import { CURRENT_DM_PROMPT_VERSION } from "./replyDraftPolicy.js";
 
 /** How much conversation the drafter sees: recent, and bounded. */
 const CONTEXT_MESSAGE_LIMIT = 20;
@@ -39,43 +40,60 @@ function isUniqueViolation(error: unknown): boolean {
  * returns the winning active draft, because both callers only want "the active
  * draft for this thread".
  */
-export async function queueReplyDraft(input: {
+export interface QueueReplyDraftInput {
   threadId: string;
   inboundMessageId: string;
-}): Promise<ReplyDraft> {
-  return prisma.$transaction(async (tx) => {
-    const highest = await tx.replyDraft.aggregate({
-      where: { threadId: input.threadId },
-      _max: { revision: true },
-    });
-    const revision = (highest._max.revision ?? 0) + 1;
+  kind?: "reply" | "engagement_follow_up";
+  sourceConversationId?: string | null;
+  eligibleAt?: Date;
+  expiresAt?: Date | null;
+}
 
-    // Supersede first so the partial unique index has room for the new row.
-    await tx.replyDraft.updateMany({
-      where: { threadId: input.threadId, status: { in: [...ACTIVE_DRAFT_STATUSES] } },
-      data: { status: "superseded" },
-    });
+export async function queueReplyDraft(input: QueueReplyDraftInput): Promise<ReplyDraft> {
+  const eligibleAt = input.eligibleAt ?? new Date();
 
-    try {
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const highest = await tx.replyDraft.aggregate({
+        where: { threadId: input.threadId },
+        _max: { revision: true },
+      });
+      const revision = (highest._max.revision ?? 0) + 1;
+
+      // Supersede first so the partial unique index has room for the new row.
+      await tx.replyDraft.updateMany({
+        where: { threadId: input.threadId, status: { in: [...ACTIVE_DRAFT_STATUSES] } },
+        data: { status: "superseded" },
+      });
+
       return await tx.replyDraft.create({
         data: {
           threadId: input.threadId,
           inboundMessageId: input.inboundMessageId,
           revision,
           status: "queued",
+          kind: input.kind ?? "reply",
+          sourceConversationId: input.sourceConversationId ?? null,
+          eligibleAt,
+          nextAttemptAt: eligibleAt,
+          expiresAt: input.expiresAt ?? null,
+          promptVersion: CURRENT_DM_PROMPT_VERSION,
         },
       });
-    } catch (error) {
-      if (!isUniqueViolation(error)) throw error;
-      // A concurrent caller won. Return its draft instead of failing the webhook.
-      const winner = await tx.replyDraft.findFirst({
-        where: { threadId: input.threadId, status: { in: [...ACTIVE_DRAFT_STATUSES] } },
-        orderBy: { revision: "desc" },
-      });
-      if (!winner) throw error;
-      return winner;
-    }
-  });
+    });
+  } catch (error) {
+    if (!isUniqueViolation(error)) throw error;
+
+    // Prisma marks a transaction that hit P2002 as aborted. The transaction has
+    // fully rolled back before this root-client lookup runs, so it can see the
+    // concurrent winner without issuing another query on the failed transaction.
+    const winner = await prisma.replyDraft.findFirst({
+      where: { threadId: input.threadId, status: { in: [...ACTIVE_DRAFT_STATUSES] } },
+      orderBy: { revision: "desc" },
+    });
+    if (!winner) throw error;
+    return winner;
+  }
 }
 
 /**

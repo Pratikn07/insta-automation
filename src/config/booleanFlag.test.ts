@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { booleanFlag } from "./booleanFlag.js";
+import { envSchema } from "./env.js";
 
 const flag = booleanFlag(false);
 
@@ -45,5 +46,17 @@ describe("booleanFlag", () => {
   it("passes real booleans through", () => {
     expect(flag.parse(true)).toBe(true);
     expect(flag.parse(false)).toBe(false);
+  });
+});
+
+describe("AI follow-up feature flags", () => {
+  it("rejects follow-up scheduling when the draft worker is disabled", () => {
+    const result = envSchema.safeParse({
+      ...process.env,
+      AI_DRAFTS_ENABLED: "false",
+      AI_FOLLOW_UPS_ENABLED: "true",
+    });
+
+    expect(result.success).toBe(false);
   });
 });

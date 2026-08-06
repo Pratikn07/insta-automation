@@ -2,7 +2,7 @@ import "dotenv/config";
 import { z } from "zod";
 import { booleanFlag } from "./booleanFlag.js";
 
-const envSchema = z.object({
+export const envSchema = z.object({
   PORT: z.coerce.number().default(3000),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
@@ -97,6 +97,7 @@ const envSchema = z.object({
   // Every AI capability ships OFF. Each phase is enabled deliberately, and
   // turning one off must never disable existing automation.
   AI_DRAFTS_ENABLED: booleanFlag(false),
+  AI_FOLLOW_UPS_ENABLED: booleanFlag(false),
   AI_SEND_ENABLED: booleanFlag(false),
   AI_ADVISOR_ENABLED: booleanFlag(false),
   AI_BRAND_VOICE: z
@@ -104,6 +105,14 @@ const envSchema = z.object({
     .max(4000)
     .default("Warm, practical, concise, and supportive. Never diagnose or shame a parent."),
   AI_DRAFT_INTERVAL_MS: z.coerce.number().int().min(5_000).default(15_000),
+}).superRefine((value, ctx) => {
+  if (value.AI_FOLLOW_UPS_ENABLED && !value.AI_DRAFTS_ENABLED) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["AI_FOLLOW_UPS_ENABLED"],
+      message: "AI_FOLLOW_UPS_ENABLED requires AI_DRAFTS_ENABLED",
+    });
+  }
 });
 
 const parsed = envSchema.safeParse(process.env);

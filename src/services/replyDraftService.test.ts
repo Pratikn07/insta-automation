@@ -13,12 +13,17 @@ const tx = {
   dmMessage: { findMany: vi.fn() },
 };
 
+const rootReplyDraft = {
+  ...tx.replyDraft,
+  findFirst: vi.fn(),
+};
+
 const $transaction = vi.fn(async (fn: (client: typeof tx) => unknown) => fn(tx));
 
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
     $transaction,
-    replyDraft: tx.replyDraft,
+    replyDraft: rootReplyDraft,
     dmThread: tx.dmThread,
     dmMessage: tx.dmMessage,
   },
@@ -34,11 +39,13 @@ const {
   markSendFailed,
   markSendUncertain,
 } = await import("./replyDraftService.js");
+const { CURRENT_DM_PROMPT_VERSION } = await import("./replyDraftPolicy.js");
 
 const INPUT = { threadId: "thread-1", inboundMessageId: "message-1" };
 
 beforeEach(() => {
   for (const fn of Object.values(tx.replyDraft)) fn.mockReset();
+  rootReplyDraft.findFirst.mockReset();
   tx.dmThread.findUnique.mockReset();
   tx.dmMessage.findMany.mockReset();
   $transaction.mockClear();
@@ -58,6 +65,12 @@ describe("queueReplyDraft", () => {
           inboundMessageId: "message-1",
           revision: 1,
           status: "queued",
+          kind: "reply",
+          eligibleAt: expect.any(Date),
+          nextAttemptAt: expect.any(Date),
+          expiresAt: null,
+          promptVersion: CURRENT_DM_PROMPT_VERSION,
+          sourceConversationId: null,
         }),
       }),
     );
@@ -93,16 +106,30 @@ describe("queueReplyDraft", () => {
     expect(call.data.status).toBe("superseded");
   });
 
-  it("reloads the winning draft when the partial index rejects a concurrent insert", async () => {
+  it("reloads the winner from the root client after a failed transaction rolls back", async () => {
     // Two webhooks for the same thread can race. The database's partial unique
     // index is the arbiter; the loser must return the winner rather than throw,
     // because both callers just want "the active draft for this thread".
     const uniqueViolation = Object.assign(new Error("unique constraint"), { code: "P2002" });
+    const order: string[] = [];
     tx.replyDraft.create.mockRejectedValue(uniqueViolation);
-    tx.replyDraft.findFirst.mockResolvedValue({ id: "draft-winner", revision: 1, status: "queued" });
+    $transaction.mockImplementationOnce(async (fn: (client: typeof tx) => unknown) => {
+      try {
+        return await fn(tx);
+      } catch (error) {
+        order.push("rollback");
+        throw error;
+      }
+    });
+    rootReplyDraft.findFirst.mockImplementation(async () => {
+      order.push("winner_lookup");
+      return { id: "draft-winner", revision: 1, status: "queued" };
+    });
 
     await expect(queueReplyDraft(INPUT)).resolves.toMatchObject({ id: "draft-winner" });
-    expect(tx.replyDraft.findFirst).toHaveBeenCalledWith(
+    expect(order).toEqual(["rollback", "winner_lookup"]);
+    expect(tx.replyDraft.findFirst).not.toHaveBeenCalled();
+    expect(rootReplyDraft.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
           threadId: "thread-1",
@@ -115,7 +142,7 @@ describe("queueReplyDraft", () => {
   it("rethrows a unique violation when no active draft can be found", async () => {
     const uniqueViolation = Object.assign(new Error("unique constraint"), { code: "P2002" });
     tx.replyDraft.create.mockRejectedValue(uniqueViolation);
-    tx.replyDraft.findFirst.mockResolvedValue(null);
+    rootReplyDraft.findFirst.mockResolvedValue(null);
 
     await expect(queueReplyDraft(INPUT)).rejects.toThrow("unique constraint");
   });

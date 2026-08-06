@@ -16,6 +16,7 @@ import {
   updateDmThreadProfile,
 } from "../services/dmThreadService.js";
 import { queueReplyDraft } from "../services/replyDraftService.js";
+import { scheduleEngagementFollowUp } from "../services/engagementFollowUpService.js";
 import { logger } from "../lib/logger.js";
 import { logEvent, describeGraphError } from "../services/eventLogger.js";
 import { resolveUsername } from "../services/igUserService.js";
@@ -47,6 +48,46 @@ function graphFailureMetadata(err: unknown): Record<string, unknown> {
     if (detail[key] !== undefined) metadata[key] = detail[key];
   }
   return metadata;
+}
+
+async function scheduleFollowUpAfterDelivery(input: {
+  conversationId: string;
+  threadId: string;
+  inboundMessageId: string;
+  inboundAt: Date;
+  deliveredAt: Date | null;
+}): Promise<void> {
+  if (!env.AI_FOLLOW_UPS_ENABLED) return;
+
+  if (!input.deliveredAt) {
+    logger.error(
+      {
+        errorCode: "follow_up_completion_timestamp_missing",
+        conversationId: input.conversationId,
+        threadId: input.threadId,
+        inboundMessageId: input.inboundMessageId,
+      },
+      "Failed to schedule engagement follow-up after guide delivery",
+    );
+    return;
+  }
+
+  try {
+    await scheduleEngagementFollowUp({ ...input, deliveredAt: input.deliveredAt });
+  } catch {
+    // The guide is already delivered and completion is recorded. Follow-up
+    // queueing is best-effort and must never make that successful path look
+    // failed (or leak a database/backend error that could contain private text).
+    logger.error(
+      {
+        errorCode: "follow_up_schedule_failed",
+        conversationId: input.conversationId,
+        threadId: input.threadId,
+        inboundMessageId: input.inboundMessageId,
+      },
+      "Failed to schedule engagement follow-up after guide delivery",
+    );
+  }
 }
 
 /**
@@ -176,7 +217,14 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
           messages: keyword.resource.messages,
           source: "guide_automation",
         });
-        await markCompleted(convo.id);
+        const completed = await markCompleted(convo.id);
+        await scheduleFollowUpAfterDelivery({
+          conversationId: convo.id,
+          threadId: inbound.threadId,
+          inboundMessageId: inbound.messageId,
+          inboundAt: new Date(entry.timestamp),
+          deliveredAt: completed.completedAt,
+        });
         await markThreadResolved({
           threadId: inbound.threadId,
           inboundMessageId: inbound.messageId,
@@ -277,7 +325,14 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
           messages: convo.keyword.resource.messages,
           source: "guide_automation",
         });
-        await markCompleted(convo.id);
+        const completed = await markCompleted(convo.id);
+        await scheduleFollowUpAfterDelivery({
+          conversationId: convo.id,
+          threadId: inbound.threadId,
+          inboundMessageId: inbound.messageId,
+          inboundAt: new Date(entry.timestamp),
+          deliveredAt: completed.completedAt,
+        });
         await markThreadResolved({
           threadId: inbound.threadId,
           inboundMessageId: inbound.messageId,
@@ -359,7 +414,14 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
         messages: convo.keyword.resource.messages,
         source: "guide_automation",
       });
-      await markCompleted(convo.id);
+      const completed = await markCompleted(convo.id);
+      await scheduleFollowUpAfterDelivery({
+        conversationId: convo.id,
+        threadId: inbound.threadId,
+        inboundMessageId: inbound.messageId,
+        inboundAt: new Date(entry.timestamp),
+        deliveredAt: completed.completedAt,
+      });
       await markThreadResolved({
         threadId: inbound.threadId,
         inboundMessageId: inbound.messageId,

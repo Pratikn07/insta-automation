@@ -6,6 +6,7 @@ const recordInboundMessage = vi.fn();
 const updateDmThreadProfile = vi.fn();
 const markThreadResolved = vi.fn();
 const queueReplyDraft = vi.fn();
+const scheduleEngagementFollowUp = vi.fn();
 const findKeywordInMessage = vi.fn();
 const findActiveAwaitingDone = vi.fn();
 const hasCompletedKeyword = vi.fn();
@@ -30,6 +31,7 @@ vi.mock("../services/dmThreadService.js", () => ({
   markThreadResolved,
 }));
 vi.mock("../services/replyDraftService.js", () => ({ queueReplyDraft }));
+vi.mock("../services/engagementFollowUpService.js", () => ({ scheduleEngagementFollowUp }));
 vi.mock("../services/keywordService.js", () => ({ findKeywordInMessage }));
 vi.mock("../services/conversationService.js", () => ({
   findActiveAwaitingDone,
@@ -50,13 +52,16 @@ vi.mock("../lib/logger.js", () => ({ logger }));
 // The real env has AI_DRAFTS_ENABLED=false (all AI ships off), so drafting is
 // mocked ON here and toggled per test. `aiDraftsEnabled` is mutable so one test
 // can prove the flag genuinely gates the queue call.
-const aiFlags = { AI_DRAFTS_ENABLED: true };
+const aiFlags = { AI_DRAFTS_ENABLED: true, AI_FOLLOW_UPS_ENABLED: true };
 vi.mock("../config/env.js", async (importOriginal) => {
   const actual = (await importOriginal()) as { env: Record<string, unknown> };
   return {
     env: new Proxy(actual.env, {
-      get: (target, prop) =>
-        prop === "AI_DRAFTS_ENABLED" ? aiFlags.AI_DRAFTS_ENABLED : target[prop as string],
+      get: (target, prop) => {
+        if (prop === "AI_DRAFTS_ENABLED") return aiFlags.AI_DRAFTS_ENABLED;
+        if (prop === "AI_FOLLOW_UPS_ENABLED") return aiFlags.AI_FOLLOW_UPS_ENABLED;
+        return target[prop as string];
+      },
     }),
   };
 });
@@ -90,6 +95,7 @@ beforeEach(() => {
     updateDmThreadProfile,
     markThreadResolved,
     queueReplyDraft,
+    scheduleEngagementFollowUp,
     findKeywordInMessage,
     findActiveAwaitingDone,
     hasCompletedKeyword,
@@ -121,7 +127,13 @@ beforeEach(() => {
   sendTrackedText.mockResolvedValue({ messageId: "mid-out" });
   sendSequence.mockResolvedValue(undefined);
   queueReplyDraft.mockResolvedValue({ id: "draft-1" });
+  scheduleEngagementFollowUp.mockResolvedValue({ scheduled: true, draftId: "follow-up-1" });
+  markCompleted.mockResolvedValue({
+    id: "convo-1",
+    completedAt: new Date("2026-08-05T10:01:00.000Z"),
+  });
   aiFlags.AI_DRAFTS_ENABLED = true;
+  aiFlags.AI_FOLLOW_UPS_ENABLED = true;
 });
 
 describe("handleMessage — inbound capture", () => {
@@ -241,6 +253,164 @@ describe("handleMessage — branch order is unchanged", () => {
     expect(sendSequence).toHaveBeenCalledOnce();
     expect(markCompleted).toHaveBeenCalledWith("convo-1");
     expect(queueReplyDraft).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleMessage — engagement follow-up scheduling", () => {
+  const expectedScheduleInput = {
+    conversationId: "convo-1",
+    threadId: "thread-1",
+    inboundMessageId: "message-1",
+    inboundAt: new Date(1785895200000),
+    deliveredAt: new Date("2026-08-05T10:01:00.000Z"),
+  };
+
+  it("schedules exactly once after instant keyword guide delivery is completed", async () => {
+    findKeywordInMessage.mockResolvedValue(keywordFixture);
+
+    await handleMessage(inbound("SLEEP"));
+
+    expect(scheduleEngagementFollowUp).toHaveBeenCalledOnce();
+    expect(scheduleEngagementFollowUp).toHaveBeenCalledWith(expectedScheduleInput);
+  });
+
+  it("schedules exactly once after an already-delivered open gate is redelivered", async () => {
+    findActiveAwaitingDone.mockResolvedValue({
+      id: "convo-1",
+      keywordId: "keyword-1",
+      keyword: { keyword: "SLEEP", resource: { messages: [] } },
+    });
+    hasCompletedKeyword.mockResolvedValue(true);
+
+    await handleMessage(inbound("Done"));
+
+    expect(scheduleEngagementFollowUp).toHaveBeenCalledOnce();
+    expect(scheduleEngagementFollowUp).toHaveBeenCalledWith(expectedScheduleInput);
+  });
+
+  it("schedules exactly once after a normal open-gate guide delivery is completed", async () => {
+    findActiveAwaitingDone.mockResolvedValue({
+      id: "convo-1",
+      keywordId: "keyword-1",
+      keyword: { keyword: "SLEEP", resource: { messages: [] } },
+    });
+
+    await handleMessage(inbound("Done"));
+
+    expect(scheduleEngagementFollowUp).toHaveBeenCalledOnce();
+    expect(scheduleEngagementFollowUp).toHaveBeenCalledWith(expectedScheduleInput);
+  });
+
+  it("does not schedule before a guide sequence succeeds", async () => {
+    findActiveAwaitingDone.mockResolvedValue({
+      id: "convo-1",
+      keywordId: "keyword-1",
+      keyword: { keyword: "SLEEP", resource: { messages: [] } },
+    });
+    sendSequence.mockRejectedValue(new Error("graph 400"));
+
+    await handleMessage(inbound("Done"));
+
+    expect(markCompleted).not.toHaveBeenCalled();
+    expect(scheduleEngagementFollowUp).not.toHaveBeenCalled();
+  });
+
+  it("does not schedule unless completion is confirmed", async () => {
+    findActiveAwaitingDone.mockResolvedValue({
+      id: "convo-1",
+      keywordId: "keyword-1",
+      keyword: { keyword: "SLEEP", resource: { messages: [] } },
+    });
+    markCompleted.mockRejectedValue(new Error("database unavailable"));
+
+    await handleMessage(inbound("Done"));
+
+    expect(sendSequence).toHaveBeenCalledOnce();
+    expect(scheduleEngagementFollowUp).not.toHaveBeenCalled();
+  });
+
+  it("keeps successful delivery successful when follow-up queueing fails", async () => {
+    findActiveAwaitingDone.mockResolvedValue({
+      id: "convo-1",
+      keywordId: "keyword-1",
+      keyword: { keyword: "SLEEP", resource: { messages: [] } },
+    });
+    const privateBody = "private DM or model output";
+    scheduleEngagementFollowUp.mockRejectedValue(new Error(privateBody));
+
+    await expect(handleMessage(inbound("Done"))).resolves.toBeUndefined();
+
+    expect(markThreadResolved).toHaveBeenCalledWith({
+      threadId: "thread-1",
+      inboundMessageId: "message-1",
+    });
+    expect(logEvent).not.toHaveBeenCalledWith("sequence_failed", expect.anything());
+    expect(logger.error).toHaveBeenCalledWith(
+      {
+        errorCode: "follow_up_schedule_failed",
+        conversationId: "convo-1",
+        threadId: "thread-1",
+        inboundMessageId: "message-1",
+      },
+      "Failed to schedule engagement follow-up after guide delivery",
+    );
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain(privateBody);
+  });
+
+  it("does not queue without the completion timestamp and logs IDs only", async () => {
+    findKeywordInMessage.mockResolvedValue(keywordFixture);
+    markCompleted.mockResolvedValue({ id: "convo-1", completedAt: null });
+
+    await handleMessage(inbound("SLEEP"));
+
+    expect(scheduleEngagementFollowUp).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith(
+      {
+        errorCode: "follow_up_completion_timestamp_missing",
+        conversationId: "convo-1",
+        threadId: "thread-1",
+        inboundMessageId: "message-1",
+      },
+      "Failed to schedule engagement follow-up after guide delivery",
+    );
+  });
+
+  it("does not schedule while AI_FOLLOW_UPS_ENABLED is false", async () => {
+    aiFlags.AI_FOLLOW_UPS_ENABLED = false;
+    findKeywordInMessage.mockResolvedValue(keywordFixture);
+
+    await handleMessage(inbound("SLEEP"));
+
+    expect(sendSequence).toHaveBeenCalledOnce();
+    expect(markCompleted).toHaveBeenCalledOnce();
+    expect(scheduleEngagementFollowUp).not.toHaveBeenCalled();
+  });
+
+  it("does not schedule after a keyword gate-only send", async () => {
+    resolveUsername.mockResolvedValue({ isFollower: false, username: "geri", name: "Geri" });
+    findKeywordInMessage.mockResolvedValue(keywordFixture);
+
+    await handleMessage(inbound("SLEEP"));
+
+    expect(sendTrackedText).toHaveBeenCalledWith(
+      expect.objectContaining({ text: keywordFixture.gateMessage }),
+    );
+    expect(sendSequence).not.toHaveBeenCalled();
+    expect(scheduleEngagementFollowUp).not.toHaveBeenCalled();
+  });
+
+  it("does not schedule after a follow-required nudge", async () => {
+    resolveUsername.mockResolvedValue({ isFollower: false, username: "geri", name: "Geri" });
+    findActiveAwaitingDone.mockResolvedValue({
+      id: "convo-1",
+      keywordId: "keyword-1",
+      keyword: { keyword: "SLEEP", resource: { messages: [] } },
+    });
+
+    await handleMessage(inbound("Done"));
+
+    expect(sendSequence).not.toHaveBeenCalled();
+    expect(scheduleEngagementFollowUp).not.toHaveBeenCalled();
   });
 });
 
