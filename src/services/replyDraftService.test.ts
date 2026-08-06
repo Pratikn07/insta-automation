@@ -20,12 +20,14 @@ const rootReplyDraft = {
   ...tx.replyDraft,
   findFirst: vi.fn(),
 };
+const rootExecuteRaw = vi.fn();
 
 const $transaction = vi.fn(async (fn: (client: typeof tx) => unknown) => fn(tx));
 
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
     $transaction,
+    $executeRaw: rootExecuteRaw,
     replyDraft: rootReplyDraft,
     dmThread: tx.dmThread,
     dmMessage: tx.dmMessage,
@@ -56,10 +58,11 @@ beforeEach(() => {
   tx.$queryRaw.mockReset();
   for (const fn of Object.values(tx.replyDraft)) fn.mockReset();
   rootReplyDraft.findFirst.mockReset();
+  rootExecuteRaw.mockReset().mockResolvedValue(0);
   tx.dmThread.findUnique.mockReset();
   tx.dmMessage.findMany.mockReset();
   tx.conversation.findUnique.mockReset();
-  $transaction.mockClear();
+  $transaction.mockReset().mockImplementation(async (fn: (client: typeof tx) => unknown) => fn(tx));
   tx.replyDraft.aggregate.mockResolvedValue({ _max: { revision: null } });
   tx.replyDraft.updateMany.mockResolvedValue({ count: 0 });
   tx.$executeRaw.mockResolvedValue(1);
@@ -168,6 +171,11 @@ describe("queueReplyDraft", () => {
 
 describe("regenerateReplyDraft", () => {
   const INPUT = { threadId: "thread-1", draftId: "draft-1" };
+  const THREAD_ROW = {
+    id: "thread-1",
+    latestInboundMessageId: "message-1",
+    igUserId: "ig-user-1",
+  };
   const FOLLOW_UP_ROW = {
     threadId: "thread-1",
     inboundMessageId: "message-1",
@@ -177,23 +185,41 @@ describe("regenerateReplyDraft", () => {
     eligibleAt: new Date("2026-08-05T22:00:00.000Z"),
     expiresAt: new Date("2026-08-06T09:15:00.000Z"),
     promptVersion: CURRENT_DM_PROMPT_VERSION,
-    latestInboundMessageId: "message-1",
-    threadIgUserId: "ig-user-1",
     sourceIgUserId: "ig-user-1",
     sourceCompletedAt: new Date("2026-08-05T10:00:00.000Z"),
     isEligible: true,
     isUnexpired: true,
   };
+  let lockedThread = THREAD_ROW;
+  let lockedDraft = FOLLOW_UP_ROW;
+  let boundaryWins = true;
+
+  function sqlAt(index: number): string {
+    return (tx.$queryRaw.mock.calls[index]?.[0] as TemplateStringsArray).join("?");
+  }
 
   beforeEach(() => {
-    tx.$queryRaw.mockResolvedValue([FOLLOW_UP_ROW]);
+    lockedThread = THREAD_ROW;
+    lockedDraft = FOLLOW_UP_ROW;
+    boundaryWins = true;
+    tx.$queryRaw.mockImplementation(async (strings: TemplateStringsArray) => {
+      const sql = strings.join("?");
+      if (sql.includes('FROM "dm_thread"') && sql.includes("FOR UPDATE")) {
+        return [lockedThread];
+      }
+      if (sql.includes('FROM "reply_draft" AS draft') && sql.includes("FOR UPDATE OF draft")) {
+        return [lockedDraft];
+      }
+      if (sql.includes('INSERT INTO "reply_draft"')) {
+        return boundaryWins ? [{ id: "draft-4" }] : [];
+      }
+      return [];
+    });
     tx.replyDraft.findFirst.mockResolvedValue(null);
-    tx.replyDraft.updateMany.mockResolvedValue({ count: 1 });
-    tx.replyDraft.aggregate.mockResolvedValue({ _max: { revision: 3 } });
-    tx.replyDraft.create.mockResolvedValue({ id: "draft-4", status: "queued" });
+    tx.replyDraft.findUnique.mockResolvedValue({ id: "draft-4", status: "queued" });
   });
 
-  it("atomically preserves the validated follow-up source and timing", async () => {
+  it("locks thread then draft and preserves source/timing at one guarded boundary", async () => {
     await expect(regenerateReplyDraft(INPUT)).resolves.toMatchObject({
       id: "draft-4",
       status: "queued",
@@ -202,56 +228,46 @@ describe("regenerateReplyDraft", () => {
     expect($transaction).toHaveBeenCalledWith(expect.any(Function), {
       isolationLevel: "Serializable",
     });
-    expect(tx.replyDraft.updateMany).toHaveBeenCalledWith({
-      where: {
-        id: "draft-1",
-        threadId: "thread-1",
-        inboundMessageId: "message-1",
-        status: "pending_approval",
-        kind: "engagement_follow_up",
-        promptVersion: CURRENT_DM_PROMPT_VERSION,
-      },
-      data: { status: "superseded" },
-    });
-    expect(tx.replyDraft.create).toHaveBeenCalledWith({
-      data: {
-        threadId: "thread-1",
-        inboundMessageId: "message-1",
-        revision: 4,
-        status: "queued",
-        kind: "engagement_follow_up",
-        sourceConversationId: "conversation-1",
-        eligibleAt: new Date("2026-08-05T22:00:00.000Z"),
-        nextAttemptAt: new Date("2026-08-05T22:00:00.000Z"),
-        expiresAt: new Date("2026-08-06T09:15:00.000Z"),
-        promptVersion: CURRENT_DM_PROMPT_VERSION,
-      },
-    });
-    const validationSql = (tx.$queryRaw.mock.calls[0]?.[0] as TemplateStringsArray).join("?");
-    expect(validationSql).toContain("FOR UPDATE OF draft, thread");
-    expect(validationSql).toContain("clock_timestamp()");
-    expect(validationSql).toContain('thread."latest_inbound_message_id"');
-    expect(validationSql).toContain('source."ig_user_id"');
+    expect(sqlAt(0)).toContain('FROM "dm_thread"');
+    expect(sqlAt(0)).toContain("FOR UPDATE");
+    expect(sqlAt(0)).not.toContain('JOIN "reply_draft"');
+    expect(sqlAt(1)).toContain('FROM "reply_draft" AS draft');
+    expect(sqlAt(1)).toContain("FOR UPDATE OF draft");
+    expect(sqlAt(1)).not.toContain("FOR UPDATE OF draft, thread");
+
+    const boundarySql = sqlAt(2);
+    expect(boundarySql).toContain('UPDATE "reply_draft" AS draft');
+    expect(boundarySql).toContain('INSERT INTO "reply_draft"');
+    expect(boundarySql).toContain('thread."latest_inbound_message_id" = draft."inbound_message_id"');
+    expect(boundarySql).toContain('source."completed_at" IS NOT NULL');
+    expect(boundarySql).toContain('source."ig_user_id" = thread."ig_user_id"');
+    expect(boundarySql).toContain('draft."source_conversation_id"');
+    expect(boundarySql).toContain('draft."eligible_at"');
+    expect(boundarySql).toContain('draft."expires_at"');
+    expect(boundarySql.match(/"expires_at" > clock_timestamp\(\)/g)).toHaveLength(2);
+    expect(tx.replyDraft.updateMany).not.toHaveBeenCalled();
+    expect(tx.replyDraft.create).not.toHaveBeenCalled();
   });
 
   it.each([
-    ["superseded", FOLLOW_UP_ROW, "draft_not_pending"],
-    ["stale inbound", { ...FOLLOW_UP_ROW, latestInboundMessageId: "message-2" }, "stale_draft"],
-    ["old policy", { ...FOLLOW_UP_ROW, promptVersion: CURRENT_DM_PROMPT_VERSION - 1 }, "prompt_policy_outdated"],
-    ["not eligible", { ...FOLLOW_UP_ROW, isEligible: false }, "follow_up_not_ready"],
-    ["wrong source user", { ...FOLLOW_UP_ROW, sourceIgUserId: "ig-user-2" }, "stale_draft"],
-    ["unfinished source", { ...FOLLOW_UP_ROW, sourceCompletedAt: null }, "stale_draft"],
-  ])("rejects %s before superseding any draft", async (_case, row, code) => {
-    if (_case === "superseded") row = { ...row, status: "superseded" };
-    tx.$queryRaw.mockResolvedValue([row]);
+    ["superseded", { status: "superseded" }, {}, "draft_not_pending"],
+    ["stale inbound", {}, { latestInboundMessageId: "message-2" }, "stale_draft"],
+    ["old policy", { promptVersion: CURRENT_DM_PROMPT_VERSION - 1 }, {}, "prompt_policy_outdated"],
+    ["not eligible", { isEligible: false }, {}, "follow_up_not_ready"],
+    ["wrong source user", { sourceIgUserId: "ig-user-2" }, {}, "stale_draft"],
+    ["unfinished source", { sourceCompletedAt: null }, {}, "stale_draft"],
+  ])("rejects %s after both locks and before the guarded boundary", async (_case, draft, thread, code) => {
+    lockedDraft = { ...FOLLOW_UP_ROW, ...draft };
+    lockedThread = { ...THREAD_ROW, ...thread };
 
     await expect(regenerateReplyDraft(INPUT)).rejects.toMatchObject({ code });
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
     expect(tx.replyDraft.updateMany).not.toHaveBeenCalled();
     expect(tx.replyDraft.create).not.toHaveBeenCalled();
   });
 
   it("commits expiry without superseding or creating a replacement", async () => {
-    tx.$queryRaw.mockResolvedValue([{ ...FOLLOW_UP_ROW, isUnexpired: false }]);
+    lockedDraft = { ...FOLLOW_UP_ROW, isUnexpired: false };
     tx.$executeRaw.mockResolvedValue(1);
 
     await expect(regenerateReplyDraft(INPUT)).rejects.toMatchObject({
@@ -264,13 +280,57 @@ describe("regenerateReplyDraft", () => {
     expect(expirySql).toContain('"expires_at" <= clock_timestamp()');
   });
 
+  it("rolls back the boundary and commits expiry when the deadline crosses before create", async () => {
+    boundaryWins = false;
+    rootExecuteRaw.mockResolvedValue(1);
+
+    await expect(regenerateReplyDraft(INPUT)).rejects.toMatchObject({
+      code: "follow_up_window_closed",
+    });
+
+    expect(tx.replyDraft.findUnique).not.toHaveBeenCalled();
+    expect(tx.replyDraft.updateMany).not.toHaveBeenCalled();
+    expect(tx.replyDraft.create).not.toHaveBeenCalled();
+    expect(rootExecuteRaw).toHaveBeenCalledOnce();
+    const expirySql = (rootExecuteRaw.mock.calls[0]?.[0] as TemplateStringsArray).join("?");
+    expect(expirySql).toContain('"status" = \'expired\'');
+    expect(expirySql).toContain('"expires_at" <= clock_timestamp()');
+    expect(expirySql).toContain('"status" =');
+    expect(expirySql).toContain('"inbound_message_id" =');
+  });
+
   it("does not supersede a newer active reply when a failed follow-up is retried", async () => {
-    tx.$queryRaw.mockResolvedValue([{ ...FOLLOW_UP_ROW, status: "generation_failed" }]);
+    lockedDraft = { ...FOLLOW_UP_ROW, status: "generation_failed" };
     tx.replyDraft.findFirst.mockResolvedValue({ id: "reply-new" });
 
     await expect(regenerateReplyDraft(INPUT)).rejects.toMatchObject({ code: "stale_draft" });
     expect(tx.replyDraft.updateMany).not.toHaveBeenCalled();
     expect(tx.replyDraft.create).not.toHaveBeenCalled();
+  });
+
+  it("retries P2034 in a fresh thread-then-draft transaction", async () => {
+    const serializationFailure = Object.assign(new Error("serialization failure"), { code: "P2034" });
+    $transaction.mockImplementationOnce(async (fn: (client: typeof tx) => unknown) => {
+      await fn(tx);
+      throw serializationFailure;
+    });
+
+    await expect(regenerateReplyDraft(INPUT)).resolves.toMatchObject({ id: "draft-4" });
+
+    expect($transaction).toHaveBeenCalledTimes(2);
+    const sql = tx.$queryRaw.mock.calls.map((call) => (call[0] as TemplateStringsArray).join("?"));
+    expect(
+      sql.filter((value) => value.includes('FROM "dm_thread"') && value.includes("FOR UPDATE")),
+    ).toHaveLength(2);
+    expect(sql.filter((value) => value.includes("FOR UPDATE OF draft"))).toHaveLength(2);
+  });
+
+  it("bounds repeated P2034 retries", async () => {
+    const serializationFailure = Object.assign(new Error("serialization failure"), { code: "P2034" });
+    $transaction.mockRejectedValue(serializationFailure);
+
+    await expect(regenerateReplyDraft(INPUT)).rejects.toBe(serializationFailure);
+    expect($transaction).toHaveBeenCalledTimes(3);
   });
 });
 
