@@ -164,7 +164,7 @@ export function FollowerFlowPanel({
         <div className="flex gap-3 rounded-xl border border-violet-400/15 bg-violet-400/5 p-3.5 text-xs leading-relaxed text-muted-foreground">
           <Info className="mt-0.5 size-4 shrink-0 text-violet-300" />
           <p>
-            Net adds (follows minus unfollows) diffed from Meta's follower geography, bucketed by UTC day.
+            Net adds (follows minus unfollows) diffed from Meta's follower geography, bucketed by Pacific day.
             Meta reports only its top countries and lags about two days — the dashed newest bars can still shift,
             and days Meta skips are absorbed into the next bar.
           </p>

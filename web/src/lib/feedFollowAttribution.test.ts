@@ -9,7 +9,7 @@ import {
 } from "./feedFollowAttribution";
 
 describe("feedFollowAttributionPath", () => {
-  it("requests an inclusive one-day range for the selected UTC date", () => {
+  it("requests an inclusive one-day range for the selected Pacific date", () => {
     expect(feedFollowAttributionPath("2026-08-05")).toBe(
       "/insights/feed-follow-attribution?from=2026-08-05&to=2026-08-05",
     );
@@ -129,7 +129,7 @@ describe("feedCollectionCopy", () => {
       ),
     ).toEqual({
       label: "Partial collection",
-      detail: "All 37 post readings succeeded, but tracking began partway through this UTC day.",
+      detail: "All 37 post readings succeeded, but tracking began partway through this Pacific day.",
       tone: "caution",
     });
   });

@@ -78,6 +78,8 @@ describe("FollowerFlowPanel", () => {
     expect(html).toContain("Where your new followers come from");
     expect(html).toContain("South Asia");
     expect(html).toContain("Daily net adds by region");
+    expect(html).toContain("bucketed by Pacific day");
+    expect(html).not.toContain("bucketed by UTC day");
     // The "Meta did not refresh" caveat used to appear here because it lived in
     // a per-bar <title>. It is now hover-only, covered by chartTooltip.test.ts;
     // the panel's own footer keeps the standing version of the caveat.

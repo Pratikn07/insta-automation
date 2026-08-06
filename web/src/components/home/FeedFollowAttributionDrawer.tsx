@@ -36,10 +36,10 @@ const shortDay = new Intl.DateTimeFormat("en-US", {
   month: "short",
   day: "numeric",
   year: "numeric",
-  timeZone: "UTC",
+  timeZone: "America/Los_Angeles",
 });
 
-function formatUtcDay(day: string): string {
+function formatDayKey(day: string): string {
   return longDay.format(new Date(`${day}T00:00:00Z`));
 }
 
@@ -123,7 +123,7 @@ function PostRow({ post }: { post: FeedFollowAttributedPost }) {
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
                 {feedMediaLabel(post.mediaType)}
-                {publishedAt ? ` · Published ${publishedAt} UTC` : ""}
+                {publishedAt ? ` · Published ${publishedAt} Pacific` : ""}
               </p>
             </div>
             <div className="shrink-0 text-right">
@@ -282,7 +282,7 @@ export function FeedFollowAttributionDrawer({
   onClose,
 }: FeedFollowAttributionDrawerProps) {
   const selected = data?.days[0];
-  const titleDay = day ? formatUtcDay(day) : "Selected day";
+  const titleDay = day ? formatDayKey(day) : "Selected day";
 
   return (
     <Drawer

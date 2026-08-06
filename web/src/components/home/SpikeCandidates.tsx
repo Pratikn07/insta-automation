@@ -16,6 +16,7 @@ const compactNumber = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 1,
 });
 
+// This is an abstract Pacific day key; UTC formatting prevents browser date shifting.
 function dayLabel(day: string): string {
   return new Date(`${day}T00:00:00Z`).toLocaleDateString(undefined, {
     timeZone: "UTC",
