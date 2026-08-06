@@ -5,7 +5,28 @@ vi.mock("../lib/prisma.js", () => ({
   prisma: { conversation: { findFirst } },
 }));
 
-const { hasCompletedKeyword } = await import("./conversationService.js");
+const { findLatestIncompleteConversation, hasCompletedKeyword } = await import(
+  "./conversationService.js"
+);
+
+describe("findLatestIncompleteConversation", () => {
+  beforeEach(() => findFirst.mockReset());
+
+  it("selects the newest unfinished conversation without an age cutoff", async () => {
+    findFirst.mockResolvedValue({ id: "expired-convo" });
+
+    await findLatestIncompleteConversation("user-1");
+
+    expect(findFirst).toHaveBeenCalledWith({
+      where: {
+        igUserId: "user-1",
+        state: { in: ["awaiting_done", "expired"] },
+      },
+      orderBy: { createdAt: "desc" },
+      include: { keyword: { include: { resource: { include: { messages: true } } } } },
+    });
+  });
+});
 
 // WHY THIS TEST EXISTS.
 //

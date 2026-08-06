@@ -2,6 +2,7 @@ import type { DmMessageType } from "@prisma/client";
 import type { MessagingEntry } from "../types/meta.js";
 import {
   findActiveAwaitingDone,
+  findLatestIncompleteConversation,
   hasCompletedKeyword,
   markCompleted,
   markGated,
@@ -294,11 +295,18 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     return;
   }
 
-  // ---- 2. Any reply to an OPEN gate → deliver the guide --------------------
+  // ---- 2. Any reply to an OPEN gate → continue the request ----------------
   // The user received the gate and replied with intent — regardless of the exact
   // wording ("Hi", "Followed", "Yes", a sticker, or "Done"). This is the flexible
-  // matching that recovers the users who never typed the magic word.
-  const convo = await findActiveAwaitingDone(senderId);
+  // matching that recovers the users who never typed the magic word. When the
+  // internal gate has expired, only an explicit DONE recovers the latest request;
+  // that fresh inbound message opens Meta's current 24-hour sending window.
+  let convo = await findActiveAwaitingDone(senderId);
+  let recoveredInactiveGate = false;
+  if (!convo && DONE_RE.test(text)) {
+    convo = await findLatestIncompleteConversation(senderId);
+    recoveredInactiveGate = convo !== null;
+  }
   if (convo) {
     // Duplicate guard: the user already completed this keyword (e.g. commented
     // "sleep" on two reels → two open gates). The old behavior closed the gate
@@ -367,6 +375,7 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
         conversationId: convo.id,
         keyword: convo.keyword.keyword,
         senderId,
+        recoveredInactiveGate,
       });
       try {
         await sendTrackedText({
@@ -401,6 +410,7 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
       textLength: text.length,
       matched: "any_reply",
       looksLikeDone: DONE_RE.test(text),
+      recoveredInactiveGate,
     });
 
     try {

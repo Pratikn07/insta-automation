@@ -9,6 +9,7 @@ const queueReplyDraft = vi.fn();
 const scheduleEngagementFollowUp = vi.fn();
 const findKeywordInMessage = vi.fn();
 const findActiveAwaitingDone = vi.fn();
+const findLatestIncompleteConversation = vi.fn();
 const hasCompletedKeyword = vi.fn();
 const openConversation = vi.fn();
 const markCompleted = vi.fn();
@@ -42,6 +43,7 @@ vi.mock("../services/engagementFollowUpService.js", () => ({ scheduleEngagementF
 vi.mock("../services/keywordService.js", () => ({ findKeywordInMessage }));
 vi.mock("../services/conversationService.js", () => ({
   findActiveAwaitingDone,
+  findLatestIncompleteConversation,
   hasCompletedKeyword,
   openConversation,
   markCompleted,
@@ -105,6 +107,7 @@ beforeEach(() => {
     scheduleEngagementFollowUp,
     findKeywordInMessage,
     findActiveAwaitingDone,
+    findLatestIncompleteConversation,
     hasCompletedKeyword,
     openConversation,
     markCompleted,
@@ -128,6 +131,7 @@ beforeEach(() => {
   resolveUsername.mockResolvedValue({ isFollower: true, username: "geri", name: "Geri" });
   findKeywordInMessage.mockResolvedValue(null);
   findActiveAwaitingDone.mockResolvedValue(null);
+  findLatestIncompleteConversation.mockResolvedValue(null);
   hasCompletedKeyword.mockResolvedValue(false);
   openConversation.mockResolvedValue({ id: "convo-1" });
   logEvent.mockResolvedValue(undefined);
@@ -260,6 +264,59 @@ describe("handleMessage — branch order is unchanged", () => {
     expect(sendSequence).toHaveBeenCalledOnce();
     expect(markCompleted).toHaveBeenCalledWith("convo-1");
     expect(queueReplyDraft).not.toHaveBeenCalled();
+  });
+
+  it("recovers an expired DONE and asks a confirmed non-follower to follow", async () => {
+    resolveUsername.mockResolvedValue({ isFollower: false, username: "geri", name: "Geri" });
+    findLatestIncompleteConversation.mockResolvedValue({
+      id: "expired-convo",
+      keywordId: "keyword-1",
+      state: "expired",
+      keyword: { keyword: "SLEEP", resource: { messages: [] } },
+    });
+
+    await handleMessage(inbound("Done"));
+
+    expect(findLatestIncompleteConversation).toHaveBeenCalledWith("ig-user-1");
+    expect(sendTrackedText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        recipientIgUserId: "ig-user-1",
+        source: "keyword_automation",
+      }),
+    );
+    expect(markGated).toHaveBeenCalledWith("expired-convo");
+    expect(sendSequence).not.toHaveBeenCalled();
+    expect(queueReplyDraft).not.toHaveBeenCalled();
+    expect(logEvent).toHaveBeenCalledWith(
+      "follow_required",
+      expect.objectContaining({ recoveredInactiveGate: true }),
+    );
+  });
+
+  it("recovers an expired DONE and delivers to a follower", async () => {
+    findLatestIncompleteConversation.mockResolvedValue({
+      id: "expired-convo",
+      keywordId: "keyword-1",
+      state: "expired",
+      keyword: { keyword: "SLEEP", resource: { messages: [] } },
+    });
+
+    await handleMessage(inbound("DONE!"));
+
+    expect(sendSequence).toHaveBeenCalledOnce();
+    expect(markCompleted).toHaveBeenCalledWith("expired-convo");
+    expect(queueReplyDraft).not.toHaveBeenCalled();
+    expect(logEvent).toHaveBeenCalledWith(
+      "done_received",
+      expect.objectContaining({ recoveredInactiveGate: true }),
+    );
+  });
+
+  it("does not recover an expired request for arbitrary text", async () => {
+    await handleMessage(inbound("Can you help?"));
+
+    expect(findLatestIncompleteConversation).not.toHaveBeenCalled();
+    expect(queueReplyDraft).toHaveBeenCalledOnce();
   });
 });
 
@@ -496,6 +553,7 @@ describe("handleMessage — unhandled DMs", () => {
       textLength: privateBody.length,
       matched: "any_reply",
       looksLikeDone: false,
+      recoveredInactiveGate: false,
     });
     expect(
       JSON.stringify({ logs: logger.info.mock.calls, events: logEvent.mock.calls }),

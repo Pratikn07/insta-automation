@@ -42,6 +42,22 @@ export async function findActiveAwaitingDone(igUserId: string) {
   });
 }
 
+/**
+ * Recover the latest unfinished request after an explicit DONE. The inbound DM
+ * opens Meta's current 24-hour send window even when our older gate window has
+ * elapsed, so expired rows remain actionable only through this narrow lookup.
+ */
+export async function findLatestIncompleteConversation(igUserId: string) {
+  return prisma.conversation.findFirst({
+    where: {
+      igUserId,
+      state: { in: ["awaiting_done", "expired"] },
+    },
+    orderBy: { createdAt: "desc" },
+    include: { keyword: { include: { resource: { include: { messages: true } } } } },
+  });
+}
+
 export async function markCompleted(conversationId: string) {
   // Completing a conversation also cancels any still-pending gate retries for
   // it: the user has the guide, so another "reply DONE to unlock" would be pure
