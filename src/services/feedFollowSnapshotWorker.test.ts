@@ -220,17 +220,18 @@ describe("collectFeedFollowSnapshot", () => {
     expect(memory.repository.finishRun).not.toHaveBeenCalled();
   });
 
-  it("dates each media snapshot at its own capture time when a batch crosses UTC midnight", async () => {
+  it("dates every media reading by its Pacific capture day", async () => {
     const memory = memoryRepository(new Date("2026-08-01T00:00:00Z"));
     const clock = vi
       .fn()
-      .mockReturnValueOnce(new Date("2026-08-05T00:00:01Z"))
-      .mockReturnValueOnce(new Date("2026-08-05T00:00:02Z"));
+      .mockReturnValueOnce(new Date("2026-08-05T06:59:59Z"))
+      .mockReturnValueOnce(new Date("2026-08-05T07:00:01Z"))
+      .mockReturnValueOnce(new Date("2026-08-05T07:00:02Z"));
 
     await collectFeedFollowSnapshot(
       {
         repository: memory.repository,
-        listPosts: async () => [post("midnight", null)],
+        listPosts: async () => [post("before-midnight", null), post("after-midnight", null)],
         fetchFollowCount: async () => ({ status: "ok", follows: 2 }),
         isAuthenticationError: () => false,
         pause: async () => undefined,
@@ -238,13 +239,19 @@ describe("collectFeedFollowSnapshot", () => {
         describeError: () => ({}),
         clock,
       },
-      new Date("2026-08-04T23:59:59Z"),
+      new Date("2026-08-05T00:00:00Z"),
     );
 
-    expect(memory.snapshotWrites[0]).toMatchObject({
-      day: new Date("2026-08-05T00:00:00Z"),
-      capturedAt: new Date("2026-08-05T00:00:01Z"),
-    });
+    expect(memory.snapshotWrites.map(({ day, capturedAt }) => ({ day, capturedAt }))).toEqual([
+      {
+        day: new Date("2026-08-04T00:00:00Z"),
+        capturedAt: new Date("2026-08-05T06:59:59Z"),
+      },
+      {
+        day: new Date("2026-08-05T00:00:00Z"),
+        capturedAt: new Date("2026-08-05T07:00:01Z"),
+      },
+    ]);
   });
 });
 

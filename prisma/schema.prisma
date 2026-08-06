@@ -310,7 +310,7 @@ model FeedPostMeta {
 }
 
 // The cumulative lifetime follow count for one feed post, sampled throughout
-// the day but stored as one latest row per UTC day. A nullable value is
+// the day but stored as one latest row per Pacific analytics day. A nullable value is
 // deliberate: unavailable/failed is unknown and must never be coerced to zero.
 model FeedFollowDailySnapshot {
   mediaId    String   @map("media_id")
