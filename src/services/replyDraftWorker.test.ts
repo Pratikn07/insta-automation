@@ -131,6 +131,8 @@ describe("runReplyDraftTick", () => {
   });
 
   it("sends the exact delivered-guide context for an engagement follow-up", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-05T22:00:00.000Z"));
     const followUpDraft = {
       ...workerDraft,
       kind: "engagement_follow_up",
@@ -150,7 +152,11 @@ describe("runReplyDraftTick", () => {
       },
     });
 
-    await runReplyDraftTick();
+    try {
+      await runReplyDraftTick();
+    } finally {
+      vi.useRealTimers();
+    }
 
     expect(runtimePayload()).toEqual({
       requestId: expect.any(String),
