@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const tx = {
+  $executeRaw: vi.fn(),
   replyDraft: {
     aggregate: vi.fn(),
     updateMany: vi.fn(),
@@ -48,6 +49,7 @@ const { CURRENT_DM_PROMPT_VERSION } = await import("./replyDraftPolicy.js");
 const INPUT = { threadId: "thread-1", inboundMessageId: "message-1" };
 
 beforeEach(() => {
+  tx.$executeRaw.mockReset();
   for (const fn of Object.values(tx.replyDraft)) fn.mockReset();
   rootReplyDraft.findFirst.mockReset();
   tx.dmThread.findUnique.mockReset();
@@ -56,6 +58,7 @@ beforeEach(() => {
   $transaction.mockClear();
   tx.replyDraft.aggregate.mockResolvedValue({ _max: { revision: null } });
   tx.replyDraft.updateMany.mockResolvedValue({ count: 0 });
+  tx.$executeRaw.mockResolvedValue(1);
   tx.replyDraft.create.mockResolvedValue({ id: "draft-1", revision: 1, status: "queued" });
 });
 
@@ -306,6 +309,25 @@ describe("loadDraftContext", () => {
     });
   });
 
+  it("fails context safely when a follow-up source has no confirmed delivery time", async () => {
+    tx.conversation.findUnique.mockResolvedValue({
+      completedAt: null,
+      keyword: {
+        keyword: "SLEEP",
+        resource: { name: "Sleep Guide", description: "A practical bedtime guide" },
+      },
+    });
+
+    await expect(
+      loadDraftContext({
+        ...baseDraft,
+        kind: "engagement_follow_up",
+        sourceConversationId: "conversation-1",
+        expiresAt: new Date("2026-08-06T09:30:00.000Z"),
+      }),
+    ).resolves.toBeNull();
+  });
+
   it("uses the newest 20 messages, oldest-to-newest, within 8,000 characters", async () => {
     tx.dmMessage.findMany.mockResolvedValue(
       Array.from({ length: 20 }, (_, index) => ({
@@ -321,7 +343,10 @@ describe("loadDraftContext", () => {
 
     expect(tx.dmMessage.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        orderBy: { instagramTimestamp: "desc" },
+        orderBy: [
+          { instagramTimestamp: "desc" },
+          { instagramMessageId: "desc" },
+        ],
         take: 20,
       }),
     );
@@ -330,6 +355,41 @@ describe("loadDraftContext", () => {
     expect(loaded?.messages.at(-1)?.text).toMatch(/^00:/);
     expect(loaded?.messages.reduce((total, message) => total + (message.text?.length ?? 0), 0))
       .toBeLessThanOrEqual(8_000);
+  });
+
+  it("uses Meta message ID to deterministically order tied Instagram timestamps", async () => {
+    const tiedAt = new Date("2026-08-05T10:00:00.000Z");
+    tx.dmMessage.findMany.mockResolvedValue([
+      {
+        direction: "inbound",
+        text: "second",
+        type: "text",
+        source: "instagram_user",
+        instagramMessageId: "mid-b",
+        instagramTimestamp: tiedAt,
+      },
+      {
+        direction: "inbound",
+        text: "first",
+        type: "text",
+        source: "instagram_user",
+        instagramMessageId: "mid-a",
+        instagramTimestamp: tiedAt,
+      },
+    ]);
+
+    const loaded = await loadDraftContext(baseDraft);
+
+    expect(tx.dmMessage.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderBy: [
+          { instagramTimestamp: "desc" },
+          { instagramMessageId: "desc" },
+        ],
+        take: 20,
+      }),
+    );
+    expect(loaded?.messages.map((message) => message.text)).toEqual(["first", "second"]);
   });
 
   it("keeps one oversized database message inside the runtime's 2,000-character bound", async () => {
@@ -453,6 +513,41 @@ describe("completeGeneration", () => {
     expect(tx.dmThread.findUnique).not.toHaveBeenCalled();
     expect(tx.replyDraft.updateMany).toHaveBeenCalledWith({
       where: { id: "draft-1", status: "generating" },
+      data: { status: "expired", errorCode: "follow_up_window_closed" },
+    });
+    expect(tx.replyDraft.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: "pending_approval" }) }),
+    );
+  });
+
+  it("expires when the deadline-safe final approval transition loses at write time", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-06T09:14:59.900Z"));
+    tx.replyDraft.findUnique.mockResolvedValue({
+      id: "draft-1",
+      status: "generating",
+      threadId: "thread-1",
+      inboundMessageId: "message-1",
+      kind: "engagement_follow_up",
+      expiresAt: new Date("2026-08-06T09:15:00.000Z"),
+    });
+    tx.dmThread.findUnique.mockResolvedValue({ latestInboundMessageId: "message-1" });
+    // Simulates Postgres evaluating clock_timestamp() after the deadline and
+    // refusing the final guarded pending_approval write.
+    tx.$executeRaw.mockResolvedValue(0);
+    tx.replyDraft.updateMany.mockResolvedValue({ count: 1 });
+
+    try {
+      await completeGeneration("draft-1", payload);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(tx.$executeRaw).toHaveBeenCalledOnce();
+    const sql = (tx.$executeRaw.mock.calls[0]?.[0] as TemplateStringsArray).join("?");
+    expect(sql).toContain('"expires_at" > clock_timestamp()');
+    expect(tx.replyDraft.updateMany).toHaveBeenCalledWith({
+      where: { id: "draft-1", status: "generating", kind: "engagement_follow_up" },
       data: { status: "expired", errorCode: "follow_up_window_closed" },
     });
     expect(tx.replyDraft.updateMany).not.toHaveBeenCalledWith(

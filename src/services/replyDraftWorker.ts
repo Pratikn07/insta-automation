@@ -99,14 +99,10 @@ async function generateOne(draft: {
 
   try {
     const suggestion = await runtimeClient.generateDmDraft({
+      ...context,
       requestId: newRequestId(),
-      kind: context.kind,
       promptVersion: CURRENT_DM_PROMPT_VERSION,
-      guideDeliveredAt: context.guideDeliveredAt,
-      participant: context.participant,
-      messages: context.messages,
       brandVoice: env.AI_BRAND_VOICE,
-      guideContext: context.guideContext,
     });
 
     await completeGeneration(draft.id, {

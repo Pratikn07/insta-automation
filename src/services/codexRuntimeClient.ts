@@ -106,12 +106,9 @@ export interface AdvisorAsk {
   clientMessageId: string;
 }
 
-/** The request sent to the runtime's drafter. Shape mirrors runtime schemas.ts. */
-export interface DmDraftRequest {
+interface DmDraftRequestBase {
   requestId: string;
-  kind: "reply" | "engagement_follow_up";
   promptVersion: 2;
-  guideDeliveredAt: string | null;
   participant: { igUserId: string; username: string | null; name: string | null };
   messages: Array<{
     direction: "inbound" | "outbound";
@@ -121,8 +118,18 @@ export interface DmDraftRequest {
     at: string;
   }>;
   brandVoice: string;
-  guideContext: null | { keyword: string; resourceName: string; description: string | null };
 }
+
+type DmGuideContext = { keyword: string; resourceName: string; description: string | null };
+
+/** The kind-discriminated request sent to the runtime's drafter. */
+export type DmDraftRequest =
+  | (DmDraftRequestBase & { kind: "reply"; guideDeliveredAt: null; guideContext: null })
+  | (DmDraftRequestBase & {
+      kind: "engagement_follow_up";
+      guideDeliveredAt: string;
+      guideContext: DmGuideContext;
+    });
 
 export interface CodexRuntimeClient {
   getConnectionStatus(refresh?: boolean): Promise<AiConnectionStatus>;

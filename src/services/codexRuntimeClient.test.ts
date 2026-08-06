@@ -1,10 +1,11 @@
 import { createServer } from "node:http";
 import type { Server } from "node:http";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import {
   CodexRuntimeError,
   createCodexRuntimeClient,
 } from "./codexRuntimeClient.js";
+import type { DmDraftRequest } from "./codexRuntimeClient.js";
 
 const RUNTIME_TOKEN = "t".repeat(32);
 
@@ -182,6 +183,17 @@ const draftRequest = {
 };
 
 describe("createCodexRuntimeClient.generateDmDraft", () => {
+  it("couples guide context and delivery time to the draft kind in its request type", () => {
+    expectTypeOf<DmDraftRequest>().toMatchTypeOf<
+      | { kind: "reply"; guideDeliveredAt: null; guideContext: null }
+      | {
+          kind: "engagement_follow_up";
+          guideDeliveredAt: string;
+          guideContext: { keyword: string; resourceName: string; description: string | null };
+        }
+    >();
+  });
+
   it("posts the request and validates the suggestion", async () => {
     let receivedBody = "";
     const baseUrl = await stubRuntime((req, res) => {

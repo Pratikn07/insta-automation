@@ -144,13 +144,19 @@ export async function expireDueFollowUps(now = new Date()): Promise<number> {
   return result.count;
 }
 
-export interface DraftContext {
-  kind: DmDraftRequest["kind"];
-  guideDeliveredAt: DmDraftRequest["guideDeliveredAt"];
+type DraftContextBase = {
   participant: DmDraftRequest["participant"];
   messages: DmDraftRequest["messages"];
-  guideContext: DmDraftRequest["guideContext"];
-}
+};
+
+type DraftKindContext =
+  | { kind: "reply"; guideDeliveredAt: null; guideContext: null }
+  | Pick<
+      Extract<DmDraftRequest, { kind: "engagement_follow_up" }>,
+      "kind" | "guideDeliveredAt" | "guideContext"
+    >;
+
+export type DraftContext = DraftContextBase & DraftKindContext;
 
 /**
  * Load the bounded transcript a draft needs. Newest 20 messages, then trimmed to
@@ -180,8 +186,7 @@ export async function loadDraftContext(draft: {
   });
   if (!thread) return null;
 
-  let guideDeliveredAt: string | null = null;
-  let guideContext: DmDraftRequest["guideContext"] = null;
+  let kindContext: DraftKindContext;
   if (draft.kind === "engagement_follow_up") {
     if (!draft.sourceConversationId) return null;
     const source = await prisma.conversation.findUnique({
@@ -196,18 +201,26 @@ export async function loadDraftContext(draft: {
         },
       },
     });
-    if (!source) return null;
-    guideDeliveredAt = source.completedAt?.toISOString() ?? null;
-    guideContext = {
-      keyword: source.keyword.keyword,
-      resourceName: source.keyword.resource.name,
-      description: source.keyword.resource.description,
+    if (!source?.completedAt) return null;
+    kindContext = {
+      kind: "engagement_follow_up",
+      guideDeliveredAt: source.completedAt.toISOString(),
+      guideContext: {
+        keyword: source.keyword.keyword,
+        resourceName: source.keyword.resource.name,
+        description: source.keyword.resource.description,
+      },
     };
+  } else {
+    kindContext = { kind: "reply", guideDeliveredAt: null, guideContext: null };
   }
 
   const recent = await prisma.dmMessage.findMany({
     where: { threadId: draft.threadId },
-    orderBy: { instagramTimestamp: "desc" },
+    orderBy: [
+      { instagramTimestamp: "desc" },
+      { instagramMessageId: "desc" },
+    ],
     take: CONTEXT_MESSAGE_LIMIT,
     select: { direction: true, text: true, type: true, source: true, instagramTimestamp: true },
   });
@@ -238,8 +251,7 @@ export async function loadDraftContext(draft: {
   if (stillGenerating?.status !== "generating") return null;
 
   return {
-    kind: draft.kind,
-    guideDeliveredAt,
+    ...kindContext,
     participant: { igUserId: thread.igUserId, username: thread.username, name: thread.name },
     messages: kept.map((m) => ({
       direction: m.direction,
@@ -248,7 +260,6 @@ export async function loadDraftContext(draft: {
       source: m.source,
       at: m.instagramTimestamp.toISOString(),
     })),
-    guideContext,
   };
 }
 
@@ -312,22 +323,61 @@ export async function completeGeneration(
       return;
     }
 
+    const completionData = {
+      status: "pending_approval" as const,
+      suggestedText: input.suggestedText,
+      workingText: input.workingText,
+      rationale: input.rationale,
+      confidence: input.confidence,
+      warnings: input.warnings,
+      modelId: input.modelId,
+      promptVersion: CURRENT_DM_PROMPT_VERSION,
+      attempts: { increment: 1 },
+      errorCode: null,
+      errorMessage: null,
+      retryAt: null,
+    };
+
+    if (draft.kind === "engagement_follow_up") {
+      // clock_timestamp() is evaluated by Postgres at the final write boundary.
+      // A deadline crossing after the reads above therefore loses this update;
+      // no transaction or row lock is held across the earlier runtime call.
+      const completed = await tx.$executeRaw`
+        UPDATE "reply_draft"
+        SET
+          "status" = 'pending_approval',
+          "suggested_text" = ${input.suggestedText},
+          "working_text" = ${input.workingText},
+          "rationale" = ${input.rationale},
+          "confidence" = ${input.confidence},
+          "warnings" = ${JSON.stringify(input.warnings)}::jsonb,
+          "model_id" = ${input.modelId},
+          "prompt_version" = ${CURRENT_DM_PROMPT_VERSION},
+          "attempts" = "attempts" + 1,
+          "error_code" = NULL,
+          "error_message" = NULL,
+          "retry_at" = NULL,
+          "updated_at" = clock_timestamp()
+        WHERE "id" = ${draftId}::uuid
+          AND "status" = 'generating'
+          AND "kind" = 'engagement_follow_up'
+          AND "expires_at" > clock_timestamp()
+      `;
+      if (completed !== 1) {
+        // If the row is still generating, the guarded write can only have lost
+        // because its deadline elapsed. Concurrent supersession/dismissal keeps
+        // its own state because this fallback is conditional too.
+        await tx.replyDraft.updateMany({
+          where: { id: draftId, status: "generating", kind: "engagement_follow_up" },
+          data: { status: "expired", errorCode: "follow_up_window_closed" },
+        });
+      }
+      return;
+    }
+
     await tx.replyDraft.updateMany({
       where: { id: draftId, status: "generating" },
-      data: {
-        status: "pending_approval",
-        suggestedText: input.suggestedText,
-        workingText: input.workingText,
-        rationale: input.rationale,
-        confidence: input.confidence,
-        warnings: input.warnings,
-        modelId: input.modelId,
-        promptVersion: CURRENT_DM_PROMPT_VERSION,
-        attempts: { increment: 1 },
-        errorCode: null,
-        errorMessage: null,
-        retryAt: null,
-      },
+      data: completionData,
     });
   });
 }
