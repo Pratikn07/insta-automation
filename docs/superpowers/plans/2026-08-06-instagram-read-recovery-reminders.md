@@ -102,23 +102,23 @@ it.runIf(process.env.MIGRATION_TEST_DATABASE_URL)(
       SELECT table_name
       FROM information_schema.tables
       WHERE table_schema = 'public'
-        AND table_name IN ('DmRecoveryReminder', 'DmRecoveryControl')
+        AND table_name IN ('dm_recovery_reminder', 'dm_recovery_control')
       ORDER BY table_name
     `;
     expect(tables.map((row) => row.table_name)).toEqual([
-      "DmRecoveryControl",
-      "DmRecoveryReminder",
+      "dm_recovery_control",
+      "dm_recovery_reminder",
     ]);
 
     const rls = await prisma.$queryRaw<Array<{ relname: string; relrowsecurity: boolean }>>`
       SELECT relname, relrowsecurity
       FROM pg_class
-      WHERE relname IN ('DmRecoveryReminder', 'DmRecoveryControl')
+      WHERE relname IN ('dm_recovery_reminder', 'dm_recovery_control')
       ORDER BY relname
     `;
     expect(rls).toEqual([
-      { relname: "DmRecoveryControl", relrowsecurity: true },
-      { relname: "DmRecoveryReminder", relrowsecurity: true },
+      { relname: "dm_recovery_control", relrowsecurity: true },
+      { relname: "dm_recovery_reminder", relrowsecurity: true },
     ]);
   },
 );
@@ -155,6 +155,8 @@ Add these enums:
 enum DmRecoveryTriggerKind {
   no_confirmed_read
   settings_blocked
+
+  @@map("dm_recovery_trigger_kind")
 }
 
 enum DmRecoveryStatus {
@@ -167,12 +169,16 @@ enum DmRecoveryStatus {
   send_uncertain
   tracking_unavailable
   cancelled
+
+  @@map("dm_recovery_status")
 }
 
 enum DmRecoveryCohort {
   treatment
   control
   not_applicable
+
+  @@map("dm_recovery_cohort")
 }
 ```
 
@@ -213,6 +219,7 @@ model DmRecoveryReminder {
   claimExpiresAt         DateTime?             @map("claim_expires_at") @db.Timestamptz(3)
   nextAttemptAt          DateTime?             @map("next_attempt_at") @db.Timestamptz(3)
   attempts               Int                   @default(0)
+  lastAttemptAt          DateTime?             @map("last_attempt_at") @db.Timestamptz(3)
   publicReplyId          String?               @map("public_reply_id")
   sentAt                 DateTime?             @map("sent_at") @db.Timestamptz(3)
   lastErrorCategory      String?               @map("last_error_category")
@@ -230,6 +237,7 @@ model DmRecoveryReminder {
   @@index([igUserId, sentAt])
   @@index([igUserId, keywordId, status])
   @@index([cohort, eligibleAt])
+  @@map("dm_recovery_reminder")
 }
 
 model DmRecoveryControl {
@@ -240,18 +248,20 @@ model DmRecoveryControl {
   resetAt     DateTime? @map("reset_at") @db.Timestamptz(3)
   resetBy     String?   @map("reset_by")
   updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("dm_recovery_control")
 }
 ```
 
 - [ ] **Step 4: Write the SQL migration explicitly**
 
-Create the enum types, timestamptz columns, tables, indexes, and foreign keys represented by the Prisma schema. Add database checks that `attempts >= 0`, singleton control `id = 1`, and terminal state timestamps are internally consistent where practical. Add a partial unique index on `ig_user_id WHERE status = 'sending'` so the database cannot hold two concurrent public-send claims for one person. Seed the control row with `INSERT INTO "DmRecoveryControl" ("id", "circuit_open", "updated_at") VALUES (1, false, NOW()) ON CONFLICT ("id") DO NOTHING`.
+Create the enum types, timestamptz columns, snake_case tables, indexes, and foreign keys represented by the Prisma schema. Add database checks that `attempts >= 0`, singleton control `id = 1`, and terminal state timestamps are internally consistent where practical. Add a partial unique index on `ig_user_id WHERE status = 'sending'` so the database cannot hold two concurrent public-send claims for one person. Seed the control row with `INSERT INTO "dm_recovery_control" ("id", "circuit_open", "updated_at") VALUES (1, false, NOW()) ON CONFLICT ("id") DO NOTHING`.
 
 Finish the migration with:
 
 ```sql
-ALTER TABLE "DmRecoveryReminder" ENABLE ROW LEVEL SECURITY;
-ALTER TABLE "DmRecoveryControl" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "dm_recovery_reminder" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "dm_recovery_control" ENABLE ROW LEVEL SECURITY;
 ```
 
 Do not create `anon` or `authenticated` policies.
@@ -324,7 +334,7 @@ expect(decideRecovery(baseInput({ now: hour(10), cohort: "treatment" }))).toEqua
 expect(decideRecovery(settingsBlockedInput())).toEqual({ kind: "send_settings_fallback" });
 ```
 
-Add cases for: tracking unavailable; terminal status; another public reminder within 24 hours; a more recent eligible candidate for the same person; overdue by 29 hours after worker recovery; delayed seen/engagement received after eligibility but with an event timestamp before the final send; public comment activity not counting as DM read/engagement; missing source comment; DM-origin records being impossible to create; pre-experiment withholding; post-experiment withholding before review; and new post-review treatment without releasing a previously stored control row.
+Add cases for: tracking unavailable; terminal status; another confirmed or outcome-uncertain public reminder attempt within 24 hours; a settings-blocked fallback also respecting that same person cooldown; a more recent eligible candidate for the same person; overdue by 29 hours after worker recovery; delayed seen/engagement received after eligibility but with an event timestamp before the final send; public comment activity not counting as DM read/engagement; missing source comment; DM-origin records being impossible to create; pre-experiment withholding; post-experiment withholding before review; and new post-review treatment without releasing a previously stored control row.
 
 Pin cohort stability:
 
@@ -419,11 +429,11 @@ Hash `${experimentVersion}:${igUserId}` with Node's `createHash("sha256")`, take
 2. positive read/engagement/completion -> suppress;
 3. unavailable source comment -> suppress;
 4. tracking unavailable -> no automatic send;
-5. settings blocked -> immediate fallback;
-6. before `eligibleAt` -> wait;
-7. control -> holdout;
-8. recent sent reminder for the person -> suppress by cooldown;
-9. newer eligible candidate exists -> suppress as superseded;
+5. recent confirmed or outcome-uncertain reminder attempt for the person -> suppress by cooldown;
+6. newer currently eligible candidate exists -> suppress as superseded;
+7. settings blocked -> immediate fallback;
+8. before `eligibleAt` -> wait;
+9. control -> holdout;
 10. otherwise send the no-confirmed-read reminder.
 
 The pure function must not read environment variables or call Prisma.
@@ -918,7 +928,7 @@ recordRecoveryInbound(input: PersonEvidence & { kind: "inbound_reply" | "quick_r
 
 Use a short Prisma transaction for read-modify-write when preserving the earliest timestamps. Only `waiting` rows transition to `suppressed`; `sending` and `sent` keep their status so late webhook evidence can be measured. Never broaden an exact `mid` read/reaction/postback into a person-wide suppression. Inbound user engagement may suppress all unfinished recovery rows for that `igUserId` because it proves the user opened a conversation with the business.
 
-Log `dm_recovery_created`, `dm_recovery_evidence_recorded`, and `dm_recovery_tracking_unavailable` with IDs, trigger, status, and timing only.
+Log `dm_recovery_created`, `dm_recovery_control_assigned`, `dm_seen_received`, `dm_recovery_evidence_recorded`, and `dm_recovery_tracking_unavailable` with IDs, trigger, status, and timing only.
 
 - [ ] **Step 6: Verify GREEN**
 
@@ -1212,8 +1222,8 @@ Claim `pending -> sending` with `updateMany` and a lease before calling Meta. On
 
 For known failures before acceptance:
 
-- rate limit / retryable provider response: `sending -> pending`, increment attempts, use the existing bounded backoff;
-- exhausted/permanent: `sending -> exhausted` or the existing permanent terminal state;
+- rate limit / retryable provider response: `sending -> pending`, increment attempts, and set `nextAttemptAt` to `min(15 minutes * 2^(attempts - 1), 2 hours)`; subcode `2534025` also stops the rest of the tick;
+- attempt cap, closed seven-day window, or definite permanent rejection: `sending -> exhausted`;
 - verified settings blocked: `sending -> abandoned`, then schedule the immediate settings recovery exactly once;
 - auth/permission not allowlisted: terminal queue failure and operational log, no public recovery;
 - transport timeout/reset after request dispatch: `sending -> send_uncertain`, idempotently create `tracking_unavailable` recovery attention from the loaded source, and perform no automatic private resend.
@@ -1359,36 +1369,39 @@ Expected: FAIL because the event shapes and focused handlers are missing.
 Model optional payloads without making malformed events type-safe by accident:
 
 ```ts
-export type InstagramMessagingEntry = {
-  sender?: { id?: string };
-  recipient?: { id?: string };
-  timestamp?: number;
+export interface MessagingEntry {
+  sender: { id: string };
+  recipient: { id: string };
+  timestamp: number;
   message?: {
-    mid?: string;
+    mid: string;
     text?: string;
     is_echo?: boolean;
     is_deleted?: boolean;
     quick_reply?: { payload?: string };
-    attachments?: Array<{ type?: string; payload?: unknown }>;
+    attachments?: Array<{
+      type?: string;
+      payload?: { url?: string; [key: string]: unknown };
+    }>;
   };
-  read?: { mid?: string };
+  read?: { mid: string };
   reaction?: {
-    mid?: string;
+    mid: string;
     action?: "react" | "unreact" | string;
     reaction?: string;
     emoji?: string;
   };
   postback?: { mid?: string; title?: string; payload?: string };
-};
+}
 ```
 
-Keep provider timestamp conversion in one validated helper: finite milliseconds only; otherwise use receipt time and log `provider_timestamp_invalid`.
+Even though Meta documents the required IDs, handlers must still runtime-check each `mid` because webhook JSON is untrusted. Keep provider timestamp conversion in one validated helper: finite milliseconds only; otherwise use receipt time and log `provider_timestamp_invalid`.
 
 - [ ] **Step 6: Implement single-dispatch routing and focused handlers**
 
 Route in this order: `read`, `reaction`, `postback`, `message`, unknown. Each focused handler validates `mid`, calls its local-thread updater where relevant, applies the corresponding recovery evidence, and catches/logs internal errors so the webhook request is still acknowledged. In `seenHandler`, run local `DmMessage` update and recovery correlation independently with `Promise.allSettled`: a missing/local-history write must not prevent suppression through `instagramGateMessageId`, and a recovery write failure must not erase the local seen timestamp.
 
-`markOutboundSeen(mid, eventAt)` updates only `DmMessage` rows matching `instagramMessageId = mid` and preserves the earliest `seenAt`.
+`markOutboundSeen(mid, eventAt)` updates only `direction = outbound` `DmMessage` rows matching `instagramMessageId = mid` and preserves the earliest `seenAt`.
 
 - [ ] **Step 7: Integrate inbound evidence before conversation routing**
 
@@ -1402,7 +1415,7 @@ const kind = message.quick_reply?.payload
     : "inbound_reply";
 ```
 
-For `is_deleted`, call `markInboundDeleted` and return without creating a new inbound message or new engagement. If the matching message already supplied engagement earlier, do not clear it.
+For `is_deleted`, call `markInboundDeleted(mid, deletedAt)`, which updates only `direction = inbound`, and return without creating a new inbound message or new engagement. If the matching message already supplied engagement earlier, do not clear it.
 
 - [ ] **Step 8: Verify GREEN and replay safety**
 
@@ -1554,6 +1567,7 @@ Add unit tests for:
 - two claimants, one `updateMany.count === 1`, one `0`;
 - rows with `seenAt`, `engagedAt`, cancellation, or completed conversation suppressed before claim;
 - a sent reminder for the user inside 24 hours suppresses the candidate;
+- a `send_uncertain` reminder whose `lastAttemptAt` is inside 24 hours also suppresses the candidate conservatively;
 - at exactly 24 hours the candidate is eligible;
 - two eligible keywords choose highest `eligibleAt`, then newest `createdAt`, then stable `id` tie-breaker;
 - losing same-person candidates become `suppressed/newer_candidate` or `person_cooldown`;
@@ -1590,7 +1604,7 @@ export async function claimRecovery(
 export type FinalRecoveryCheck =
   | RecoveryDecision
   | { kind: "pause"; reason: "circuit_open" | "hourly_cap" };
-export async function recheckClaimForSend(id: string, now: Date): Promise<FinalRecoveryCheck>;
+export async function authorizeClaimForSend(id: string, now: Date): Promise<FinalRecoveryCheck>;
 ```
 
 `listDueRecoveryIds` fetches only IDs ordered by `eligibleAt ASC, createdAt ASC`, bounded above the worker batch so skipped rows do not starve later people.
@@ -1605,9 +1619,17 @@ await tx.$queryRaw<Array<{ id: string }>>`
 
 Load completion/evidence/recent-send/newer-eligible-candidate data, invoke `decideRecovery`, persist all suppress/holdout decisions, and compare-and-set the winner to `sending`. The migration's partial unique index is a second line of defense. Retry only Prisma `P2034` serialization failures a bounded three times with jitter; do not retry arbitrary errors.
 
-- [ ] **Step 5: Implement a final pre-network recheck**
+After the transaction commits, log `dm_recovery_ready` and `dm_recovery_claimed` for the successful claim; log `dm_recovery_cooldown_suppressed` for that terminal policy result. Reprocessing or a failed transaction must not emit a false claim event.
 
-Immediately before the worker calls Meta, run another short transaction that confirms:
+- [ ] **Step 5: Implement final pre-network authorization and capacity reservation**
+
+Immediately before the worker calls Meta, run another short transaction. Lock the singleton `DmRecoveryControl` row with `FOR UPDATE` so circuit state, hourly capacity, and attempt reservation are serialized across processes. Confirm:
+
+```ts
+await tx.$queryRaw<Array<{ id: number }>>`
+  SELECT "id" FROM "dm_recovery_control" WHERE "id" = 1 FOR UPDATE
+`;
+```
 
 ```text
 status = sending
@@ -1617,12 +1639,13 @@ no seen evidence
 no engagement evidence
 conversation not completed
 owner not cancelled
-no confirmed public recovery sent for person in rolling 24h
+no confirmed or outcome-uncertain public recovery attempt for person in rolling 24h
 candidate remains the most recent eligible candidate for person
 circuit still closed
+hourly cap still has capacity after confirmed sends and reserved attempts
 ```
 
-Return `send_*` only if all predicates still hold. Return `pause` for circuit/cap gates so the worker releases `sending -> waiting` without suppressing the user; persist terminal/suppression decisions for all evidence-based no-send results.
+When all predicates hold, atomically stamp `lastAttemptAt = now` and increment `attempts` in this transaction before returning `send_*`; this durable reservation prevents another process from overrunning the hourly cap. Return `pause` for circuit/cap gates so the worker releases `sending -> waiting` without suppressing the user; persist terminal/suppression decisions for all evidence-based no-send results. A caller must never call Meta unless `authorizeClaimForSend` returned a send decision.
 
 - [ ] **Step 6: Add repository finalizers**
 
@@ -1636,7 +1659,7 @@ markRecoveryUncertain(id, { category }): Promise<boolean>;
 releaseOrSuppressClaim(id, decision, now): Promise<boolean>;
 ```
 
-Every finalizer clears claim timestamps. `markRecoverySent` requires a nonempty Meta reply ID.
+Every finalizer clears claim timestamps but preserves `lastAttemptAt`. `markRecoverySent` requires a nonempty Meta reply ID. Person cooldown queries consider both confirmed `sentAt` and uncertain `lastAttemptAt`; a safe known-not-accepted retryable failure does not enter cooldown because its status returns to `waiting`.
 
 - [ ] **Step 7: Verify GREEN including database concurrency**
 
@@ -1730,7 +1753,7 @@ Calculate the failure rate only when the configured sample size is met. Count `s
 
 - [ ] **Step 4: Make circuit recovery explicit and conservative**
 
-Maintain the three-consecutive-healthy counter in memory only for auto-recoverable reasons; a restart restarts the proof window, never force-closes the database row. `auth_or_permission` is latched and must be reset operationally after credentials/subscriptions are verified, using the documented owner-only database runbook. Store `resetAt` and `resetBy = "health_auto_recovery"` when an anomaly auto-closes.
+Maintain the three-consecutive-healthy counter in memory only for auto-recoverable reasons; a restart restarts the proof window, never force-closes the database row. `auth_or_permission` is latched and must be reset operationally after credentials/subscriptions are verified, using the documented owner-only database runbook. Store `resetAt` and `resetBy = "health_auto_recovery"` when an anomaly auto-closes. Emit `dm_recovery_circuit_opened` or `dm_recovery_circuit_closed` only when the persisted circuit state actually changes.
 
 The worker consults the stored row on every final pre-send recheck. Health evaluation must never change individual recovery rows.
 
@@ -1769,12 +1792,13 @@ git commit -m "feat: guard dm recovery sends with circuit breaker"
 ```ts
 it("posts the exact snapshotted copy and confirms the reply ID", async () => {
   listDueRecoveryIds.mockResolvedValue(["recovery-1"]);
-  claimRecovery.mockResolvedValue(claimedRecovery({
+  const claimed = claimedRecovery({
     commentId: "comment-1",
     publicReplyText:
       "I sent your guide 💛 Check your DMs/Requests. If you don’t see it, DM @tinysoho “PROTEIN”.",
-  }));
-  recheckClaimForSend.mockResolvedValue({ kind: "send_no_confirmed_read_reminder" });
+  });
+  claimRecovery.mockResolvedValue(claimed);
+  authorizeClaimForSend.mockResolvedValue({ kind: "send_no_confirmed_read_reminder" });
   replyToComment.mockResolvedValue({ replyId: "public-reply-1" });
 
   await runDmRecoveryTick();
@@ -1862,7 +1886,7 @@ At tick start, reconcile expired `sending` leases to `send_uncertain`, evaluate 
 For each ID:
 
 1. atomically claim;
-2. final transactional evidence/circuit recheck;
+2. final transactional evidence/circuit/cap authorization, which durably reserves the attempt;
 3. if no-send, persist that decision and continue;
 4. call `replyToComment` outside transactions;
 5. only a nonempty `replyId` becomes `sent`; if that final database write fails, never call Meta again and let the lease reconcile to `send_uncertain`;
@@ -1871,7 +1895,7 @@ For each ID:
 8. on 429, calculate `base * 2^(attempts - 1)` with a bounded jitter and never exceed max attempts;
 9. on timeout/reset/unknown/missing ID, set `send_uncertain` and never retry automatically.
 
-Write safe events `dm_recovery_sent`, `dm_recovery_suppressed`, `dm_recovery_send_failed`, `dm_recovery_send_uncertain`, and `dm_recovery_circuit_opened`. Include recovery/conversation/user IDs, keyword ID, trigger, cohort, attempt, timing, and stable category—never the public text or provider body.
+Write safe events `dm_recovery_sent`, `dm_recovery_sent_late`, `dm_recovery_suppressed`, `dm_recovery_send_failed`, and `dm_recovery_send_uncertain`. Emit `sent_late` in addition to `sent` when `sentAt` exceeds the one-minute worker allowance after `eligibleAt`. Include recovery/conversation/user IDs, keyword ID, trigger, cohort, attempt, timing, and stable category—never the public text or provider body.
 
 - [ ] **Step 7: Verify GREEN and run the state-machine suite**
 
@@ -2031,6 +2055,8 @@ type RecoveryReminderRow = {
   firstEngagementKind: string | null;
   suppressionReason: string | null;
   sentAt: string | null;
+  attempts: number;
+  lastAttemptAt: string | null;
   lastErrorCategory: string | null;
   reviewedAt: string | null;
   createdAt: string;
@@ -2130,7 +2156,7 @@ type RecoveryMetrics = {
 };
 ```
 
-Define replies/completions relative to `eligibleAt`, using identical 24-hour and 48-hour windows for both cohorts. Count treatment assignment by unique user for the primary comparison—one user is successful if any eligible journey completes—and retain journey counts beside it. `absoluteLiftPercentagePoints = treatmentRate - controlRate`; `relativeLiftPercent = (treatmentRate - controlRate) / controlRate`, or `null` when either denominator is unavailable or control rate is zero. Compute median reminder-to-reply only from treatment rows with both `sentAt` and a later `repliedAt`. `laterSeen`/`laterEngaged` count evidence received after `sentAt`; `delayedPreSendSignalFalsePositives` is the stricter subset whose provider event timestamp is before `sentAt`. This measures comments that may have been unnecessary because telemetry arrived late. Compute read-event coverage among eventual repliers only, and expose raw numerators beside every percentage.
+Define replies/completions relative to `eligibleAt`, using identical 24-hour and 48-hour windows for both cohorts. Count treatment assignment by unique user for the primary comparison—one user is successful if any eligible journey completes—and retain journey counts beside it. `absoluteLiftPercentagePoints = treatmentRate - controlRate`; `relativeLiftPercent = (treatmentRate - controlRate) / controlRate`, or `null` when either denominator is unavailable or control rate is zero. Compute median reminder-to-reply only from treatment rows with both `sentAt` and a later `repliedAt`. `laterSeen`/`laterEngaged` count evidence received after `sentAt`; `delayedPreSendSignalFalsePositives` is the stricter subset whose provider event timestamp is before `sentAt`. This measures comments that may have been unnecessary because telemetry arrived late. Compute read-event coverage among eventual repliers only, where prior seen means `seenAt <= repliedAt`, and expose raw numerators beside every percentage.
 
 - [ ] **Step 3: Write failing detail and owner-action tests**
 
@@ -2141,11 +2167,28 @@ Cancellation matrix:
 ```ts
 it.each(["waiting", "control", "tracking_unavailable", "send_failed"])(
   "cancels an unsent %s item",
-  async (status) => { /* expect conditional update to cancelled */ },
+  async (_status) => {
+    prisma.dmRecoveryReminder.updateMany.mockResolvedValue({ count: 1 });
+    const response = await adminRequest.post(`/api/recovery-reminders/recovery-1/cancel`);
+    expect(response.status).toBe(204);
+    expect(prisma.dmRecoveryReminder.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: "recovery-1",
+          status: { in: ["waiting", "control", "tracking_unavailable", "send_failed"] },
+        }),
+      }),
+    );
+  },
 );
 it.each(["sending", "sent", "send_uncertain", "cancelled"])(
   "returns 409 for %s",
-  async (status) => { /* expect no update and conflict response */ },
+  async (status) => {
+    prisma.dmRecoveryReminder.updateMany.mockResolvedValue({ count: 0 });
+    prisma.dmRecoveryReminder.findUnique.mockResolvedValue({ id: "recovery-1", status });
+    const response = await adminRequest.post(`/api/recovery-reminders/recovery-1/cancel`);
+    expect(response.status).toBe(409);
+  },
 );
 ```
 
@@ -2179,7 +2222,7 @@ const result = await prisma.dmRecoveryReminder.updateMany({
 });
 ```
 
-When `count === 0`, distinguish not found (404) from a state race (409) with one follow-up select. `mark-reviewed` follows the same pattern. Log owner email, recovery ID, action, and old/new status only.
+When `count === 0`, distinguish not found (404) from a state race (409) with one follow-up select. `mark-reviewed` follows the same pattern. Emit `dm_recovery_cancelled` only after a successful cancellation. Log owner email, recovery ID, action, and old/new status only.
 
 - [ ] **Step 7: Mount and verify GREEN**
 
@@ -2616,7 +2659,7 @@ Kill switch rollback: set `DM_RECOVERY_ENABLED=false` and redeploy/restart. Inge
 For a latched auth/permission breaker, first validate/rotate the token and confirm permissions with the existing Meta verification steps. Then reset only the singleton row through the trusted database console:
 
 ```sql
-UPDATE "DmRecoveryControl"
+UPDATE "dm_recovery_control"
 SET "circuit_open" = false,
     "reason" = NULL,
     "reset_at" = NOW(),
