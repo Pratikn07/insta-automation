@@ -25,7 +25,7 @@ describe("classifySendError", () => {
   it.each([400, 401, 403, 429, 500, 502])("treats an HTTP %i response as a definite failure", (status) => {
     expect(classifySendError(graphResponse(status))).toEqual({
       outcome: "failed",
-      errorCode: `graph_${status}`,
+      errorCode: "graph_rejected",
     });
   });
 
@@ -35,7 +35,12 @@ describe("classifySendError", () => {
     (code) => {
       expect(classifySendError(noResponse(code))).toEqual({
         outcome: "uncertain",
-        errorCode: code,
+        errorCode:
+          code === "ECONNABORTED" || code === "ETIMEDOUT"
+            ? "transport_timeout"
+            : code === "ECONNRESET"
+              ? "transport_connection_reset"
+              : "transport_dns_failure",
       });
     },
   );
@@ -43,7 +48,18 @@ describe("classifySendError", () => {
   it("falls back to no_response when Axios gives no code", () => {
     const err = new AxiosError("socket hang up");
     err.response = undefined;
-    expect(classifySendError(err)).toEqual({ outcome: "uncertain", errorCode: "no_response" });
+    expect(classifySendError(err)).toEqual({
+      outcome: "uncertain",
+      errorCode: "transport_error",
+    });
+  });
+
+  it("maps an arbitrary secret-bearing Axios code to one generic safe code", () => {
+    const err = noResponse("SECRET-owner@example.com-private-DM");
+    expect(classifySendError(err)).toEqual({
+      outcome: "uncertain",
+      errorCode: "transport_error",
+    });
   });
 
   it("treats a non-Axios throw as a definite failure", () => {

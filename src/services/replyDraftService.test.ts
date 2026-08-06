@@ -748,15 +748,19 @@ describe("claimApprovedDraft", () => {
       eligibleAt: new Date("2026-08-05T11:00:00.000Z"),
       expiresAt: AFTER_EXPIRY,
     });
-    tx.$executeRaw.mockResolvedValue(0);
+    tx.$executeRaw.mockResolvedValueOnce(0).mockResolvedValueOnce(1);
 
     await expect(claimApprovedDraft(INPUT, NOW)).rejects.toMatchObject({
       code: "follow_up_window_closed",
     });
-    expect(tx.$executeRaw).toHaveBeenCalledOnce();
-    const sql = (tx.$executeRaw.mock.calls[0]?.[0] as TemplateStringsArray).join("?");
-    expect(sql).toContain('"expires_at" > clock_timestamp()');
-    expect(sql).toContain('"eligible_at" <= clock_timestamp()');
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(2);
+    const claimSql = (tx.$executeRaw.mock.calls[0]?.[0] as TemplateStringsArray).join("?");
+    expect(claimSql).toContain("FOR UPDATE");
+    expect(claimSql).toContain('"expires_at" > clock_timestamp()');
+    expect(claimSql).toContain('"eligible_at" <= clock_timestamp()');
+    const expirySql = (tx.$executeRaw.mock.calls[1]?.[0] as TemplateStringsArray).join("?");
+    expect(expirySql).toContain('"status" = \'expired\'');
+    expect(expirySql).toContain('"expires_at" <= clock_timestamp()');
   });
 
   it("allows only one of two parallel approval claims", async () => {

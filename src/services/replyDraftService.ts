@@ -449,7 +449,7 @@ export async function claimApprovedDraft(input: {
   approvedBy: string;
   workingText: string;
 }, now = new Date()): Promise<{ approvedText: string; inboundMessageId: string }> {
-  return prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
     const draft = await tx.replyDraft.findUnique({
       where: { id: input.draftId },
       select: {
@@ -491,6 +491,17 @@ export async function claimApprovedDraft(input: {
       draft.kind === "engagement_follow_up"
         ? {
             count: await tx.$executeRaw`
+              WITH locked AS MATERIALIZED (
+                SELECT draft."id"
+                FROM "reply_draft" AS draft
+                WHERE draft."id" = ${input.draftId}::uuid
+                  AND draft."thread_id" = ${input.threadId}::uuid
+                  AND draft."inbound_message_id" = ${draft.inboundMessageId}::uuid
+                  AND draft."status" = 'pending_approval'
+                  AND draft."prompt_version" = ${CURRENT_DM_PROMPT_VERSION}
+                  AND draft."kind" = 'engagement_follow_up'
+                FOR UPDATE
+              )
               UPDATE "reply_draft" AS draft
               SET
                 "working_text" = ${approvedText},
@@ -499,12 +510,8 @@ export async function claimApprovedDraft(input: {
                 "approved_at" = ${now},
                 "status" = 'sending',
                 "updated_at" = clock_timestamp()
-              WHERE draft."id" = ${input.draftId}::uuid
-                AND draft."thread_id" = ${input.threadId}::uuid
-                AND draft."inbound_message_id" = ${draft.inboundMessageId}::uuid
-                AND draft."status" = 'pending_approval'
-                AND draft."prompt_version" = ${CURRENT_DM_PROMPT_VERSION}
-                AND draft."kind" = 'engagement_follow_up'
+              FROM locked
+              WHERE draft."id" = locked."id"
                 AND draft."eligible_at" <= clock_timestamp()
                 AND draft."expires_at" > clock_timestamp()
                 AND EXISTS (
@@ -550,8 +557,25 @@ export async function claimApprovedDraft(input: {
         throw new DraftActionError("stale_draft");
       }
       // The remaining follow-up-only predicate is the database clock. If it
-      // crossed expiresAt after the application pre-check, fail closed.
+      // crossed expiresAt after the application pre-check, fail closed and
+      // commit the terminal state before surfacing the rejection. Throwing from
+      // inside this transaction would roll the expiration back.
       if (draft.kind === "engagement_follow_up") {
+        const expired = await tx.$executeRaw`
+          UPDATE "reply_draft"
+          SET
+            "status" = 'expired',
+            "error_code" = 'follow_up_window_closed',
+            "updated_at" = clock_timestamp()
+          WHERE "id" = ${input.draftId}::uuid
+            AND "thread_id" = ${input.threadId}::uuid
+            AND "status" = 'pending_approval'
+            AND "kind" = 'engagement_follow_up'
+            AND "expires_at" <= clock_timestamp()
+        `;
+        if (expired === 1) {
+          return { rejected: "follow_up_window_closed" as const };
+        }
         throw new DraftActionError("follow_up_window_closed");
       }
       throw new DraftActionError("draft_not_pending");
@@ -559,6 +583,11 @@ export async function claimApprovedDraft(input: {
 
     return { approvedText, inboundMessageId: draft.inboundMessageId };
   });
+
+  if ("rejected" in result && result.rejected === "follow_up_window_closed") {
+    throw new DraftActionError(result.rejected);
+  }
+  return result;
 }
 
 /**
@@ -573,7 +602,7 @@ export async function claimRetryDraft(input: {
   draftId: string;
   confirmedNotDelivered: true;
 }, now = new Date()): Promise<{ approvedText: string; inboundMessageId: string }> {
-  return prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
     const draft = await tx.replyDraft.findUnique({
       where: { id: input.draftId },
       select: {
@@ -620,17 +649,24 @@ export async function claimRetryDraft(input: {
       draft.kind === "engagement_follow_up"
         ? {
             count: await tx.$executeRaw`
+              WITH locked AS MATERIALIZED (
+                SELECT draft."id"
+                FROM "reply_draft" AS draft
+                WHERE draft."id" = ${input.draftId}::uuid
+                  AND draft."thread_id" = ${input.threadId}::uuid
+                  AND draft."inbound_message_id" = ${draft.inboundMessageId}::uuid
+                  AND draft."status" IN ('send_failed', 'send_uncertain')
+                  AND draft."prompt_version" = ${CURRENT_DM_PROMPT_VERSION}
+                  AND draft."kind" = 'engagement_follow_up'
+                FOR UPDATE
+              )
               UPDATE "reply_draft" AS draft
               SET
                 "status" = 'sending',
                 "error_code" = NULL,
                 "updated_at" = clock_timestamp()
-              WHERE draft."id" = ${input.draftId}::uuid
-                AND draft."thread_id" = ${input.threadId}::uuid
-                AND draft."inbound_message_id" = ${draft.inboundMessageId}::uuid
-                AND draft."status" IN ('send_failed', 'send_uncertain')
-                AND draft."prompt_version" = ${CURRENT_DM_PROMPT_VERSION}
-                AND draft."kind" = 'engagement_follow_up'
+              FROM locked
+              WHERE draft."id" = locked."id"
                 AND draft."eligible_at" <= clock_timestamp()
                 AND draft."expires_at" > clock_timestamp()
                 AND EXISTS (
@@ -669,6 +705,21 @@ export async function claimRetryDraft(input: {
         throw new DraftActionError("stale_draft");
       }
       if (draft.kind === "engagement_follow_up") {
+        const expired = await tx.$executeRaw`
+          UPDATE "reply_draft"
+          SET
+            "status" = 'expired',
+            "error_code" = 'follow_up_window_closed',
+            "updated_at" = clock_timestamp()
+          WHERE "id" = ${input.draftId}::uuid
+            AND "thread_id" = ${input.threadId}::uuid
+            AND "status" IN ('send_failed', 'send_uncertain')
+            AND "kind" = 'engagement_follow_up'
+            AND "expires_at" <= clock_timestamp()
+        `;
+        if (expired === 1) {
+          return { rejected: "follow_up_window_closed" as const };
+        }
         throw new DraftActionError("follow_up_window_closed");
       }
       throw new DraftActionError("draft_not_retryable");
@@ -676,6 +727,11 @@ export async function claimRetryDraft(input: {
 
     return { approvedText: draft.approvedText, inboundMessageId: draft.inboundMessageId };
   });
+
+  if ("rejected" in result && result.rejected === "follow_up_window_closed") {
+    throw new DraftActionError(result.rejected);
+  }
+  return result;
 }
 
 /** Confirmed delivery. */

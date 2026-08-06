@@ -14,6 +14,7 @@ const markSendUncertain = vi.fn();
 const sendTrackedText = vi.fn();
 const markThreadResolved = vi.fn();
 const logEvent = vi.fn();
+const loggerError = vi.fn();
 
 vi.mock("../lib/prisma.js", () => ({ prisma: { replyDraft, dmThread } }));
 vi.mock("../services/replyDraftService.js", async (importOriginal) => {
@@ -31,6 +32,9 @@ vi.mock("../services/replyDraftService.js", async (importOriginal) => {
 vi.mock("../services/dmDeliveryService.js", () => ({ sendTrackedText }));
 vi.mock("../services/dmThreadService.js", () => ({ markThreadResolved }));
 vi.mock("../services/eventLogger.js", () => ({ logEvent, describeGraphError: () => ({}) }));
+vi.mock("../lib/logger.js", () => ({
+  logger: { error: loggerError, warn: vi.fn(), info: vi.fn() },
+}));
 
 const sendFlags = { AI_SEND_ENABLED: true, AI_DRAFTS_ENABLED: true };
 vi.mock("../config/env.js", async (importOriginal) => {
@@ -97,6 +101,7 @@ beforeEach(() => {
     sendTrackedText,
     markThreadResolved,
     logEvent,
+    loggerError,
   ]) {
     fn.mockReset();
   }
@@ -268,6 +273,44 @@ describe("POST approve", () => {
     expect(markSendUncertain).not.toHaveBeenCalled();
   });
 
+  it("never exposes a secret-bearing provider rejection in logs, audit, or HTTP", async () => {
+    const providerSecret = "provider says private DM body and TOKEN-SECRET";
+    const editorSecret = "Private editor text only Instagram may receive";
+    const axiosish = Object.assign(new Error(providerSecret), {
+      isAxiosError: true,
+      code: "ERR_BAD_REQUEST",
+      config: {
+        url: "/messages?access_token=URL-TOKEN-SECRET",
+        data: JSON.stringify({ text: editorSecret }),
+      },
+      response: {
+        status: 400,
+        data: { error: { code: 100, message: providerSecret } },
+      },
+    });
+    sendTrackedText.mockRejectedValue(axiosish);
+
+    const res = await request(makeApp())
+      .post(`${base}/approve`)
+      .send({ workingText: editorSecret })
+      .expect(502, { status: "send_failed", errorCode: "graph_rejected" });
+
+    expect(markSendFailed).toHaveBeenCalledWith("draft-2", "graph_rejected");
+    expect(logEvent).toHaveBeenCalledWith("ai_reply_send_failed", {
+      threadId: "thread-1",
+      draftId: "draft-2",
+      errorCode: "graph_rejected",
+    });
+    const exposed = JSON.stringify({
+      response: res.body,
+      audit: logEvent.mock.calls,
+      logs: loggerError.mock.calls,
+    });
+    for (const secret of [providerSecret, editorSecret, "TOKEN-SECRET", "URL-TOKEN-SECRET"]) {
+      expect(exposed).not.toContain(secret);
+    }
+  });
+
   it("marks a no-response timeout send_uncertain with 202 and never retries", async () => {
     const timeout = Object.assign(new Error("timeout of 10000ms exceeded"), {
       isAxiosError: true,
@@ -285,6 +328,38 @@ describe("POST approve", () => {
     // The costly mistake would be sending twice to a real person.
     expect(sendTrackedText).toHaveBeenCalledTimes(1);
     expect(markSent).not.toHaveBeenCalled();
+  });
+
+  it("maps an arbitrary secret-bearing transport code to safe metadata everywhere", async () => {
+    const arbitraryCode = "SECRET_CODE_private-DM_owner-token";
+    const providerMessage = "socket error included TOKEN-SECRET and private body";
+    const timeout = Object.assign(new Error(providerMessage), {
+      isAxiosError: true,
+      code: arbitraryCode,
+      config: { data: "private editor body", url: "/messages?access_token=URL-TOKEN" },
+      response: undefined,
+    });
+    sendTrackedText.mockRejectedValue(timeout);
+
+    const res = await request(makeApp())
+      .post(`${base}/approve`)
+      .send({ workingText: "private editor body" })
+      .expect(202, { status: "send_uncertain", errorCode: "transport_error" });
+
+    expect(markSendUncertain).toHaveBeenCalledWith("draft-2", "transport_error");
+    expect(logEvent).toHaveBeenCalledWith("ai_reply_send_uncertain", {
+      threadId: "thread-1",
+      draftId: "draft-2",
+      errorCode: "transport_error",
+    });
+    const exposed = JSON.stringify({
+      response: res.body,
+      audit: logEvent.mock.calls,
+      logs: loggerError.mock.calls,
+    });
+    for (const secret of [arbitraryCode, providerMessage, "private editor body", "URL-TOKEN"]) {
+      expect(exposed).not.toContain(secret);
+    }
   });
 
   it("returns terminal send_uncertain when success recording cannot be confirmed", async () => {
