@@ -27,8 +27,9 @@ model Keyword {
   createdAt      DateTime  @default(now()) @map("created_at")
   updatedAt      DateTime  @updatedAt @map("updated_at")
 
-  resource      Resource       @relation(fields: [resourceId], references: [id])
-  conversations Conversation[]
+  resource          Resource             @relation(fields: [resourceId], references: [id])
+  conversations     Conversation[]
+  recoveryReminders DmRecoveryReminder[]
 
   @@unique([keyword, mediaId])
   // The cold-DM fallback ranks post-scoped candidates for one word by post date.
@@ -132,8 +133,9 @@ model Conversation {
   followThroughIsFollower       Boolean?          @map("follow_through_is_follower")
   engagementFollowUpScheduledAt DateTime?         @map("engagement_follow_up_scheduled_at") @db.Timestamptz(3)
 
-  keyword        Keyword      @relation(fields: [keywordId], references: [id])
-  followUpDrafts ReplyDraft[] @relation("FollowUpSource")
+  keyword           Keyword              @relation(fields: [keywordId], references: [id])
+  followUpDrafts    ReplyDraft[]         @relation("FollowUpSource")
+  recoveryReminders DmRecoveryReminder[]
 
   @@index([igUserId, state])
   @@index([state, createdAt])
@@ -175,22 +177,27 @@ model IgUser {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  recoveryReminders DmRecoveryReminder[]
+
   @@map("ig_users")
 }
 
 model GateQueue {
-  id             String   @id @default(uuid()) @db.Uuid
-  conversationId String   @map("conversation_id") @db.Uuid
-  igUserId       String   @map("ig_user_id")
-  commentId      String   @map("comment_id")
-  gateMessage    String   @map("gate_message")
-  status         String   @default("pending") // pending | sent | exhausted | abandoned
-  attempts       Int      @default(0)
-  lastError      String?  @map("last_error")
-  commentAt      DateTime @map("comment_at") // enforces the 7-day private-reply window
-  nextAttemptAt  DateTime @map("next_attempt_at")
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  id             String    @id @default(uuid()) @db.Uuid
+  conversationId String    @map("conversation_id") @db.Uuid
+  igUserId       String    @map("ig_user_id")
+  commentId      String    @map("comment_id")
+  mediaId        String?   @map("media_id")
+  gateMessage    String    @map("gate_message")
+  status         String    @default("pending") // pending | sent | exhausted | abandoned
+  attempts       Int       @default(0)
+  lastError      String?   @map("last_error")
+  commentAt      DateTime  @map("comment_at") // enforces the 7-day private-reply window
+  nextAttemptAt  DateTime  @map("next_attempt_at")
+  claimedAt      DateTime? @map("claimed_at") @db.Timestamptz(3)
+  claimExpiresAt DateTime? @map("claim_expires_at") @db.Timestamptz(3)
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
 
   @@index([status, nextAttemptAt])
   @@map("gate_queue")
@@ -519,9 +526,12 @@ model DmMessage {
   mediaUrl           String?         @map("media_url")
   // Meta's own timestamp, not ours: ordering must survive a delayed webhook.
   instagramTimestamp DateTime        @map("instagram_timestamp")
+  seenAt             DateTime?       @map("seen_at") @db.Timestamptz(3)
+  deletedAt          DateTime?       @map("deleted_at") @db.Timestamptz(3)
   createdAt          DateTime        @default(now()) @map("created_at")
 
-  thread DmThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  thread            DmThread             @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  recoveryReminders DmRecoveryReminder[]
 
   @@index([threadId, instagramTimestamp])
   @@index([direction, instagramTimestamp])
@@ -600,4 +610,99 @@ model IgToken {
   updatedAt   DateTime @updatedAt @map("updated_at")
 
   @@map("ig_token")
+}
+
+// ── DM Recovery Reminders ───────────────────────────────────────────────────
+
+enum DmRecoveryTriggerKind {
+  no_confirmed_read
+  settings_blocked
+
+  @@map("dm_recovery_trigger_kind")
+}
+
+enum DmRecoveryStatus {
+  waiting
+  control
+  suppressed
+  sending
+  sent
+  send_failed
+  send_uncertain
+  tracking_unavailable
+  cancelled
+
+  @@map("dm_recovery_status")
+}
+
+enum DmRecoveryCohort {
+  treatment
+  control
+  not_applicable
+
+  @@map("dm_recovery_cohort")
+}
+
+model DmRecoveryReminder {
+  id                     String                @id @default(uuid()) @db.Uuid
+  conversationId         String                @map("conversation_id") @db.Uuid
+  igUserId               String                @map("ig_user_id")
+  keywordId              String                @map("keyword_id") @db.Uuid
+  keywordSnapshot        String                @map("keyword_snapshot")
+  templateVersion        String                @map("template_version")
+  publicReplyText        String                @map("public_reply_text")
+  commentId              String                @unique @map("comment_id")
+  mediaId                String?               @map("media_id")
+  gateDmMessageId        String?               @map("gate_dm_message_id") @db.Uuid
+  instagramGateMessageId String?               @unique @map("instagram_gate_message_id")
+  triggerKind            DmRecoveryTriggerKind @map("trigger_kind")
+  status                 DmRecoveryStatus
+  cohort                 DmRecoveryCohort
+  acceptedAt             DateTime?             @map("accepted_at") @db.Timestamptz(3)
+  eligibleAt             DateTime              @map("eligible_at") @db.Timestamptz(3)
+  seenAt                 DateTime?             @map("seen_at") @db.Timestamptz(3)
+  seenReceivedAt         DateTime?             @map("seen_received_at") @db.Timestamptz(3)
+  engagedAt              DateTime?             @map("engaged_at") @db.Timestamptz(3)
+  engagedReceivedAt      DateTime?             @map("engaged_received_at") @db.Timestamptz(3)
+  firstEngagementKind    String?               @map("first_engagement_kind")
+  repliedAt              DateTime?             @map("replied_at") @db.Timestamptz(3)
+  repliedReceivedAt      DateTime?             @map("replied_received_at") @db.Timestamptz(3)
+  reactedAt              DateTime?             @map("reacted_at") @db.Timestamptz(3)
+  postbackAt             DateTime?             @map("postback_at") @db.Timestamptz(3)
+  suppressedAt           DateTime?             @map("suppressed_at") @db.Timestamptz(3)
+  suppressionReason      String?               @map("suppression_reason")
+  claimedAt              DateTime?             @map("claimed_at") @db.Timestamptz(3)
+  claimExpiresAt         DateTime?             @map("claim_expires_at") @db.Timestamptz(3)
+  nextAttemptAt          DateTime?             @map("next_attempt_at") @db.Timestamptz(3)
+  attempts               Int                   @default(0)
+  publicReplyId          String?               @map("public_reply_id")
+  sentAt                 DateTime?             @map("sent_at") @db.Timestamptz(3)
+  lastErrorCategory      String?               @map("last_error_category")
+  reviewedAt             DateTime?             @map("reviewed_at") @db.Timestamptz(3)
+  cancelledAt            DateTime?             @map("cancelled_at") @db.Timestamptz(3)
+  createdAt              DateTime              @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt              DateTime              @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  conversation  Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  igUser        IgUser       @relation(fields: [igUserId], references: [id], onDelete: Cascade)
+  keyword       Keyword      @relation(fields: [keywordId], references: [id], onDelete: Restrict)
+  gateDmMessage DmMessage?   @relation(fields: [gateDmMessageId], references: [id], onDelete: SetNull)
+
+  @@index([status, eligibleAt, nextAttemptAt])
+  @@index([igUserId, sentAt])
+  @@index([igUserId, keywordId, status])
+  @@index([cohort, eligibleAt])
+  @@map("dm_recovery_reminder")
+}
+
+model DmRecoveryControl {
+  id          Int       @id @default(1)
+  circuitOpen Boolean   @default(false) @map("circuit_open")
+  reason      String?
+  openedAt    DateTime? @map("opened_at") @db.Timestamptz(3)
+  resetAt     DateTime? @map("reset_at") @db.Timestamptz(3)
+  resetBy     String?   @map("reset_by")
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("dm_recovery_control")
 }
