@@ -11,6 +11,7 @@ const tx = {
   },
   dmThread: { findUnique: vi.fn() },
   dmMessage: { findMany: vi.fn() },
+  conversation: { findUnique: vi.fn() },
 };
 
 const rootReplyDraft = {
@@ -26,12 +27,15 @@ vi.mock("../lib/prisma.js", () => ({
     replyDraft: rootReplyDraft,
     dmThread: tx.dmThread,
     dmMessage: tx.dmMessage,
+    conversation: tx.conversation,
   },
 }));
 
 const {
   queueReplyDraft,
   claimOneQueuedDraft,
+  expireDueFollowUps,
+  loadDraftContext,
   completeGeneration,
   failGeneration,
   claimApprovedDraft,
@@ -48,6 +52,7 @@ beforeEach(() => {
   rootReplyDraft.findFirst.mockReset();
   tx.dmThread.findUnique.mockReset();
   tx.dmMessage.findMany.mockReset();
+  tx.conversation.findUnique.mockReset();
   $transaction.mockClear();
   tx.replyDraft.aggregate.mockResolvedValue({ _max: { revision: null } });
   tx.replyDraft.updateMany.mockResolvedValue({ count: 0 });
@@ -155,6 +160,7 @@ describe("queueReplyDraft", () => {
 
 describe("claimOneQueuedDraft", () => {
   it("claims the oldest due draft by flipping queued -> generating with updateMany", async () => {
+    const now = new Date("2026-08-05T22:00:00.000Z");
     tx.replyDraft.findFirst.mockResolvedValue({ id: "draft-1", threadId: "thread-1" });
     tx.replyDraft.updateMany.mockResolvedValue({ count: 1 });
     tx.replyDraft.findUnique.mockResolvedValue({
@@ -163,7 +169,7 @@ describe("claimOneQueuedDraft", () => {
       status: "generating",
     });
 
-    const claimed = await claimOneQueuedDraft();
+    const claimed = await claimOneQueuedDraft(now);
 
     expect(claimed).toMatchObject({ id: "draft-1", status: "generating" });
     // The claim is a conditional updateMany on status: queued — only the caller
@@ -173,6 +179,16 @@ describe("claimOneQueuedDraft", () => {
     ];
     expect(call.where).toMatchObject({ id: "draft-1", status: "queued" });
     expect(call.data.status).toBe("generating");
+    expect(tx.replyDraft.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: "queued",
+          eligibleAt: { lte: now },
+          nextAttemptAt: { lte: now },
+          OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+        }),
+      }),
+    );
   });
 
   it("returns null when no draft is due", async () => {
@@ -184,6 +200,170 @@ describe("claimOneQueuedDraft", () => {
     tx.replyDraft.findFirst.mockResolvedValue({ id: "draft-1", threadId: "thread-1" });
     tx.replyDraft.updateMany.mockResolvedValue({ count: 0 });
     await expect(claimOneQueuedDraft()).resolves.toBeNull();
+  });
+});
+
+describe("expireDueFollowUps", () => {
+  it("expires every owner-review state whose follow-up window has closed", async () => {
+    const now = new Date("2026-08-06T09:30:00.000Z");
+    tx.replyDraft.updateMany.mockResolvedValue({ count: 1 });
+
+    await expect(expireDueFollowUps(now)).resolves.toBe(1);
+
+    expect(tx.replyDraft.updateMany).toHaveBeenCalledWith({
+      where: {
+        kind: "engagement_follow_up",
+        status: {
+          in: ["queued", "generating", "generation_failed", "pending_approval", "send_failed"],
+        },
+        expiresAt: { lte: now },
+      },
+      data: { status: "expired", errorCode: "follow_up_window_closed" },
+    });
+  });
+});
+
+describe("loadDraftContext", () => {
+  const baseDraft = {
+    id: "draft-1",
+    threadId: "thread-1",
+    kind: "reply" as const,
+    sourceConversationId: null,
+    expiresAt: null,
+  };
+
+  beforeEach(() => {
+    tx.replyDraft.findUnique.mockResolvedValue({ status: "generating" });
+    tx.dmThread.findUnique.mockResolvedValue({
+      username: "geri",
+      name: "Geri",
+      igUserId: "ig-user-1",
+    });
+    tx.dmMessage.findMany.mockResolvedValue([
+      {
+        direction: "inbound",
+        text: "latest",
+        type: "text",
+        source: "instagram_user",
+        instagramTimestamp: new Date("2026-08-05T10:00:00.000Z"),
+      },
+      {
+        direction: "outbound",
+        text: "older",
+        type: "text",
+        source: "manual_external",
+        instagramTimestamp: new Date("2026-08-05T09:00:00.000Z"),
+      },
+    ]);
+  });
+
+  it("returns reply context without looking up any guide", async () => {
+    await expect(loadDraftContext(baseDraft)).resolves.toMatchObject({
+      kind: "reply",
+      guideDeliveredAt: null,
+      guideContext: null,
+      messages: [{ text: "older" }, { text: "latest" }],
+    });
+    expect(tx.conversation.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("loads only the follow-up's exact delivered guide and completion time", async () => {
+    tx.conversation.findUnique.mockResolvedValue({
+      completedAt: new Date("2026-08-05T10:00:00.000Z"),
+      keyword: {
+        keyword: "SLEEP",
+        resource: { name: "Sleep Guide", description: "A practical bedtime guide" },
+      },
+    });
+
+    await expect(
+      loadDraftContext({
+        ...baseDraft,
+        kind: "engagement_follow_up",
+        sourceConversationId: "conversation-1",
+        expiresAt: new Date("2026-08-06T09:30:00.000Z"),
+      }),
+    ).resolves.toMatchObject({
+      kind: "engagement_follow_up",
+      guideDeliveredAt: "2026-08-05T10:00:00.000Z",
+      guideContext: {
+        keyword: "SLEEP",
+        resourceName: "Sleep Guide",
+        description: "A practical bedtime guide",
+      },
+    });
+    expect(tx.conversation.findUnique).toHaveBeenCalledWith({
+      where: { id: "conversation-1" },
+      select: {
+        completedAt: true,
+        keyword: {
+          select: {
+            keyword: true,
+            resource: { select: { name: true, description: true } },
+          },
+        },
+      },
+    });
+  });
+
+  it("uses the newest 20 messages, oldest-to-newest, within 8,000 characters", async () => {
+    tx.dmMessage.findMany.mockResolvedValue(
+      Array.from({ length: 20 }, (_, index) => ({
+        direction: index % 2 === 0 ? "inbound" : "outbound",
+        text: `${String(index).padStart(2, "0")}:${"x".repeat(496)}`,
+        type: "text",
+        source: "instagram_user",
+        instagramTimestamp: new Date(Date.UTC(2026, 7, 5, 20 - index)),
+      })),
+    );
+
+    const loaded = await loadDraftContext(baseDraft);
+
+    expect(tx.dmMessage.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderBy: { instagramTimestamp: "desc" },
+        take: 20,
+      }),
+    );
+    expect(loaded?.messages).toHaveLength(16);
+    expect(loaded?.messages[0]?.text).toMatch(/^15:/);
+    expect(loaded?.messages.at(-1)?.text).toMatch(/^00:/);
+    expect(loaded?.messages.reduce((total, message) => total + (message.text?.length ?? 0), 0))
+      .toBeLessThanOrEqual(8_000);
+  });
+
+  it("keeps one oversized database message inside the runtime's 2,000-character bound", async () => {
+    tx.dmMessage.findMany.mockResolvedValue([
+      {
+        direction: "inbound",
+        text: "x".repeat(9_000),
+        type: "text",
+        source: "instagram_user",
+        instagramTimestamp: new Date("2026-08-05T10:00:00.000Z"),
+      },
+    ]);
+
+    const loaded = await loadDraftContext(baseDraft);
+
+    expect(loaded?.messages).toHaveLength(1);
+    expect(loaded?.messages[0]?.text).toHaveLength(2_000);
+  });
+
+  it("returns null after a newer inbound supersedes the generating draft", async () => {
+    tx.replyDraft.findUnique.mockResolvedValue({ status: "superseded" });
+
+    await expect(loadDraftContext(baseDraft)).resolves.toBeNull();
+    expect(tx.dmThread.findUnique).not.toHaveBeenCalled();
+    expect(tx.dmMessage.findMany).not.toHaveBeenCalled();
+  });
+
+  it("rechecks generation state after context reads and drops mid-load supersession", async () => {
+    tx.replyDraft.findUnique
+      .mockResolvedValueOnce({ status: "generating" })
+      .mockResolvedValueOnce({ status: "superseded" });
+
+    await expect(loadDraftContext(baseDraft)).resolves.toBeNull();
+    expect(tx.dmMessage.findMany).toHaveBeenCalledOnce();
   });
 });
 
@@ -250,6 +430,34 @@ describe("completeGeneration", () => {
 
     await completeGeneration("draft-1", payload);
     expect(tx.replyDraft.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("expires an elapsed follow-up instead of exposing model output for approval", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-06T09:30:00.000Z"));
+    tx.replyDraft.findUnique.mockResolvedValue({
+      id: "draft-1",
+      status: "generating",
+      threadId: "thread-1",
+      inboundMessageId: "message-1",
+      kind: "engagement_follow_up",
+      expiresAt: new Date("2026-08-06T09:15:00.000Z"),
+    });
+
+    try {
+      await completeGeneration("draft-1", payload);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(tx.dmThread.findUnique).not.toHaveBeenCalled();
+    expect(tx.replyDraft.updateMany).toHaveBeenCalledWith({
+      where: { id: "draft-1", status: "generating" },
+      data: { status: "expired", errorCode: "follow_up_window_closed" },
+    });
+    expect(tx.replyDraft.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: "pending_approval" }) }),
+    );
   });
 });
 

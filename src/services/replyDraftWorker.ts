@@ -4,9 +4,11 @@ import { CodexRuntimeError, runtimeClient } from "./codexRuntimeClient.js";
 import {
   claimOneQueuedDraft,
   completeGeneration,
+  expireDueFollowUps,
   failGeneration,
   loadDraftContext,
 } from "./replyDraftService.js";
+import { CURRENT_DM_PROMPT_VERSION } from "./replyDraftPolicy.js";
 
 /**
  * Shadow-drafting worker: turns queued drafts into pending suggestions.
@@ -28,25 +30,53 @@ export async function runReplyDraftTick(): Promise<void> {
   if (!env.AI_DRAFTS_ENABLED) return;
 
   try {
+    const now = new Date();
+    await expireDueFollowUps(now);
+
     // One status check per tick, not per draft: if ChatGPT is disconnected there
     // is nothing to do, and hammering the runtime would be pointless.
     const status = await runtimeClient.getConnectionStatus().catch(() => null);
     if (!status?.connected) return;
 
     for (let i = 0; i < MAX_DRAFTS_PER_TICK; i++) {
-      const draft = await claimOneQueuedDraft();
+      const draft = await claimOneQueuedDraft(now);
       if (!draft) return; // queue drained before the cap
 
       await generateOne(draft);
     }
   } catch (err) {
     // Mirrors runGateQueueTick / runGeminiQueueTick: swallow at the boundary.
-    logger.error({ err }, "runReplyDraftTick failed");
+    logger.error({ errorCode: "reply_draft_tick_failed" }, "runReplyDraftTick failed");
   }
 }
 
-async function generateOne(draft: { id: string; threadId: string }): Promise<void> {
-  const context = await loadDraftContext(draft);
+async function generateOne(draft: {
+  id: string;
+  threadId: string;
+  kind: "reply" | "engagement_follow_up";
+  sourceConversationId: string | null;
+  expiresAt: Date | null;
+}): Promise<void> {
+  if (
+    draft.kind === "engagement_follow_up" &&
+    draft.expiresAt !== null &&
+    draft.expiresAt <= new Date()
+  ) {
+    await expireDueFollowUps(new Date());
+    return;
+  }
+
+  let context: Awaited<ReturnType<typeof loadDraftContext>>;
+  try {
+    context = await loadDraftContext(draft);
+  } catch {
+    await failGeneration(draft.id, {
+      errorCode: "context_unavailable",
+      errorMessage: "The conversation for this draft is no longer available.",
+      retryAt: null,
+    });
+    return;
+  }
   if (!context) {
     // The thread was deleted between queueing and now. Fail the draft rather than
     // generate against nothing.
@@ -58,9 +88,21 @@ async function generateOne(draft: { id: string; threadId: string }): Promise<voi
     return;
   }
 
+  if (
+    draft.kind === "engagement_follow_up" &&
+    draft.expiresAt !== null &&
+    draft.expiresAt <= new Date()
+  ) {
+    await expireDueFollowUps(new Date());
+    return;
+  }
+
   try {
     const suggestion = await runtimeClient.generateDmDraft({
       requestId: newRequestId(),
+      kind: context.kind,
+      promptVersion: CURRENT_DM_PROMPT_VERSION,
+      guideDeliveredAt: context.guideDeliveredAt,
       participant: context.participant,
       messages: context.messages,
       brandVoice: env.AI_BRAND_VOICE,

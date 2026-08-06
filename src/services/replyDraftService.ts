@@ -7,6 +7,7 @@ import { CURRENT_DM_PROMPT_VERSION } from "./replyDraftPolicy.js";
 /** How much conversation the drafter sees: recent, and bounded. */
 const CONTEXT_MESSAGE_LIMIT = 20;
 const CONTEXT_CHAR_BUDGET = 8_000;
+const CONTEXT_MESSAGE_CHAR_LIMIT = 2_000;
 
 /**
  * Creating and advancing reply drafts.
@@ -104,10 +105,15 @@ export async function queueReplyDraft(input: QueueReplyDraftInput): Promise<Repl
  * never generate the same draft twice. Returns null when nothing is due or the
  * race was lost.
  */
-export async function claimOneQueuedDraft(): Promise<ReplyDraft | null> {
+export async function claimOneQueuedDraft(now = new Date()): Promise<ReplyDraft | null> {
   return prisma.$transaction(async (tx) => {
     const candidate = await tx.replyDraft.findFirst({
-      where: { status: "queued", nextAttemptAt: { lte: new Date() } },
+      where: {
+        status: "queued",
+        eligibleAt: { lte: now },
+        nextAttemptAt: { lte: now },
+        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+      },
       orderBy: { createdAt: "asc" },
       select: { id: true },
     });
@@ -123,7 +129,24 @@ export async function claimOneQueuedDraft(): Promise<ReplyDraft | null> {
   });
 }
 
+/** Close every follow-up whose owner-review window has elapsed. */
+export async function expireDueFollowUps(now = new Date()): Promise<number> {
+  const result = await prisma.replyDraft.updateMany({
+    where: {
+      kind: "engagement_follow_up",
+      status: {
+        in: ["queued", "generating", "generation_failed", "pending_approval", "send_failed"],
+      },
+      expiresAt: { lte: now },
+    },
+    data: { status: "expired", errorCode: "follow_up_window_closed" },
+  });
+  return result.count;
+}
+
 export interface DraftContext {
+  kind: DmDraftRequest["kind"];
+  guideDeliveredAt: DmDraftRequest["guideDeliveredAt"];
   participant: DmDraftRequest["participant"];
   messages: DmDraftRequest["messages"];
   guideContext: DmDraftRequest["guideContext"];
@@ -132,16 +155,55 @@ export interface DraftContext {
 /**
  * Load the bounded transcript a draft needs. Newest 20 messages, then trimmed to
  * an 8,000-char budget from the oldest end, and returned oldest-first so the
- * drafter reads the conversation in order. Returns null if the thread vanished.
+ * drafter reads the conversation in order. Returns null if the draft is no
+ * longer generating or its required thread/source conversation vanished.
  */
 export async function loadDraftContext(draft: {
+  id: string;
   threadId: string;
+  kind: "reply" | "engagement_follow_up";
+  sourceConversationId: string | null;
+  expiresAt: Date | null;
 }): Promise<DraftContext | null> {
+  // A genuine newer inbound supersedes a generating draft in the inbound
+  // transaction. Re-read the state before loading private content so superseded
+  // work never reaches the runtime.
+  const current = await prisma.replyDraft.findUnique({
+    where: { id: draft.id },
+    select: { status: true },
+  });
+  if (current?.status !== "generating") return null;
+
   const thread = await prisma.dmThread.findUnique({
     where: { id: draft.threadId },
     select: { username: true, name: true, igUserId: true },
   });
   if (!thread) return null;
+
+  let guideDeliveredAt: string | null = null;
+  let guideContext: DmDraftRequest["guideContext"] = null;
+  if (draft.kind === "engagement_follow_up") {
+    if (!draft.sourceConversationId) return null;
+    const source = await prisma.conversation.findUnique({
+      where: { id: draft.sourceConversationId },
+      select: {
+        completedAt: true,
+        keyword: {
+          select: {
+            keyword: true,
+            resource: { select: { name: true, description: true } },
+          },
+        },
+      },
+    });
+    if (!source) return null;
+    guideDeliveredAt = source.completedAt?.toISOString() ?? null;
+    guideContext = {
+      keyword: source.keyword.keyword,
+      resourceName: source.keyword.resource.name,
+      description: source.keyword.resource.description,
+    };
+  }
 
   const recent = await prisma.dmMessage.findMany({
     where: { threadId: draft.threadId },
@@ -152,9 +214,13 @@ export async function loadDraftContext(draft: {
 
   // recent is newest-first; walk it keeping a running char budget, then reverse
   // to oldest-first for the model.
-  const kept: typeof recent = [];
+  const boundedRecent = recent.map((message) => ({
+    ...message,
+    text: message.text?.slice(0, CONTEXT_MESSAGE_CHAR_LIMIT) ?? null,
+  }));
+  const kept: typeof boundedRecent = [];
   let budget = CONTEXT_CHAR_BUDGET;
-  for (const m of recent) {
+  for (const m of boundedRecent) {
     const cost = m.text?.length ?? 0;
     if (kept.length > 0 && cost > budget) break;
     kept.push(m);
@@ -162,7 +228,18 @@ export async function loadDraftContext(draft: {
   }
   kept.reverse();
 
+  // Context reads are separate, short queries. A genuine inbound may supersede
+  // the draft while they run, so make the final read immediately before handing
+  // private context back to the worker.
+  const stillGenerating = await prisma.replyDraft.findUnique({
+    where: { id: draft.id },
+    select: { status: true },
+  });
+  if (stillGenerating?.status !== "generating") return null;
+
   return {
+    kind: draft.kind,
+    guideDeliveredAt,
     participant: { igUserId: thread.igUserId, username: thread.username, name: thread.name },
     messages: kept.map((m) => ({
       direction: m.direction,
@@ -171,9 +248,7 @@ export async function loadDraftContext(draft: {
       source: m.source,
       at: m.instagramTimestamp.toISOString(),
     })),
-    // Widening to the full catalog is a deliberate follow-on; for now the drafter
-    // gets no guide unless a later task supplies one.
-    guideContext: null,
+    guideContext,
   };
 }
 
@@ -201,9 +276,27 @@ export async function completeGeneration(
   await prisma.$transaction(async (tx) => {
     const draft = await tx.replyDraft.findUnique({
       where: { id: draftId },
-      select: { status: true, threadId: true, inboundMessageId: true },
+      select: {
+        status: true,
+        threadId: true,
+        inboundMessageId: true,
+        kind: true,
+        expiresAt: true,
+      },
     });
     if (!draft || draft.status !== "generating") return; // dismissed/superseded meanwhile
+
+    if (
+      draft.kind === "engagement_follow_up" &&
+      draft.expiresAt !== null &&
+      draft.expiresAt <= new Date()
+    ) {
+      await tx.replyDraft.updateMany({
+        where: { id: draftId, status: "generating" },
+        data: { status: "expired", errorCode: "follow_up_window_closed" },
+      });
+      return;
+    }
 
     const thread = await tx.dmThread.findUnique({
       where: { id: draft.threadId },
@@ -229,6 +322,7 @@ export async function completeGeneration(
         confidence: input.confidence,
         warnings: input.warnings,
         modelId: input.modelId,
+        promptVersion: CURRENT_DM_PROMPT_VERSION,
         attempts: { increment: 1 },
         errorCode: null,
         errorMessage: null,

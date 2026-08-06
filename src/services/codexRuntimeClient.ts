@@ -109,6 +109,9 @@ export interface AdvisorAsk {
 /** The request sent to the runtime's drafter. Shape mirrors runtime schemas.ts. */
 export interface DmDraftRequest {
   requestId: string;
+  kind: "reply" | "engagement_follow_up";
+  promptVersion: 2;
+  guideDeliveredAt: string | null;
   participant: { igUserId: string; username: string | null; name: string | null };
   messages: Array<{
     direction: "inbound" | "outbound";

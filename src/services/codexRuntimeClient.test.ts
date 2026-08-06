@@ -164,6 +164,9 @@ describe("createCodexRuntimeClient", () => {
 
 const draftRequest = {
   requestId: "11111111-1111-1111-1111-111111111111",
+  kind: "reply" as const,
+  promptVersion: 2 as const,
+  guideDeliveredAt: null,
   participant: { igUserId: "ig-user-1", username: "geri", name: "Geri" },
   messages: [
     {
@@ -204,7 +207,48 @@ describe("createCodexRuntimeClient.generateDmDraft", () => {
       confidence: "high",
       modelId: "codex-default",
     });
-    expect(JSON.parse(receivedBody)).toMatchObject({ requestId: draftRequest.requestId });
+    expect(JSON.parse(receivedBody)).toEqual(draftRequest);
+  });
+
+  it("posts the exact engagement follow-up context without arbitrary keys", async () => {
+    let received: unknown;
+    const baseUrl = await stubRuntime((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+      req.on("end", () => {
+        received = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        jsonResponse(res, 200, {
+          reply: "How has the Sleep Guide been going so far?",
+          rationale: "A gentle check-in about the delivered guide.",
+          confidence: "high",
+          warnings: [],
+          modelId: null,
+        });
+      });
+    });
+    const client = createCodexRuntimeClient({ baseUrl, token: RUNTIME_TOKEN });
+
+    await client.generateDmDraft({
+      ...draftRequest,
+      kind: "engagement_follow_up",
+      guideDeliveredAt: "2026-08-05T10:00:00.000Z",
+      guideContext: {
+        keyword: "SLEEP",
+        resourceName: "Sleep Guide",
+        description: "A practical bedtime guide",
+      },
+    });
+
+    expect(received).toEqual({
+      ...draftRequest,
+      kind: "engagement_follow_up",
+      guideDeliveredAt: "2026-08-05T10:00:00.000Z",
+      guideContext: {
+        keyword: "SLEEP",
+        resourceName: "Sleep Guide",
+        description: "A practical bedtime guide",
+      },
+    });
   });
 
   it("maps a runtime 429 to a rate-limit error with retryAt", async () => {
