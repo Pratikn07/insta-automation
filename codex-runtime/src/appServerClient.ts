@@ -23,6 +23,7 @@ export type SpawnAppServer = (
 export interface AppServerDependencies {
   spawn?: SpawnAppServer;
   codexBin?: string;
+  onUnexpectedExit?: (error: Error) => void;
 }
 
 const disabledFeatures = [
@@ -88,19 +89,27 @@ export async function startAppServerClient(
   const peer = new JsonRpcPeer(child.stdout, child.stdin);
   let stopping = false;
   let exited = false;
+  let unexpectedExitReported = false;
+
+  const reportUnexpectedExit = (error: Error): void => {
+    peer.close(error);
+    if (stopping || unexpectedExitReported) return;
+    unexpectedExitReported = true;
+    dependencies.onUnexpectedExit?.(error);
+  };
 
   // Drain diagnostics so the child cannot block on a full stderr pipe. Runtime
   // account and authentication details are intentionally never forwarded.
   child.stderr.on("data", () => undefined);
-  child.once("error", (error) => peer.close(error));
+  child.once("error", reportUnexpectedExit);
   child.once("exit", (code, signal) => {
     exited = true;
     const detail = code === null ? `signal ${signal ?? "unknown"}` : `code ${code}`;
-    peer.close(
-      stopping
-        ? new Error("app-server stopped")
-        : new Error(`app-server exited unexpectedly with ${detail}`),
-    );
+    if (stopping) {
+      peer.close(new Error("app-server stopped"));
+      return;
+    }
+    reportUnexpectedExit(new Error(`app-server exited unexpectedly with ${detail}`));
   });
 
   try {

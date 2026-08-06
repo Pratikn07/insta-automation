@@ -1,4 +1,4 @@
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { PassThrough } from "node:stream";
 import type { ChildProcessWithoutNullStreams, SpawnOptionsWithoutStdio } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
@@ -15,7 +15,7 @@ class FakeChild extends EventEmitter {
   });
   exitCode: number | null = null;
 
-  constructor() {
+  constructor(respondToInitialize = true) {
     super();
     let buffer = "";
     this.stdin.on("data", (chunk) => {
@@ -26,7 +26,7 @@ class FakeChild extends EventEmitter {
         buffer = buffer.slice(newline + 1);
         if (line) {
           const message = JSON.parse(line) as { id?: number; method: string };
-          if (message.method === "initialize" && message.id !== undefined) {
+          if (respondToInitialize && message.method === "initialize" && message.id !== undefined) {
             this.stdout.write(`${JSON.stringify({ id: message.id, result: { userAgent: "fake" } })}\n`);
           }
         }
@@ -130,5 +130,71 @@ describe("startAppServerClient", () => {
     child.emit("exit", 1, null);
 
     await expect(pending).rejects.toThrow("app-server exited unexpectedly with code 1");
+  });
+
+  it("reports an unexpected child exit to its lifecycle owner", async () => {
+    const child = new FakeChild();
+    const spawn = vi.fn(() => child as unknown as ChildProcessWithoutNullStreams);
+    const onUnexpectedExit = vi.fn();
+    await startAppServerClient(config, {
+      spawn,
+      codexBin: "/runtime/codex",
+      onUnexpectedExit,
+    });
+
+    child.emit("exit", 17, null);
+
+    expect(onUnexpectedExit).toHaveBeenCalledOnce();
+    expect(onUnexpectedExit.mock.calls[0]![0].message).toContain("code 17");
+  });
+
+  it("does not report an intentional stop as an unexpected exit", async () => {
+    const child = new FakeChild();
+    const spawn = vi.fn(() => child as unknown as ChildProcessWithoutNullStreams);
+    const onUnexpectedExit = vi.fn();
+    const client = await startAppServerClient(config, {
+      spawn,
+      codexBin: "/runtime/codex",
+      onUnexpectedExit,
+    });
+
+    await client.stop();
+    child.emit("exit", 0, null);
+
+    expect(onUnexpectedExit).not.toHaveBeenCalled();
+  });
+
+  it("reports and rejects an exit during the initialization handshake", async () => {
+    const child = new FakeChild(false);
+    const spawn = vi.fn(() => child as unknown as ChildProcessWithoutNullStreams);
+    const onUnexpectedExit = vi.fn();
+    const firstWrite = once(child.stdin, "data");
+
+    const starting = startAppServerClient(config, {
+      spawn,
+      codexBin: "/runtime/codex",
+      onUnexpectedExit,
+    });
+    await firstWrite;
+    child.emit("exit", null, "SIGKILL");
+
+    await expect(starting).rejects.toThrow("app-server exited unexpectedly with signal SIGKILL");
+    expect(onUnexpectedExit).toHaveBeenCalledOnce();
+  });
+
+  it("reports a child process error only once when exit follows", async () => {
+    const child = new FakeChild();
+    const spawn = vi.fn(() => child as unknown as ChildProcessWithoutNullStreams);
+    const onUnexpectedExit = vi.fn();
+    await startAppServerClient(config, {
+      spawn,
+      codexBin: "/runtime/codex",
+      onUnexpectedExit,
+    });
+
+    child.emit("error", new Error("spawn failed"));
+    child.emit("exit", 1, null);
+
+    expect(onUnexpectedExit).toHaveBeenCalledOnce();
   });
 });
