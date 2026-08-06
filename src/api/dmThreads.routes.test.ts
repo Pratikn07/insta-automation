@@ -70,6 +70,15 @@ describe("GET /api/dm-threads/:threadId", () => {
     expect(findUnique).toHaveBeenCalledWith(
       expect.objectContaining({
         select: expect.objectContaining({
+          drafts: expect.objectContaining({
+            select: expect.objectContaining({
+              kind: true,
+              sourceConversationId: true,
+              eligibleAt: true,
+              expiresAt: true,
+              promptVersion: true,
+            }),
+          }),
           messages: expect.objectContaining({
             orderBy: [{ instagramTimestamp: "desc" }, { id: "desc" }],
             take: 200,

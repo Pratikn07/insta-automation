@@ -22,6 +22,7 @@ export interface ReplyDraftCardProps {
   draft: ReplyDraft;
   sendEnabled: boolean;
   mutationPending: boolean;
+  windowClosedError?: boolean;
   onEdit: (workingText: string) => void;
   onRegenerate: () => void;
   onDismiss: () => void;
@@ -36,6 +37,8 @@ const GATE_MESSAGE: Record<string, string> = {
   in_flight: "Sending…",
   send_disabled: "Sending is turned off for this environment.",
   uncertain_needs_check: "Check Instagram before retrying.",
+  follow_up_not_ready: "This follow-up is not ready yet.",
+  follow_up_window_closed: "The Instagram reply window has closed.",
   not_pending: "This draft can't be sent.",
 };
 
@@ -43,17 +46,32 @@ export function ReplyDraftCard(props: ReplyDraftCardProps) {
   const { thread, draft, sendEnabled, mutationPending } = props;
   const [text, setText] = useState(draft.workingText ?? draft.suggestedText ?? "");
   const [confirmedNotDelivered, setConfirmedNotDelivered] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
-  // A new revision replaces the editor contents; an in-progress edit of the SAME
-  // revision is preserved so a background refetch can't discard typing.
+  // The parent keys this card by draft id, so a new revision gets fresh editor
+  // state while a refetch of the same revision never discards in-progress typing.
   useEffect(() => {
-    setText(draft.workingText ?? draft.suggestedText ?? "");
-  }, [draft.id]);
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
-  const gate = approvalGate({ thread, draft, text, sendEnabled, mutationPending });
+  const now = new Date(nowMs);
+  const gate = approvalGate({ thread, draft, text, sendEnabled, mutationPending, now });
   const stale = isStale(thread, draft);
   const drafting = draft.status === "queued" || draft.status === "generating";
   const uncertain = draft.status === "send_uncertain";
+  const failedSend = draft.status === "send_failed";
+  const followUp = draft.kind === "engagement_follow_up";
+  const expired =
+    draft.status === "expired" ||
+    (followUp && draft.expiresAt !== null && now >= new Date(draft.expiresAt));
+  const cancelled = followUp && draft.status === "superseded";
+  const terminal = expired || cancelled;
+  const canEdit = draft.status === "pending_approval" && !stale && !terminal;
+  const canRegenerate =
+    (draft.status === "pending_approval" || draft.status === "generation_failed") &&
+    (!stale || !followUp) &&
+    !terminal;
 
   return (
     <Card className="border-brand/30">
@@ -61,7 +79,7 @@ export function ReplyDraftCard(props: ReplyDraftCardProps) {
         <div className="flex items-center justify-between gap-2">
           <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             <Sparkles className="size-3.5" />
-            {draftStatusLabel(draft.status)}
+            {draftStatusLabel(draft.status, draft.kind)}
             {draft.revision > 1 && <span className="opacity-60">· v{draft.revision}</span>}
           </span>
           {draft.confidence && !drafting && (
@@ -70,6 +88,41 @@ export function ReplyDraftCard(props: ReplyDraftCardProps) {
             </span>
           )}
         </div>
+
+        {followUp && draft.status === "queued" && (
+          <p className="text-xs text-muted-foreground">
+            Eligible at {new Date(draft.eligibleAt).toLocaleString()} ·{" "}
+            {formatCountdown(new Date(draft.eligibleAt).getTime() - nowMs)}
+          </p>
+        )}
+
+        {followUp && draft.expiresAt && (
+          <p className="text-xs text-muted-foreground">
+            Send by {new Date(draft.expiresAt).toLocaleString()}
+          </p>
+        )}
+
+        {followUp && (
+          <p className="text-xs text-muted-foreground">
+            {draft.promptVersion === null
+              ? "Prompt policy unavailable"
+              : `Prompt policy v${draft.promptVersion}`}
+          </p>
+        )}
+
+        {props.windowClosedError && (
+          <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+            <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
+            <span>The Instagram reply window closed before this could be sent.</span>
+          </div>
+        )}
+
+        {expired && (
+          <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
+            <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
+            <span>The Instagram reply window has closed.</span>
+          </div>
+        )}
 
         {stale && (
           <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
@@ -98,18 +151,25 @@ export function ReplyDraftCard(props: ReplyDraftCardProps) {
         {drafting ? (
           <p className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
             <Loader2 className="size-4 animate-spin" />
-            Writing a suggestion…
+            {followUp && draft.status === "queued"
+              ? "Waiting to write…"
+              : followUp
+                ? "Writing follow-up…"
+                : "Writing a suggestion…"}
           </p>
-        ) : (
+        ) : draft.workingText || draft.suggestedText ? (
           <>
             <textarea
               value={text}
               onChange={(e) => setText(e.target.value)}
-              onBlur={() => text !== (draft.workingText ?? "") && props.onEdit(text)}
+              onBlur={() => {
+                const trimmed = text.trim();
+                if (canEdit && trimmed !== (draft.workingText ?? "")) props.onEdit(trimmed);
+              }}
               rows={4}
-              disabled={draft.status === "sending"}
+              disabled={!canEdit}
               className="w-full resize-y rounded-md border bg-transparent p-3 text-sm outline-none focus:border-foreground/40 disabled:opacity-60"
-              aria-label="Reply draft"
+              aria-label={followUp ? "Follow-up draft" : "Reply draft"}
             />
             <div className="flex items-center justify-between text-xs text-muted-foreground">
               <span>{draft.rationale}</span>
@@ -118,7 +178,7 @@ export function ReplyDraftCard(props: ReplyDraftCardProps) {
               </span>
             </div>
           </>
-        )}
+        ) : null}
 
         {Array.isArray(draft.warnings) && draft.warnings.length > 0 && (
           <ul className="space-y-1 text-xs text-amber-300">
@@ -131,7 +191,13 @@ export function ReplyDraftCard(props: ReplyDraftCardProps) {
           </ul>
         )}
 
-        {uncertain ? (
+        {!sendEnabled && !terminal && !drafting && (
+          <p className="text-xs text-muted-foreground">
+            Sending is turned off for this environment.
+          </p>
+        )}
+
+        {terminal || drafting ? null : uncertain || failedSend ? (
           <div className="space-y-2">
             <label className="flex items-start gap-2 text-xs">
               <input
@@ -140,11 +206,13 @@ export function ReplyDraftCard(props: ReplyDraftCardProps) {
                 onChange={(e) => setConfirmedNotDelivered(e.target.checked)}
                 className="mt-0.5"
               />
-              <span>I checked Instagram — this reply was not delivered.</span>
+              <span>
+                I checked Instagram — this {followUp ? "follow-up" : "reply"} was not delivered.
+              </span>
             </label>
             <Button
               variant="brand"
-              disabled={!confirmedNotDelivered || mutationPending || !sendEnabled}
+              disabled={!confirmedNotDelivered || mutationPending || !sendEnabled || expired}
               onClick={() => props.onRetry(true)}
             >
               {mutationPending && <Loader2 className="mr-2 size-4 animate-spin" />}
@@ -157,7 +225,7 @@ export function ReplyDraftCard(props: ReplyDraftCardProps) {
               variant="brand"
               disabled={!gate.canApprove}
               title={gate.reason ? GATE_MESSAGE[gate.reason] : undefined}
-              onClick={() => props.onApprove(text)}
+              onClick={() => props.onApprove(text.trim())}
             >
               {mutationPending ? (
                 <Loader2 className="mr-2 size-4 animate-spin" />
@@ -166,14 +234,18 @@ export function ReplyDraftCard(props: ReplyDraftCardProps) {
               )}
               Approve &amp; Send
             </Button>
-            <Button variant="outline" disabled={mutationPending} onClick={props.onRegenerate}>
-              <RotateCw className="mr-2 size-4" />
-              Try another
-            </Button>
-            <Button variant="ghost" disabled={mutationPending} onClick={props.onDismiss}>
-              <Trash2 className="mr-2 size-4" />
-              Dismiss
-            </Button>
+            {canRegenerate && (
+              <Button variant="outline" disabled={mutationPending} onClick={props.onRegenerate}>
+                <RotateCw className="mr-2 size-4" />
+                Try another
+              </Button>
+            )}
+            {(draft.status === "pending_approval" || draft.status === "generation_failed") && (
+              <Button variant="ghost" disabled={mutationPending} onClick={props.onDismiss}>
+                <Trash2 className="mr-2 size-4" />
+                Dismiss
+              </Button>
+            )}
             {draft.status === "sent" && (
               <span className="inline-flex items-center gap-1.5 text-xs text-emerald-500">
                 <Check className="size-3.5" />
@@ -185,4 +257,14 @@ export function ReplyDraftCard(props: ReplyDraftCardProps) {
       </CardContent>
     </Card>
   );
+}
+
+function formatCountdown(remainingMs: number): string {
+  if (remainingMs <= 0) return "Ready now";
+  const seconds = Math.ceil(remainingMs / 1_000);
+  if (seconds < 60) return `Ready in ${seconds}s`;
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes < 60) return `Ready in ${minutes}m`;
+  const hours = Math.ceil(minutes / 60);
+  return `Ready in ${hours}h`;
 }

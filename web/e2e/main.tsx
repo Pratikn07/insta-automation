@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { DmThreadDrawer } from "@/components/conversations/DmThreadDrawer";
 import { Assistant } from "@/pages/Assistant";
+import { Conversations } from "@/pages/Conversations";
 import "../src/index.css";
 
 /**
@@ -48,6 +49,7 @@ const THREAD = {
   ],
   draft: {
     id: "draft-1",
+    kind: "reply" as const,
     status: "pending_approval" as const,
     revision: 1,
     suggestedText: "Bedtime battles at two are so common 💛 Try dimming the lights an hour before.",
@@ -60,11 +62,28 @@ const THREAD = {
     errorMessage: null,
     retryAt: null,
     inboundMessageId: "message-2",
+    sourceConversationId: null,
+    eligibleAt: "2026-08-04T10:06:00.000Z",
+    expiresAt: null,
+    promptVersion: 2,
     approvedBy: null,
     approvedAt: null,
     sentAt: null,
     createdAt: "2026-08-04T10:06:00.000Z",
   },
+};
+
+const FOLLOW_UP = {
+  ...THREAD.draft,
+  id: "follow-up-1",
+  kind: "engagement_follow_up" as const,
+  sourceConversationId: "conversation-1",
+  inboundMessageId: "message-2",
+  eligibleAt: "2026-08-05T22:00:00.000Z",
+  expiresAt: "2026-08-06T09:15:00.000Z",
+  suggestedText: "How did bedtime go after trying the guide?",
+  workingText: "How did bedtime go after trying the guide?",
+  rationale: "References the delivered guide and asks one easy question.",
 };
 
 const ADVISOR_ANSWER = {
@@ -88,6 +107,7 @@ const ADVISOR_ANSWER = {
 let capturedBody = "";
 let sentText = "";
 let approved = false;
+let windowClosed = false;
 const listeners = new Set<() => void>();
 
 function publish(body: string): void {
@@ -142,6 +162,70 @@ function installFetchStub(): void {
     }
 
     if (path === "/dm-threads/thread-1" && method === "GET") {
+      const scenario = new URLSearchParams(window.location.search).get("scenario");
+      if (scenario === "follow-up-scheduled") {
+        return json({ ...THREAD, draft: { ...FOLLOW_UP, status: "queued" as const } });
+      }
+      if (scenario === "follow-up-ready") {
+        return json({ ...THREAD, draft: FOLLOW_UP });
+      }
+      if (scenario === "follow-up-expiry") {
+        return json({
+          ...THREAD,
+          draft: {
+            ...FOLLOW_UP,
+            status: "pending_approval" as const,
+            expiresAt: "2026-08-05T22:00:30.000Z",
+          },
+        });
+      }
+      if (scenario === "follow-up-window-race") {
+        return json({
+          ...THREAD,
+          draft: {
+            ...FOLLOW_UP,
+            status: windowClosed ? ("expired" as const) : ("pending_approval" as const),
+            expiresAt: "2026-08-05T22:01:00.000Z",
+          },
+        });
+      }
+      if (scenario === "follow-up-cancelled") {
+        return json({
+          ...THREAD,
+          latestInboundMessageId: "message-3",
+          draft: { ...FOLLOW_UP, status: "superseded" as const },
+          messages: [
+            ...THREAD.messages,
+            {
+              id: "message-3",
+              direction: "inbound" as const,
+              text: "Actually, can I ask something else?",
+              type: "text" as const,
+              source: "instagram_user",
+              mediaUrl: null,
+              instagramTimestamp: "2026-08-05T21:59:00.000Z",
+            },
+          ],
+        });
+      }
+      if (scenario === "stale-reply") {
+        return json({
+          ...THREAD,
+          latestInboundMessageId: "message-3",
+          messages: [
+            ...THREAD.messages,
+            {
+              id: "message-3",
+              direction: "inbound" as const,
+              text: "One more detail before you answer…",
+              type: "text" as const,
+              source: "instagram_user",
+              mediaUrl: null,
+              instagramTimestamp: "2026-08-05T21:59:00.000Z",
+            },
+          ],
+        });
+      }
       if (!approved) return json(THREAD);
       // What the API really does after a successful approve: records an outbound
       // message and clears needsReply. `sent` is not a live status, so the
@@ -165,7 +249,44 @@ function installFetchStub(): void {
       });
     }
 
+    if (path === "/dm-threads" && method === "GET") {
+      return json({ items: [THREAD], nextCursor: null });
+    }
+
+    if (path === "/conversations" && method === "GET") {
+      return json({ items: [], nextCursor: null });
+    }
+
+    if (path === "/conversations/counts" && method === "GET") {
+      return json({
+        awaiting_done: 0,
+        completed: 0,
+        expired: 0,
+        retrying: 0,
+        waitingOnReply: 1,
+      });
+    }
+
+    if (path === "/ai/capabilities" && method === "GET") {
+      const scenario = new URLSearchParams(window.location.search).get("scenario");
+      return json({
+        draftsEnabled: true,
+        followUpsEnabled: true,
+        sendEnabled: scenario === "capabilities-enabled",
+      });
+    }
+
     if (path === "/ai/dm-threads/thread-1/drafts/draft-1/approve" && method === "POST") {
+      publish(typeof init?.body === "string" ? init.body : "");
+      return json({ status: "sent" });
+    }
+
+    if (path === "/ai/dm-threads/thread-1/drafts/follow-up-1/approve" && method === "POST") {
+      const scenario = new URLSearchParams(window.location.search).get("scenario");
+      if (scenario === "follow-up-window-race") {
+        windowClosed = true;
+        return json({ error: "follow_up_window_closed" }, 409);
+      }
       publish(typeof init?.body === "string" ? init.body : "");
       return json({ status: "sent" });
     }
@@ -192,7 +313,7 @@ function installFetchStub(): void {
   };
 }
 
-function DmApprovalScenario() {
+export function DmApprovalScenario() {
   const [open, setOpen] = useState(true);
   const body = useCapturedBody();
   return (
@@ -207,9 +328,23 @@ function DmApprovalScenario() {
   );
 }
 
-function Harness() {
+export function CapabilitiesScenario() {
+  return (
+    <div className="p-4">
+      <Conversations />
+      <pre data-testid="captured-request-body">{useCapturedBody()}</pre>
+    </div>
+  );
+}
+
+export function Harness() {
   const scenario = new URLSearchParams(window.location.search).get("scenario");
   if (scenario === "dm-approval") return <DmApprovalScenario />;
+  if (scenario === "capabilities" || scenario === "capabilities-enabled") {
+    return <CapabilitiesScenario />;
+  }
+  if (scenario === "stale-reply") return <DmApprovalScenario />;
+  if (scenario?.startsWith("follow-up-")) return <DmApprovalScenario />;
   if (scenario === "advisor") {
     return (
       <div className="p-4">

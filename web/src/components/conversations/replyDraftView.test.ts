@@ -4,7 +4,7 @@ import {
   MAX_REPLY_LENGTH,
   approvalGate,
   draftStatusLabel,
-  isLiveDraft,
+  isVisibleDraft,
   isStale,
   rowState,
 } from "./replyDraftView";
@@ -12,6 +12,7 @@ import {
 function draft(overrides: Partial<ReplyDraft> = {}): ReplyDraft {
   return {
     id: "draft-1",
+    kind: "reply",
     status: "pending_approval",
     revision: 1,
     suggestedText: "Most toddlers keep a nap until around 3 💛",
@@ -23,6 +24,10 @@ function draft(overrides: Partial<ReplyDraft> = {}): ReplyDraft {
     errorCode: null,
     errorMessage: null,
     retryAt: null,
+    sourceConversationId: null,
+    eligibleAt: "2026-08-04T10:00:00.000Z",
+    expiresAt: null,
+    promptVersion: 2,
     inboundMessageId: "message-2",
     approvedBy: null,
     approvedAt: null,
@@ -48,6 +53,18 @@ function thread(overrides: Partial<DmThreadDetail> = {}): DmThreadDetail {
 }
 
 const OK = { sendEnabled: true, mutationPending: false };
+const BEFORE_EXPIRY = new Date("2026-08-05T09:14:59.999Z");
+const AT_EXPIRY = new Date("2026-08-05T09:15:00.000Z");
+
+function followUp(overrides: Partial<ReplyDraft> = {}): ReplyDraft {
+  return draft({
+    kind: "engagement_follow_up",
+    sourceConversationId: "conversation-1",
+    eligibleAt: "2026-08-04T22:00:00.000Z",
+    expiresAt: AT_EXPIRY.toISOString(),
+    ...overrides,
+  });
+}
 
 describe("isStale", () => {
   it("is false while the draft answers the latest inbound", () => {
@@ -140,6 +157,44 @@ describe("approvalGate", () => {
     ).toBe("send_disabled");
   });
 
+  it("allows a ready follow-up until the exact expiry boundary", () => {
+    expect(
+      approvalGate({
+        thread: thread(),
+        draft: followUp(),
+        text: "How did bedtime go?",
+        now: BEFORE_EXPIRY,
+        ...OK,
+      }),
+    ).toEqual({ canApprove: true, reason: null });
+  });
+
+  it("blocks a follow-up at and after its exact expiry boundary", () => {
+    for (const now of [AT_EXPIRY, new Date(AT_EXPIRY.getTime() + 1)]) {
+      expect(
+        approvalGate({
+          thread: thread(),
+          draft: followUp(),
+          text: "How did bedtime go?",
+          now,
+          ...OK,
+        }),
+      ).toEqual({ canApprove: false, reason: "follow_up_window_closed" });
+    }
+  });
+
+  it("blocks a follow-up before it becomes eligible", () => {
+    expect(
+      approvalGate({
+        thread: thread(),
+        draft: followUp(),
+        text: "How did bedtime go?",
+        now: new Date("2026-08-04T21:59:59.999Z"),
+        ...OK,
+      }),
+    ).toEqual({ canApprove: false, reason: "follow_up_not_ready" });
+  });
+
   // The message MAY already be in someone's inbox: ordinary approval must not be
   // offered, only the explicit confirmed retry.
   it("blocks ordinary approval for send_uncertain and asks for a check", () => {
@@ -171,6 +226,14 @@ describe("draftStatusLabel", () => {
     expect(draftStatusLabel("sent")).toBe("Replied");
   });
 
+  it("distinguishes every owner-visible follow-up phase", () => {
+    expect(draftStatusLabel("queued", "engagement_follow_up")).toBe("Follow-up scheduled");
+    expect(draftStatusLabel("generating", "engagement_follow_up")).toBe("Writing follow-up");
+    expect(draftStatusLabel("pending_approval", "engagement_follow_up")).toBe("Follow-up ready");
+    expect(draftStatusLabel("expired", "engagement_follow_up")).toBe("Follow-up expired");
+    expect(draftStatusLabel("superseded", "engagement_follow_up")).toBe("Follow-up cancelled");
+  });
+
   it("labels every status", () => {
     const all: ReplyDraftStatus[] = [
       "queued",
@@ -183,6 +246,7 @@ describe("draftStatusLabel", () => {
       "sent",
       "send_failed",
       "send_uncertain",
+      "expired",
     ];
     for (const s of all) expect(draftStatusLabel(s)).toBeTruthy();
   });
@@ -208,15 +272,21 @@ describe("rowState", () => {
   });
 });
 
-describe("isLiveDraft", () => {
-  it("treats dismissed and superseded as history", () => {
-    expect(isLiveDraft(draft({ status: "dismissed" }))).toBe(false);
-    expect(isLiveDraft(draft({ status: "superseded" }))).toBe(false);
-    expect(isLiveDraft(draft({ status: "sent" }))).toBe(false);
+describe("isVisibleDraft", () => {
+  it("treats ordinary terminal drafts as history", () => {
+    expect(isVisibleDraft(draft({ status: "dismissed" }))).toBe(false);
+    expect(isVisibleDraft(draft({ status: "superseded" }))).toBe(false);
+    expect(isVisibleDraft(draft({ status: "sent" }))).toBe(false);
   });
 
   it("treats anything actionable as live", () => {
-    expect(isLiveDraft(draft({ status: "pending_approval" }))).toBe(true);
-    expect(isLiveDraft(draft({ status: "send_uncertain" }))).toBe(true);
+    expect(isVisibleDraft(draft({ status: "pending_approval" }))).toBe(true);
+    expect(isVisibleDraft(draft({ status: "send_uncertain" }))).toBe(true);
+  });
+
+  it("keeps expired and cancelled follow-ups visible", () => {
+    expect(isVisibleDraft(followUp({ status: "expired" }))).toBe(true);
+    expect(isVisibleDraft(followUp({ status: "superseded" }))).toBe(true);
+    expect(isVisibleDraft(draft({ status: "expired" }))).toBe(false);
   });
 });

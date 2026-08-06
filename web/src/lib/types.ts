@@ -450,7 +450,14 @@ export interface AiLoginStart {
   verificationUrl: string;
 }
 
+export interface AiCapabilities {
+  draftsEnabled: boolean;
+  followUpsEnabled: boolean;
+  sendEnabled: boolean;
+}
+
 // --- DM threads + AI reply drafts --------------------------------------------
+export type ReplyDraftKind = "reply" | "engagement_follow_up";
 export type ReplyDraftStatus =
   | "queued"
   | "generating"
@@ -461,7 +468,8 @@ export type ReplyDraftStatus =
   | "sending"
   | "sent"
   | "send_failed"
-  | "send_uncertain";
+  | "send_uncertain"
+  | "expired";
 
 export type DmDirection = "inbound" | "outbound";
 export type DmMessageType = "text" | "image" | "video" | "audio" | "file" | "unknown";
@@ -478,6 +486,7 @@ export interface DmMessage {
 
 export interface ReplyDraft {
   id: string;
+  kind: ReplyDraftKind;
   status: ReplyDraftStatus;
   revision: number;
   // The model's original output. Never rewritten — this is the audit record.
@@ -493,6 +502,10 @@ export interface ReplyDraft {
   retryAt: string | null;
   // Which inbound this answers. If the thread has moved on, the draft is stale.
   inboundMessageId: string;
+  sourceConversationId: string | null;
+  eligibleAt: string;
+  expiresAt: string | null;
+  promptVersion: number | null;
   approvedBy: string | null;
   approvedAt: string | null;
   sentAt: string | null;

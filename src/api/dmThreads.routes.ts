@@ -21,6 +21,7 @@ const listQuerySchema = z.object({
 /** The draft a row/detail should show: the active one, else the latest failed one. */
 const DRAFT_SELECT = {
   id: true,
+  kind: true,
   status: true,
   revision: true,
   suggestedText: true,
@@ -33,6 +34,10 @@ const DRAFT_SELECT = {
   errorMessage: true,
   retryAt: true,
   inboundMessageId: true,
+  sourceConversationId: true,
+  eligibleAt: true,
+  expiresAt: true,
+  promptVersion: true,
   approvedBy: true,
   approvedAt: true,
   sentAt: true,

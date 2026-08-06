@@ -1,4 +1,9 @@
-import type { DmThreadDetail, ReplyDraft, ReplyDraftStatus } from "@/lib/types";
+import type {
+  DmThreadDetail,
+  ReplyDraft,
+  ReplyDraftKind,
+  ReplyDraftStatus,
+} from "@/lib/types";
 
 /**
  * The reply-draft card's rules, kept free of any data-fetching import so they can
@@ -17,8 +22,13 @@ const LIVE_STATUSES: ReplyDraftStatus[] = [
   "send_uncertain",
 ];
 
-export function isLiveDraft(draft: ReplyDraft | null): boolean {
-  return draft !== null && LIVE_STATUSES.includes(draft.status);
+export function isVisibleDraft(draft: ReplyDraft | null): boolean {
+  if (!draft) return false;
+  if (LIVE_STATUSES.includes(draft.status)) return true;
+  return (
+    draft.kind === "engagement_follow_up" &&
+    (draft.status === "expired" || draft.status === "superseded")
+  );
 }
 
 /**
@@ -43,7 +53,9 @@ export interface ApprovalGate {
     | "too_long"
     | "in_flight"
     | "send_disabled"
-    | "uncertain_needs_check";
+    | "uncertain_needs_check"
+    | "follow_up_not_ready"
+    | "follow_up_window_closed";
 }
 
 export const MAX_REPLY_LENGTH = 1000;
@@ -61,11 +73,20 @@ export function approvalGate(input: {
   text: string;
   sendEnabled: boolean;
   mutationPending: boolean;
+  now?: Date;
 }): ApprovalGate {
-  const { thread, draft, text, sendEnabled, mutationPending } = input;
+  const { thread, draft, text, sendEnabled, mutationPending, now = new Date() } = input;
 
   if (!sendEnabled) return { canApprove: false, reason: "send_disabled" };
   if (!draft) return { canApprove: false, reason: "not_pending" };
+  if (draft.kind === "engagement_follow_up") {
+    if (draft.expiresAt && now >= new Date(draft.expiresAt)) {
+      return { canApprove: false, reason: "follow_up_window_closed" };
+    }
+    if (now < new Date(draft.eligibleAt)) {
+      return { canApprove: false, reason: "follow_up_not_ready" };
+    }
+  }
   if (draft.status === "send_uncertain") {
     return { canApprove: false, reason: "uncertain_needs_check" };
   }
@@ -83,7 +104,21 @@ export function approvalGate(input: {
 }
 
 /** Row/badge label for a status. Plain English, no internal jargon. */
-export function draftStatusLabel(status: ReplyDraftStatus): string {
+export function draftStatusLabel(status: ReplyDraftStatus, kind: ReplyDraftKind = "reply"): string {
+  if (kind === "engagement_follow_up") {
+    switch (status) {
+      case "queued":
+        return "Follow-up scheduled";
+      case "generating":
+        return "Writing follow-up";
+      case "pending_approval":
+        return "Follow-up ready";
+      case "expired":
+        return "Follow-up expired";
+      case "superseded":
+        return "Follow-up cancelled";
+    }
+  }
   switch (status) {
     case "queued":
     case "generating":
@@ -104,6 +139,8 @@ export function draftStatusLabel(status: ReplyDraftStatus): string {
       return "Dismissed";
     case "superseded":
       return "Superseded";
+    case "expired":
+      return "Expired";
   }
 }
 

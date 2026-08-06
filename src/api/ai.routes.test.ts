@@ -6,17 +6,26 @@ import type { CodexRuntimeClient } from "../services/codexRuntimeClient.js";
 
 // Flags are read through a proxy so a test can flip one without touching the real
 // env, matching the convention in aiDrafts.routes.test.ts.
-const flags = { AI_ADVISOR_ENABLED: true };
+const flags = vi.hoisted(() => ({
+  AI_ADVISOR_ENABLED: true,
+  AI_DRAFTS_ENABLED: true,
+  AI_FOLLOW_UPS_ENABLED: false,
+  AI_SEND_ENABLED: false,
+}));
 vi.mock("../config/env.js", async (importOriginal) => {
   const actual = (await importOriginal()) as { env: Record<string, unknown> };
   return {
     env: new Proxy(actual.env, {
-      get: (t, p) => (p === "AI_ADVISOR_ENABLED" ? flags.AI_ADVISOR_ENABLED : t[p as string]),
+      get: (target, property) =>
+        property in flags
+          ? flags[property as keyof typeof flags]
+          : target[property as string],
     }),
   };
 });
 
 const { createAiRouter } = await import("./ai.routes.js");
+const { apiRouter } = await import("./router.js");
 
 const ADVISOR_ANSWER = {
   answer: "Reply rate is the thing to fix first.",
@@ -56,14 +65,73 @@ function makeApp(client: CodexRuntimeClient, configured = true) {
   return app;
 }
 
+function makeOwnerApiApp() {
+  const app = express();
+  app.use("/api", apiRouter);
+  return app;
+}
+
 let client: CodexRuntimeClient;
 
 beforeEach(() => {
   client = fakeClient();
   flags.AI_ADVISOR_ENABLED = true;
+  flags.AI_DRAFTS_ENABLED = true;
+  flags.AI_FOLLOW_UPS_ENABLED = false;
+  flags.AI_SEND_ENABLED = false;
 });
 
 describe("aiRouter", () => {
+  it("returns only the server-controlled AI capabilities", async () => {
+    await request(makeApp(client)).get("/api/ai/capabilities").expect(200, {
+      draftsEnabled: true,
+      followUpsEnabled: false,
+      sendEnabled: false,
+    });
+  });
+
+  it.each([
+    [false, false, false],
+    [false, false, true],
+    [false, true, false],
+    [false, true, true],
+    [true, false, false],
+    [true, false, true],
+    [true, true, false],
+    [true, true, true],
+  ])(
+    "reflects capability flags drafts=%s follow-ups=%s send=%s",
+    async (draftsEnabled, followUpsEnabled, sendEnabled) => {
+      flags.AI_DRAFTS_ENABLED = draftsEnabled;
+      flags.AI_FOLLOW_UPS_ENABLED = followUpsEnabled;
+      flags.AI_SEND_ENABLED = sendEnabled;
+
+      const response = await request(makeApp(client)).get("/api/ai/capabilities").expect(200);
+
+      expect(response.body).toEqual({ draftsEnabled, followUpsEnabled, sendEnabled });
+      expect(Object.keys(response.body).sort()).toEqual([
+        "draftsEnabled",
+        "followUpsEnabled",
+        "sendEnabled",
+      ]);
+      expect(client.getConnectionStatus).not.toHaveBeenCalled();
+    },
+  );
+
+  it("is protected by the real owner-authenticated API router", async () => {
+    await request(makeOwnerApiApp())
+      .get("/api/ai/capabilities")
+      .expect(401, { error: "missing_bearer_token" });
+  });
+
+  it("keeps capabilities available when the runtime itself is unavailable", async () => {
+    await request(makeApp(client, false)).get("/api/ai/capabilities").expect(200, {
+      draftsEnabled: true,
+      followUpsEnabled: false,
+      sendEnabled: false,
+    });
+  });
+
   it("returns the owner's connection status", async () => {
     const response = await request(makeApp(client)).get("/api/ai/connection").expect(200);
 

@@ -19,6 +19,7 @@ import type {
   ConversationCounts,
   ConversationState,
   DmThreadRow,
+  AiCapabilities,
   Paginated,
   ResourceMessage,
 } from "@/lib/types";
@@ -32,6 +33,7 @@ import { IncomingBubble, OutgoingBubble, StepBubble } from "@/components/ChatBub
 import { DmThreadList } from "@/components/conversations/DmThreadList";
 import { DmThreadDrawer } from "@/components/conversations/DmThreadDrawer";
 import { cn, displayUser } from "@/lib/utils";
+import { prettyKind } from "@/lib/eventLog";
 
 type StateFilter = ConversationState | "all";
 
@@ -84,6 +86,12 @@ export function Conversations() {
   const dmThreadsQ = useQuery<Paginated<DmThreadRow>>({
     queryKey: ["dm-threads", dmScope],
     queryFn: () => api<Paginated<DmThreadRow>>(`/dm-threads?scope=${dmScope}`),
+    enabled: lens !== "journeys",
+  });
+
+  const capabilitiesQ = useQuery<AiCapabilities>({
+    queryKey: ["ai-capabilities"],
+    queryFn: () => api<AiCapabilities>("/ai/capabilities"),
     enabled: lens !== "journeys",
   });
 
@@ -273,7 +281,7 @@ export function Conversations() {
           403 ai_send_disabled regardless, so this only governs the button state. */}
       <DmThreadDrawer
         threadId={selectedThreadId}
-        sendEnabled
+        sendEnabled={capabilitiesQ.data?.sendEnabled === true}
         onClose={() => setSelectedThreadId(null)}
       />
     </div>
@@ -685,33 +693,12 @@ function GateRetryCard({ gate }: { gate: GateRetry }) {
   );
 }
 
-const KIND_LABELS: Record<string, string> = {
-  webhook_received: "Webhook received",
-  comment_received: "Comment received",
-  comment_ignored: "Comment ignored (no keyword)",
-  keyword_matched: "Keyword matched",
-  public_reply_sent: "Public reply posted",
-  public_reply_failed: "Public reply failed",
-  dm_sent: "Gate DM sent",
-  dm_failed: "Gate DM failed",
-  message_received: "User sent a DM",
-  message_unhandled: "DM ignored (not DONE)",
-  done_received: "User replied DONE",
-  sequence_completed: "Sequence delivered",
-  sequence_failed: "Sequence failed",
-  error: "Error",
-};
-
 const FAILURE_KINDS = new Set([
   "dm_failed",
   "public_reply_failed",
   "sequence_failed",
   "error",
 ]);
-
-export function prettyKind(kind: string): string {
-  return KIND_LABELS[kind] ?? kind.replace(/_/g, " ");
-}
 
 /**
  * A single event in a timeline. Failure events render in destructive styling and

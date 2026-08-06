@@ -558,6 +558,28 @@ describe("POST dismiss / regenerate", () => {
     });
   });
 
+  it("regenerate preserves the follow-up schedule and source", async () => {
+    replyDraft.findUnique.mockResolvedValue({
+      ...PENDING,
+      kind: "engagement_follow_up",
+      sourceConversationId: "conversation-1",
+      eligibleAt: new Date("2026-08-05T22:00:00.000Z"),
+      expiresAt: new Date("2026-08-06T09:15:00.000Z"),
+    });
+    queueReplyDraft.mockResolvedValue({ id: "draft-3", status: "queued" });
+
+    await request(makeApp()).post(`${base}/regenerate`).expect(202);
+
+    expect(queueReplyDraft).toHaveBeenCalledWith({
+      threadId: "thread-1",
+      inboundMessageId: "message-2",
+      kind: "engagement_follow_up",
+      sourceConversationId: "conversation-1",
+      eligibleAt: new Date("2026-08-05T22:00:00.000Z"),
+      expiresAt: new Date("2026-08-06T09:15:00.000Z"),
+    });
+  });
+
   it("generate returns 202 for a thread with an inbound message", async () => {
     dmThread.findUnique.mockResolvedValue({
       id: "thread-1",

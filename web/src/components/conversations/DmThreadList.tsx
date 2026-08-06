@@ -76,13 +76,15 @@ export function DmThreadList({ rows, isLoading, onSelect }: DmThreadListProps) {
                   )}
                 >
                   <meta.Icon className={cn("size-3", state === "drafting" && "animate-spin")} />
-                  {meta.label}
+                  {row.draft?.kind === "engagement_follow_up"
+                    ? draftStatusLabel(row.draft.status, row.draft.kind)
+                    : meta.label}
                 </span>
               </div>
               <p className="mt-0.5 truncate text-sm text-muted-foreground">{preview}</p>
               {row.draft && state !== "needs_review" && (
                 <p className="mt-0.5 truncate text-xs text-muted-foreground/80">
-                  {draftStatusLabel(row.draft.status)}
+                  {draftStatusLabel(row.draft.status, row.draft.kind)}
                   {row.draft.workingText ? ` — ${row.draft.workingText}` : ""}
                 </p>
               )}

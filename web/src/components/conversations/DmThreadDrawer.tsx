@@ -1,13 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Sparkles } from "lucide-react";
-import { api } from "@/lib/api";
+import { ApiError, api } from "@/lib/api";
 import type { DmThreadDetail } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Drawer } from "@/components/ui/drawer";
 import { IncomingBubble, OutgoingBubble } from "@/components/ChatBubbles";
 import { displayUser } from "@/lib/utils";
 import { ReplyDraftCard } from "./ReplyDraftCard";
-import { isLiveDraft } from "./replyDraftView";
+import { isVisibleDraft } from "./replyDraftView";
 
 /**
  * The real message thread plus its approval surface.
@@ -44,6 +44,10 @@ export function DmThreadDrawer({
     ]);
   }
 
+  function handleMutationError(error: Error) {
+    if (isErrorCode(error, "follow_up_window_closed")) void refreshAll();
+  }
+
   const draftPath = (action: string) =>
     `/ai/dm-threads/${threadId}/drafts/${draft?.id}${action}`;
 
@@ -51,27 +55,32 @@ export function DmThreadDrawer({
     mutationFn: (workingText: string) =>
       api<void>(draftPath(""), { method: "PATCH", body: JSON.stringify({ workingText }) }),
     onSuccess: refreshAll,
+    onError: handleMutationError,
   });
 
   const regenerate = useMutation({
     mutationFn: () => api<void>(draftPath("/regenerate"), { method: "POST" }),
     onSuccess: refreshAll,
+    onError: handleMutationError,
   });
 
   const dismiss = useMutation({
     mutationFn: () => api<void>(draftPath("/dismiss"), { method: "POST" }),
     onSuccess: refreshAll,
+    onError: handleMutationError,
   });
 
   const generate = useMutation({
     mutationFn: () => api<void>(`/ai/dm-threads/${threadId}/drafts`, { method: "POST" }),
     onSuccess: refreshAll,
+    onError: handleMutationError,
   });
 
   const approve = useMutation({
     mutationFn: (workingText: string) =>
       api<void>(draftPath("/approve"), { method: "POST", body: JSON.stringify({ workingText }) }),
     onSuccess: refreshAll,
+    onError: handleMutationError,
   });
 
   const retry = useMutation({
@@ -81,6 +90,7 @@ export function DmThreadDrawer({
         body: JSON.stringify({ confirmedNotDelivered: true }),
       }),
     onSuccess: refreshAll,
+    onError: handleMutationError,
   });
 
   const mutationPending =
@@ -90,6 +100,17 @@ export function DmThreadDrawer({
     approve.isPending ||
     retry.isPending ||
     generate.isPending;
+  const windowClosedError = [
+    edit.error,
+    regenerate.error,
+    dismiss.error,
+    approve.error,
+    retry.error,
+    generate.error,
+  ].some((error) => isErrorCode(error, "follow_up_window_closed"));
+  const terminalFollowUp =
+    draft?.kind === "engagement_follow_up" &&
+    (draft.status === "expired" || draft.status === "superseded");
 
   return (
     <Drawer open={threadId !== null} onClose={onClose}>
@@ -114,19 +135,22 @@ export function DmThreadDrawer({
             )}
           </div>
 
-          {isLiveDraft(draft) && draft ? (
+          {isVisibleDraft(draft) && draft && (
             <ReplyDraftCard
+              key={draft.id}
               thread={thread}
               draft={draft}
               sendEnabled={sendEnabled}
               mutationPending={mutationPending}
+              windowClosedError={windowClosedError}
               onEdit={(t) => edit.mutate(t)}
               onRegenerate={() => regenerate.mutate()}
               onDismiss={() => dismiss.mutate()}
               onApprove={(t) => approve.mutate(t)}
               onRetry={() => retry.mutate()}
             />
-          ) : thread.needsReply ? (
+          )}
+          {thread.needsReply && (!isVisibleDraft(draft) || terminalFollowUp) ? (
             <Button
               variant="outline"
               disabled={mutationPending}
@@ -139,5 +163,15 @@ export function DmThreadDrawer({
         </div>
       )}
     </Drawer>
+  );
+}
+
+function isErrorCode(error: unknown, code: string): error is ApiError {
+  if (!(error instanceof ApiError)) return false;
+  return (
+    typeof error.body === "object" &&
+    error.body !== null &&
+    "error" in error.body &&
+    (error.body as { error: unknown }).error === code
   );
 }

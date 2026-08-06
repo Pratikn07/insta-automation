@@ -62,8 +62,19 @@ function sendRuntimeError(res: Response, error: unknown): void {
 export function createAiRouter(deps: AiRouterDependencies): Router {
   const router = Router();
 
-  // One guard for every route: an unconfigured runtime is answered identically
-  // and without touching the client, so a partial deploy cannot half-work.
+  // Capabilities are deployment policy, not runtime health. Keep this response
+  // available when the runtime is down so the browser does not confuse an
+  // unavailable ChatGPT connection with permission to send.
+  router.get("/capabilities", (_req, res) => {
+    res.json({
+      draftsEnabled: env.AI_DRAFTS_ENABLED,
+      followUpsEnabled: env.AI_FOLLOW_UPS_ENABLED,
+      sendEnabled: env.AI_SEND_ENABLED,
+    });
+  });
+
+  // One guard for every runtime-backed route: an unconfigured runtime is
+  // answered identically and without touching the client.
   router.use((_req: Request, res: Response, next) => {
     if (!deps.isConfigured()) {
       res.status(503).json({ error: "ai_not_configured" });
@@ -269,6 +280,12 @@ export function createAiRouter(deps: AiRouterDependencies): Router {
       const next = await queueReplyDraft({
         threadId: draft.threadId,
         inboundMessageId: thread.latestInboundMessageId,
+        ...(draft.kind === "engagement_follow_up" && {
+          kind: draft.kind,
+          sourceConversationId: draft.sourceConversationId,
+          eligibleAt: draft.eligibleAt,
+          expiresAt: draft.expiresAt,
+        }),
       });
       await writeDraftAudit("ai_draft_regenerated", {
         threadId: draft.threadId,

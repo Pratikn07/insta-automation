@@ -3,7 +3,8 @@ import { Info } from "lucide-react";
 import { api } from "@/lib/api";
 import type { LineageEvent, UserLineageResponse } from "@/lib/types";
 import { Skeleton } from "@/components/ui/skeleton";
-import { EventRow, prettyKind } from "@/pages/Conversations";
+import { EventRow } from "@/pages/Conversations";
+import { prettyKind } from "@/lib/eventLog";
 import { IncomingBubble, OutgoingBubble } from "./ChatBubbles";
 import { FollowBadge } from "./FollowBadge";
 
