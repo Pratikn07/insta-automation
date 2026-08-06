@@ -2,13 +2,13 @@ CREATE TYPE "reply_draft_kind" AS ENUM ('reply', 'engagement_follow_up');
 
 ALTER TYPE "reply_draft_status" ADD VALUE 'expired';
 
-ALTER TABLE "conversations" ADD COLUMN "engagement_follow_up_scheduled_at" TIMESTAMP(3);
+ALTER TABLE "conversations" ADD COLUMN "engagement_follow_up_scheduled_at" TIMESTAMPTZ(3);
 
 ALTER TABLE "reply_draft"
   ADD COLUMN "kind" "reply_draft_kind" NOT NULL DEFAULT 'reply',
   ADD COLUMN "source_conversation_id" UUID,
-  ADD COLUMN "eligible_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  ADD COLUMN "expires_at" TIMESTAMP(3),
+  ADD COLUMN "eligible_at" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  ADD COLUMN "expires_at" TIMESTAMPTZ(3),
   ADD COLUMN "prompt_version" INTEGER;
 
 ALTER TABLE "reply_draft" ADD CONSTRAINT "reply_draft_follow_up_fields_check"

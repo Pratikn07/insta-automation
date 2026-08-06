@@ -130,7 +130,7 @@ model Conversation {
   followThroughAt               DateTime?         @map("follow_through_at")
   // Follow status AT that later reading. Null until measured.
   followThroughIsFollower       Boolean?          @map("follow_through_is_follower")
-  engagementFollowUpScheduledAt DateTime?         @map("engagement_follow_up_scheduled_at")
+  engagementFollowUpScheduledAt DateTime?         @map("engagement_follow_up_scheduled_at") @db.Timestamptz(3)
 
   keyword        Keyword      @relation(fields: [keywordId], references: [id])
   followUpDrafts ReplyDraft[] @relation("FollowUpSource")
@@ -544,8 +544,8 @@ model ReplyDraft {
   status               ReplyDraftStatus @default(queued)
   kind                 ReplyDraftKind   @default(reply)
   sourceConversationId String?          @map("source_conversation_id") @db.Uuid
-  eligibleAt           DateTime         @default(now()) @map("eligible_at")
-  expiresAt            DateTime?        @map("expires_at")
+  eligibleAt           DateTime         @default(now()) @map("eligible_at") @db.Timestamptz(3)
+  expiresAt            DateTime?        @map("expires_at") @db.Timestamptz(3)
   promptVersion        Int?             @map("prompt_version")
 
   suggestedText String? @map("suggested_text")
