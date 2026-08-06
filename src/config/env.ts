@@ -105,12 +105,63 @@ export const envSchema = z.object({
     .max(4000)
     .default("Warm, practical, concise, and supportive. Never diagnose or shame a parent."),
   AI_DRAFT_INTERVAL_MS: z.coerce.number().int().min(5_000).default(15_000),
+
+  // --- DM Recovery Reminders ---
+  DM_RECOVERY_ENABLED: booleanFlag(false),
+  DM_RECOVERY_DELAY_HOURS: z.coerce.number().int().min(1).max(168).default(10),
+  DM_RECOVERY_COOLDOWN_HOURS: z.coerce.number().int().min(1).max(168).default(24),
+  DM_RECOVERY_WORKER_INTERVAL_MS: z.coerce.number().int().min(10_000).default(60_000),
+  DM_RECOVERY_BATCH_SIZE: z.coerce.number().int().min(1).max(50).default(5),
+  DM_RECOVERY_HOURLY_CAP: z.coerce.number().int().min(1).max(200).default(30),
+  DM_RECOVERY_LEASE_MS: z.coerce.number().int().min(60_000).default(900_000),
+  DM_RECOVERY_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
+  DM_RECOVERY_RETRY_BASE_MS: z.coerce.number().int().min(60_000).default(300_000),
+  DM_RECOVERY_HOLDOUT_PERCENT: z.coerce.number().int().min(0).max(50).default(10),
+  DM_RECOVERY_EXPERIMENT_VERSION: z.string().min(1).default("read-recovery-v1"),
+  DM_RECOVERY_EXPERIMENT_START_AT: z.string().datetime().optional(),
+  DM_RECOVERY_EXPERIMENT_END_AT: z.string().datetime().optional(),
+  DM_RECOVERY_POST_EXPERIMENT_ENABLED: booleanFlag(false),
+  DM_RECOVERY_SETTINGS_BLOCKED_SIGNATURES: z.string().default(""),
+  DM_RECOVERY_HEALTH_SAMPLE_SIZE: z.coerce.number().int().min(10).max(500).default(50),
+  DM_RECOVERY_FAILURE_RATE_PERCENT: z.coerce.number().int().min(1).max(100).default(50),
+  DM_RECOVERY_BACKLOG_ALERT_THRESHOLD: z.coerce.number().int().min(1).default(500),
+  DM_RECOVERY_DB_FAILURE_THRESHOLD: z.coerce.number().int().min(2).max(20).default(3),
+  DM_RECOVERY_MIN_ACCEPTED_HEALTH_SAMPLE: z.coerce.number().int().min(5).max(500).default(20),
 }).superRefine((value, ctx) => {
   if (value.AI_FOLLOW_UPS_ENABLED && !value.AI_DRAFTS_ENABLED) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["AI_FOLLOW_UPS_ENABLED"],
       message: "AI_FOLLOW_UPS_ENABLED requires AI_DRAFTS_ENABLED",
+    });
+  }
+
+  const hasStart = Boolean(value.DM_RECOVERY_EXPERIMENT_START_AT);
+  const hasEnd = Boolean(value.DM_RECOVERY_EXPERIMENT_END_AT);
+
+  if (hasStart !== hasEnd) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [hasStart ? "DM_RECOVERY_EXPERIMENT_END_AT" : "DM_RECOVERY_EXPERIMENT_START_AT"],
+      message: "DM_RECOVERY_EXPERIMENT_START_AT and DM_RECOVERY_EXPERIMENT_END_AT must both be set or both unset",
+    });
+  } else if (hasStart && hasEnd) {
+    const startTime = new Date(value.DM_RECOVERY_EXPERIMENT_START_AT!).getTime();
+    const endTime = new Date(value.DM_RECOVERY_EXPERIMENT_END_AT!).getTime();
+    if (endTime <= startTime) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["DM_RECOVERY_EXPERIMENT_END_AT"],
+        message: "DM_RECOVERY_EXPERIMENT_END_AT must be strictly after DM_RECOVERY_EXPERIMENT_START_AT",
+      });
+    }
+  }
+
+  if (value.DM_RECOVERY_ENABLED && (!hasStart || !hasEnd)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["DM_RECOVERY_ENABLED"],
+      message: "DM_RECOVERY_ENABLED requires experiment start and end dates to be configured",
     });
   }
 });
