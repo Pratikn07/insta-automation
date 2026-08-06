@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const tx = {
+  dmThread: { findUnique: vi.fn() },
   conversation: { updateMany: vi.fn() },
   replyDraft: {
     aggregate: vi.fn(),
@@ -32,6 +33,7 @@ beforeEach(() => {
     for (const fn of Object.values(group)) fn.mockReset();
   }
   tx.conversation.updateMany.mockResolvedValue({ count: 1 });
+  tx.dmThread.findUnique.mockResolvedValue({ latestInboundMessageId: "message-1" });
   tx.replyDraft.aggregate.mockResolvedValue({ _max: { revision: null } });
   tx.replyDraft.updateMany.mockResolvedValue({ count: 1 });
   tx.replyDraft.create.mockResolvedValue({ id: "follow-up-1", status: "queued" });
@@ -47,6 +49,9 @@ describe("scheduleEngagementFollowUp", () => {
     expect(tx.conversation.updateMany).toHaveBeenCalledWith({
       where: { id: "conversation-1", engagementFollowUpScheduledAt: null },
       data: { engagementFollowUpScheduledAt: expect.any(Date) },
+    });
+    expect($transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: "Serializable",
     });
     expect(tx.replyDraft.updateMany).toHaveBeenCalledWith({
       where: {
@@ -72,7 +77,7 @@ describe("scheduleEngagementFollowUp", () => {
     });
   });
 
-  it("does not open a transaction when the 12-hour delay falls outside the inbound window", async () => {
+  it("does not claim or create when the 12-hour delay falls outside the inbound window", async () => {
     await expect(
       scheduleEngagementFollowUp({
         ...INPUT,
@@ -80,7 +85,8 @@ describe("scheduleEngagementFollowUp", () => {
       }),
     ).resolves.toEqual({ scheduled: false, draftId: null });
 
-    expect($transaction).not.toHaveBeenCalled();
+    expect(tx.dmThread.findUnique).toHaveBeenCalledOnce();
+    expect(tx.conversation.updateMany).not.toHaveBeenCalled();
     expect(tx.replyDraft.create).not.toHaveBeenCalled();
   });
 
@@ -98,6 +104,46 @@ describe("scheduleEngagementFollowUp", () => {
       draftId: null,
     });
 
+    expect(tx.replyDraft.create).toHaveBeenCalledOnce();
+  });
+
+  it("does not claim or derive timing from an inbound that is no longer latest", async () => {
+    // The older handler finished a slow guide send after Task 3 had already
+    // accepted a newer genuine inbound for the same thread.
+    tx.dmThread.findUnique.mockResolvedValue({ latestInboundMessageId: "message-new" });
+
+    await expect(scheduleEngagementFollowUp(INPUT)).resolves.toEqual({
+      scheduled: false,
+      draftId: null,
+    });
+
+    expect(tx.dmThread.findUnique).toHaveBeenCalledWith({
+      where: { id: "thread-1" },
+      select: { latestInboundMessageId: true },
+    });
+    expect(tx.conversation.updateMany).not.toHaveBeenCalled();
+    expect(tx.replyDraft.updateMany).not.toHaveBeenCalled();
+    expect(tx.replyDraft.aggregate).not.toHaveBeenCalled();
+    expect(tx.replyDraft.create).not.toHaveBeenCalled();
+  });
+
+  it("retries the complete latest-inbound check after a serializable race", async () => {
+    const serializationConflict = Object.assign(new Error("write conflict"), { code: "P2034" });
+    $transaction.mockImplementationOnce(async (fn: (client: typeof tx) => unknown) => {
+      await fn(tx); // writes are rolled back when the serializable transaction aborts
+      tx.dmThread.findUnique.mockResolvedValue({ latestInboundMessageId: "message-new" });
+      throw serializationConflict;
+    });
+
+    await expect(scheduleEngagementFollowUp(INPUT)).resolves.toEqual({
+      scheduled: false,
+      draftId: null,
+    });
+
+    expect($transaction).toHaveBeenCalledTimes(2);
+    expect(tx.dmThread.findUnique).toHaveBeenCalledTimes(2);
+    // Only the rolled-back first attempt reached creation; the retry saw the
+    // newer inbound before claim/timing writes and returned without another one.
     expect(tx.replyDraft.create).toHaveBeenCalledOnce();
   });
 
