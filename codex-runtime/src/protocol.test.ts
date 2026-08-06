@@ -97,6 +97,30 @@ describe("JsonRpcPeer", () => {
     await expect(pending).rejects.toThrow("app-server stream closed");
   });
 
+  it.each([
+    ["input", "end"],
+    ["input", "close"],
+    ["input", "error"],
+    ["output", "finish"],
+    ["output", "close"],
+    ["output", "error"],
+  ] as const)("reports one peer close for %s transport %s", (side, event) => {
+    const fromServer = new PassThrough();
+    const toServer = new PassThrough();
+    const onClose = vi.fn();
+    new JsonRpcPeer(fromServer, toServer, onClose);
+    const stream = side === "input" ? fromServer : toServer;
+
+    if (event === "error") stream.emit(event, new Error("transport failed"));
+    else stream.emit(event);
+    expect(onClose).toHaveBeenCalledOnce();
+
+    fromServer.emit("close");
+    toServer.emit("close");
+
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
   it("rejects a timed-out call and ignores a late response", async () => {
     const fromServer = new PassThrough();
     const toServer = new PassThrough();

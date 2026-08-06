@@ -27,7 +27,11 @@ export class JsonRpcPeer {
   #closed = false;
   #writeQueue: Promise<void> = Promise.resolve();
 
-  constructor(input: NodeJS.ReadableStream, output: NodeJS.WritableStream) {
+  constructor(
+    input: NodeJS.ReadableStream,
+    output: NodeJS.WritableStream,
+    private readonly onClose?: (error: Error) => void,
+  ) {
     this.#input = input as Readable;
     this.#output = output as Writable;
     this.#input.setEncoding("utf8");
@@ -35,6 +39,8 @@ export class JsonRpcPeer {
     this.#input.once("end", this.#handleStreamClose);
     this.#input.once("close", this.#handleStreamClose);
     this.#input.once("error", this.#handleStreamError);
+    this.#output.once("finish", this.#handleStreamClose);
+    this.#output.once("close", this.#handleStreamClose);
     this.#output.once("error", this.#handleStreamError);
   }
 
@@ -88,6 +94,7 @@ export class JsonRpcPeer {
     }
     this.#pending.clear();
     this.#input.off("data", this.#handleData);
+    this.onClose?.(error);
   }
 
   readonly #handleData = (chunk: string | Buffer): void => {

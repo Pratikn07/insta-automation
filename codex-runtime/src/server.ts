@@ -21,10 +21,16 @@ type StartAppServerClient = (
   dependencies?: AppServerDependencies,
 ) => Promise<AppServerClient>;
 
+export interface RuntimeSignalSource {
+  on(signal: "SIGTERM" | "SIGINT", listener: (signal: NodeJS.Signals) => void): unknown;
+  off(signal: "SIGTERM" | "SIGINT", listener: (signal: NodeJS.Signals) => void): unknown;
+}
+
 export interface RuntimeDependencies {
   config?: RuntimeConfig;
   exit?: (code: number) => void;
   logger?: RuntimeLogger;
+  signalSource?: RuntimeSignalSource;
   startAppServerClient?: StartAppServerClient;
 }
 
@@ -38,6 +44,7 @@ export async function startRuntime(deps: RuntimeDependencies = {}): Promise<Runn
   const config = deps.config ?? parseRuntimeConfig(process.env);
   const logger = deps.logger ?? pino({ level: process.env.LOG_LEVEL ?? "info" });
   const exit = deps.exit ?? ((code: number) => process.exit(code));
+  const signalSource = deps.signalSource ?? process;
   const startClient = deps.startAppServerClient ?? startAppServerClient;
   let ready = false;
   let server: Server | undefined;
@@ -45,12 +52,12 @@ export async function startRuntime(deps: RuntimeDependencies = {}): Promise<Runn
   let shuttingDown = false;
   let exitCalled = false;
   let fallbackExitTimer: NodeJS.Timeout | undefined;
-  let shutdownHandler: ((signal: NodeJS.Signals) => Promise<void>) | undefined;
+  let signalHandler: ((signal: NodeJS.Signals) => void) | undefined;
 
   const removeSignalHandlers = (): void => {
-    if (!shutdownHandler) return;
-    process.off("SIGTERM", shutdownHandler);
-    process.off("SIGINT", shutdownHandler);
+    if (!signalHandler) return;
+    signalSource.off("SIGTERM", signalHandler);
+    signalSource.off("SIGINT", signalHandler);
   };
 
   const exitOnce = (code: number): void => {
@@ -118,9 +125,24 @@ export async function startRuntime(deps: RuntimeDependencies = {}): Promise<Runn
     exitOnce(0);
   };
 
-  shutdownHandler = shutdown;
-  process.on("SIGTERM", shutdown);
-  process.on("SIGINT", shutdown);
+  const handleShutdownFailure = (): void => {
+    ready = false;
+    logger.error("codex runtime shutdown failed; terminating");
+    if (server?.listening) {
+      try {
+        server.close(() => undefined);
+      } catch {
+        // Process termination remains the final containment boundary.
+      }
+    }
+    exitOnce(1);
+  };
+
+  signalHandler = (signal) => {
+    void shutdown(signal).catch(handleShutdownFailure);
+  };
+  signalSource.on("SIGTERM", signalHandler);
+  signalSource.on("SIGINT", signalHandler);
 
   return { app, server, shutdown };
 }

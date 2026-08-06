@@ -158,7 +158,10 @@ describe("startAppServerClient", () => {
       onUnexpectedExit,
     });
 
-    await client.stop();
+    const stopping = client.stop();
+    child.stdout.emit("close");
+    child.stdin.emit("close");
+    await stopping;
     child.emit("exit", 0, null);
 
     expect(onUnexpectedExit).not.toHaveBeenCalled();
