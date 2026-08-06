@@ -72,7 +72,7 @@ insightsRouter.get("/feed-follow-attribution", async (req, res) => {
   } catch {
     return res.status(400).json({
       error: "invalid_date_range",
-      detail: "Use inclusive UTC dates (YYYY-MM-DD), from <= to, with at most 90 days.",
+      detail: "Use inclusive Pacific dates (YYYY-MM-DD), from <= to, with at most 90 days.",
     });
   }
   res.json(await getFeedFollowAttribution(range));

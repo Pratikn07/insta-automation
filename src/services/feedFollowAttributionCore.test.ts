@@ -247,7 +247,7 @@ describe("buildFeedFollowAttribution", () => {
     });
   });
 
-  it("never compares the partial UTC day on which tracking starts", () => {
+  it("never compares the partial Pacific day on which tracking starts", () => {
     const response = buildFeedFollowAttribution({
       from: "2026-08-02",
       to: "2026-08-02",
@@ -271,16 +271,16 @@ describe("buildFeedFollowAttribution", () => {
     });
   });
 
-  it("treats tracking day as partial even when state creation lands exactly at midnight", () => {
+  it("marks the Pacific tracking day partial even at exact Pacific midnight", () => {
     const response = buildFeedFollowAttribution({
       from: "2026-08-02",
       to: "2026-08-02",
-      trackingStartedAt: new Date("2026-08-02T00:00:00Z"),
+      trackingStartedAt: new Date("2026-08-02T07:00:00Z"),
       posts: [
         post({
-          firstSeenAt: new Date("2026-08-02T00:05:00Z"),
+          firstSeenAt: new Date("2026-08-02T07:05:00Z"),
           baselineFollows: 5,
-          baselineCapturedAt: new Date("2026-08-02T00:05:00Z"),
+          baselineCapturedAt: new Date("2026-08-02T07:05:00Z"),
         }),
       ],
       snapshots: [snapshot("2026-08-02", 5)],
@@ -293,11 +293,31 @@ describe("buildFeedFollowAttribution", () => {
       comparisonReason: "feed_tracking_partial_day",
     });
   });
+
+  it("uses Pacific publication and first-seen days for eligibility", () => {
+    const response = buildFeedFollowAttribution({
+      from: "2026-08-04",
+      to: "2026-08-04",
+      trackingStartedAt: new Date("2026-08-01T07:00:00Z"),
+      posts: [
+        post({
+          postedAt: new Date("2026-08-05T00:30:00Z"),
+          firstSeenAt: new Date("2026-08-05T01:00:00Z"),
+          baselineFollows: 0,
+          baselineCapturedAt: new Date("2026-08-05T00:30:00Z"),
+        }),
+      ],
+      snapshots: [snapshot("2026-08-04", 2)],
+      followerPoints: [followerPoint("2026-08-04", 3)],
+    });
+
+    expect(response.days[0]).toMatchObject({ day: "2026-08-04", eligiblePosts: 1 });
+  });
 });
 
 describe("parseFeedFollowAttributionRange", () => {
-  it("defaults to the latest 30 inclusive UTC days", () => {
-    expect(parseFeedFollowAttributionRange({}, new Date("2026-08-04T22:00:00Z"))).toEqual({
+  it("defaults to the latest 30 inclusive Pacific days", () => {
+    expect(parseFeedFollowAttributionRange({}, new Date("2026-08-05T00:05:00Z"))).toEqual({
       from: "2026-07-06",
       to: "2026-08-04",
     });
