@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const extractCandidates = vi.fn();
 const findKeywordForComment = vi.fn();
-const openConversation = vi.fn();
 const markGated = vi.fn();
 const replyToComment = vi.fn();
 const sendTrackedPrivateReply = vi.fn();
@@ -11,6 +10,8 @@ const logEvent = vi.fn();
 const rememberUsername = vi.fn();
 const enqueueGate = vi.fn();
 const claimComment = vi.fn();
+const openConversationIn = vi.fn();
+const resolveJourneyIntent = vi.fn();
 const childLogger = {
   debug: vi.fn(),
   info: vi.fn(),
@@ -26,7 +27,10 @@ vi.mock("../services/keywordService.js", () => ({
   extractCandidates,
   findKeywordForComment,
 }));
-vi.mock("../services/conversationService.js", () => ({ openConversation, markGated }));
+vi.mock("../services/conversationService.js", () => ({ openConversationIn, markGated }));
+// The resolver is contract-tested against real Postgres; here the handler's own
+// contract is what it does with each disposition.
+vi.mock("../services/journeyIntentService.js", () => ({ resolveJourneyIntent }));
 vi.mock("../meta/replyToComment.js", () => ({ replyToComment }));
 vi.mock("../services/dmDeliveryService.js", () => ({ sendTrackedPrivateReply }));
 vi.mock("../services/eventLogger.js", async (importOriginal) => {
@@ -36,7 +40,9 @@ vi.mock("../services/eventLogger.js", async (importOriginal) => {
 vi.mock("../services/igUserService.js", () => ({ rememberUsername }));
 vi.mock("../services/gateQueueService.js", () => ({ enqueueGate }));
 vi.mock("../services/commentClaimService.js", () => ({ claimComment }));
-vi.mock("../lib/logger.js", () => ({ logger: { child: () => childLogger } }));
+vi.mock("../lib/logger.js", () => ({
+  logger: { child: () => childLogger, info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
 vi.mock("../config/env.js", () => ({
   env: {
     IG_USER_ID: "ig-account-owner",
@@ -91,7 +97,8 @@ beforeEach(() => {
   for (const fn of [
     extractCandidates,
     findKeywordForComment,
-    openConversation,
+    openConversationIn,
+    resolveJourneyIntent,
     markGated,
     replyToComment,
     sendTrackedPrivateReply,
@@ -124,7 +131,14 @@ beforeEach(() => {
       gateMessage: "PRIVATE-DM-SENTINEL",
     },
   });
-  openConversation.mockResolvedValue({ id: "conversation-1" });
+  openConversationIn.mockResolvedValue({ id: "conversation-1" });
+  // Default: a first-time request, which is the only disposition that may send.
+  resolveJourneyIntent.mockResolvedValue({
+    disposition: "new_journey",
+    intentId: "intent-1",
+    conversationId: "conversation-1",
+    maySendGate: true,
+  });
   replyToComment.mockResolvedValue(undefined);
   logEvent.mockResolvedValue(undefined);
   rememberUsername.mockResolvedValue(undefined);
@@ -324,7 +338,7 @@ describe("handleComment gate failure routing", () => {
   it("creates nothing for a comment authored by the business account", async () => {
     await handleComment({ ...COMMENT, from: { id: "ig-account-owner", username: "tinysoho" } });
 
-    expect(openConversation).not.toHaveBeenCalled();
+    expect(resolveJourneyIntent).not.toHaveBeenCalled();
     expect(sendTrackedPrivateReply).not.toHaveBeenCalled();
     expect(enqueueGate).not.toHaveBeenCalled();
     expect(scheduleAcceptedGateRecovery).not.toHaveBeenCalled();
@@ -351,7 +365,7 @@ describe("duplicate comment webhook delivery", () => {
 
     expect(replyToComment).toHaveBeenCalledTimes(1);
     expect(sendTrackedPrivateReply).toHaveBeenCalledTimes(1);
-    expect(openConversation).toHaveBeenCalledTimes(1);
+    expect(resolveJourneyIntent).toHaveBeenCalledTimes(1);
     expect(enqueueGate).not.toHaveBeenCalled();
   });
 
@@ -362,7 +376,7 @@ describe("duplicate comment webhook delivery", () => {
     await handleComment(COMMENT);
 
     expect(replyToComment).toHaveBeenCalledTimes(1);
-    expect(openConversation).toHaveBeenCalledTimes(1);
+    expect(resolveJourneyIntent).toHaveBeenCalledTimes(1);
     expect(enqueueGate).toHaveBeenCalledTimes(1);
   });
 
@@ -377,7 +391,7 @@ describe("duplicate comment webhook delivery", () => {
     const claimOrder = claimComment.mock.invocationCallOrder[0]!;
     expect(claimOrder).toBeLessThan(replyToComment.mock.invocationCallOrder[0]!);
     expect(claimOrder).toBeLessThan(sendTrackedPrivateReply.mock.invocationCallOrder[0]!);
-    expect(claimOrder).toBeLessThan(openConversation.mock.invocationCallOrder[0]!);
+    expect(claimOrder).toBeLessThan(resolveJourneyIntent.mock.invocationCallOrder[0]!);
   });
 
   it("ignores a comment that matches no keyword without consuming a claim", async () => {
@@ -386,5 +400,93 @@ describe("duplicate comment webhook delivery", () => {
     await handleComment(COMMENT);
 
     expect(claimComment).not.toHaveBeenCalled();
+  });
+});
+
+// The behaviour Feature 3 exists for. Two comments for the same guide are two
+// different Meta comment ids, so the comment claim cannot merge them — it only
+// stops the SAME comment being delivered twice. Before this, asking twice meant
+// two journeys and two gate DMs; that happened 342 times in production.
+describe("duplicate journey suppression", () => {
+  const COMMENT = {
+    id: "comment-second-ask",
+    text: "sleep",
+    from: { id: "ig-user-1", username: "parent" },
+    media: { id: "media-1", media_product_type: "REELS" },
+  };
+
+  function reusedJourney() {
+    resolveJourneyIntent.mockResolvedValue({
+      disposition: "reused_active",
+      intentId: "intent-1",
+      conversationId: "conversation-1",
+      maySendGate: false,
+    });
+  }
+
+  it("sends no second gate DM when the journey is reused", async () => {
+    reusedJourney();
+
+    await handleComment(COMMENT);
+
+    expect(sendTrackedPrivateReply).not.toHaveBeenCalled();
+    expect(enqueueGate).not.toHaveBeenCalled();
+    expect(scheduleAcceptedGateRecovery).not.toHaveBeenCalled();
+  });
+
+  // The public reply is per-COMMENT, not per-journey: a comment left visibly
+  // unanswered reads as being ignored, even when the DM already went out.
+  it("still answers the comment publicly", async () => {
+    reusedJourney();
+
+    await handleComment(COMMENT);
+
+    expect(replyToComment).toHaveBeenCalledTimes(1);
+  });
+
+  it("records why the gate was withheld", async () => {
+    reusedJourney();
+
+    await handleComment(COMMENT);
+
+    const kinds = logEvent.mock.calls.map(([kind]) => kind);
+    expect(kinds).toContain("gate_withheld_duplicate_journey");
+  });
+
+  it("withholds for a request completed inside the window", async () => {
+    resolveJourneyIntent.mockResolvedValue({
+      disposition: "already_completed_recently",
+      intentId: "intent-1",
+      conversationId: "conversation-1",
+      maySendGate: false,
+    });
+
+    await handleComment(COMMENT);
+
+    expect(sendTrackedPrivateReply).not.toHaveBeenCalled();
+  });
+
+  // A redelivered webhook reaching the resolver must also stay silent. The comment
+  // claim normally catches this first; this is the second line of defence.
+  it("withholds for a replayed comment", async () => {
+    resolveJourneyIntent.mockResolvedValue({
+      disposition: "replayed_comment",
+      intentId: "intent-1",
+      conversationId: "conversation-1",
+      maySendGate: false,
+    });
+
+    await handleComment(COMMENT);
+
+    expect(sendTrackedPrivateReply).not.toHaveBeenCalled();
+  });
+
+  it("names the journey it joined on keyword_matched", async () => {
+    reusedJourney();
+
+    await handleComment(COMMENT);
+
+    const matched = logEvent.mock.calls.find(([kind]) => kind === "keyword_matched");
+    expect(matched?.[1]).toMatchObject({ journeyDisposition: "reused_active" });
   });
 });

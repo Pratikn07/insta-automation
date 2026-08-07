@@ -1,6 +1,7 @@
 import type { CommentValue } from "../types/meta.js";
 import { extractCandidates, findKeywordForComment } from "../services/keywordService.js";
-import { openConversation, markGated } from "../services/conversationService.js";
+import { openConversationIn, markGated } from "../services/conversationService.js";
+import { resolveJourneyIntent } from "../services/journeyIntentService.js";
 import { replyToComment } from "../meta/replyToComment.js";
 import { sendTrackedPrivateReply, type TrackedPrivateReplyReceipt } from "../services/dmDeliveryService.js";
 import { logger } from "../lib/logger.js";
@@ -108,12 +109,38 @@ export async function handleComment(comment: CommentValue): Promise<void> {
     return;
   }
 
-  const convo = await openConversation(senderId, keyword.id);
-  log.info({ conversationId: convo.id }, "Conversation opened");
+  // Attach this comment to the person's canonical journey for this keyword. Two
+  // comments for the same guide are two different Meta comment ids, so the claim
+  // above cannot merge them — that guard only stops the SAME comment being
+  // delivered twice. Without this, asking twice meant two journeys and two gate
+  // DMs, which happened 342 times in production history.
+  const journey = await resolveJourneyIntent(
+    {
+      igUserId: senderId,
+      keywordId: keyword.id,
+      commentId: comment.id,
+      mediaId: comment.media?.id ?? null,
+      // The comment webhook carries no timestamp, so arrival time is the best
+      // available. `enqueueGate` already defaults `commentAt` the same way.
+      receivedAt: new Date(),
+      triggerKind: "comment",
+    },
+    (tx) => openConversationIn(tx, senderId, keyword.id),
+  );
+
+  const convo = { id: journey.conversationId! };
+  log.info(
+    { conversationId: convo.id, disposition: journey.disposition },
+    journey.disposition === "new_journey" ? "Conversation opened" : "Attached to existing journey",
+  );
 
   await logEvent("keyword_matched", {
     conversationId: convo.id,
     commentId: comment.id,
+    // Which journey this comment joined, and whether it opened one. A rising
+    // reused_active share is the measure of how much duplicate sending this
+    // prevents.
+    journeyDisposition: journey.disposition,
     parentId: comment.parent_id ?? null,
     keyword: keyword.keyword,
     // Observability for the all-token rollout: matchedToken names the word that
@@ -140,6 +167,26 @@ export async function handleComment(comment: CommentValue): Promise<void> {
       commentId: comment.id,
       ...describeGraphError(err),
     });
+  }
+
+  // The public acknowledgement is per-COMMENT: someone who asks twice gets a
+  // reply on each comment, because a comment left visibly unanswered reads as
+  // being ignored. The gate DM is per-JOURNEY, so it stops here.
+  //
+  // Nothing below runs for a reused journey: no second DM, no second queue row,
+  // and no second recovery reminder. The first journey already owns all three,
+  // and its gate is either delivered or being retried.
+  if (!journey.maySendGate) {
+    log.info(
+      { conversationId: convo.id, disposition: journey.disposition },
+      "Gate DM withheld — this journey already has one",
+    );
+    await logEvent("gate_withheld_duplicate_journey", {
+      conversationId: convo.id,
+      commentId: comment.id,
+      disposition: journey.disposition,
+    });
+    return;
   }
 
   let receipt: TrackedPrivateReplyReceipt;
