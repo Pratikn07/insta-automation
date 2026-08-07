@@ -63,6 +63,37 @@ describe("classifyOrigins", () => {
     expect(body.generationConfig.temperature).toBe(0);
   });
 
+  // 2.5-flash draws reasoning from the SAME maxOutputTokens budget as the
+  // answer. Left on the default, a live batch of 25 spent 3,931 tokens thinking
+  // and 151 answering, hit the 4,096 cap, and returned JSON truncated
+  // mid-record — every batch parsed to zero verdicts and was re-billed on the
+  // next tick. This is a fixed-schema name screen at temperature 0; it must not
+  // deliberate.
+  it("disables thinking so reasoning cannot crowd out the answer", async () => {
+    post.mockResolvedValue(reply([]));
+    await classifyOrigins(CANDIDATES);
+
+    const [, body] = post.mock.calls[0];
+    expect(body.generationConfig.thinkingConfig).toEqual({ thinkingBudget: 0 });
+  });
+
+  it("reports the provider stop reason so an empty batch is diagnosable", async () => {
+    post.mockResolvedValue({
+      data: {
+        candidates: [
+          { content: { parts: [{ text: '{"results":[{"id":"a","or' }] }, finishReason: "MAX_TOKENS" },
+        ],
+      },
+    });
+
+    const result = await classifyOrigins(CANDIDATES);
+
+    expect(result.verdicts).toEqual([]);
+    // Without this the log read the same whether the model was blocked,
+    // truncated, or genuinely undecided.
+    expect(result.finishReason).toBe("MAX_TOKENS");
+  });
+
   // Everything below is untrusted input. A model response that cannot be read
   // must leave the user UNCLASSIFIED, because an unclassified user still gets
   // the cheap name screen — whereas a wrongly-stored `high` silently withholds

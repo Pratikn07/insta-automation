@@ -41,6 +41,8 @@ export interface OriginClassificationResult {
   costUsd: number;
   modelId: string;
   promptVersion: string;
+  /** Provider stop reason, so a zero-verdict batch is diagnosable. */
+  finishReason?: string | null;
 }
 
 const RESPONSE_SCHEMA = {
@@ -85,7 +87,11 @@ Rules that matter:
 Classify these accounts (JSON array):`;
 
 interface GenerateResponse {
-  candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+  candidates?: Array<{
+    content?: { parts?: Array<{ text?: string }> };
+    /** `MAX_TOKENS` means the JSON was cut mid-record; `SAFETY` means blocked. */
+    finishReason?: string;
+  }>;
 }
 
 const VALID_ORIGINS = new Set<Origin>(["south_asian", "us_western", "other", "unknown"]);
@@ -183,8 +189,20 @@ export async function classifyOrigins(
         // Deterministic: the same name must not drift between classification
         // and any later re-check, or the audit trail stops meaning anything.
         temperature: 0,
-        // Bounded so a runaway generation cannot truncate the JSON: 50 people at
-        // ~26 output tokens each, with generous headroom.
+        // `gemini-2.5-flash` is a thinking model, and reasoning tokens are drawn
+        // from the SAME maxOutputTokens budget as the answer. Left on dynamic,
+        // a batch of 25 production rows spent 3,931 tokens thinking and 151
+        // answering, hit the 4,096 cap, and returned JSON truncated mid-record —
+        // so every batch parsed to zero verdicts, stamped nothing, and was
+        // re-billed on the next tick forever.
+        //
+        // This is a name-token screen against a fixed schema at temperature 0.
+        // It does not need deliberation, and measured on the messiest production
+        // shape (mostly null names, emoji, numeric handles) turning it off
+        // returned all 25 verdicts in 3.5s versus 11.5s.
+        thinkingConfig: { thinkingBudget: 0 },
+        // Headroom for the answer alone now that thinking cannot consume it:
+        // 50 people at ~26 output tokens each.
         maxOutputTokens: 4096,
         responseMimeType: "application/json",
         responseSchema: RESPONSE_SCHEMA,
@@ -224,5 +242,10 @@ export async function classifyOrigins(
     costUsd: estimateOriginCostUsd(candidates.length),
     modelId: env.GEMINI_MODEL,
     promptVersion: ORIGIN_PROMPT_VERSION,
+    // Reported so a zero-verdict batch says WHY. Without this the worker logged
+    // only "no usable verdicts", which read identically whether the model was
+    // blocked, truncated, or genuinely undecided — and a truncation loop billed
+    // for forty minutes before anyone could tell which.
+    finishReason: data.candidates?.[0]?.finishReason ?? null,
   };
 }

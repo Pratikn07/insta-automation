@@ -168,7 +168,7 @@ async function tickBody(): Promise<OriginEnrichmentResult> {
 
   if (classifiable.length === 0) return result;
 
-  const { verdicts, costUsd } = await classifyOrigins(classifiable);
+  const { verdicts, costUsd, finishReason } = await classifyOrigins(classifiable);
   result.costUsd = costUsd;
 
   // Zero verdicts for a non-empty batch means the response was unreadable or
@@ -177,7 +177,13 @@ async function tickBody(): Promise<OriginEnrichmentResult> {
   if (verdicts.length === 0) {
     noteUnrecordedSpend(costUsd);
     logger.error(
-      { errorCode: "origin_batch_unreadable", batchSize: classifiable.length },
+      {
+        errorCode: "origin_batch_unreadable",
+        batchSize: classifiable.length,
+        // MAX_TOKENS here means the answer was truncated — lower the batch size
+        // or check that thinking is still disabled.
+        finishReason,
+      },
       "Origin classification returned no usable verdicts",
     );
     return result;
