@@ -569,50 +569,64 @@ export async function suppressRecoveriesForCompletion(
   tx: Prisma.TransactionClient,
   input: { conversationId: string; igUserId: string; keywordId: string; completedAt: Date },
 ): Promise<void> {
-  const rows = await tx.dmRecoveryReminder.findMany({
-    where: {
-      OR: [
-        { conversationId: input.conversationId },
-        { igUserId: input.igUserId, keywordId: input.keywordId },
-      ],
+  const { conversationId, igUserId, keywordId, completedAt } = input;
+
+  // Bulk statements only. This runs inside the completion transaction, so a
+  // read-then-update-per-row loop would hold that transaction open in
+  // proportion to the person's history.
+  //
+  // `sending` is deliberately absent: a row mid-send must not be forced
+  // terminal here. The worker's final pre-send transaction re-reads the
+  // conversation and suppresses it there, which is the only point that can
+  // safely decide the outcome of an in-flight send.
+  const sourceWhere = { conversationId, status: "waiting" as const };
+  const elsewhereWhere = {
+    igUserId,
+    keywordId,
+    conversationId: { not: conversationId },
+    status: "waiting" as const,
+  };
+
+  await tx.dmRecoveryReminder.updateMany({
+    where: sourceWhere,
+    data: {
+      status: "suppressed",
+      suppressedAt: completedAt,
+      suppressionReason: "completed",
     },
   });
 
-  for (const row of rows) {
-    const isSourceConvo = row.conversationId === input.conversationId;
-    const reason = isSourceConvo ? "completed" : "completed_elsewhere";
+  await tx.dmRecoveryReminder.updateMany({
+    where: elsewhereWhere,
+    data: {
+      status: "suppressed",
+      suppressedAt: completedAt,
+      suppressionReason: "completed_elsewhere",
+    },
+  });
 
-    if (row.status === "waiting") {
-      await tx.dmRecoveryReminder.update({
-        where: { id: row.id },
-        data: {
-          status: "suppressed",
-          suppressedAt: input.completedAt,
-          suppressionReason: reason,
-        },
-      });
-      logger.info(
-        {
-          eventCode: "dm_recovery_evidence_recorded",
-          id: row.id,
-          evidenceKind: "completion",
-          previousStatus: "waiting",
-          newStatus: "suppressed",
-          suppressionReason: reason,
-        },
-        "Recovery suppressed on journey completion",
-      );
-    } else if (row.status === "control") {
-      // Record observed completion timestamp/reason on control rows for counterfactual analysis without changing cohort status
-      await tx.dmRecoveryReminder.update({
-        where: { id: row.id },
-        data: {
-          suppressedAt: input.completedAt,
-          suppressionReason: reason,
-        },
-      });
-    }
-  }
+  // Control rows are the experiment's counterfactual: record that the person
+  // completed anyway, but never move them out of the holdout.
+  await tx.dmRecoveryReminder.updateMany({
+    where: { ...sourceWhere, status: "control" },
+    data: { suppressedAt: completedAt, suppressionReason: "completed" },
+  });
+
+  await tx.dmRecoveryReminder.updateMany({
+    where: { ...elsewhereWhere, status: "control" },
+    data: { suppressedAt: completedAt, suppressionReason: "completed_elsewhere" },
+  });
+
+  logger.info(
+    {
+      eventCode: "dm_recovery_evidence_recorded",
+      evidenceKind: "completion",
+      conversationId,
+      igUserId,
+      keywordId,
+    },
+    "Recovery suppressed on journey completion",
+  );
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────

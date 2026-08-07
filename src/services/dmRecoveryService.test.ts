@@ -774,36 +774,50 @@ describe("recordRecoveryInbound", () => {
 // ── suppressRecoveriesForCompletion ──────────────────────────────────────
 
 describe("suppressRecoveriesForCompletion", () => {
-  it("suppresses source waiting row as 'completed' and other matching rows as 'completed_elsewhere'", async () => {
+  // Runs inside the completion transaction, so it must be bulk statements
+  // rather than a read plus a per-row update loop: an N+1 here holds the
+  // completion transaction open for as long as the person has history.
+  function txWith(updateManyFn: ReturnType<typeof vi.fn>) {
+    return { dmRecoveryReminder: { updateMany: updateManyFn } } as any;
+  }
+
+  const completedAt = new Date("2026-08-06T15:00:00Z");
+
+  async function run(updateManyFn: ReturnType<typeof vi.fn>) {
     const { suppressRecoveriesForCompletion } = await import("./dmRecoveryService.js");
-
-    const sourceRow = makeRow({ id: "row-source", conversationId: "convo-1", status: "waiting" });
-    const otherRow = makeRow({ id: "row-other", conversationId: "convo-2", status: "waiting" });
-    findMany.mockResolvedValue([sourceRow, otherRow]);
-
-    const tx = {
-      dmRecoveryReminder: { findMany, update },
-    } as any;
-
-    const completedAt = new Date("2026-08-06T15:00:00Z");
-    await suppressRecoveriesForCompletion(tx, {
+    await suppressRecoveriesForCompletion(txWith(updateManyFn), {
       conversationId: "convo-1",
       igUserId: "ig-1",
       keywordId: "kw-1",
       completedAt,
     });
+  }
 
-    expect(update).toHaveBeenCalledTimes(2);
-    expect(update).toHaveBeenNthCalledWith(1, {
-      where: { id: "row-source" },
+  it("suppresses the source waiting row as 'completed'", async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    await run(updateMany);
+
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { conversationId: "convo-1", status: "waiting" },
       data: {
         status: "suppressed",
         suppressedAt: completedAt,
         suppressionReason: "completed",
       },
     });
-    expect(update).toHaveBeenNthCalledWith(2, {
-      where: { id: "row-other" },
+  });
+
+  it("suppresses this person's other waiting rows for the keyword as 'completed_elsewhere'", async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    await run(updateMany);
+
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        igUserId: "ig-1",
+        keywordId: "kw-1",
+        conversationId: { not: "convo-1" },
+        status: "waiting",
+      },
       data: {
         status: "suppressed",
         suppressedAt: completedAt,
@@ -812,30 +826,43 @@ describe("suppressRecoveriesForCompletion", () => {
     });
   });
 
-  it("retains status on control rows while updating suppressedAt and suppressionReason", async () => {
+  it("records completion on control rows without changing their status", async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    await run(updateMany);
+
+    const controlCalls = updateMany.mock.calls.filter(
+      ([args]) => args.where.status === "control",
+    );
+    expect(controlCalls).toHaveLength(2);
+    for (const [args] of controlCalls) {
+      expect(args.data).not.toHaveProperty("status");
+      expect(args.data).toMatchObject({ suppressedAt: completedAt });
+    }
+  });
+
+  // A row mid-send must not be forced terminal here; the worker's final
+  // pre-send transaction re-reads the conversation and suppresses it there.
+  it("never touches a sending row", async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 0 });
+    await run(updateMany);
+
+    for (const [args] of updateMany.mock.calls) {
+      expect(["waiting", "control"]).toContain(args.where.status);
+    }
+  });
+
+  it("issues only bulk statements — no per-row read or update", async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 0 });
+    const findManyFn = vi.fn();
+    const updateFn = vi.fn();
     const { suppressRecoveriesForCompletion } = await import("./dmRecoveryService.js");
 
-    const controlRow = makeRow({ id: "row-ctrl", conversationId: "convo-1", status: "control", cohort: "control" });
-    findMany.mockResolvedValue([controlRow]);
+    await suppressRecoveriesForCompletion(
+      { dmRecoveryReminder: { updateMany, findMany: findManyFn, update: updateFn } } as any,
+      { conversationId: "convo-1", igUserId: "ig-1", keywordId: "kw-1", completedAt },
+    );
 
-    const tx = {
-      dmRecoveryReminder: { findMany, update },
-    } as any;
-
-    const completedAt = new Date("2026-08-06T15:00:00Z");
-    await suppressRecoveriesForCompletion(tx, {
-      conversationId: "convo-1",
-      igUserId: "ig-1",
-      keywordId: "kw-1",
-      completedAt,
-    });
-
-    expect(update).toHaveBeenCalledWith({
-      where: { id: "row-ctrl" },
-      data: {
-        suppressedAt: completedAt,
-        suppressionReason: "completed",
-      },
-    });
+    expect(findManyFn).not.toHaveBeenCalled();
+    expect(updateFn).not.toHaveBeenCalled();
   });
 });
