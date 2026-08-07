@@ -10,10 +10,23 @@ export type SchedulerOptions = {
 
 export function startDmRecoveryScheduler(options: SchedulerOptions): () => void {
   if (!options.enabled) return () => undefined;
-  const run = () =>
-    void options.runTick().catch((err) => {
-      logger.error({ errorCode: "dm_recovery_tick_rejected", err }, "DM recovery tick rejected");
-    });
+  // Awaiting inside the wrapper catches a synchronous throw as well as a
+  // rejection. `runTick().catch(...)` only handles the latter, and a tick that
+  // threw before returning its promise would surface as an uncaught exception
+  // in a timer callback — able to take down a server whose job is answering
+  // webhooks.
+  const run = () => {
+    void (async () => {
+      try {
+        await options.runTick();
+      } catch (err) {
+        logger.error(
+          { errorCode: "dm_recovery_tick_rejected", err },
+          "DM recovery tick rejected",
+        );
+      }
+    })();
+  };
   run();
   const handle = options.setInterval(run, options.intervalMs);
   return () => options.clearInterval(handle);

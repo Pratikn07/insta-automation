@@ -49,16 +49,16 @@ vi.mock("../lib/prisma.js", () => ({
   },
 }));
 
-vi.mock("../config/env.js", () => ({
-  env: {
-    LOG_LEVEL: "info",
-    DM_RECOVERY_ENABLED: true,
-    DM_RECOVERY_BATCH_SIZE: 5,
-    DM_RECOVERY_LEASE_MS: 900000,
-    DM_RECOVERY_RETRY_BASE_MS: 300000,
-    DM_RECOVERY_MAX_ATTEMPTS: 3,
-  },
-}));
+const envMock = {
+  LOG_LEVEL: "info",
+  DM_RECOVERY_ENABLED: true,
+  DM_RECOVERY_BATCH_SIZE: 5,
+  DM_RECOVERY_LEASE_MS: 900000,
+  DM_RECOVERY_RETRY_BASE_MS: 300000,
+  DM_RECOVERY_MAX_ATTEMPTS: 3,
+};
+
+vi.mock("../config/env.js", () => ({ env: envMock }));
 
 const { runDmRecoveryTick } = await import("./dmRecoveryWorker.js");
 
@@ -100,6 +100,22 @@ beforeEach(() => {
   updateMany.mockResolvedValue({ count: 0 });
   count.mockResolvedValue(0);
   evaluateRecoveryHealth.mockResolvedValue({ circuitOpen: false });
+  envMock.DM_RECOVERY_ENABLED = true;
+});
+
+// The scheduler refuses to register the timer when recovery is off, and the
+// tick refuses independently. Only the scheduler half was covered, so a
+// misregistered worker would have sent public comments with the switch off.
+describe("the kill switch", () => {
+  it("refuses to do any work when recovery is disabled", async () => {
+    envMock.DM_RECOVERY_ENABLED = false;
+
+    await expect(runDmRecoveryTick()).resolves.toMatchObject({ skipped: "disabled" });
+
+    expect(evaluateRecoveryHealth).not.toHaveBeenCalled();
+    expect(listDueRecoveryIds).not.toHaveBeenCalled();
+    expect(replyToComment).not.toHaveBeenCalled();
+  });
 });
 
 describe("runDmRecoveryTick", () => {
