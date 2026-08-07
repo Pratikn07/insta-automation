@@ -238,8 +238,18 @@ function buildTimeline(row: Record<string, unknown>): TimelineEntry[] {
     .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
 }
 
-const CANCELLABLE = ["waiting", "control", "tracking_unavailable", "send_failed"] as const;
-const REVIEWABLE = ["send_failed", "send_uncertain", "tracking_unavailable"] as const;
+/**
+ * The server owns both lists. The web view model keeps its own copies to decide
+ * whether to offer a button, because `web` is a separate build and cannot import
+ * from here. Those copies are asserted against these in
+ * `recoveryActionStatuses.test.ts`, so a change on either side fails a test
+ * rather than silently offering an action the API will refuse.
+ *
+ * Drift is a mislabelled button, not corruption: every action re-reads the row
+ * and answers 409 when the status is no longer eligible.
+ */
+export const CANCELLABLE = ["waiting", "control", "tracking_unavailable", "send_failed"] as const;
+export const REVIEWABLE = ["send_failed", "send_uncertain", "tracking_unavailable"] as const;
 
 recoveryRemindersRouter.get("/:id", async (req, res) => {
   const row = await prisma.dmRecoveryReminder.findUnique({

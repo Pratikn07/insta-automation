@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { formatAbsolute } from "../../lib/utils";
 import { useEffect, useState } from "react";
 import { ApiError, recoveryApi } from "../../lib/api";
 import type { RecoveryReminderDetail } from "../../lib/types";
@@ -34,15 +35,6 @@ const TIMELINE_LABELS: Record<string, string> = {
   cancelled: "Cancelled by owner",
   reviewed: "Reviewed",
 };
-
-function formatWhen(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
 
 export function DmRecoveryDrawer({
   id,
@@ -137,7 +129,7 @@ export function DmRecoveryDrawer({
 
         {row.comment ? (
           <p className="rounded-md border px-3 py-2 text-xs">
-            <span className="text-muted-foreground">Comment · {formatWhen(row.comment.receivedAt)}</span>
+            <span className="text-muted-foreground">Comment · {formatAbsolute(row.comment.receivedAt)}</span>
             <br />
             {row.comment.text ? `“${row.comment.text}”` : "(no text captured)"}
           </p>
@@ -152,7 +144,7 @@ export function DmRecoveryDrawer({
                   <span className="text-muted-foreground"> · {entry.detail}</span>
                 ) : null}
               </span>
-              <span className="shrink-0 text-muted-foreground">{formatWhen(entry.at)}</span>
+              <span className="shrink-0 text-muted-foreground">{formatAbsolute(entry.at)}</span>
             </li>
           ))}
         </ol>

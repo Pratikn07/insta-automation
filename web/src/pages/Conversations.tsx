@@ -35,7 +35,7 @@ import { UserLineage } from "@/components/UserLineage";
 import { IncomingBubble, OutgoingBubble, StepBubble } from "@/components/ChatBubbles";
 import { DmThreadList } from "@/components/conversations/DmThreadList";
 import { DmThreadDrawer } from "@/components/conversations/DmThreadDrawer";
-import { cn, displayUser } from "@/lib/utils";
+import { cn, displayUser, formatAbsolute } from "@/lib/utils";
 import { prettyKind } from "@/lib/eventLog";
 
 type StateFilter = ConversationState | "all";
@@ -838,15 +838,6 @@ function formatRelative(iso: string): string {
   const days = Math.round(hr / 24);
   if (days < 7) return `${days}d ago`;
   return new Date(iso).toLocaleDateString();
-}
-
-function formatAbsolute(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
 }
 
 // Like formatRelative but phrased forward ("in 5m"); clamps past times to "shortly".

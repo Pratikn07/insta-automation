@@ -9,7 +9,7 @@ import type {
   RecoveryReminderRow,
   RecoveryView,
 } from "../../lib/types";
-import { cn } from "../../lib/utils";
+import { cn, formatAbsolute } from "../../lib/utils";
 import { recoveryStatusView, type RecoveryTone } from "./dmRecoveryViewModel";
 
 /**
@@ -42,15 +42,6 @@ const TONE_CLASS: Record<RecoveryTone, string> = {
  *  absent rather than as zero. */
 function pct(value: number | null): string {
   return value === null ? "—" : `${value.toFixed(1)}%`;
-}
-
-function formatWhen(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
 }
 
 export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void }) {
@@ -269,7 +260,7 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
                       {row.username ? `@${row.username}` : row.igUserId}
                     </span>
                     <span className="block truncate text-xs text-muted-foreground">
-                      {row.keyword.keyword} · {formatWhen(row.eligibleAt)}
+                      {row.keyword.keyword} · {formatAbsolute(row.eligibleAt)}
                     </span>
                   </span>
                   <span
