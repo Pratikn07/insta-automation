@@ -49,6 +49,7 @@ CREATE TABLE "dm_recovery_reminder" (
     "claim_expires_at" TIMESTAMPTZ(3),
     "next_attempt_at" TIMESTAMPTZ(3),
     "attempts" INTEGER NOT NULL DEFAULT 0 CHECK ("attempts" >= 0),
+    "last_attempt_at" TIMESTAMPTZ(3),
     "public_reply_id" TEXT,
     "sent_at" TIMESTAMPTZ(3),
     "last_error_category" TEXT,
@@ -72,6 +73,23 @@ CREATE TABLE "dm_recovery_control" (
 
     CONSTRAINT "dm_recovery_control_pkey" PRIMARY KEY ("id")
 );
+
+-- Terminal-state consistency constraints
+-- sent rows must have a sent_at timestamp
+ALTER TABLE "dm_recovery_reminder" ADD CONSTRAINT "chk_sent_has_sent_at"
+  CHECK ("status" != 'sent' OR "sent_at" IS NOT NULL);
+
+-- cancelled rows must have a cancelled_at timestamp
+ALTER TABLE "dm_recovery_reminder" ADD CONSTRAINT "chk_cancelled_has_cancelled_at"
+  CHECK ("status" != 'cancelled' OR "cancelled_at" IS NOT NULL);
+
+-- suppressed rows must have a suppressed_at timestamp
+ALTER TABLE "dm_recovery_reminder" ADD CONSTRAINT "chk_suppressed_has_suppressed_at"
+  CHECK ("status" != 'suppressed' OR "suppressed_at" IS NOT NULL);
+
+-- claim_expires_at must be at or after claimed_at when both are set
+ALTER TABLE "dm_recovery_reminder" ADD CONSTRAINT "chk_claim_expires_after_claimed"
+  CHECK ("claimed_at" IS NULL OR "claim_expires_at" IS NULL OR "claim_expires_at" >= "claimed_at");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "dm_recovery_reminder_comment_id_key" ON "dm_recovery_reminder"("comment_id");

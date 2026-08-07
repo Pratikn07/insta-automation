@@ -675,6 +675,7 @@ model DmRecoveryReminder {
   claimExpiresAt         DateTime?             @map("claim_expires_at") @db.Timestamptz(3)
   nextAttemptAt          DateTime?             @map("next_attempt_at") @db.Timestamptz(3)
   attempts               Int                   @default(0)
+  lastAttemptAt          DateTime?             @map("last_attempt_at") @db.Timestamptz(3)
   publicReplyId          String?               @map("public_reply_id")
   sentAt                 DateTime?             @map("sent_at") @db.Timestamptz(3)
   lastErrorCategory      String?               @map("last_error_category")
