@@ -30,6 +30,7 @@ model Keyword {
   resource          Resource             @relation(fields: [resourceId], references: [id])
   conversations     Conversation[]
   recoveryReminders DmRecoveryReminder[]
+  JourneyIntent     JourneyIntent[]
 
   @@unique([keyword, mediaId])
   // The cold-DM fallback ranks post-scoped candidates for one word by post date.
@@ -132,13 +133,21 @@ model Conversation {
   // Follow status AT that later reading. Null until measured.
   followThroughIsFollower       Boolean?          @map("follow_through_is_follower")
   engagementFollowUpScheduledAt DateTime?         @map("engagement_follow_up_scheduled_at") @db.Timestamptz(3)
+  // Set by reconciliation. Null means "not yet reconciled", never "no owner".
+  canonicalIntentId             String?           @map("canonical_intent_id") @db.Uuid
+  reconciliationReason          String?           @map("reconciliation_reason")
+  reconciledAt                  DateTime?         @map("reconciled_at") @db.Timestamptz(3)
 
   keyword           Keyword              @relation(fields: [keywordId], references: [id])
   followUpDrafts    ReplyDraft[]         @relation("FollowUpSource")
   recoveryReminders DmRecoveryReminder[]
+  canonicalIntent   JourneyIntent?       @relation("ConversationCanonicalIntent", fields: [canonicalIntentId], references: [id], onDelete: SetNull)
+  ownedIntents      JourneyIntent[]      @relation("IntentCanonicalConversation")
+  journeyTriggers   JourneyTrigger[]
 
   @@index([igUserId, state])
   @@index([state, createdAt])
+  @@index([canonicalIntentId])
   @@map("conversations")
 }
 
@@ -729,4 +738,84 @@ model ProcessedComment {
 
   @@index([createdAt])
   @@map("processed_comment")
+}
+
+/// The reconciled relationship between an alias journey and its canonical owner.
+/// `recovered` = a sibling journey completed the request; `superseded` = none did
+/// and this row simply is not the owner.
+enum JourneyReconciledState {
+  canonical
+  recovered
+  superseded
+
+  @@map("journey_reconciled_state")
+}
+
+/// What one trigger did on arrival. `replayed_comment` is the exact-duplicate
+/// webhook case absorbed by the unique commentId; the rest describe a genuinely
+/// new comment landing on a new, live, or finished intent.
+enum JourneyTriggerDisposition {
+  new_journey
+  reused_active
+  already_completed_recently
+  replayed_comment
+
+  @@map("journey_trigger_disposition")
+}
+
+/// One person-keyword request, owning a 48-hour window and the single conversation
+/// responsible for it.
+///
+/// Two comments for the same guide are two different Meta comment ids, so webhook
+/// idempotency cannot merge them — 342 of 423 production repeat triggers arrived
+/// inside 48 hours, each one a duplicate gate DM. This table is what collapses
+/// them to one journey while `JourneyTrigger` keeps every originating comment.
+model JourneyIntent {
+  id                      String                 @id @default(uuid()) @db.Uuid
+  igUserId                String                 @map("ig_user_id")
+  keywordId               String                 @map("keyword_id") @db.Uuid
+  /// Nullable only so reconciliation can insert an intent before picking its owner.
+  canonicalConversationId String?                @map("canonical_conversation_id") @db.Uuid
+  windowStartedAt         DateTime               @map("window_started_at") @db.Timestamptz(3)
+  /// The 48-hour boundary is measured from HERE, not windowStartedAt, so a person
+  /// re-asking keeps one journey alive instead of opening a second.
+  lastTriggerAt           DateTime               @map("last_trigger_at") @db.Timestamptz(3)
+  windowExpiresAt         DateTime               @map("window_expires_at") @db.Timestamptz(3)
+  reconciledState         JourneyReconciledState @default(canonical) @map("reconciled_state")
+  completedAt             DateTime?              @map("completed_at") @db.Timestamptz(3)
+  createdAt               DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt               DateTime               @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  keyword               Keyword          @relation(fields: [keywordId], references: [id], onDelete: Restrict)
+  canonicalConversation Conversation?    @relation("IntentCanonicalConversation", fields: [canonicalConversationId], references: [id], onDelete: SetNull)
+  aliasConversations    Conversation[]   @relation("ConversationCanonicalIntent")
+  triggers              JourneyTrigger[]
+
+  /// Exactly one intent owns a person-keyword window. Two simultaneous first
+  /// comments race here: one insert wins, the loser reads the winner and attaches.
+  @@unique([igUserId, keywordId, windowStartedAt], map: "journey_intent_person_keyword_window_key")
+  @@index([igUserId, keywordId, lastTriggerAt(sort: Desc)], map: "journey_intent_person_keyword_last_trigger_idx")
+  @@index([reconciledState])
+  @@map("journey_intent")
+}
+
+/// One originating comment. Retained for audit even when it drove no automation,
+/// so an alias journey's history is never lost.
+model JourneyTrigger {
+  id             String                    @id @default(uuid()) @db.Uuid
+  intentId       String                    @map("intent_id") @db.Uuid
+  /// Nullable: a replayed comment attaches to an intent without opening a conversation.
+  conversationId String?                   @map("conversation_id") @db.Uuid
+  commentId      String                    @unique @map("comment_id")
+  mediaId        String?                   @map("media_id")
+  receivedAt     DateTime                  @map("received_at") @db.Timestamptz(3)
+  triggerKind    String                    @map("trigger_kind")
+  disposition    JourneyTriggerDisposition
+  createdAt      DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  intent       JourneyIntent @relation(fields: [intentId], references: [id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@index([intentId, receivedAt])
+  @@map("journey_trigger")
 }
