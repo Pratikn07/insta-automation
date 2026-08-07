@@ -9,12 +9,14 @@ const count = vi.fn();
 const queryRaw = vi.fn();
 const controlFindUnique = vi.fn();
 const convoFindUnique = vi.fn();
+const igUserFindUnique = vi.fn();
 const logEvent = vi.fn();
 
 const txClient = {
   dmRecoveryReminder: { findMany, findUnique, findFirst, updateMany, update, count },
   dmRecoveryControl: { findUnique: controlFindUnique },
   conversation: { findUnique: convoFindUnique },
+  igUser: { findUnique: igUserFindUnique },
   $queryRaw: queryRaw,
 };
 
@@ -25,6 +27,7 @@ vi.mock("../lib/prisma.js", () => ({
     dmRecoveryReminder: { findMany, findUnique, findFirst, updateMany, update, count },
     dmRecoveryControl: { findUnique: controlFindUnique },
     conversation: { findUnique: convoFindUnique },
+    igUser: { findUnique: igUserFindUnique },
     $queryRaw: queryRaw,
     $transaction,
   },
@@ -35,7 +38,7 @@ vi.mock("../lib/logger.js", () => ({
   logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 vi.mock("../config/env.js", () => ({
-  env: { DM_RECOVERY_LEASE_MS: 900_000, DM_RECOVERY_HOURLY_CAP: 30 },
+  env: { DM_RECOVERY_LEASE_MS: 900_000, DM_RECOVERY_HOURLY_CAP: 30, DM_RECOVERY_WESTERN_ONLY: false },
 }));
 
 const {
@@ -84,13 +87,14 @@ function routeFindFirst(opts: { cooldown?: unknown; newer?: unknown } = {}) {
 beforeEach(() => {
   for (const fn of [
     findMany, findUnique, findFirst, updateMany, update, count,
-    queryRaw, controlFindUnique, convoFindUnique, logEvent, $transaction,
+    queryRaw, controlFindUnique, convoFindUnique, igUserFindUnique, logEvent, $transaction,
   ]) {
     fn.mockReset();
   }
   $transaction.mockImplementation(async (fn: Function) => fn(txClient));
   queryRaw.mockResolvedValue([]);
   convoFindUnique.mockResolvedValue({ state: "awaiting_done", completedAt: null });
+  igUserFindUnique.mockResolvedValue({ username: "emily_r", name: "Emily Robbins" });
   controlFindUnique.mockResolvedValue({ circuitOpen: false });
   count.mockResolvedValue(0);
   updateMany.mockResolvedValue({ count: 1 });
@@ -318,6 +322,37 @@ describe("authorizeClaimForSend", () => {
     await expect(authorizeClaimForSend("rec-1", NOW)).resolves.toEqual({
       kind: "suppress",
       reason,
+    });
+  });
+
+  // The gate is a policy decision, but the ORIGIN behind it is resolved here.
+  // These prove the wiring, which the pure policy tests cannot see.
+  describe("out-of-market audience", () => {
+    it("classifies the person from their current name, not a stored column", async () => {
+      findUnique.mockResolvedValue(sendingRow());
+      igUserFindUnique.mockResolvedValue({ username: "priya_s", name: "Priya Sharma" });
+
+      const decision = await authorizeClaimForSend("rec-1", NOW);
+
+      // ig_users.inferred_origin is written only by the one-time backfill, so a
+      // read of that column would return null for anyone newer than the last
+      // run and silently disable the gate for exactly those people.
+      expect(igUserFindUnique).toHaveBeenCalledWith({
+        where: { id: "ig-1" },
+        select: { username: true, name: true },
+      });
+      // The flag is off in the env mock, so the send still goes through — this
+      // asserts the lookup, not the suppression.
+      expect(decision).toEqual({ kind: "send_no_confirmed_read_reminder" });
+    });
+
+    it("does not blow up when the person was never resolved", async () => {
+      findUnique.mockResolvedValue(sendingRow());
+      igUserFindUnique.mockResolvedValue(null);
+
+      await expect(authorizeClaimForSend("rec-1", NOW)).resolves.toEqual({
+        kind: "send_no_confirmed_read_reminder",
+      });
     });
   });
 });

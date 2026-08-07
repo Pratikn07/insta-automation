@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { DmRecoveryCohort, DmRecoveryTriggerKind } from "@prisma/client";
+import type { Origin } from "./originInference.js";
 
 export const RECOVERY_TEMPLATE_VERSION = "v1";
 
@@ -21,6 +22,11 @@ export type RecoverySuppressionReason =
   // carries no claim about whether the person ever read the DM, and callers
   // must not overwrite the reason already stored on the row.
   | "already_finalized"
+  // The recovery reminder is a PUBLIC comment. This account sells to a Western
+  // audience, so a high-confidence South-Asian origin is withheld rather than
+  // posted. Named for the decision, not for the person: it records why WE did
+  // not post, and it is never shown to anyone outside the dashboard.
+  | "audience_out_of_market"
   | "owner_cancelled";
 
 export type RecoveryDecision =
@@ -79,6 +85,15 @@ export type RecoveryPolicyInput = {
   hasRecentSentReminderForPerson: boolean;
   hasNewerEligibleCandidate: boolean;
   isSourceCommentAvailable: boolean;
+  /**
+   * Name-based origin proxy from `inferOrigin`. NOT measured geography — Meta
+   * exposes no per-user country.
+   */
+  audienceOrigin: Origin;
+  /** Confidence of `audienceOrigin`. Only `high` may withhold a send. */
+  audienceOriginConfidence: "high" | "low";
+  /** `DM_RECOVERY_WESTERN_ONLY`. When false the origin is ignored entirely. */
+  westernOnly: boolean;
 };
 
 // Terminal statuses that must never be sent again.
@@ -99,6 +114,7 @@ const TERMINAL_STATUSES = new Set([
  *  1. Terminal status
  *  2. Positive evidence (seen / engaged / completed)
  *  3. Missing source comment
+ *  3b. Out-of-market audience (DM_RECOVERY_WESTERN_ONLY)
  *  4. Tracking unavailable (no_confirmed_read without gate mid)
  *  5. Person cooldown (24h)
  *  6. Newer candidate
@@ -160,6 +176,24 @@ export function decideRecovery(input: RecoveryPolicyInput): RecoveryDecision {
   // 3. Missing source comment
   if (!input.isSourceCommentAvailable) {
     return { kind: "suppress", reason: "source_unavailable" };
+  }
+
+  // 3b. Out-of-market audience. Applies to BOTH trigger kinds: the settings
+  // fallback is the same public comment and carries the same cost.
+  //
+  // Only a HIGH-confidence south_asian call withholds. `inferOrigin` returns
+  // low confidence for its Western calls and leaves ~70% of this audience
+  // `unknown`, so suppressing anything short of a script hit or a distinctive
+  // token would silently cancel most of the feature while looking like a
+  // targeting rule. A high-confidence call is a non-Latin script or an
+  // unambiguous name token — a false positive there costs one withheld
+  // reminder, which is the cheap direction to be wrong in.
+  if (
+    input.westernOnly &&
+    input.audienceOrigin === "south_asian" &&
+    input.audienceOriginConfidence === "high"
+  ) {
+    return { kind: "suppress", reason: "audience_out_of_market" };
   }
 
   // 4. Tracking unavailable (no_confirmed_read without gate message ID)

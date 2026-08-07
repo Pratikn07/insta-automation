@@ -4,6 +4,7 @@ import { logger } from "../lib/logger.js";
 import { env } from "../config/env.js";
 import { logEvent } from "./eventLogger.js";
 import { recordRecoveryDatabaseFailure } from "./dmRecoveryHealth.js";
+import { inferOrigin, type Origin } from "./originInference.js";
 import {
   decideRecovery,
   type RecoveryDecision,
@@ -25,6 +26,8 @@ type PolicyContext = {
   conversationCompletedAt: Date | null;
   hasRecentSentReminderForPerson: boolean;
   hasNewerEligibleCandidate: boolean;
+  audienceOrigin: Origin;
+  audienceOriginConfidence: "high" | "low";
 };
 
 /**
@@ -85,12 +88,26 @@ async function loadPolicyContext(
     select: { id: true },
   });
 
+  // Classified live from the current name/username rather than read from
+  // ig_users.inferred_origin. That column is written only by the one-time
+  // backfill script, so for anyone who arrived after the last run it is null —
+  // and a null read as "not South Asian" would silently disable the gate for
+  // exactly the newest people. inferOrigin is pure, so this costs nothing
+  // beyond the row we already need.
+  const person = await tx.igUser.findUnique({
+    where: { id: row.igUserId },
+    select: { username: true, name: true },
+  });
+  const origin = inferOrigin(person?.username ?? null, person?.name ?? null);
+
   return {
     now,
     conversationCompletedAt:
       convo?.state === "completed" ? (convo.completedAt ?? now) : null,
     hasRecentSentReminderForPerson: Boolean(recentAttempt),
     hasNewerEligibleCandidate: Boolean(newerCandidate),
+    audienceOrigin: origin.origin,
+    audienceOriginConfidence: origin.confidence,
   };
 }
 
@@ -119,6 +136,9 @@ function toPolicyInput(
     hasRecentSentReminderForPerson: ctx.hasRecentSentReminderForPerson,
     hasNewerEligibleCandidate: ctx.hasNewerEligibleCandidate,
     isSourceCommentAvailable: Boolean(row.commentId),
+    audienceOrigin: ctx.audienceOrigin,
+    audienceOriginConfidence: ctx.audienceOriginConfidence,
+    westernOnly: env.DM_RECOVERY_WESTERN_ONLY,
   };
 }
 

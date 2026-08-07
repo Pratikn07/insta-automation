@@ -69,7 +69,87 @@ describe("DM recovery policy", () => {
       hasRecentSentReminderForPerson: false,
       hasNewerEligibleCandidate: false,
       isSourceCommentAvailable: true,
+      audienceOrigin: "unknown",
+      audienceOriginConfidence: "low",
+      westernOnly: false,
     };
+
+    describe("out-of-market audience", () => {
+      const western = { ...baseInput, westernOnly: true };
+
+      it("withholds a public reminder from a high-confidence South-Asian origin", () => {
+        expect(
+          decideRecovery({
+            ...western,
+            audienceOrigin: "south_asian",
+            audienceOriginConfidence: "high",
+          }),
+        ).toEqual({ kind: "suppress", reason: "audience_out_of_market" });
+      });
+
+      it("applies to the settings fallback too — it is the same public comment", () => {
+        expect(
+          decideRecovery({
+            ...western,
+            triggerKind: "settings_blocked",
+            audienceOrigin: "south_asian",
+            audienceOriginConfidence: "high",
+          }),
+        ).toEqual({ kind: "suppress", reason: "audience_out_of_market" });
+      });
+
+      // inferOrigin leaves ~70% of this audience `unknown`. Withholding those
+      // would cancel most of the feature while looking like a targeting rule.
+      it("still sends to an unknown origin rather than silently disabling itself", () => {
+        expect(
+          decideRecovery({ ...western, audienceOrigin: "unknown", audienceOriginConfidence: "low" }),
+        ).toEqual({ kind: "send_no_confirmed_read_reminder" });
+      });
+
+      // A low-confidence south_asian call cannot happen today, but the guard is
+      // written on confidence rather than on origin alone, so a future bio pass
+      // that starts emitting low-confidence calls cannot quietly widen this.
+      it("does not withhold on a low-confidence South-Asian call", () => {
+        expect(
+          decideRecovery({
+            ...western,
+            audienceOrigin: "south_asian",
+            audienceOriginConfidence: "low",
+          }),
+        ).toEqual({ kind: "send_no_confirmed_read_reminder" });
+      });
+
+      it("sends to a Western origin", () => {
+        expect(
+          decideRecovery({ ...western, audienceOrigin: "us_western", audienceOriginConfidence: "low" }),
+        ).toEqual({ kind: "send_no_confirmed_read_reminder" });
+      });
+
+      it("ignores origin entirely while DM_RECOVERY_WESTERN_ONLY is off", () => {
+        expect(
+          decideRecovery({
+            ...baseInput,
+            westernOnly: false,
+            audienceOrigin: "south_asian",
+            audienceOriginConfidence: "high",
+          }),
+        ).toEqual({ kind: "send_no_confirmed_read_reminder" });
+      });
+
+      // Read evidence is the stronger, truer statement about this row, and the
+      // dashboard counts suppression reasons — a read that got relabelled as a
+      // market decision would corrupt the experiment's read-rate denominator.
+      it("reports read evidence ahead of the market decision", () => {
+        expect(
+          decideRecovery({
+            ...western,
+            audienceOrigin: "south_asian",
+            audienceOriginConfidence: "high",
+            seenAt: new Date("2026-08-06T17:00:00.000Z"),
+          }),
+        ).toEqual({ kind: "suppress", reason: "seen" });
+      });
+    });
 
     // The reason matters as much as the kind. A finalized row that was never
     // read must not be labelled "seen": absence of a read signal is never
