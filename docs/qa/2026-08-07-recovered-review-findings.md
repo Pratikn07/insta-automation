@@ -22,6 +22,28 @@ Leads are not findings; the REFUTED section is as load-bearing as the CONFIRMED 
 - Diff scope: 91 files, +19797 / -203 against `main`
 - TypeScript: `npx tsc --noEmit` passes clean (the build failure noted in the earlier session is resolved)
 
+## Status
+
+All five confirmed defects are fixed, each with a regression test that was verified to fail against
+the pre-fix code and pass after it:
+
+| Defect | Fix |
+|---|---|
+| 1. Metrics endpoint dead by default | `1d3be2b` |
+| 2. Completion voided by bookkeeping | `8c7d38b` |
+| 3. Gate batch stranded, falsely recorded | `4f13ff7` |
+| 4. Gate `send_uncertain` has no consumer | Open — needs a product decision, see below |
+| 5. Pagination drops rows between pages | `be2aa39` |
+
+Backend: 913 tests pass, `tsc` clean. Web: 346 tests pass, `tsc` clean.
+
+Defect 4 is deliberately left open: closing it means either building a reviewer surface for
+gate-queue `send_uncertain` rows or documenting that the recovery mirror row is the sole review
+path. That is a product call, not a mechanical fix.
+
+The quality findings below are also unaddressed, by choice — they are not correctness issues and
+are better handled as one deliberate cleanup pass than folded into defect fixes.
+
 ## Confirmed defects
 
 ### 1. The metrics endpoint is dead in the default configuration
@@ -184,6 +206,12 @@ finder reached before dying: the web dashboard (16 files, +3218), origin classif
 (4 files, +921), and the schema and migration (+249). Every confirmed defect so far came from the
 backend recovery core and gate queue, which is simply where the finders happened to start reading.
 
-Note that all five confirmed defects sit in code paths no test exercises. Test-coverage gaps are
+Note that all five confirmed defects sat in code paths no test exercised. Test-coverage gaps are
 the strongest available predictor of where the next defect is, so worth using as a targeting signal
 rather than a separate review angle.
+
+One process note worth carrying forward: of the eleven leads verified, six were refuted. The
+finders were generating plausible-sounding defects at roughly a 50% false-positive rate, and the
+origin-verdict lead had a completely correct mechanism with an inverted consequence — it would have
+read as a real finding to anyone who did not check it. Whatever runs next, the adversarial verify
+step is the part that cannot be dropped.
