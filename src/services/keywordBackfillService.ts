@@ -15,6 +15,7 @@ import { logEvent } from "./eventLogger.js";
 interface CandidateComment {
   commentId: string;
   fromId: string;
+  mediaId: string | null;
   createdAt: Date;
 }
 
@@ -51,7 +52,12 @@ export async function backfillKeyword(keywordId: string): Promise<number> {
       if (p.fromId === env.IG_USER_ID) continue; // own replies (bot or manual)
       if (kw.mediaId && p.mediaId !== kw.mediaId) continue; // respect reel scope
       if (!textContainsKeyword(p.text, norm)) continue;
-      byUser.set(p.fromId, { commentId: p.commentId, fromId: p.fromId, createdAt: r.createdAt });
+      byUser.set(p.fromId, {
+        commentId: p.commentId,
+        fromId: p.fromId,
+        mediaId: p.mediaId ?? null,
+        createdAt: r.createdAt,
+      });
     }
     if (byUser.size === 0) return 0;
 
@@ -70,6 +76,7 @@ export async function backfillKeyword(keywordId: string): Promise<number> {
         conversationId: convo.id,
         igUserId: c.fromId,
         commentId: c.commentId,
+        mediaId: c.mediaId,
         gateMessage: kw.gateMessage,
         commentAt: c.createdAt,
       });

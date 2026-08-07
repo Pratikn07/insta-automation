@@ -5,29 +5,22 @@ import { env } from "../config/env.js";
 import { sendTrackedPrivateReply, sendTrackedText } from "./dmDeliveryService.js";
 import { logEvent, describeGraphError } from "../services/eventLogger.js";
 import { PRIVATE_REPLY_WINDOW_MS } from "./gateQueueService.js";
+import {
+  classifyPrivateGateFailure,
+  parseGraphSignatures,
+} from "./graphErrorClassifier.js";
+import {
+  scheduleAcceptedGateRecovery,
+  scheduleSettingsBlockedRecovery,
+  scheduleTrackingUnavailableRecovery,
+} from "./dmRecoveryService.js";
 
 // The rate-limit subcode. When we see it again we back off for the rest of the tick.
 const RATE_LIMIT_SUBCODE = 2534025;
 
-// Spacing between retries for a single row that keeps hitting the limit (grows
-// with attempts, capped). Sends for DIFFERENT rows in a tick are also spaced.
-// The cap was 12h — a relic of the June 2534025 storm. With the rate limit now
-// rare (~5/week) and the queue routinely drained, a 12h cap only stranded the
-// occasional failing gate for half a day between tries, dragging the delivery
-// tail (p90 was ~1.8d). A 2h cap tightens that; real storms are still handled by
-// the adaptive per-tick break below (we stop the tick the moment 2534025 recurs),
-// so faster retries never hammer a limited account.
 const BASE_BACKOFF_MS = 15 * 60 * 1000; // 15 min
 const MAX_BACKOFF_MS = 2 * 60 * 60 * 1000; // 2 h
 const PER_SEND_GAP_MS = 4000; // gentle spacing between sends within a tick
-
-// Hard ceiling on send attempts per row. Discovered the hard way (a user got 33
-// copies of the same gate over 4 days): Meta sometimes DELIVERS the private
-// reply but still returns an error ("An unknown error has occurred"), so a
-// "failing" row can actually be spamming a real inbox. Successful sends land on
-// attempt 1 in practice (sent rows avg 1.0 attempts), so a small cap loses
-// nothing and bounds the worst delivered-but-errored case. Mirrors
-// geminiQueueWorker's MAX_ATTEMPTS.
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -35,6 +28,57 @@ function isRateLimit(err: unknown): boolean {
   if (!isAxiosError(err)) return false;
   const data = err.response?.data as { error?: { error_subcode?: number } } | undefined;
   return data?.error?.error_subcode === RATE_LIMIT_SUBCODE;
+}
+
+/**
+ * Reconcile stale sending claims (leases that expired while worker crashed/restarted).
+ * These rows are moved to `send_uncertain` and an attention recovery row is created.
+ */
+async function reconcileStaleSendingClaims(now: Date): Promise<void> {
+  const staleRows = await prisma.gateQueue.findMany({
+    where: {
+      status: "sending",
+      claimExpiresAt: { lte: now },
+    },
+    select: {
+      id: true,
+      conversationId: true,
+      igUserId: true,
+      commentId: true,
+      mediaId: true,
+    },
+  });
+
+  for (const row of staleRows) {
+    await prisma.gateQueue.update({
+      where: { id: row.id },
+      data: { status: "send_uncertain", lastError: "private_send_outcome_unknown" },
+    });
+
+    const convo = await prisma.conversation.findUnique({
+      where: { id: row.conversationId },
+      include: { keyword: true },
+    });
+
+    if (convo?.keyword) {
+      try {
+        await scheduleTrackingUnavailableRecovery({
+          conversationId: row.conversationId,
+          igUserId: row.igUserId,
+          keywordId: convo.keywordId,
+          keywordSnapshot: convo.keyword.keyword,
+          commentId: row.commentId,
+          mediaId: row.mediaId,
+        });
+      } catch {
+        await logEvent("dm_recovery_schedule_failed", {
+          conversationId: row.conversationId,
+          commentId: row.commentId,
+          triggerKind: "tracking_unavailable",
+        });
+      }
+    }
+  }
 }
 
 /**
@@ -47,8 +91,11 @@ function isRateLimit(err: unknown): boolean {
  */
 export async function runGateQueueTick(): Promise<void> {
   try {
-    const now = Date.now();
-    const windowStart = new Date(now - PRIVATE_REPLY_WINDOW_MS);
+    const now = new Date();
+    const windowStart = new Date(now.getTime() - PRIVATE_REPLY_WINDOW_MS);
+
+    // Reconcile stale sending leases from interrupted workers.
+    await reconcileStaleSendingClaims(now);
 
     // Mark rows whose 7-day window has closed as exhausted (can't private-reply anymore).
     await prisma.gateQueue.updateMany({
@@ -56,41 +103,69 @@ export async function runGateQueueTick(): Promise<void> {
       data: { status: "exhausted" },
     });
 
-    // Retire rows already at the attempt ceiling (covers rows predating the cap).
+    // Retire rows already at the attempt ceiling.
     await prisma.gateQueue.updateMany({
       where: { status: "pending", attempts: { gte: env.GATE_MAX_ATTEMPTS } },
       data: { status: "exhausted" },
     });
 
-    const due = await prisma.gateQueue.findMany({
+    const dueCandidates = await prisma.gateQueue.findMany({
       where: {
         status: "pending",
-        nextAttemptAt: { lte: new Date(now) },
+        nextAttemptAt: { lte: now },
         commentAt: { gte: windowStart },
       },
       orderBy: { commentAt: "asc" },
       take: env.GATE_RETRY_BATCH,
     });
 
-    if (due.length === 0) {
+    if (dueCandidates.length === 0) {
       await maybeRunExperiment();
       return;
     }
 
-    // Never retry a gate whose conversation already completed — the user has the
-    // guide (they replied to an earlier send, possibly one Meta claimed failed).
-    // This is what let a completed user keep receiving "reply DONE to unlock".
-    const convoStates = await prisma.conversation.findMany({
-      where: { id: { in: due.map((r) => r.conversationId) } },
-      select: { id: true, state: true },
+    // Atomic claims: attempt to move each due item from pending -> sending with lease
+    const leaseDuration = env.DM_RECOVERY_LEASE_MS ?? 15 * 60 * 1000;
+    const claimedRows = [];
+    for (const item of dueCandidates) {
+      const claimExpiresAt = new Date(now.getTime() + leaseDuration);
+      const claimed = await prisma.gateQueue.updateMany({
+        where: {
+          id: item.id,
+          status: "pending",
+        },
+        data: {
+          status: "sending",
+          claimedAt: now,
+          claimExpiresAt,
+        },
+      });
+      if (claimed.count > 0) {
+        claimedRows.push(item);
+      }
+    }
+
+    if (claimedRows.length === 0) return;
+
+    // Load conversations and keywords
+    const convos = await prisma.conversation.findMany({
+      where: { id: { in: claimedRows.map((r) => r.conversationId) } },
+      include: { keyword: true },
     });
-    const completedConvos = new Set(
-      convoStates.filter((c) => c.state === "completed").map((c) => c.id),
-    );
+    const convoMap = new Map(convos.map((c) => [c.id, c]));
 
     let sent = 0;
-    for (const row of due) {
-      if (completedConvos.has(row.conversationId)) {
+    for (const row of claimedRows) {
+      const convo = convoMap.get(row.conversationId);
+      if (!convo || !convo.keyword) {
+        await prisma.gateQueue.update({
+          where: { id: row.id },
+          data: { status: "exhausted", lastError: "conversation_or_keyword_missing" },
+        });
+        continue;
+      }
+
+      if (convo.state === "completed") {
         await prisma.gateQueue.update({
           where: { id: row.id },
           data: { status: "abandoned", lastError: "conversation_completed" },
@@ -102,20 +177,20 @@ export async function runGateQueueTick(): Promise<void> {
         });
         continue;
       }
+
       try {
-        await sendTrackedPrivateReply({
+        const receipt = await sendTrackedPrivateReply({
           recipientIgUserId: row.igUserId,
           commentId: row.commentId,
           text: row.gateMessage,
           source: "keyword_automation",
         });
+
+        // Immediately finalize delivery state
         await prisma.gateQueue.update({
           where: { id: row.id },
           data: { status: "sent", attempts: row.attempts + 1, lastError: null },
         });
-        // Re-arm the conversation: the user has now actually received the gate, so
-        // open the DONE-window from this moment. Without this, the reply lands on
-        // an expired conversation and is dropped (the retry-gate state bug).
         await prisma.conversation.update({
           where: { id: row.conversationId },
           data: { state: "awaiting_done", gatedAt: new Date() },
@@ -125,36 +200,103 @@ export async function runGateQueueTick(): Promise<void> {
           kind: "gate",
           source: "retry",
         });
+
+        // Schedule recovery in separate block (failures do not un-send or revert queue)
+        try {
+          await scheduleAcceptedGateRecovery({
+            conversationId: row.conversationId,
+            igUserId: row.igUserId,
+            keywordId: convo.keywordId,
+            keywordSnapshot: convo.keyword.keyword,
+            commentId: row.commentId,
+            mediaId: row.mediaId,
+            gateDmMessageId: receipt.dmMessageId,
+            instagramGateMessageId: receipt.instagramMessageId,
+            acceptedAt: receipt.acceptedAt,
+          });
+        } catch {
+          await logEvent("dm_recovery_schedule_failed", {
+            conversationId: row.conversationId,
+            commentId: row.commentId,
+            triggerKind: "no_confirmed_read",
+          });
+        }
+
         sent++;
         await sleep(PER_SEND_GAP_MS);
       } catch (err) {
-        const detail = describeGraphError(err);
+        const metadata = describeGraphError(err);
+        const classification = classifyPrivateGateFailure(
+          metadata,
+          parseGraphSignatures(env.DM_RECOVERY_SETTINGS_BLOCKED_SIGNATURES),
+        );
         const attempts = row.attempts + 1;
-        const lastError = detail.category;
-        if (attempts >= env.GATE_MAX_ATTEMPTS) {
-          // Cap reached: stop for good. Either the target is gone (dead IGSID)
-          // or Meta is delivering-but-erroring — both mean more sends only harm.
+
+        if (classification === "settings_blocked") {
           await prisma.gateQueue.update({
             where: { id: row.id },
-            data: { status: "exhausted", attempts, lastError },
+            data: { status: "abandoned", attempts, lastError: "settings_blocked" },
+          });
+          try {
+            await scheduleSettingsBlockedRecovery({
+              conversationId: row.conversationId,
+              igUserId: row.igUserId,
+              keywordId: convo.keywordId,
+              keywordSnapshot: convo.keyword.keyword,
+              commentId: row.commentId,
+              mediaId: row.mediaId,
+              rejectedAt: new Date(),
+            });
+          } catch {
+            await logEvent("dm_recovery_schedule_failed", {
+              conversationId: row.conversationId,
+              commentId: row.commentId,
+              triggerKind: "settings_blocked",
+            });
+          }
+        } else if (classification === "uncertain") {
+          await prisma.gateQueue.update({
+            where: { id: row.id },
+            data: { status: "send_uncertain", attempts, lastError: metadata.category },
+          });
+          try {
+            await scheduleTrackingUnavailableRecovery({
+              conversationId: row.conversationId,
+              igUserId: row.igUserId,
+              keywordId: convo.keywordId,
+              keywordSnapshot: convo.keyword.keyword,
+              commentId: row.commentId,
+              mediaId: row.mediaId,
+            });
+          } catch {
+            await logEvent("dm_recovery_schedule_failed", {
+              conversationId: row.conversationId,
+              commentId: row.commentId,
+              triggerKind: "tracking_unavailable",
+            });
+          }
+        } else if (classification === "permanent" || attempts >= env.GATE_MAX_ATTEMPTS) {
+          await prisma.gateQueue.update({
+            where: { id: row.id },
+            data: { status: "exhausted", attempts, lastError: metadata.category },
           });
         } else {
+          // rate_limited or retryable_transport or permission_or_auth
           const backoff = Math.min(BASE_BACKOFF_MS * 2 ** (attempts - 1), MAX_BACKOFF_MS);
           await prisma.gateQueue.update({
             where: { id: row.id },
             data: {
+              status: "pending",
               attempts,
-              lastError,
+              lastError: metadata.category,
               nextAttemptAt: new Date(Date.now() + backoff),
             },
           });
         }
 
-        // Adaptive: if we hit the rate limit, the account window is closed right
-        // now — stop this tick rather than burning more failed calls.
         if (isRateLimit(err)) {
           logger.info(
-            { sentThisTick: sent, remaining: due.length - sent },
+            { sentThisTick: sent, remaining: claimedRows.length - sent },
             "Gate retry hit rate limit — backing off for this tick",
           );
           break;

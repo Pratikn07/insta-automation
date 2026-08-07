@@ -6,12 +6,16 @@ const gateQueue = {
   findMany: vi.fn(),
   update: vi.fn(),
 };
-const conversation = { findMany: vi.fn(), update: vi.fn() };
+const conversation = { findMany: vi.fn(), findUnique: vi.fn(), update: vi.fn() };
 const sendTrackedPrivateReply = vi.fn();
 const sendTrackedText = vi.fn();
 const logEvent = vi.fn();
 const logger = { error: vi.fn(), info: vi.fn(), warn: vi.fn(), debug: vi.fn() };
 const flags = { experiment: false };
+
+const scheduleAcceptedGateRecovery = vi.fn();
+const scheduleSettingsBlockedRecovery = vi.fn();
+const scheduleTrackingUnavailableRecovery = vi.fn();
 
 vi.mock("../lib/prisma.js", () => ({ prisma: { gateQueue, conversation } }));
 vi.mock("./dmDeliveryService.js", () => ({ sendTrackedPrivateReply, sendTrackedText }));
@@ -22,7 +26,12 @@ vi.mock("../services/eventLogger.js", async (importOriginal) => {
 vi.mock("../lib/logger.js", () => ({ logger }));
 vi.mock("../config/env.js", () => ({
   env: new Proxy(
-    { GATE_MAX_ATTEMPTS: 3, GATE_RETRY_BATCH: 5 },
+    {
+      GATE_MAX_ATTEMPTS: 3,
+      GATE_RETRY_BATCH: 5,
+      DM_RECOVERY_LEASE_MS: 900000,
+      DM_RECOVERY_SETTINGS_BLOCKED_SIGNATURES: "10:12345",
+    },
     {
       get(target, property) {
         if (property === "GATE_DM_EXPERIMENT") return flags.experiment;
@@ -30,6 +39,11 @@ vi.mock("../config/env.js", () => ({
       },
     },
   ),
+}));
+vi.mock("./dmRecoveryService.js", () => ({
+  scheduleAcceptedGateRecovery,
+  scheduleSettingsBlockedRecovery,
+  scheduleTrackingUnavailableRecovery,
 }));
 
 const { runGateQueueTick } = await import("./gateQueueWorker.js");
@@ -43,7 +57,7 @@ const SENTINELS = [
   "ARBITRARY-AXIOS-CODE-SENTINEL",
 ];
 
-function graphFailure(): AxiosError {
+function graphFailure(code = 100, subcode = 2534025): AxiosError {
   const error = new AxiosError(
     "PROVIDER-MESSAGE-SENTINEL PRIVATE-DM-SENTINEL",
     "ARBITRARY-AXIOS-CODE-SENTINEL",
@@ -60,8 +74,8 @@ function graphFailure(): AxiosError {
     config: error.config,
     data: {
       error: {
-        code: 2,
-        error_subcode: 460,
+        code,
+        error_subcode: subcode,
         message: "PROVIDER-MESSAGE-SENTINEL",
         fbtrace_id: "trace_GATE-1",
       },
@@ -75,10 +89,18 @@ const row = {
   conversationId: "conversation-1",
   igUserId: "ig-user-1",
   commentId: "comment-1",
+  mediaId: "media-1",
   gateMessage: "PRIVATE-DM-SENTINEL",
   attempts: 0,
   commentAt: new Date(),
   updatedAt: new Date(),
+};
+
+const convoObj = {
+  id: "conversation-1",
+  state: "awaiting_gate",
+  keywordId: "keyword-1",
+  keyword: { id: "keyword-1", keyword: "SLEEP" },
 };
 
 beforeEach(() => {
@@ -89,19 +111,30 @@ beforeEach(() => {
     sendTrackedPrivateReply,
     sendTrackedText,
     logEvent,
+    scheduleAcceptedGateRecovery,
+    scheduleSettingsBlockedRecovery,
+    scheduleTrackingUnavailableRecovery,
     ...Object.values(logger),
   ]) {
     fn.mockReset();
   }
-  gateQueue.updateMany.mockResolvedValue({ count: 0 });
+  gateQueue.findMany.mockImplementation(async (args?: { where?: { status?: string } }) => {
+    if (args?.where?.status === "sending") return [];
+    if (args?.where?.status === "pending") return [row];
+    return [];
+  });
+  gateQueue.updateMany.mockResolvedValue({ count: 1 });
   gateQueue.update.mockResolvedValue(row);
-  conversation.findMany.mockResolvedValue([]);
+  conversation.findMany.mockResolvedValue([convoObj]);
+  conversation.findUnique.mockResolvedValue(convoObj);
   logEvent.mockResolvedValue(undefined);
+  scheduleAcceptedGateRecovery.mockResolvedValue({ id: "rec-1", status: "waiting" });
+  scheduleSettingsBlockedRecovery.mockResolvedValue({ id: "rec-2", status: "waiting" });
+  scheduleTrackingUnavailableRecovery.mockResolvedValue({ id: "rec-3", status: "tracking_unavailable" });
 });
 
 describe("runGateQueueTick Graph failure privacy", () => {
   it("stores only a stable category for a secret-bearing retry failure", async () => {
-    gateQueue.findMany.mockResolvedValue([row]);
     sendTrackedPrivateReply.mockRejectedValue(graphFailure());
 
     await runGateQueueTick();
@@ -109,6 +142,7 @@ describe("runGateQueueTick Graph failure privacy", () => {
     expect(gateQueue.update).toHaveBeenCalledWith({
       where: { id: "gate-1" },
       data: {
+        status: "pending",
         attempts: 1,
         lastError: "graph_response",
         nextAttemptAt: expect.any(Date),
@@ -124,8 +158,13 @@ describe("runGateQueueTick Graph failure privacy", () => {
 
   it("writes only the safe descriptor for the experiment EventLog caller", async () => {
     flags.experiment = true;
-    gateQueue.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([row]);
-    sendTrackedText.mockRejectedValue(graphFailure());
+    gateQueue.findMany.mockImplementation(async (args?: { where?: { status?: string } }) => {
+      if (args?.where?.status === "sending") return [];
+      if (args?.where?.status === "pending") return [];
+      if (args?.where?.status === "exhausted") return [row];
+      return [];
+    });
+    sendTrackedText.mockRejectedValue(graphFailure(2, 460));
     const timeout = vi.spyOn(globalThis, "setTimeout").mockImplementation((callback) => {
       if (typeof callback === "function") callback();
       return 0 as unknown as ReturnType<typeof setTimeout>;
@@ -148,5 +187,54 @@ describe("runGateQueueTick Graph failure privacy", () => {
     });
     const captured = JSON.stringify(logEvent.mock.calls);
     for (const sentinel of SENTINELS) expect(captured).not.toContain(sentinel);
+  });
+});
+
+describe("runGateQueueTick Recovery Scheduling (Task 7)", () => {
+  it("schedules accepted-DM recovery after a queued send succeeds", async () => {
+    const acceptedAt = new Date("2026-08-06T08:00:00Z");
+    gateQueue.findMany.mockResolvedValue([row]);
+    sendTrackedPrivateReply.mockResolvedValue({
+      instagramMessageId: "mid-1",
+      dmMessageId: "dm-1",
+      acceptedAt,
+    });
+
+    await runGateQueueTick();
+
+    expect(scheduleAcceptedGateRecovery).toHaveBeenCalledWith({
+      conversationId: "conversation-1",
+      igUserId: "ig-user-1",
+      keywordId: "keyword-1",
+      keywordSnapshot: "SLEEP",
+      commentId: "comment-1",
+      mediaId: "media-1",
+      gateDmMessageId: "dm-1",
+      instagramGateMessageId: "mid-1",
+      acceptedAt,
+    });
+    expect(gateQueue.update).toHaveBeenCalledWith({
+      where: { id: "gate-1" },
+      data: { status: "sent", attempts: 1, lastError: null },
+    });
+  });
+
+  it("creates an immediate settings recovery candidate for allowlisted settings rejection", async () => {
+    gateQueue.findMany.mockResolvedValue([row]);
+    sendTrackedPrivateReply.mockRejectedValue(graphFailure(10, 12345));
+
+    await runGateQueueTick();
+
+    expect(gateQueue.update).toHaveBeenCalledWith({
+      where: { id: "gate-1" },
+      data: { status: "abandoned", attempts: 1, lastError: "settings_blocked" },
+    });
+    expect(scheduleSettingsBlockedRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: "conversation-1",
+        commentId: "comment-1",
+        mediaId: "media-1",
+      }),
+    );
   });
 });
