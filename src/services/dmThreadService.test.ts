@@ -199,6 +199,16 @@ describe("recordOutboundMessage", () => {
     instagramTimestamp: new Date("2026-08-04T10:05:00.000Z"),
   };
 
+  // The reason this function stopped returning void: recovery correlates a gate
+  // DM to its reminder row through the local message id, so an accepted send
+  // that cannot hand back its identifiers is untrackable.
+  it("returns the local thread and message identifiers after a successful write", async () => {
+    await expect(recordOutboundMessage(OUTBOUND)).resolves.toEqual({
+      threadId: "thread-1",
+      messageId: "message-1",
+    });
+  });
+
   it("updates outbound timestamps but never touches latestInboundMessageId or needsReply", async () => {
     await recordOutboundMessage(OUTBOUND);
 
