@@ -46,7 +46,8 @@ type StateFilter = ConversationState | "all";
 type Lens = "needs_reply" | "dms" | "recovery" | "journeys";
 
 // Plain-English tab labels. "DONE" is internal jargon (the word the user types) —
-// a marketer tracks outcomes: who's waiting, who got it, who never replied.
+// a marketer tracks outcomes: who's waiting, who got it, and who we never got a
+// confirmed reply from — which is not the same as who chose not to answer.
 const FILTERS: { value: StateFilter; label: string; countKey?: keyof ConversationCounts }[] = [
   { value: "all", label: "All" },
   { value: "awaiting_done", label: "Waiting", countKey: "awaiting_done" },
@@ -495,7 +496,10 @@ function summaryLine(data: ConversationDetailResponse): { text: string; tone: St
     return { text: `${who} replied DONE and got the ${freebie}. 🎉`, tone: "done" };
   }
   if (conversation.state === "expired") {
-    return { text: `${who} never replied, so the ${freebie} wasn’t sent.`, tone: "pending" };
+    return {
+      text: `No reply was confirmed from ${who}, so the ${freebie} wasn’t sent.`,
+      tone: "pending",
+    };
   }
   // awaiting_done
   if (gate && (gate.status === "pending" || gate.status === "exhausted")) {
