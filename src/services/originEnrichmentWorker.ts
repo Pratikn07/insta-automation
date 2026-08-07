@@ -21,6 +21,35 @@ export type OriginEnrichmentResult = {
 
 let running = false;
 
+/**
+ * Spend this process has incurred today that left no row behind — a call the
+ * model answered unreadably, or one that threw after billing. The row-derived
+ * figure below cannot see it, and that is precisely the spend worth stopping.
+ * Process-local and reset daily; a restart forgets it, which errs toward
+ * continuing rather than toward a stuck worker.
+ */
+let unrecordedSpendUsd = 0;
+let unrecordedSpendDay = "";
+
+function noteUnrecordedSpend(amount: number): void {
+  const today = new Date().toISOString().slice(0, 10);
+  if (today !== unrecordedSpendDay) {
+    unrecordedSpendDay = today;
+    unrecordedSpendUsd = 0;
+  }
+  unrecordedSpendUsd += amount;
+}
+
+function unrecordedSpendToday(): number {
+  return new Date().toISOString().slice(0, 10) === unrecordedSpendDay ? unrecordedSpendUsd : 0;
+}
+
+/** Reset process-local spend tracking. Tests only. */
+export function _resetOriginSpendState(): void {
+  unrecordedSpendUsd = 0;
+  unrecordedSpendDay = "";
+}
+
 function emptyResult(skipped: OriginEnrichmentResult["skipped"]): OriginEnrichmentResult {
   return { examined: 0, classified: 0, skippedNoSignal: 0, costUsd: 0, skipped };
 }
@@ -48,7 +77,7 @@ async function spentTodayUsd(): Promise<number> {
   // from the row count at the batch rate — exact whenever batches are full,
   // and an over-estimate otherwise, which errs toward stopping early.
   const batches = Math.ceil(rows.length / MAX_ORIGIN_BATCH);
-  return batches * estimateOriginCostUsd(MAX_ORIGIN_BATCH);
+  return batches * estimateOriginCostUsd(MAX_ORIGIN_BATCH) + unrecordedSpendToday();
 }
 
 /**
@@ -79,10 +108,10 @@ export async function runOriginEnrichmentTick(): Promise<OriginEnrichmentResult>
   try {
     return await tickBody();
   } catch (error) {
-    logger.error(
-      { errorCode: "origin_enrichment_failed", message: (error as Error)?.message },
-      "Origin enrichment tick failed",
-    );
+    // Stable code only. The Gemini client carries the API key in its request
+    // params, and raw error text is untrusted — the same reason the recovery
+    // workers log codes rather than errors.
+    logger.error({ errorCode: "origin_enrichment_failed" }, "Origin enrichment tick failed");
     return emptyResult(undefined);
   } finally {
     running = false;
@@ -137,6 +166,18 @@ async function tickBody(): Promise<OriginEnrichmentResult> {
   const { verdicts, costUsd } = await classifyOrigins(classifiable);
   result.costUsd = costUsd;
 
+  // Zero verdicts for a non-empty batch means the response was unreadable or
+  // empty, not that these people are unclassifiable. Leave them unstamped for a
+  // later tick, but record the spend, which left no row to be counted from.
+  if (verdicts.length === 0) {
+    noteUnrecordedSpend(costUsd);
+    logger.error(
+      { errorCode: "origin_batch_unreadable", batchSize: classifiable.length },
+      "Origin classification returned no usable verdicts",
+    );
+    return result;
+  }
+
   for (const v of verdicts) {
     await prisma.igUser.update({
       where: { id: v.id },
@@ -151,8 +192,27 @@ async function tickBody(): Promise<OriginEnrichmentResult> {
     result.classified++;
   }
 
-  // Rows the model skipped keep originCheckedAt null on purpose, so the next
-  // tick retries them. They stay on the name-token fallback until then.
+  // The model answered, so anyone it left out is someone it declined to place
+  // rather than a failed call. Stamping them `unknown` stops the query
+  // returning them every two minutes forever, which re-billed the same rows
+  // indefinitely once the backlog drained. `unknown` never withholds a
+  // reminder, so this errs toward sending; a prompt-version bump re-runs them.
+  const classified = new Set(verdicts.map((v) => v.id));
+  for (const candidate of classifiable) {
+    if (classified.has(candidate.id)) continue;
+    await prisma.igUser.update({
+      where: { id: candidate.id },
+      data: {
+        inferredOrigin: "unknown",
+        originConfidence: "low",
+        originMethod: ORIGIN_PROMPT_VERSION,
+        originEvidence: "model returned no verdict for this account",
+        originCheckedAt: now,
+      },
+    });
+    result.skippedNoSignal++;
+  }
+
   await logEvent("origin_enrichment_tick", {
     examined: result.examined,
     classified: result.classified,

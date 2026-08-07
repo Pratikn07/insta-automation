@@ -8,8 +8,9 @@ const logEvent = vi.fn();
 vi.mock("../lib/prisma.js", () => ({
   prisma: { igUser: { findMany, update } },
 }));
+const loggerError = vi.fn();
 vi.mock("../lib/logger.js", () => ({
-  logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
+  logger: { error: loggerError, warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 vi.mock("../meta/geminiClient.js", () => ({ geminiEnabled: true }));
 vi.mock("./eventLogger.js", () => ({ logEvent }));
@@ -26,12 +27,19 @@ vi.mock("./originClassifier.js", async (importOriginal) => {
   return { ...actual, classifyOrigins };
 });
 
-const { runOriginEnrichmentTick } = await import("./originEnrichmentWorker.js");
+const { runOriginEnrichmentTick, _resetOriginSpendState } = await import(
+  "./originEnrichmentWorker.js"
+);
 const { ORIGIN_PROMPT_VERSION } = await import("./originClassifier.js");
 
 beforeEach(() => {
+  // Spend that left no row behind is tracked in module state; without this a
+  // budget test would starve every test after it.
+  _resetOriginSpendState();
+  loggerError.mockReset();
   for (const fn of [findMany, update, classifyOrigins, logEvent]) fn.mockReset();
   env.DM_RECOVERY_ORIGIN_LLM_ENABLED = true;
+  env.GEMINI_DAILY_BUDGET_USD = 5;
   findMany.mockResolvedValue([]);
   update.mockResolvedValue({});
   classifyOrigins.mockResolvedValue({ verdicts: [], costUsd: 0 });
@@ -107,7 +115,11 @@ describe("runOriginEnrichmentTick", () => {
   // Leaving originCheckedAt null is what returns the row to a later tick. The
   // user keeps the name-token fallback until then, rather than being recorded
   // as checked-and-unknown on the strength of a response that never came.
-  it("leaves a user the model skipped unstamped, for a later tick", async () => {
+  // The model answered and declined to place u2. Leaving it unstamped meant the
+  // query returned it again every two minutes forever, re-billing the same row
+  // once the backlog drained. `unknown` never withholds, so this errs toward
+  // sending, and a prompt-version bump re-runs it.
+  it("stamps a user the model declined to place, rather than retrying forever", async () => {
     arrange([
       { id: "u1", username: "a_name", name: "A Name" },
       { id: "u2", username: "b_name", name: "B Name" },
@@ -120,8 +132,52 @@ describe("runOriginEnrichmentTick", () => {
     const res = await runOriginEnrichmentTick();
 
     expect(res.classified).toBe(1);
-    expect(update).toHaveBeenCalledTimes(1);
-    expect(update).not.toHaveBeenCalledWith(expect.objectContaining({ where: { id: "u2" } }));
+    expect(update).toHaveBeenCalledWith({
+      where: { id: "u2" },
+      data: expect.objectContaining({
+        inferredOrigin: "unknown",
+        originConfidence: "low",
+        originCheckedAt: expect.any(Date),
+      }),
+    });
+  });
+
+  // An unreadable response is not a statement about these people, so they are
+  // left for a later tick — but the call was still billed, and a row-derived
+  // budget cannot see spend that produced no row.
+  it("does not stamp anyone when the whole batch came back unusable", async () => {
+    arrange([{ id: "u1", username: "a_name", name: "A Name" }]);
+    classifyOrigins.mockResolvedValue({ verdicts: [], costUsd: 0.0035 });
+
+    const res = await runOriginEnrichmentTick();
+
+    expect(res.classified).toBe(0);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("counts an unreadable batch toward the daily budget", async () => {
+    env.GEMINI_DAILY_BUDGET_USD = 0.003; // below the 0.0035 the failed call cost
+    arrange([{ id: "u1", username: "a_name", name: "A Name" }]);
+    classifyOrigins.mockResolvedValue({ verdicts: [], costUsd: 0.0035 });
+
+    await runOriginEnrichmentTick();
+
+    // The first call left no row behind, so the row-derived figure still reads
+    // zero. Without process-local tracking the guard would keep paying for the
+    // same failure indefinitely.
+    arrange([{ id: "u1", username: "a_name", name: "A Name" }]);
+    const second = await runOriginEnrichmentTick();
+
+    expect(second.skipped).toBe("budget");
+  });
+
+  it("never logs raw error text", async () => {
+    arrange([{ id: "u1", username: "a_name", name: "A Name" }]);
+    classifyOrigins.mockRejectedValue(new Error("SECRET-SENTINEL"));
+
+    await runOriginEnrichmentTick();
+
+    expect(JSON.stringify(loggerError.mock.calls)).not.toContain("SECRET-SENTINEL");
   });
 
   describe("guards", () => {
