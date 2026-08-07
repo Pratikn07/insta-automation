@@ -19,6 +19,22 @@ export function displayUser(igUserId: string, user?: IgUserLite | null): string 
   return igUserId;
 }
 
+/**
+ * An absolute timestamp in the viewer's own locale and zone: "Aug 7, 9:41 AM".
+ *
+ * The one definition for the whole UI. Three byte-identical copies had accreted
+ * (two named formatWhen, one formatAbsolute), which is how a timestamp ends up
+ * rendered one way in a list and another in the drawer beside it.
+ */
+export function formatAbsolute(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 /** Compact follower count: 2214 → "2,214", 18500 → "18.5K", 1200000 → "1.2M". */
 export function formatFollowerCount(n?: number | null): string | null {
   if (n == null || n < 0) return null;

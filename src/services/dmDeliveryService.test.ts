@@ -19,7 +19,8 @@ beforeEach(() => {
   sendTextMessage.mockReset().mockResolvedValue({ messageId: "mid-1" });
   sendPrivateReply.mockReset().mockResolvedValue({ messageId: "mid-2" });
   sendMedia.mockReset().mockResolvedValue({ messageId: "mid-3" });
-  recordOutboundMessage.mockReset().mockResolvedValue(undefined);
+  // Matches the real signature: RecordedOutboundMessage | null, never undefined.
+  recordOutboundMessage.mockReset().mockResolvedValue(null);
   loggerError.mockReset();
 });
 
@@ -153,9 +154,10 @@ describe("sendTrackedText", () => {
 
 describe("sendTrackedPrivateReply", () => {
   it("records against the recipient, not the comment", async () => {
+    recordOutboundMessage.mockResolvedValueOnce({ threadId: "thread-1", messageId: "dm-1" });
     // A private reply is addressed by comment_id, but it lands in the participant's
     // DM thread — so the recorded row must key on the user.
-    await sendTrackedPrivateReply({
+    const receipt = await sendTrackedPrivateReply({
       recipientIgUserId: "ig-user-1",
       commentId: "comment-9",
       text: "Reply to your comment",
@@ -166,10 +168,70 @@ describe("sendTrackedPrivateReply", () => {
     expect(recordOutboundMessage).toHaveBeenCalledWith(
       expect.objectContaining({ igUserId: "ig-user-1", instagramMessageId: "mid-2" }),
     );
+    expect(receipt).toEqual({
+      instagramMessageId: "mid-2",
+      dmMessageId: "dm-1",
+      acceptedAt: expect.any(Date),
+    });
   });
 
-  it("survives a recording failure", async () => {
+  // This is the real local-failure path: recordOutboundMessage catches its own
+  // errors and resolves null, so production never sees it throw. Meta has
+  // already accepted at this point, so the receipt must still report the send.
+  it("still reports the accepted send when local capture returns null", async () => {
+    recordOutboundMessage.mockResolvedValue(null);
+
+    const receipt = await sendTrackedPrivateReply({
+      recipientIgUserId: "ig-user-1",
+      commentId: "comment-9",
+      text: "Reply",
+      source: "keyword_automation",
+    });
+
+    expect(receipt).toEqual({
+      instagramMessageId: "mid-2",
+      dmMessageId: null,
+      acceptedAt: expect.any(Date),
+    });
+  });
+
+  // Defence in depth for the wrapper: recordOutboundMessage does not throw
+  // today, and a delivered message must stay delivered if that ever changes.
+  it("survives a recording failure even if local capture starts throwing", async () => {
     recordOutboundMessage.mockRejectedValue(new Error("database unavailable"));
+    const receipt = await sendTrackedPrivateReply({
+      recipientIgUserId: "ig-user-1",
+      commentId: "comment-9",
+      text: "Reply",
+      source: "keyword_automation",
+    });
+    expect(receipt).toEqual({
+      instagramMessageId: "mid-2",
+      dmMessageId: null,
+      acceptedAt: expect.any(Date),
+    });
+  });
+
+  // The 10-hour recovery clock starts at this timestamp, and the same instant is
+  // written to local history, so the two must not drift apart.
+  it("stamps local history with the same instant it reports as acceptedAt", async () => {
+    recordOutboundMessage.mockResolvedValue({ threadId: "thread-1", messageId: "dm-1" });
+
+    const receipt = await sendTrackedPrivateReply({
+      recipientIgUserId: "ig-user-1",
+      commentId: "comment-9",
+      text: "Reply",
+      source: "keyword_automation",
+    });
+
+    expect(recordOutboundMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ instagramTimestamp: receipt.acceptedAt }),
+    );
+  });
+
+  it("propagates a Meta rejection instead of returning a receipt", async () => {
+    sendPrivateReply.mockRejectedValue(new Error("graph rejected"));
+
     await expect(
       sendTrackedPrivateReply({
         recipientIgUserId: "ig-user-1",
@@ -177,7 +239,8 @@ describe("sendTrackedPrivateReply", () => {
         text: "Reply",
         source: "keyword_automation",
       }),
-    ).resolves.toEqual({ messageId: "mid-2" });
+    ).rejects.toThrow("graph rejected");
+    expect(recordOutboundMessage).not.toHaveBeenCalled();
   });
 });
 

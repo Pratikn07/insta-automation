@@ -152,6 +152,116 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
+
+// ── DM recovery fixtures ──────────────────────────────────────────────────
+//
+// Fixed ISO timestamps so labels ("late", "ready") are deterministic rather
+// than relative to when the suite happens to run. POSTs mutate this state, so a
+// cancellation genuinely changes the next GET instead of being asserted only at
+// the network boundary.
+
+const RECOVERY_CANCELLED = new Set<string>();
+const RECOVERY_REVIEWED = new Set<string>();
+
+function recoveryRow(over: Record<string, unknown> = {}) {
+  return {
+    id: "recovery-1",
+    conversationId: "convo-1",
+    igUserId: "ig-user-1",
+    username: "sarah",
+    name: "Sarah",
+    keyword: { id: "kw-1", keyword: "SLEEP" },
+    media: { id: "media-1", permalink: "https://instagram.com/p/sleep", caption: "Sleep reel" },
+    triggerKind: "no_confirmed_read",
+    status: "waiting",
+    cohort: "treatment",
+    acceptedAt: "2026-08-06T00:00:00.000Z",
+    eligibleAt: "2026-08-06T10:00:00.000Z",
+    seenAt: null,
+    engagedAt: null,
+    firstEngagementKind: null,
+    suppressionReason: null,
+    sentAt: null,
+    attempts: 0,
+    lastAttemptAt: null,
+    lastErrorCategory: null,
+    reviewedAt: null,
+    createdAt: "2026-08-05T23:00:00.000Z",
+    ...over,
+  };
+}
+
+const RECOVERY_ROWS: Record<string, Record<string, unknown>[]> = {
+  "recovery-ready": [recoveryRow()],
+  "recovery-seen": [
+    recoveryRow({ status: "suppressed", suppressionReason: "seen", seenAt: "2026-08-06T09:00:00.000Z" }),
+  ],
+  "recovery-replied": [
+    recoveryRow({
+      status: "suppressed",
+      suppressionReason: "inbound_reply",
+      engagedAt: "2026-08-06T09:30:00.000Z",
+      firstEngagementKind: "inbound_reply",
+    }),
+  ],
+  "recovery-sent-late": [
+    recoveryRow({ status: "sent", sentAt: "2026-08-07T05:00:00.000Z" }),
+  ],
+  "recovery-control": [recoveryRow({ status: "control", cohort: "control" })],
+  "recovery-settings": [
+    recoveryRow({ triggerKind: "settings_blocked", cohort: "not_applicable" }),
+  ],
+  "recovery-tracking": [recoveryRow({ status: "tracking_unavailable" })],
+  "recovery-uncertain": [
+    recoveryRow({ status: "send_uncertain", lastErrorCategory: "graph_transport", attempts: 1 }),
+  ],
+  "recovery-cooldown": [
+    recoveryRow({ status: "sent", sentAt: "2026-08-06T10:00:20.000Z" }),
+    recoveryRow({
+      id: "recovery-2",
+      status: "suppressed",
+      suppressionReason: "person_cooldown",
+      keyword: { id: "kw-2", keyword: "PROTEIN" },
+    }),
+  ],
+  "recovery-circuit": [recoveryRow()],
+};
+
+function recoveryScenario(): string {
+  return new URLSearchParams(window.location.search).get("scenario") ?? "";
+}
+
+function currentRecoveryRows(): Record<string, unknown>[] {
+  const rows = RECOVERY_ROWS[recoveryScenario()] ?? RECOVERY_ROWS["recovery-ready"]!;
+  return rows.map((row) =>
+    RECOVERY_CANCELLED.has(row.id as string)
+      ? { ...row, status: "cancelled", suppressionReason: "owner_cancelled" }
+      : RECOVERY_REVIEWED.has(row.id as string)
+        ? { ...row, reviewedAt: "2026-08-07T06:00:00.000Z" }
+        : row,
+  );
+}
+
+function recoveryCounts() {
+  const rows = currentRecoveryRows();
+  const people = new Set(rows.map((r) => r.igUserId)).size;
+  const of = (pred: (r: Record<string, unknown>) => boolean) => {
+    const m = rows.filter(pred);
+    return { records: m.length, people: new Set(m.map((r) => r.igUserId)).size };
+  };
+  return {
+    all: { records: rows.length, people },
+    scheduled: of((r) => r.status === "waiting" && r.eligibleAt! > "2026-08-07"),
+    ready: of((r) => r.status === "waiting"),
+    sent: of((r) => r.status === "sent"),
+    suppressed: of((r) => r.status === "suppressed"),
+    control: of((r) => r.status === "control"),
+    attention: of((r) =>
+      ["send_failed", "send_uncertain", "tracking_unavailable"].includes(r.status as string),
+    ),
+  };
+}
+
 function installFetchStub(): void {
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -322,6 +432,81 @@ function installFetchStub(): void {
       });
     }
 
+
+    // ── DM recovery ──────────────────────────────────────────────────────
+    if (path === "/recovery-reminders" && method === "GET") {
+      const view = new URL(url, window.location.origin).searchParams.get("view") ?? "all";
+      const rows = currentRecoveryRows().filter((r) => {
+        if (view === "all") return true;
+        if (view === "ready") return r.status === "waiting";
+        if (view === "attention") {
+          return ["send_failed", "send_uncertain", "tracking_unavailable"].includes(
+            r.status as string,
+          );
+        }
+        return r.status === view;
+      });
+      return json({ rows, nextCursor: null });
+    }
+
+    if (path === "/recovery-reminders/counts" && method === "GET") {
+      return json(recoveryCounts());
+    }
+
+    if (path === "/recovery-reminders/metrics" && method === "GET") {
+      const open = recoveryScenario() === "recovery-circuit";
+      return json({
+        health: {
+          circuitOpen: open,
+          reason: open ? "auth_or_permission" : null,
+          openedAt: open ? "2026-08-07T04:00:00.000Z" : null,
+          dueCount: currentRecoveryRows().length,
+          sentLastHour: 0,
+          recentOutcomeCount: 0,
+          recentFailureRate: null,
+          acceptedSignalSample: 0,
+          positiveSignalSample: 0,
+        },
+      });
+    }
+
+    if (path.startsWith("/recovery-reminders/") && method === "GET") {
+      const id = path.split("/")[2]!;
+      const row = currentRecoveryRows().find((r) => r.id === id) ?? currentRecoveryRows()[0]!;
+      const timeline = [
+        { kind: "created", at: row.createdAt, detail: null },
+        { kind: "accepted", at: row.acceptedAt, detail: null },
+        { kind: "eligible", at: row.eligibleAt, detail: null },
+        ...(row.seenAt ? [{ kind: "seen", at: row.seenAt, detail: null }] : []),
+        ...(row.engagedAt
+          ? [{ kind: "engaged", at: row.engagedAt, detail: row.firstEngagementKind }]
+          : []),
+        ...(row.sentAt ? [{ kind: "sent", at: row.sentAt, detail: null }] : []),
+      ].filter((e) => e.at);
+      return json({
+        ...row,
+        commentId: "comment-1",
+        keywordSnapshot: "SLEEP",
+        templateVersion: "v1",
+        publicReplyId: row.sentAt ? "public-reply-1" : null,
+        trackingAvailable: row.status !== "tracking_unavailable",
+        comment: { text: "sleep", receivedAt: row.createdAt },
+        timeline,
+      });
+    }
+
+    if (path.endsWith("/cancel") && method === "POST") {
+      RECOVERY_CANCELLED.add(path.split("/")[2]!);
+      capture(JSON.stringify({ method, path }));
+      return new Response(null, { status: 204 });
+    }
+
+    if (path.endsWith("/mark-reviewed") && method === "POST") {
+      RECOVERY_REVIEWED.add(path.split("/")[2]!);
+      capture(JSON.stringify({ method, path }));
+      return new Response(null, { status: 204 });
+    }
+
     if (path === "/ai/capabilities" && method === "GET") {
       const scenario = new URLSearchParams(window.location.search).get("scenario");
       return json({
@@ -430,6 +615,13 @@ export function Harness() {
   }
   if (scenario === "stale-reply") return <DmApprovalScenario />;
   if (scenario?.startsWith("follow-up-")) return <DmApprovalScenario />;
+  if (scenario?.startsWith("recovery-")) {
+    return (
+      <div className="p-4">
+        <Conversations />
+      </div>
+    );
+  }
   if (scenario === "advisor") {
     return (
       <div className="p-4">

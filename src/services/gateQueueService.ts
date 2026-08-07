@@ -22,18 +22,24 @@ export async function enqueueGate(args: {
   igUserId: string;
   commentId: string;
   gateMessage: string;
+  mediaId?: string | null;
   lastError?: string;
+  initialErrorCategory?: string | null;
   commentAt?: Date;
 }): Promise<void> {
   try {
     const now = Date.now();
+    const isUncertain =
+      args.initialErrorCategory === "transport_uncertain" ||
+      args.initialErrorCategory === "uncertain";
     await prisma.gateQueue.create({
       data: {
         conversationId: args.conversationId,
         igUserId: args.igUserId,
         commentId: args.commentId,
+        mediaId: args.mediaId ?? null,
         gateMessage: args.gateMessage,
-        status: "pending",
+        status: isUncertain ? "send_uncertain" : "pending",
         attempts: 0,
         lastError: args.lastError ?? null,
         commentAt: args.commentAt ?? new Date(now),

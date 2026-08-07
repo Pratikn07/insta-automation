@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma.js";
+import { suppressRecoveriesForCompletionSafely } from "./dmRecoveryService.js";
 
 // Window during which we'll accept a DONE reply / keep a gate "open", measured
 // from when the gate was DELIVERED (gatedAt), falling back to createdAt for legacy
@@ -59,20 +60,42 @@ export async function findLatestIncompleteConversation(igUserId: string) {
 }
 
 export async function markCompleted(conversationId: string) {
-  // Completing a conversation also cancels any still-pending gate retries for
-  // it: the user has the guide, so another "reply DONE to unlock" would be pure
-  // spam (Meta sometimes delivers a private reply while returning an error, so
-  // a "failing" queue row may in fact be reaching the user's inbox).
-  const [convo] = await prisma.$transaction([
-    prisma.conversation.update({
+  const completedAt = new Date();
+
+  // Completing the conversation also abandons any still-pending gate retries:
+  // the user has the guide, so another "reply DONE to unlock" would be pure
+  // spam. Those two writes must land together, so they share a transaction.
+  const convo = await prisma.$transaction(async (tx) => {
+    const updated = await tx.conversation.update({
       where: { id: conversationId },
-      data: { state: "completed", completedAt: new Date() },
-    }),
-    prisma.gateQueue.updateMany({
+      data: { state: "completed", completedAt },
+    });
+
+    await tx.gateQueue.updateMany({
       where: { conversationId, status: "pending" },
       data: { status: "abandoned", lastError: "conversation_completed" },
-    }),
-  ]);
+    });
+
+    return updated;
+  });
+
+  // Suppressing the recovery reminders is best-effort bookkeeping and runs
+  // after the commit, never inside it. Inside, a failure here would roll back
+  // the completion and the gate abandon, stranding the conversation in
+  // awaiting_done with live gate rows — so the worker would re-send the gate to
+  // someone who already has the guide, which is exactly the spam this abandon
+  // exists to prevent.
+  //
+  // Losing the suppression is safe on its own: the recovery worker re-runs the
+  // full policy in its final pre-send transaction, and `conversationCompletedAt`
+  // suppresses the row there before any public comment is posted.
+  await suppressRecoveriesForCompletionSafely({
+    conversationId,
+    igUserId: convo.igUserId,
+    keywordId: convo.keywordId,
+    completedAt,
+  });
+
   return convo;
 }
 

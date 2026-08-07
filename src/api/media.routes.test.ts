@@ -78,6 +78,7 @@ describe("media route Graph failure privacy", () => {
         graphCode: 2,
         graphSubcode: 99,
         traceId: "trace_MEDIA-1",
+        transportCode: null,
       },
       logMessage,
     );

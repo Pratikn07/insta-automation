@@ -2,6 +2,64 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { getIgUsers } from "../services/igUserService.js";
+import { env } from "../config/env.js";
+
+/**
+ * Enough recovery state for a badge, and no more: the copy we would post and
+ * the provider identifiers stay out of the conversations list.
+ */
+const RECOVERY_SUMMARY_SELECT = {
+  id: true,
+  status: true,
+  triggerKind: true,
+  eligibleAt: true,
+  sentAt: true,
+} as const;
+
+type RecoverySummaryRow = {
+  id: string;
+  status: string;
+  triggerKind: string;
+  eligibleAt: Date;
+  sentAt: Date | null;
+};
+
+export type ReadTrackingAvailability = "tracked" | "predates_tracking" | "not_available";
+
+/**
+ * Why a journey has no read information.
+ *
+ * Derived only from whether a recovery row exists and when the conversation was
+ * created — never from the conversation's current state. A completed journey
+ * from before launch has no recovery row for the same reason an ineligible one
+ * does, and reporting either as "no confirmed read" would be a claim we never
+ * measured.
+ */
+export function readTrackingAvailability(
+  recovery: RecoverySummaryRow | null,
+  conversationCreatedAt: Date,
+  trackingStart: Date | null,
+): ReadTrackingAvailability {
+  if (recovery) return "tracked";
+  if (trackingStart && conversationCreatedAt < trackingStart) return "predates_tracking";
+  return "not_available";
+}
+
+function trackingStartAt(): Date | null {
+  const raw = env.DM_RECOVERY_EXPERIMENT_START_AT;
+  return raw ? new Date(raw) : null;
+}
+
+function summariseRecovery(recovery: RecoverySummaryRow | null): Record<string, unknown> | null {
+  if (!recovery) return null;
+  return {
+    id: recovery.id,
+    status: recovery.status,
+    triggerKind: recovery.triggerKind,
+    eligibleAt: recovery.eligibleAt.toISOString(),
+    sentAt: recovery.sentAt ? recovery.sentAt.toISOString() : null,
+  };
+}
 
 export const conversationsRouter = Router();
 
@@ -23,6 +81,12 @@ conversationsRouter.get("/", async (req, res) => {
     ...(cursor && { cursor: { id: cursor }, skip: 1 }),
     include: {
       keyword: { select: { id: true, keyword: true } },
+      // At most one row per conversation: a bounded badge, never an N+1.
+      recoveryReminders: {
+        take: 1,
+        orderBy: { createdAt: "desc" },
+        select: RECOVERY_SUMMARY_SELECT,
+      },
     },
   });
 
@@ -41,8 +105,16 @@ conversationsRouter.get("/", async (req, res) => {
     items.filter((c) => c.state === "awaiting_done").map((c) => c.id),
   );
 
-  const withUsers = items.map((c) => ({
+  const trackingStart = trackingStartAt();
+
+  const withUsers = items.map(({ recoveryReminders, ...c }) => ({
     ...c,
+    recovery: summariseRecovery(recoveryReminders[0] ?? null),
+    readTracking: readTrackingAvailability(
+      recoveryReminders[0] ?? null,
+      c.createdAt,
+      trackingStart,
+    ),
     username: users[c.igUserId]?.username ?? null,
     name: users[c.igUserId]?.name ?? null,
     isFollower: users[c.igUserId]?.isFollower ?? null,

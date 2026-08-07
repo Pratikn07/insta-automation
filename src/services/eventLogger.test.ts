@@ -67,9 +67,28 @@ describe("describeGraphError", () => {
       graphCode: 100,
       graphSubcode: 2534025,
       traceId: "trace_SAFE-123",
+      // err.code is caller-controlled, so an unrecognised value is dropped
+      // rather than echoed into the event log.
+      transportCode: null,
     });
     const captured = JSON.stringify(described);
     for (const sentinel of SENTINELS) expect(captured).not.toContain(sentinel);
+  });
+
+  it("surfaces a known transport code but drops an arbitrary one", () => {
+    const known = describeGraphError(
+      new AxiosError("network", "ECONNREFUSED", { headers: {} as never }, {}),
+    );
+    expect(known).toMatchObject({
+      category: "graph_transport",
+      transportCode: "ECONNREFUSED",
+    });
+
+    const arbitrary = describeGraphError(
+      new AxiosError("network", "ARBITRARY-AXIOS-CODE-SENTINEL", { headers: {} as never }, {}),
+    );
+    expect(arbitrary.transportCode).toBeNull();
+    expect(JSON.stringify(arbitrary)).not.toContain("ARBITRARY-AXIOS-CODE-SENTINEL");
   });
 
   it("uses only stable null metadata for unknown raw errors", () => {
@@ -82,6 +101,7 @@ describe("describeGraphError", () => {
       graphCode: null,
       graphSubcode: null,
       traceId: null,
+      transportCode: null,
     });
     expect(JSON.stringify(described)).not.toContain("SENTINEL");
   });

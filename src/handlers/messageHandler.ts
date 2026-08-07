@@ -12,13 +12,16 @@ import { findKeywordInMessage } from "../services/keywordService.js";
 import { sendSequence } from "../services/sequenceSender.js";
 import { sendTrackedText } from "../services/dmDeliveryService.js";
 import {
+  markInboundDeleted,
   markThreadResolved,
   recordInboundMessage,
   updateDmThreadProfile,
 } from "../services/dmThreadService.js";
+import { recordRecoveryInbound } from "../services/dmRecoveryService.js";
 import { queueReplyDraft } from "../services/replyDraftService.js";
 import { scheduleEngagementFollowUp } from "../services/engagementFollowUpService.js";
 import { logger } from "../lib/logger.js";
+import { parseProviderTimestamp } from "../lib/providerTime.js";
 import { logEvent, describeGraphError } from "../services/eventLogger.js";
 import { resolveUsername } from "../services/igUserService.js";
 import { env } from "../config/env.js";
@@ -117,8 +120,24 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
   const msg = entry.message;
   if (!msg || msg.is_echo) return;
 
+  // Webhook JSON is untrusted. Everything below keys on the mid — thread
+  // capture, deletion, and evidence correlation — so a missing one must be
+  // acknowledged and dropped rather than reaching persistence.
+  if (typeof msg.mid !== "string" || msg.mid.trim() === "") {
+    logger.warn(
+      { errorCode: "inbound_message_missing_mid", senderId: entry.sender?.id ?? null },
+      "Inbound message webhook has no usable mid — acknowledged without capture",
+    );
+    return;
+  }
+
   const senderId = entry.sender.id;
   if (senderId === env.IG_USER_ID) return;
+
+  if (msg.is_deleted) {
+    await markInboundDeleted(msg.mid, parseProviderTimestamp(entry.timestamp));
+    return;
+  }
 
   const text = msg.text ?? "";
 
@@ -140,12 +159,33 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     messageType,
     mediaUrl,
     // Meta's timestamp, not ours, so a delayed webhook still orders correctly.
-    instagramTimestamp: new Date(entry.timestamp),
+    instagramTimestamp: parseProviderTimestamp(entry.timestamp),
   });
-  if (inbound.duplicate || !inbound.becameLatest) {
+  if (inbound.duplicate) {
     logger.debug(
-      { senderId, mid: msg.mid, duplicate: inbound.duplicate },
-      "Inbound webhook ignored",
+      { senderId, mid: msg.mid, duplicate: true },
+      "Inbound webhook ignored (duplicate)",
+    );
+    return;
+  }
+
+  // Record recovery inbound evidence for any newly captured inbound message (even if delayed)
+  const recoveryKind = msg.quick_reply?.payload
+    ? "quick_reply"
+    : msg.attachments?.length
+      ? "attachment"
+      : "inbound_reply";
+  await recordRecoveryInbound({
+    igUserId: senderId,
+    eventAt: parseProviderTimestamp(entry.timestamp),
+    receivedAt: new Date(),
+    kind: recoveryKind,
+  });
+
+  if (!inbound.becameLatest) {
+    logger.debug(
+      { senderId, mid: msg.mid, duplicate: false, becameLatest: false },
+      "Inbound webhook ignored for conversation routing (not latest)",
     );
     return;
   }
@@ -218,7 +258,7 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
           conversationId: convo.id,
           threadId: inbound.threadId,
           inboundMessageId: inbound.messageId,
-          inboundAt: new Date(entry.timestamp),
+          inboundAt: parseProviderTimestamp(entry.timestamp),
           deliveredAt: completed.completedAt,
         });
         await markThreadResolved({
@@ -333,7 +373,7 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
           conversationId: convo.id,
           threadId: inbound.threadId,
           inboundMessageId: inbound.messageId,
-          inboundAt: new Date(entry.timestamp),
+          inboundAt: parseProviderTimestamp(entry.timestamp),
           deliveredAt: completed.completedAt,
         });
         await markThreadResolved({
@@ -424,7 +464,7 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
         conversationId: convo.id,
         threadId: inbound.threadId,
         inboundMessageId: inbound.messageId,
-        inboundAt: new Date(entry.timestamp),
+        inboundAt: parseProviderTimestamp(entry.timestamp),
         deliveredAt: completed.completedAt,
       });
       await markThreadResolved({

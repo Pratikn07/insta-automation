@@ -13,6 +13,9 @@ import {
   User,
 } from "lucide-react";
 import { useState } from "react";
+import { DmRecoveryList } from "../components/conversations/DmRecoveryList";
+import { DmRecoveryDrawer } from "../components/conversations/DmRecoveryDrawer";
+import { journeyRowMarkers } from "../components/conversations/journeyRowMarkers";
 import { api } from "@/lib/api";
 import type {
   Conversation,
@@ -32,7 +35,7 @@ import { UserLineage } from "@/components/UserLineage";
 import { IncomingBubble, OutgoingBubble, StepBubble } from "@/components/ChatBubbles";
 import { DmThreadList } from "@/components/conversations/DmThreadList";
 import { DmThreadDrawer } from "@/components/conversations/DmThreadDrawer";
-import { cn, displayUser } from "@/lib/utils";
+import { cn, displayUser, formatAbsolute } from "@/lib/utils";
 import { prettyKind } from "@/lib/eventLog";
 
 type StateFilter = ConversationState | "all";
@@ -41,21 +44,28 @@ type StateFilter = ConversationState | "all";
 // approval surface; the journey views are the existing keyword→gate→guide funnel,
 // unchanged. Kept side by side rather than replaced, because a journey row and a
 // DM thread answer different questions.
-type Lens = "needs_reply" | "dms" | "journeys";
+type Lens = "needs_reply" | "dms" | "recovery" | "journeys";
 
 // Plain-English tab labels. "DONE" is internal jargon (the word the user types) —
-// a marketer tracks outcomes: who's waiting, who got it, who never replied.
+// a marketer tracks outcomes: who's waiting, who got it, and who we never got a
+// confirmed reply from — which is not the same as who chose not to answer.
 const FILTERS: { value: StateFilter; label: string; countKey?: keyof ConversationCounts }[] = [
   { value: "all", label: "All" },
   { value: "awaiting_done", label: "Waiting", countKey: "awaiting_done" },
   { value: "completed", label: "Delivered", countKey: "completed" },
-  { value: "expired", label: "No reply", countKey: "expired" },
+  // Not "No reply": a journey can end here because the gate DM never landed,
+  // which is not the same as the person choosing not to answer.
+  { value: "expired", label: "No confirmed reply", countKey: "expired" },
 ];
 
 const stateMeta: Record<ConversationState, { label: string; tone: string; Icon: typeof Clock }> = {
   awaiting_done: { label: "Waiting for reply", tone: "text-amber-400 bg-amber-400/10", Icon: Clock },
   completed: { label: "Delivered", tone: "text-emerald-400 bg-emerald-400/10", Icon: CheckCircle2 },
-  expired: { label: "No reply", tone: "text-muted-foreground bg-muted/40", Icon: AlertCircle },
+  expired: {
+    label: "No confirmed reply",
+    tone: "text-muted-foreground bg-muted/40",
+    Icon: AlertCircle,
+  },
 };
 
 // The "we couldn't reach them yet — auto-retrying" row style. Deliberately calm
@@ -81,12 +91,13 @@ export function Conversations() {
   const [selected, setSelected] = useState<Conversation | null>(null);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [lineageUser, setLineageUser] = useState<string | null>(null);
+  const [selectedRecoveryId, setSelectedRecoveryId] = useState<string | null>(null);
 
   const dmScope = lens === "needs_reply" ? "needs_reply" : "all";
   const dmThreadsQ = useQuery<Paginated<DmThreadRow>>({
     queryKey: ["dm-threads", dmScope],
     queryFn: () => api<Paginated<DmThreadRow>>(`/dm-threads?scope=${dmScope}`),
-    enabled: lens !== "journeys",
+    enabled: lens === "needs_reply" || lens === "dms",
   });
 
   const capabilitiesQ = useQuery<AiCapabilities>({
@@ -105,6 +116,10 @@ export function Conversations() {
     },
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last) => last.nextCursor ?? undefined,
+    // Only the journeys lens renders these rows. Without this the page fetched
+    // journey pages — and paged through them — while showing Needs reply or DM
+    // recovery.
+    enabled: lens === "journeys",
   });
 
   // Tab counts so the page reads like a dashboard ("Waiting 416 · Delivered 351").
@@ -144,6 +159,7 @@ export function Conversations() {
           [
             { value: "needs_reply", label: "Needs reply" },
             { value: "dms", label: "DMs" },
+            { value: "recovery", label: "DM recovery" },
           ] as const
         ).map((l) => (
           <button
@@ -202,7 +218,11 @@ export function Conversations() {
         </div>
       )}
 
-      {lens !== "journeys" ? (
+      {lens === "recovery" ? (
+        <div className="mt-4">
+          <DmRecoveryList onSelect={setSelectedRecoveryId} />
+        </div>
+      ) : lens !== "journeys" ? (
         <DmThreadList
           rows={dmThreadsQ.data?.items ?? []}
           isLoading={dmThreadsQ.isLoading}
@@ -270,6 +290,20 @@ export function Conversations() {
       </Drawer>
 
       <Drawer
+        open={selectedRecoveryId !== null}
+        onClose={() => setSelectedRecoveryId(null)}
+        title="DM recovery reminder"
+      >
+        {selectedRecoveryId && (
+          <DmRecoveryDrawer
+            id={selectedRecoveryId}
+            onClose={() => setSelectedRecoveryId(null)}
+            onOpenUser={(id) => setLineageUser(id)}
+          />
+        )}
+      </Drawer>
+
+      <Drawer
         open={lineageUser !== null}
         onClose={() => setLineageUser(null)}
         title="User journey"
@@ -294,6 +328,7 @@ function isRetrying(c: Conversation): boolean {
 
 function ConversationRow({ c, onClick }: { c: Conversation; onClick: () => void }) {
   const meta = rowBadge(c);
+  const markers = journeyRowMarkers(c);
   return (
     <Card className="group transition-colors hover:bg-accent/40">
       <CardContent className="p-0">
@@ -319,7 +354,24 @@ function ConversationRow({ c, onClick }: { c: Conversation; onClick: () => void 
               {formatRelative(c.createdAt)}
               {c.completedAt && ` · completed ${formatRelative(c.completedAt)}`}
             </p>
+            {/* An old journey has no receipts because none were ever collected.
+                Without this the older half of the table reads as failures. */}
+            {markers.note && (
+              <p className="mt-0.5 text-[11px] text-muted-foreground/80">{markers.note}</p>
+            )}
           </div>
+          {markers.recovery && (
+            <span
+              className={cn(
+                "inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium",
+                markers.recovery.pending
+                  ? "bg-sky-400/10 text-sky-400"
+                  : "bg-muted/40 text-muted-foreground",
+              )}
+            >
+              {markers.recovery.label}
+            </span>
+          )}
           <span
             className={cn(
               "inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium",
@@ -473,7 +525,10 @@ function summaryLine(data: ConversationDetailResponse): { text: string; tone: St
     return { text: `${who} replied DONE and got the ${freebie}. 🎉`, tone: "done" };
   }
   if (conversation.state === "expired") {
-    return { text: `${who} never replied, so the ${freebie} wasn’t sent.`, tone: "pending" };
+    return {
+      text: `No reply was confirmed from ${who}, so the ${freebie} wasn’t sent.`,
+      tone: "pending",
+    };
   }
   // awaiting_done
   if (gate && (gate.status === "pending" || gate.status === "exhausted")) {
@@ -783,15 +838,6 @@ function formatRelative(iso: string): string {
   const days = Math.round(hr / 24);
   if (days < 7) return `${days}d ago`;
   return new Date(iso).toLocaleDateString();
-}
-
-function formatAbsolute(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
 }
 
 // Like formatRelative but phrased forward ("in 5m"); clamps past times to "shortly".

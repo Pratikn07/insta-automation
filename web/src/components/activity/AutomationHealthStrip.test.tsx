@@ -37,6 +37,34 @@ describe("AutomationHealthStrip", () => {
   });
 });
 
+// An ambiguous gate send is never auto-retried, so it appears in no queue view.
+// Before this the only trace was a row in the database, and the person it
+// belonged to might never have received their gate.
+describe("AutomationHealthStrip ambiguous gate sends", () => {
+  it("stays quiet when there is nothing to review", () => {
+    const html = renderToStaticMarkup(
+      <AutomationHealthStrip stats={{ ...stats, gateQueueSendUncertain: 0 }} isLoading={false} />,
+    );
+    expect(html).not.toContain("Needs review");
+    expect(html).toContain("Retries queued");
+  });
+
+  it("surfaces the count once a send outcome is unknown", () => {
+    const html = renderToStaticMarkup(
+      <AutomationHealthStrip stats={{ ...stats, gateQueueSendUncertain: 3 }} isLoading={false} />,
+    );
+    expect(html).toContain("Needs review");
+    expect(html).toContain("3");
+  });
+
+  it("stays quiet against an API build that omits the field", () => {
+    const html = renderToStaticMarkup(
+      <AutomationHealthStrip stats={stats} isLoading={false} />,
+    );
+    expect(html).not.toContain("Needs review");
+  });
+});
+
 describe("AutomationHealthStrip token alarm", () => {
   const withToken = (
     status: "healthy" | "warning" | "critical" | "expired",

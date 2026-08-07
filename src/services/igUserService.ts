@@ -37,6 +37,36 @@ function toLite(r: {
 }
 
 /**
+ * Clear a stored origin verdict when the identity it was derived from changed.
+ *
+ * The verdict is a judgement about a specific name/username pair. When either
+ * changes, the stored answer describes a person who no longer presents under
+ * that name, so it is retired and the enrichment worker re-derives it. Returned
+ * as an update fragment so it rides the caller's existing upsert rather than
+ * adding a second write.
+ */
+function originResetIfIdentityChanged(
+  existing: { username: string | null; name: string | null } | null,
+  username: string | null,
+  name: string | null,
+): Record<string, null> {
+  if (!existing) return {};
+  if (existing.username === username && existing.name === name) return {};
+  return {
+    inferredOrigin: null,
+    originConfidence: null,
+    originEvidence: null,
+    // Retired together with the verdict. Leaving the method behind described a
+    // row as classified by a prompt version that no longer had a verdict to
+    // show for it, which only stayed harmless because `resolveAudienceOrigin`
+    // also tests the verdict itself.
+    originMethod: null,
+    // Null here is what makes the enrichment worker pick the row up again.
+    originCheckedAt: null,
+  };
+}
+
+/**
  * Store a username we already KNOW (comment webhooks include `from.username` for
  * free — no API call needed). Upsert + stamp resolvedAt. Never throws.
  */
@@ -47,10 +77,19 @@ export async function rememberUsername(
 ): Promise<void> {
   if (!username) return;
   try {
+    const existing = await prisma.igUser.findUnique({
+      where: { id: igUserId },
+      select: { username: true, name: true },
+    });
     await prisma.igUser.upsert({
       where: { id: igUserId },
       create: { id: igUserId, username, name: name ?? null, resolvedAt: new Date() },
-      update: { username, name: name ?? null, resolvedAt: new Date() },
+      update: {
+        username,
+        name: name ?? null,
+        resolvedAt: new Date(),
+        ...originResetIfIdentityChanged(existing, username, name ?? null),
+      },
     });
   } catch {
     logger.error(
@@ -87,6 +126,11 @@ export async function resolveUsername(igUserId: string): Promise<IgUserLite> {
     const followerCount = data.follower_count ?? null;
     const isVerified = data.is_verified_user ?? null;
 
+    const existing = await prisma.igUser.findUnique({
+      where: { id: igUserId },
+      select: { username: true, name: true },
+    });
+
     const row = await prisma.igUser.upsert({
       where: { id: igUserId },
       create: {
@@ -107,6 +151,7 @@ export async function resolveUsername(igUserId: string): Promise<IgUserLite> {
         followerCount,
         isVerified,
         followCheckedAt: new Date(),
+        ...originResetIfIdentityChanged(existing, username, name),
       },
     });
 

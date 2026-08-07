@@ -183,6 +183,7 @@ describe("runTokenRefreshTick privacy", () => {
       graphCode: 190,
       graphSubcode: 463,
       traceId: "trace_REFRESH-1",
+      transportCode: null,
     };
     expect(mocks.loggerError).toHaveBeenCalledWith(safe, "ig token refresh failed");
     expect(mocks.logEvent).toHaveBeenCalledWith("ig_token_refresh_failed", safe);

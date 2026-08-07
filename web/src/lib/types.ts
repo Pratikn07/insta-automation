@@ -78,6 +78,8 @@ export interface FollowFields {
 export type DeliveryStatus = "delivered" | "retrying";
 
 export interface Conversation extends FollowFields {
+  recovery?: ConversationRecoverySummary | null;
+  readTracking?: ReadTrackingAvailability;
   id: string;
   igUserId: string;
   keywordId: string;
@@ -134,6 +136,12 @@ export interface Stats {
   lastError: { kind: string; createdAt: string; payload: unknown } | null;
   gateQueuePending: number;
   gateQueueExhausted: number;
+  /**
+   * Gate sends with an ambiguous outcome. Never auto-retried — the DM may
+   * already have landed — so each one is a person who may never have received
+   * their gate. Optional because an older API build omits it.
+   */
+  gateQueueSendUncertain?: number;
   followConversion?: FollowConversion;
   tokenHealth?: TokenHealth | null;
 }
@@ -649,3 +657,153 @@ export interface FeedFollowAttributionResponse {
   };
   caveats: string[];
 }
+
+// ── DM recovery ───────────────────────────────────────────────────────────
+//
+// Closed unions mirroring the backend. The dashboard must never invent a state
+// the server cannot produce, and must never describe missing telemetry as
+// "Unread" — Meta provides no such signal.
+
+export type RecoveryStatus =
+  | "waiting"
+  | "control"
+  | "suppressed"
+  | "sending"
+  | "sent"
+  | "send_failed"
+  | "send_uncertain"
+  | "tracking_unavailable"
+  | "cancelled";
+
+export type RecoveryCohort = "treatment" | "control" | "not_applicable";
+export type RecoveryTriggerKind = "no_confirmed_read" | "settings_blocked";
+
+export type RecoveryView =
+  | "all"
+  | "scheduled"
+  | "ready"
+  | "sent"
+  | "suppressed"
+  | "control"
+  | "attention";
+
+export interface RecoveryReminderRow {
+  id: string;
+  conversationId: string;
+  igUserId: string;
+  username: string | null;
+  name: string | null;
+  keyword: { id: string; keyword: string };
+  media: { id: string | null; permalink: string | null; caption: string | null };
+  triggerKind: RecoveryTriggerKind;
+  status: RecoveryStatus;
+  cohort: RecoveryCohort;
+  acceptedAt: string | null;
+  eligibleAt: string;
+  seenAt: string | null;
+  engagedAt: string | null;
+  firstEngagementKind: string | null;
+  suppressionReason: string | null;
+  sentAt: string | null;
+  attempts: number;
+  lastAttemptAt: string | null;
+  lastErrorCategory: string | null;
+  reviewedAt: string | null;
+  createdAt: string;
+}
+
+export interface RecoveryTimelineEntry {
+  kind: string;
+  at: string;
+  detail?: string | null;
+}
+
+export interface RecoveryReminderDetail extends RecoveryReminderRow {
+  commentId: string;
+  keywordSnapshot: string;
+  templateVersion: string;
+  publicReplyId: string | null;
+  trackingAvailable: boolean;
+  comment: { text: string | null; receivedAt: string } | null;
+  timeline: RecoveryTimelineEntry[];
+}
+
+export type RecoveryCountEntry = { records: number; people: number };
+export type RecoveryCounts = Record<RecoveryView, RecoveryCountEntry>;
+
+export interface RecoveryHealthSnapshot {
+  circuitOpen: boolean;
+  reason: string | null;
+  openedAt: string | null;
+  dueCount: number;
+  sentLastHour: number;
+  recentOutcomeCount: number;
+  recentFailureRate: number | null;
+  acceptedSignalSample: number;
+  positiveSignalSample: number;
+}
+
+export interface RecoveryCohortSummary {
+  eligiblePeople: number;
+  eligibleJourneys: number;
+  repliedWithin24h: number;
+  repliedWithin48h: number;
+  completedWithin24h: number;
+  completedWithin48h: number;
+  completionRate48h: number | null;
+}
+
+export interface RecoveryMetrics {
+  experiment: {
+    version: string;
+    startAt: string | null;
+    endAt: string | null;
+    treatment: RecoveryCohortSummary & { sent: number };
+    control: RecoveryCohortSummary & { withheld: number };
+    absoluteLiftPercentagePoints: number | null;
+    relativeLiftPercent: number | null;
+    medianReminderToReplyMinutes: number | null;
+    byKeyword: Array<{
+      keywordId: string;
+      keyword: string;
+      treatmentEligiblePeople: number;
+      treatmentCompletedWithin48h: number;
+      controlEligiblePeople: number;
+      controlCompletedWithin48h: number;
+    }>;
+  };
+  accuracy: {
+    eventualRepliers: number;
+    eventualRepliersWithPriorSeen: number;
+    readEventCoverage: number | null;
+    sent: number;
+    laterSeen: number;
+    laterEngaged: number;
+    laterCompleted: number;
+    delayedPreSendSignalFalsePositives: number;
+    withoutLaterPositiveEvidence: number;
+    uncertain: number;
+    duplicateAttempts: number;
+    cooldownSuppressions: number;
+    staleLeases: number;
+    failed: number;
+    settingsClassifierMatches: number;
+  };
+  health: RecoveryHealthSnapshot;
+}
+
+/** The bounded badge attached to each Conversations row by Task 14. */
+export interface ConversationRecoverySummary {
+  id: string;
+  status: RecoveryStatus;
+  triggerKind: RecoveryTriggerKind;
+  eligibleAt: string;
+  sentAt: string | null;
+}
+
+/**
+ * Why a journey has no read information. Never inferred from conversation
+ * state: a journey from before launch has no recovery row for the same reason
+ * an ineligible one does.
+ */
+export type ReadTrackingAvailability = "tracked" | "predates_tracking" | "not_available";

@@ -26,6 +26,41 @@ export interface GraphErrorMetadata extends Record<string, unknown> {
   graphCode: number | null;
   graphSubcode: number | null;
   traceId: string | null;
+  /**
+   * Transport-level failure code, needed to tell a request that provably never
+   * reached Meta from one that may have been delivered before the connection
+   * died. Only codes on the closed allowlist below are surfaced — `err.code` is
+   * caller-controlled and must never be echoed verbatim into the event log.
+   */
+  transportCode: TransportCode | null;
+}
+
+/**
+ * Closed allowlist of transport codes. Anything not listed becomes null, which
+ * every consumer must treat as "delivery outcome unknown".
+ */
+const TRANSPORT_CODES = [
+  // Provably never delivered: the connection was refused or never resolved.
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  // Ambiguous: the request may have been received before the socket died.
+  "ECONNABORTED",
+  "ETIMEDOUT",
+  "ECONNRESET",
+  "EPIPE",
+  "ERR_NETWORK",
+  "ERR_CANCELED",
+] as const;
+
+export type TransportCode = (typeof TRANSPORT_CODES)[number];
+
+const TRANSPORT_CODE_SET: ReadonlySet<string> = new Set(TRANSPORT_CODES);
+
+function safeTransportCode(value: unknown): TransportCode | null {
+  return typeof value === "string" && TRANSPORT_CODE_SET.has(value)
+    ? (value as TransportCode)
+    : null;
 }
 
 function finiteNumber(value: unknown): number | null {
@@ -49,6 +84,7 @@ export function describeGraphError(err: unknown): GraphErrorMetadata {
       graphCode: finiteNumber(apiError?.code),
       graphSubcode: finiteNumber(apiError?.error_subcode),
       traceId: safeTraceId(apiError?.fbtrace_id),
+      transportCode: safeTransportCode(err.code),
     };
   }
 
@@ -58,5 +94,6 @@ export function describeGraphError(err: unknown): GraphErrorMetadata {
     graphCode: null,
     graphSubcode: null,
     traceId: null,
+    transportCode: null,
   };
 }

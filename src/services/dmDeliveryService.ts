@@ -27,6 +27,8 @@ const MESSAGE_TYPE: Record<AttachmentType, "image" | "video" | "audio" | "file">
   file: "file",
 };
 
+import type { RecordedOutboundMessage } from "./dmThreadService.js";
+
 /**
  * Record a delivered message, absorbing any failure here.
  *
@@ -34,9 +36,9 @@ const MESSAGE_TYPE: Record<AttachmentType, "image" | "video" | "audio" | "file">
  * not *depend* on that: a delivered message must stay delivered even if that
  * contract later changes. Logs IDs, source and length only — never the body.
  */
-async function recordDelivered(input: RecordOutboundInput): Promise<void> {
+async function recordDelivered(input: RecordOutboundInput): Promise<RecordedOutboundMessage | null> {
   try {
-    await recordOutboundMessage(input);
+    return await recordOutboundMessage(input);
   } catch {
     logger.error(
       {
@@ -48,6 +50,7 @@ async function recordDelivered(input: RecordOutboundInput): Promise<void> {
       },
       "Outbound DM was delivered but could not be recorded",
     );
+    return null;
   }
 }
 
@@ -74,18 +77,29 @@ export async function sendTrackedText(input: {
   return result;
 }
 
-/**
- * A private reply is addressed by `comment_id`, but it lands in the participant's
- * DM thread — so the recorded row keys on the recipient, never the comment.
- */
-export async function sendTrackedPrivateReply(input: {
+export type TrackedPrivateReplyReceipt = {
+  instagramMessageId: string | null;
+  dmMessageId: string | null;
+  acceptedAt: Date;
+};
+
+export type TrackedPrivateReplyInput = {
   recipientIgUserId: string;
   commentId: string;
   text: string;
   source: DmMessageSource;
-}): Promise<MetaSendResult> {
+};
+
+/**
+ * A private reply is addressed by `comment_id`, but it lands in the participant's
+ * DM thread — so the recorded row keys on the recipient, never the comment.
+ */
+export async function sendTrackedPrivateReply(
+  input: TrackedPrivateReplyInput,
+): Promise<TrackedPrivateReplyReceipt> {
   const result = await sendPrivateReply(input.commentId, input.text);
-  await recordDelivered({
+  const acceptedAt = new Date();
+  const recorded = await recordDelivered({
     igAccountId: env.IG_USER_ID,
     igUserId: input.recipientIgUserId,
     instagramMessageId: result.messageId,
@@ -93,9 +107,13 @@ export async function sendTrackedPrivateReply(input: {
     messageType: "text",
     mediaUrl: null,
     source: input.source,
-    instagramTimestamp: new Date(),
+    instagramTimestamp: acceptedAt,
   });
-  return result;
+  return {
+    instagramMessageId: result.messageId,
+    dmMessageId: recorded?.messageId ?? null,
+    acceptedAt,
+  };
 }
 
 export async function sendTrackedMedia(input: {
