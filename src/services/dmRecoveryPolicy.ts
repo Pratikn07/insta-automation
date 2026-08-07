@@ -73,14 +73,11 @@ export type RecoveryPolicyInput = {
   status: string;
   cohort: DmRecoveryCohort;
   eligibleAt: Date;
-  acceptedAt: Date | null;
   instagramGateMessageId: string | null;
-  commentId: string;
   seenAt: Date | null;
   engagedAt: Date | null;
   firstEngagementKind: string | null;
   conversationCompletedAt: Date | null;
-  conversationCompletedElsewhere: boolean;
   cancelledAt: Date | null;
   hasRecentSentReminderForPerson: boolean;
   hasNewerEligibleCandidate: boolean;
@@ -166,11 +163,12 @@ export function decideRecovery(input: RecoveryPolicyInput): RecoveryDecision {
     return { kind: "suppress", reason };
   }
 
+  // `completed_elsewhere` is not reachable from here. A sibling journey's
+  // completion is resolved inside the completion transaction, which stamps those
+  // rows terminal with that reason directly, so anything still live by the time
+  // the policy runs completed on its own journey.
   if (input.conversationCompletedAt) {
-    return {
-      kind: "suppress",
-      reason: input.conversationCompletedElsewhere ? "completed_elsewhere" : "completed",
-    };
+    return { kind: "suppress", reason: "completed" };
   }
 
   // 3. Missing source comment

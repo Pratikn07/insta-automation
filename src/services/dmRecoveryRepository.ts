@@ -177,16 +177,11 @@ function toPolicyInput(
     status: statusOverride ?? row.status,
     cohort: row.cohort,
     eligibleAt: row.eligibleAt,
-    acceptedAt: row.acceptedAt,
     instagramGateMessageId: row.instagramGateMessageId,
-    commentId: row.commentId,
     seenAt: row.seenAt,
     engagedAt: row.engagedAt,
     firstEngagementKind: row.firstEngagementKind,
     conversationCompletedAt: ctx.conversationCompletedAt,
-    // Cross-journey completion is already resolved by the completion
-    // transaction, so anything still live here completed on its own journey.
-    conversationCompletedElsewhere: false,
     cancelledAt: row.cancelledAt,
     hasRecentSentReminderForPerson: ctx.hasRecentSentReminderForPerson,
     hasNewerEligibleCandidate: ctx.hasNewerEligibleCandidate,

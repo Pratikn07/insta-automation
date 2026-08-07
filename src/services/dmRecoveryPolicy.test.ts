@@ -57,14 +57,11 @@ describe("DM recovery policy", () => {
       status: "waiting",
       cohort: "treatment",
       eligibleAt,
-      acceptedAt,
       instagramGateMessageId: "mid.gate.123",
-      commentId: "comment-123",
       seenAt: null,
       engagedAt: null,
       firstEngagementKind: null,
       conversationCompletedAt: null,
-      conversationCompletedElsewhere: false,
       cancelledAt: null,
       hasRecentSentReminderForPerson: false,
       hasNewerEligibleCandidate: false,
@@ -189,8 +186,11 @@ describe("DM recovery policy", () => {
       ["attachment", { engagedAt: now, firstEngagementKind: "attachment" }, "attachment"],
       ["reaction", { engagedAt: now, firstEngagementKind: "reaction" }, "reaction"],
       ["postback", { engagedAt: now, firstEngagementKind: "postback" }, "postback"],
+      // A sibling journey's completion never reaches the policy: the completion
+      // transaction stamps those rows terminal with `completed_elsewhere`
+      // directly, so anything still live here completed on its own journey.
+      // `suppressRecoveriesForCompletion` owns that reason and is tested for it.
       ["completed", { conversationCompletedAt: now }, "completed"],
-      ["completed_elsewhere", { conversationCompletedAt: now, conversationCompletedElsewhere: true }, "completed_elsewhere"],
       ["owner_cancelled", { cancelledAt: now }, "owner_cancelled"],
     ])("suppresses for %s", (_name, evidence, expectedReason) => {
       expect(decideRecovery({ ...baseInput, ...evidence })).toEqual({
