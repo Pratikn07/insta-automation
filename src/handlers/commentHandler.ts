@@ -174,6 +174,11 @@ export async function handleComment(comment: CommentValue): Promise<void> {
       }
       return;
     }
+    // A permanent rejection or an auth failure cannot succeed on a retry;
+    // queueing it only spends one attempt and delays the owner noticing.
+    if (classification === "permanent" || classification === "permission_or_auth") {
+      return;
+    }
     await enqueueGate({
       conversationId: convo.id,
       igUserId: senderId,

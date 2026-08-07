@@ -20,8 +20,10 @@ export function startDmRecoveryScheduler(options: SchedulerOptions): () => void 
       try {
         await options.runTick();
       } catch (err) {
+        // Stable code only. The raw error can carry database detail, provider
+        // payloads, or credentials, and this line goes to the application log.
         logger.error(
-          { errorCode: "dm_recovery_tick_rejected", err },
+          { errorCode: "dm_recovery_tick_rejected" },
           "DM recovery tick rejected",
         );
       }

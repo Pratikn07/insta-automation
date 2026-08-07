@@ -20,6 +20,8 @@ export type DmRecoveryTickResult = {
   examined: number;
   sent: number;
   suppressed: number;
+  /** Released, held, or not yet due — deliberately not counted as suppressed. */
+  deferred: number;
   failed: number;
   uncertain: number;
   skipped?: "disabled" | "already_running" | "circuit_open" | "hourly_cap";
@@ -47,7 +49,7 @@ function recoveryEventFields(
 }
 
 function emptyResult(skipped: DmRecoveryTickResult["skipped"]): DmRecoveryTickResult {
-  return { examined: 0, sent: 0, suppressed: 0, failed: 0, uncertain: 0, skipped };
+  return { examined: 0, sent: 0, suppressed: 0, deferred: 0, failed: 0, uncertain: 0, skipped };
 }
 
 export async function runDmRecoveryTick(): Promise<DmRecoveryTickResult> {
@@ -57,7 +59,12 @@ export async function runDmRecoveryTick(): Promise<DmRecoveryTickResult> {
   try {
     return await runTickBody();
   } catch (error) {
-    logger.error({ errorCode: "dm_recovery_tick_error", error }, "DM recovery tick failed");
+    // Stable code only — a raw error can carry a provider body, a query, or a
+    // connection string.
+    logger.error(
+      { errorCode: "dm_recovery_tick_error", ...describeGraphError(error) },
+      "DM recovery tick failed",
+    );
     return emptyResult(undefined);
   } finally {
     running = false;
@@ -70,6 +77,7 @@ async function runTickBody(): Promise<DmRecoveryTickResult> {
     examined: 0,
     sent: 0,
     suppressed: 0,
+    deferred: 0,
     failed: 0,
     uncertain: 0,
   };
@@ -121,7 +129,17 @@ async function runTickBody(): Promise<DmRecoveryTickResult> {
         result.skipped = decision.reason;
         break; // Stop the batch: the circuit or the hourly cap closed.
       }
-      result.suppressed++;
+      if (decision.kind === "suppress") {
+        // Only a real suppression counts; a release or a hold is a deferral,
+        // not a decision about this person.
+        result.suppressed++;
+        await logEvent("dm_recovery_suppressed", {
+          ...recoveryEventFields(claimed, claimed.attempts),
+          reason: decision.reason,
+        });
+      } else {
+        result.deferred++;
+      }
       continue;
     }
 
@@ -199,7 +217,17 @@ async function runTickBody(): Promise<DmRecoveryTickResult> {
     try {
       if (reply!.replyId) {
         const sentAt = new Date();
-        await markRecoverySent(id, { replyId: reply!.replyId, sentAt });
+        const persisted = await markRecoverySent(id, { replyId: reply!.replyId, sentAt });
+        if (!persisted) {
+          // Meta posted but the row did not move. Reporting a send here would
+          // put the metrics and the table permanently out of step; the lease
+          // reconciles the row to send_uncertain instead.
+          await logEvent("dm_recovery_finalize_failed", {
+            ...recoveryEventFields(claimed, attemptNumber),
+            stage: "mark_sent",
+          });
+          continue;
+        }
         result.sent++;
         await logEvent("dm_recovery_sent", {
           ...recoveryEventFields(claimed, attemptNumber),

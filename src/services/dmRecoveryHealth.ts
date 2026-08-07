@@ -80,7 +80,13 @@ async function collectObservations(now: Date): Promise<Observations> {
     seenOrEngagedCount,
   ] = await Promise.all([
     prisma.dmRecoveryReminder.count({
-      where: { status: "waiting", eligibleAt: { lte: now } },
+      // Rows still inside their retry backoff are not backlog; counting them
+      // opened a backlog anomaly for work that is deliberately deferred.
+      where: {
+        status: "waiting",
+        eligibleAt: { lte: now },
+        OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
+      },
     }),
     prisma.dmRecoveryReminder.count({ where: { sentAt: { gte: oneHourAgo } } }),
     // Denominator: rows that actually reached a public-send outcome. Control,
@@ -237,23 +243,29 @@ export async function evaluateRecoveryHealth(now: Date): Promise<RecoveryHealthS
     positiveSignalSample: o.seenOrEngagedCount,
   };
 
+  const control = await prisma.dmRecoveryControl.findUnique({ where: { id: 1 } });
+  const storedReason = (control?.reason as RecoveryCircuitReason | null) ?? null;
+
+  // A latched reason is read first and never replaced. Choosing a new anomaly
+  // before this let a recoverable reason overwrite auth_or_permission, after
+  // which the three-healthy rule would auto-close a circuit that must only be
+  // cleared once someone has verified the credentials.
+  if (control?.circuitOpen && storedReason && !AUTO_RECOVERABLE.has(storedReason)) {
+    return { ...snapshot, circuitOpen: true, reason: storedReason, openedAt: control.openedAt };
+  }
+
   const openReason = chooseOpenReason(o, failureRate);
   if (openReason) {
     await openRecoveryCircuit(openReason, now);
     return { ...snapshot, circuitOpen: true, reason: openReason, openedAt: now };
   }
 
-  const control = await prisma.dmRecoveryControl.findUnique({ where: { id: 1 } });
   if (!control?.circuitOpen) {
     consecutiveHealthyCount = 0;
     return snapshot;
   }
 
-  const currentReason = (control.reason as RecoveryCircuitReason | null) ?? null;
-  if (!currentReason || !AUTO_RECOVERABLE.has(currentReason)) {
-    return { ...snapshot, circuitOpen: true, reason: currentReason, openedAt: control.openedAt };
-  }
-
+  const currentReason = storedReason;
   consecutiveHealthyCount += 1;
   if (consecutiveHealthyCount >= AUTO_RECOVERY_THRESHOLD) {
     await closeRecoveryCircuit(now);

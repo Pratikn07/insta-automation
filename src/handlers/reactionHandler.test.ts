@@ -51,4 +51,21 @@ describe("reactionHandler", () => {
 
     expect(recordRecoveryReaction).not.toHaveBeenCalled();
   });
+
+  // An unknown action is not proof anyone engaged. Treating it as engagement
+  // suppresses a legitimate reminder; the inverse — treating "react" as
+  // nothing — lets a public comment reach someone who did engage.
+  it.each([["unreact"], ["unknown_future_action"], [undefined]])(
+    "records no engagement for action %s",
+    async (action) => {
+      await handleReaction({
+        sender: { id: "user-1" },
+        recipient: { id: "bot-1" },
+        timestamp: 1786003200000,
+        reaction: { mid: "mid-1", action: action as never, reaction: "love" },
+      });
+
+      expect(recordRecoveryReaction).not.toHaveBeenCalled();
+    },
+  );
 });

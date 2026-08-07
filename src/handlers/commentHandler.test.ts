@@ -154,18 +154,12 @@ describe("handleComment Graph failure privacy", () => {
       parentId: null,
       ...safe,
     });
-    expect(enqueueGate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        lastError: "graph_response",
-        mediaId: "media-1",
-        initialErrorCategory: "permanent",
-      }),
-    );
+    // 100:2534025 is permanent for this comment, so there is nothing to retry.
+    expect(enqueueGate).not.toHaveBeenCalled();
 
     const captured = JSON.stringify({
       logs: childLogger.warn.mock.calls,
       events: logEvent.mock.calls.filter(([kind]) => kind === "dm_failed"),
-      lastError: enqueueGate.mock.calls[0]?.[0]?.lastError,
     });
     for (const sentinel of SENTINELS) expect(captured).not.toContain(sentinel);
   });
@@ -285,7 +279,19 @@ describe("handleComment gate failure routing", () => {
     await handleComment(COMMENT);
 
     expect(scheduleSettingsBlockedRecovery).not.toHaveBeenCalled();
-    expect(enqueueGate).toHaveBeenCalledOnce();
+    // An auth or permission failure cannot succeed on a retry either; queueing
+    // it only spends an attempt and delays the owner noticing.
+    expect(enqueueGate).not.toHaveBeenCalled();
+  });
+
+  it("still queues a genuinely retryable failure", async () => {
+    sendTrackedPrivateReply.mockRejectedValue(graphFailure(4, 0));
+
+    await handleComment(COMMENT);
+
+    expect(enqueueGate).toHaveBeenCalledWith(
+      expect.objectContaining({ initialErrorCategory: "rate_limited" }),
+    );
   });
 
   it("still sends the gate and schedules recovery when the public reply fails", async () => {

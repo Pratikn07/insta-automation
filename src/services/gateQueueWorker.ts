@@ -150,7 +150,9 @@ export async function runGateQueueTick(): Promise<void> {
     const convoMap = new Map(convos.map((c) => [c.id, c]));
 
     let sent = 0;
+    let processedCount = 0;
     for (const row of claimedRows) {
+      processedCount++;
       const convo = convoMap.get(row.conversationId);
       if (!convo || !convo.keyword) {
         await prisma.gateQueue.update({
@@ -322,6 +324,21 @@ export async function runGateQueueTick(): Promise<void> {
           break;
         }
       }
+    }
+
+    // The whole batch is claimed up front, so an early stop would strand the
+    // untouched rows in `sending` until their lease expired and reconciliation
+    // mislabelled them send_uncertain — rows that were never attempted at all.
+    const untouched = claimedRows.slice(processedCount);
+    if (untouched.length > 0) {
+      await prisma.gateQueue.updateMany({
+        where: { id: { in: untouched.map((row) => row.id) }, status: "sending" },
+        data: { status: "pending", claimedAt: null, claimExpiresAt: null },
+      });
+      logger.info(
+        { released: untouched.length },
+        "Released unattempted gate claims after an early batch stop",
+      );
     }
 
     if (sent > 0) logger.info({ sent }, "Gate retry worker delivered queued gates");

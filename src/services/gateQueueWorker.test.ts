@@ -339,3 +339,26 @@ describe("runGateQueueTick claim safety (Task 7)", () => {
     expect(scheduleSettingsBlockedRecovery).not.toHaveBeenCalled();
   });
 });
+
+describe("runGateQueueTick early batch stop", () => {
+  // The batch is claimed up front. An early stop used to strand the untouched
+  // rows in `sending` until their lease expired, at which point reconciliation
+  // labelled them send_uncertain — rows that were never attempted at all.
+  it("releases rows it claimed but never attempted", async () => {
+    const second = { ...row, id: "gate-2", commentId: "comment-2" };
+    gateQueue.findMany.mockImplementation(async (args?: { where?: { status?: string } }) => {
+      if (args?.where?.status === "sending") return [];
+      if (args?.where?.status === "pending") return [row, second];
+      return [];
+    });
+    // A genuine rate limit stops the tick after the first row.
+    sendTrackedPrivateReply.mockRejectedValue(graphFailure(4, 0));
+
+    await runGateQueueTick();
+
+    expect(gateQueue.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ["gate-2"] }, status: "sending" },
+      data: { status: "pending", claimedAt: null, claimExpiresAt: null },
+    });
+  });
+});

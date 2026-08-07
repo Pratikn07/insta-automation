@@ -106,6 +106,32 @@ describe("evaluateRecoveryHealth", () => {
     expect(snapshot.recentFailureRate).toBeCloseTo(5);
   });
 
+  // Anomaly selection used to run first, so a recoverable reason overwrote the
+  // latch and the three-healthy rule then auto-closed a circuit that must only
+  // be cleared once someone has verified the credentials.
+  it("does not let a new anomaly overwrite a latched auth circuit", async () => {
+    controlFindUnique.mockResolvedValue({
+      circuitOpen: true,
+      reason: "auth_or_permission",
+      openedAt: NOW,
+    });
+    observations({ due: 500 }); // a backlog anomaly is also present
+
+    const snapshot = await evaluateRecoveryHealth(NOW);
+
+    expect(snapshot).toMatchObject({ circuitOpen: true, reason: "auth_or_permission" });
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it("ignores rows still inside their retry backoff when measuring backlog", async () => {
+    await evaluateRecoveryHealth(NOW);
+    const dueWhere = count.mock.calls[0]![0].where;
+    expect(dueWhere.OR).toEqual([
+      { nextAttemptAt: null },
+      { nextAttemptAt: { lte: NOW } },
+    ]);
+  });
+
   it("keeps auth_or_permission latched no matter how healthy things look", async () => {
     controlFindUnique.mockResolvedValue({
       circuitOpen: true,

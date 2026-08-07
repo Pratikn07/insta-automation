@@ -693,3 +693,20 @@ describe("handleMessage — Recovery & Deletion Integration (Task 8)", () => {
     });
   });
 });
+
+describe("untrusted inbound payloads", () => {
+  it.each([["a missing mid", undefined], ["a blank mid", "   "]])(
+    "acknowledges %s without touching persistence",
+    async (_label, mid) => {
+      await handleMessage({
+        sender: { id: "ig-1" },
+        recipient: { id: "bot" },
+        timestamp: 1786003200000,
+        message: { mid: mid as never, text: "hello" },
+      });
+
+      expect(recordInboundMessage).not.toHaveBeenCalled();
+      expect(recordRecoveryInbound).not.toHaveBeenCalled();
+    },
+  );
+});

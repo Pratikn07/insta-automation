@@ -100,6 +100,12 @@ beforeEach(() => {
   updateMany.mockResolvedValue({ count: 0 });
   count.mockResolvedValue(0);
   evaluateRecoveryHealth.mockResolvedValue({ circuitOpen: false });
+  // Every finalizer reports whether the durable write happened.
+  markRecoverySent.mockResolvedValue(true);
+  markRecoveryRetryable.mockResolvedValue(true);
+  markRecoveryFailed.mockResolvedValue(true);
+  markRecoveryUncertain.mockResolvedValue(true);
+  releaseOrSuppressClaim.mockResolvedValue(true);
   envMock.DM_RECOVERY_ENABLED = true;
 });
 
@@ -168,6 +174,7 @@ describe("runDmRecoveryTick", () => {
       examined: 0,
       sent: 0,
       suppressed: 0,
+      deferred: 0,
       failed: 0,
       uncertain: 0,
       skipped: "circuit_open",
@@ -315,6 +322,36 @@ describe("runDmRecoveryTick public outcome matrix", () => {
       "dm_recovery_finalize_failed",
       expect.objectContaining({ id: "rec-1" }),
     );
+  });
+
+  it("does not report a send when the durable write did not happen", async () => {
+    replyToComment.mockResolvedValue({ replyId: "pub-1" });
+    markRecoverySent.mockResolvedValue(false);
+
+    const res = await runDmRecoveryTick();
+
+    expect(res.sent).toBe(0);
+    expect(logEvent).toHaveBeenCalledWith(
+      "dm_recovery_finalize_failed",
+      expect.objectContaining({ stage: "mark_sent" }),
+    );
+    expect(logEvent).not.toHaveBeenCalledWith("dm_recovery_sent", expect.anything());
+  });
+
+  it("emits a suppression event and counts a deferral separately", async () => {
+    authorizeClaimForSend.mockResolvedValue({ kind: "suppress", reason: "seen" });
+    const suppressed = await runDmRecoveryTick();
+    expect(suppressed).toMatchObject({ suppressed: 1, deferred: 0 });
+    expect(logEvent).toHaveBeenCalledWith(
+      "dm_recovery_suppressed",
+      expect.objectContaining({ reason: "seen" }),
+    );
+
+    logEvent.mockClear();
+    authorizeClaimForSend.mockResolvedValue({ kind: "release", reason: "stale_claim" });
+    const deferred = await runDmRecoveryTick();
+    expect(deferred).toMatchObject({ suppressed: 0, deferred: 1 });
+    expect(logEvent).not.toHaveBeenCalledWith("dm_recovery_suppressed", expect.anything());
   });
 
   // A reminder posted days late is not the intervention the experiment

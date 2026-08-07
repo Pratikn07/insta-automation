@@ -98,7 +98,10 @@ beforeEach(() => {
 });
 
 describe("listDueRecoveryIds", () => {
-  it("selects only due waiting rows, oldest first", async () => {
+  // Fetches above the batch size: front-of-queue rows are frequently suppressed
+  // during the claim, and without headroom they consume the batch and delay
+  // people who could actually be sent.
+  it("selects only due waiting rows, oldest first, with headroom above the batch", async () => {
     findMany.mockResolvedValue([{ id: "rec-1" }]);
     await expect(listDueRecoveryIds(NOW, 5)).resolves.toEqual(["rec-1"]);
     expect(findMany).toHaveBeenCalledWith({
@@ -109,8 +112,20 @@ describe("listDueRecoveryIds", () => {
       },
       select: { id: true },
       orderBy: [{ eligibleAt: "asc" }, { createdAt: "asc" }],
-      take: 5,
+      take: 15,
     });
+  });
+
+  it("treats a reminder exactly one cooldown old as eligible again", async () => {
+    findUnique.mockResolvedValue(candidate());
+    await claimRecovery("rec-1", NOW, LEASE);
+
+    const cooldownCall = findFirst.mock.calls.find(
+      ([args]) => args?.where?.status !== "waiting",
+    );
+    const [sentClause] = cooldownCall![0].where.OR;
+    expect(sentClause.sentAt).toHaveProperty("gt");
+    expect(sentClause.sentAt).not.toHaveProperty("gte");
   });
 });
 
@@ -257,6 +272,22 @@ describe("authorizeClaimForSend", () => {
   // Evidence, cooldown and supersession can all land during the lease window.
   it.each([
     ["read evidence", () => findUnique.mockResolvedValue(sendingRow({ seenAt: NOW })), "seen"],
+    [
+      "a reaction that landed during the lease",
+      () =>
+        findUnique.mockResolvedValue(
+          sendingRow({ engagedAt: NOW, firstEngagementKind: "reaction" }),
+        ),
+      "reaction",
+    ],
+    [
+      "a postback that landed during the lease",
+      () =>
+        findUnique.mockResolvedValue(
+          sendingRow({ engagedAt: NOW, firstEngagementKind: "postback" }),
+        ),
+      "postback",
+    ],
     [
       "a completed conversation",
       () => {

@@ -54,9 +54,11 @@ async function loadPolicyContext(
       igUserId: row.igUserId,
       id: { not: row.id },
       OR: [
-        { sentAt: { gte: cooldownSince } },
+        // Strictly inside the window: a reminder exactly the cooldown old is
+        // eligible again, which is what "a rolling 24 hours" means.
+        { sentAt: { gt: cooldownSince } },
         {
-          lastAttemptAt: { gte: cooldownSince },
+          lastAttemptAt: { gt: cooldownSince },
           status: { in: ["sending", "send_uncertain"] },
         },
       ],
@@ -158,6 +160,13 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /**
  * List due recovery reminder IDs ordered by eligibleAt ASC, createdAt ASC.
  */
+/**
+ * Fetch above the worker's batch size. Rows at the front of the queue are often
+ * suppressed during the claim (cooldown, evidence, supersession); without
+ * headroom those consume the batch and delay people who could actually be sent.
+ */
+const DUE_SELECTION_HEADROOM = 3;
+
 export async function listDueRecoveryIds(now: Date, limit: number): Promise<string[]> {
   const rows = await prisma.dmRecoveryReminder.findMany({
     where: {
@@ -167,7 +176,7 @@ export async function listDueRecoveryIds(now: Date, limit: number): Promise<stri
     },
     select: { id: true },
     orderBy: [{ eligibleAt: "asc" }, { createdAt: "asc" }],
-    take: limit,
+    take: limit * DUE_SELECTION_HEADROOM,
   });
   return rows.map((r) => r.id);
 }
@@ -184,8 +193,12 @@ export async function claimRecovery(
   let attempt = 0;
   while (attempt < P2034_RETRY_ATTEMPTS) {
     attempt++;
+    // Buffered until the transaction commits: an event written inside it
+    // survives a rollback as a claim that never happened, and the extra
+    // round-trip holds the serializable lock open for longer.
+    const pendingEvents: Array<[string, Record<string, unknown>]> = [];
     try {
-      return await prisma.$transaction(
+      const claimed = await prisma.$transaction(
         async (tx) => {
           const candidate = await tx.dmRecoveryReminder.findUnique({
             where: { id },
@@ -215,20 +228,18 @@ export async function claimRecovery(
           if (!isSendDecision(decision)) {
             await persistNonSendDecision(tx, id, decision, now);
             if (decision.kind === "suppress") {
-              await logEvent("dm_recovery_cooldown_suppressed", {
-                id,
-                igUserId: candidate.igUserId,
-                reason: decision.reason,
-              });
+              pendingEvents.push([
+                "dm_recovery_cooldown_suppressed",
+                { id, igUserId: candidate.igUserId, reason: decision.reason },
+              ]);
             }
             return null;
           }
 
-          await logEvent("dm_recovery_ready", {
-            id,
-            igUserId: candidate.igUserId,
-            triggerKind: candidate.triggerKind,
-          });
+          pendingEvents.push([
+            "dm_recovery_ready",
+            { id, igUserId: candidate.igUserId, triggerKind: candidate.triggerKind },
+          ]);
 
           // Perform atomic compare-and-set claim
           const result = await tx.dmRecoveryReminder.updateMany({
@@ -252,24 +263,25 @@ export async function claimRecovery(
           });
 
           if (claimedRow) {
-            await logEvent("dm_recovery_claimed", {
-              id,
-              igUserId: claimedRow.igUserId,
-              status: "sending",
-            });
+            pendingEvents.push([
+              "dm_recovery_claimed",
+              { id, igUserId: claimedRow.igUserId, status: "sending" },
+            ]);
           }
 
           return claimedRow;
         },
         { isolationLevel: "Serializable" },
       );
+      for (const [kind, payload] of pendingEvents) await logEvent(kind, payload);
+      return claimed;
     } catch (err: any) {
       if (err?.code === "P2034" && attempt < P2034_RETRY_ATTEMPTS) {
         await sleep(20 + Math.random() * 30);
         continue;
       }
       recordRecoveryDatabaseFailure();
-      logger.error({ errorCode: "claim_recovery_failed", id, err }, "claimRecovery error");
+      logger.error({ errorCode: "claim_recovery_failed", id }, "claimRecovery error");
       return null;
     }
   }
@@ -301,7 +313,9 @@ export async function authorizeClaimForSend(
         where: {
           OR: [
             { sentAt: { gte: oneHourAgo } },
-            { lastAttemptAt: { gte: oneHourAgo }, status: "sending" },
+            // A claim in flight, and an uncertain outcome that may well have
+            // posted — both still consume capacity.
+            { lastAttemptAt: { gte: oneHourAgo }, status: { in: ["sending", "send_uncertain"] } },
           ],
         },
       });
@@ -337,7 +351,7 @@ export async function authorizeClaimForSend(
     });
   } catch (err) {
     recordRecoveryDatabaseFailure();
-    logger.error({ errorCode: "authorize_claim_failed", id, err }, "authorizeClaimForSend failed");
+    logger.error({ errorCode: "authorize_claim_failed", id }, "authorizeClaimForSend failed");
     return { kind: "pause", reason: "circuit_open" };
   }
 }
@@ -366,6 +380,7 @@ export async function markRecoverySent(
     });
     return res.count > 0;
   } catch {
+    recordRecoveryDatabaseFailure();
     return false;
   }
 }
@@ -390,6 +405,7 @@ export async function markRecoveryRetryable(
     });
     return res.count > 0;
   } catch {
+    recordRecoveryDatabaseFailure();
     return false;
   }
 }
@@ -413,6 +429,7 @@ export async function markRecoveryFailed(
     });
     return res.count > 0;
   } catch {
+    recordRecoveryDatabaseFailure();
     return false;
   }
 }
@@ -436,6 +453,7 @@ export async function markRecoveryUncertain(
     });
     return res.count > 0;
   } catch {
+    recordRecoveryDatabaseFailure();
     return false;
   }
 }
@@ -473,6 +491,7 @@ export async function releaseOrSuppressClaim(
     });
     return res.count > 0;
   } catch {
+    recordRecoveryDatabaseFailure();
     return false;
   }
 }

@@ -1,6 +1,7 @@
 import type { DmRecoveryStatus } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
+import { recordRecoveryDatabaseFailure } from "./dmRecoveryHealth.js";
 import { env } from "../config/env.js";
 import {
   assignRecoveryCohort,
@@ -366,7 +367,8 @@ export async function recordRecoverySeen(
         );
       }
     });
-  } catch (err) {
+  } catch {
+    recordRecoveryDatabaseFailure();
     logger.error(
       {
         errorCode: "dm_recovery_evidence_failed",
@@ -395,6 +397,11 @@ export async function recordRecoveryReaction(
 
       for (const row of rows) {
         const reactedAt = earlierOf(row.reactedAt, input.eventAt);
+        // The dedicated timestamp preserves the experiment denominator, but the
+        // shared engagement fields are what the final pre-send authorization
+        // reads. Writing only reactedAt let a reaction arriving during the lease
+        // window fail to stop a public comment.
+        const engagement = sharedEngagement(row, input, "reaction");
 
         const statusUpdate =
           row.status === "waiting"
@@ -407,7 +414,7 @@ export async function recordRecoveryReaction(
 
         await tx.dmRecoveryReminder.update({
           where: { id: row.id },
-          data: { reactedAt, ...statusUpdate },
+          data: { reactedAt, ...engagement, ...statusUpdate },
         });
 
         logger.info(
@@ -423,6 +430,7 @@ export async function recordRecoveryReaction(
       }
     });
   } catch {
+    recordRecoveryDatabaseFailure();
     logger.error(
       {
         errorCode: "dm_recovery_evidence_failed",
@@ -451,6 +459,7 @@ export async function recordRecoveryPostback(
 
       for (const row of rows) {
         const postbackAt = earlierOf(row.postbackAt, input.eventAt);
+        const engagement = sharedEngagement(row, input, "postback");
 
         const statusUpdate =
           row.status === "waiting"
@@ -463,7 +472,7 @@ export async function recordRecoveryPostback(
 
         await tx.dmRecoveryReminder.update({
           where: { id: row.id },
-          data: { postbackAt, ...statusUpdate },
+          data: { postbackAt, ...engagement, ...statusUpdate },
         });
 
         logger.info(
@@ -479,6 +488,7 @@ export async function recordRecoveryPostback(
       }
     });
   } catch {
+    recordRecoveryDatabaseFailure();
     logger.error(
       {
         errorCode: "dm_recovery_evidence_failed",
@@ -550,6 +560,7 @@ export async function recordRecoveryInbound(
       }
     });
   } catch {
+    recordRecoveryDatabaseFailure();
     logger.error(
       {
         errorCode: "dm_recovery_evidence_failed",
@@ -630,6 +641,23 @@ export async function suppressRecoveriesForCompletion(
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
+
+/**
+ * The engagement fields every consumer reads — the final pre-send check, the
+ * policy, and the health signal sample. A recorder that writes only its own
+ * dedicated timestamp is invisible to all three.
+ */
+function sharedEngagement(
+  row: { engagedAt: Date | null; engagedReceivedAt: Date | null; firstEngagementKind: string | null },
+  input: { eventAt: Date; receivedAt: Date },
+  kind: string,
+): { engagedAt: Date; engagedReceivedAt: Date; firstEngagementKind: string } {
+  return {
+    engagedAt: earlierOf(row.engagedAt, input.eventAt),
+    engagedReceivedAt: earlierOf(row.engagedReceivedAt, input.receivedAt),
+    firstEngagementKind: row.firstEngagementKind ?? kind,
+  };
+}
 
 function earlierOf(existing: Date | null, candidate: Date): Date {
   if (!existing) return candidate;

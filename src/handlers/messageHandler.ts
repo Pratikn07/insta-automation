@@ -120,6 +120,17 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
   const msg = entry.message;
   if (!msg || msg.is_echo) return;
 
+  // Webhook JSON is untrusted. Everything below keys on the mid — thread
+  // capture, deletion, and evidence correlation — so a missing one must be
+  // acknowledged and dropped rather than reaching persistence.
+  if (typeof msg.mid !== "string" || msg.mid.trim() === "") {
+    logger.warn(
+      { errorCode: "inbound_message_missing_mid", senderId: entry.sender?.id ?? null },
+      "Inbound message webhook has no usable mid — acknowledged without capture",
+    );
+    return;
+  }
+
   const senderId = entry.sender.id;
   if (senderId === env.IG_USER_ID) return;
 

@@ -866,3 +866,51 @@ describe("suppressRecoveriesForCompletion", () => {
     expect(updateFn).not.toHaveBeenCalled();
   });
 });
+
+// The final pre-send authorization reads engagedAt, not reactedAt/postbackAt.
+// A recorder that writes only its dedicated timestamp is invisible to it, so a
+// reaction arriving during the lease window would not stop the public comment.
+describe("reaction and postback feed the shared engagement fields", () => {
+  it.each([
+    ["reaction", () => recordRecoveryReaction, "reactedAt"],
+    ["postback", () => recordRecoveryPostback, "postbackAt"],
+  ])("%s records shared engagement alongside its own timestamp", async (kind, getFn, ownField) => {
+    findMany.mockResolvedValue([makeRow()]);
+
+    await getFn()({
+      instagramMessageId: "mid-1",
+      eventAt: new Date("2026-08-06T09:00:00Z"),
+      receivedAt: new Date("2026-08-06T09:00:05Z"),
+    });
+
+    expect(update).toHaveBeenCalledWith({
+      where: { id: "row-1" },
+      data: expect.objectContaining({
+        [ownField]: new Date("2026-08-06T09:00:00Z"),
+        engagedAt: new Date("2026-08-06T09:00:00Z"),
+        engagedReceivedAt: new Date("2026-08-06T09:00:05Z"),
+        firstEngagementKind: kind,
+      }),
+    });
+  });
+
+  it("does not overwrite an engagement kind that arrived first", async () => {
+    findMany.mockResolvedValue([
+      makeRow({ firstEngagementKind: "inbound_reply", engagedAt: new Date("2026-08-06T08:00:00Z") }),
+    ]);
+
+    await recordRecoveryReaction({
+      instagramMessageId: "mid-1",
+      eventAt: new Date("2026-08-06T09:00:00Z"),
+      receivedAt: new Date("2026-08-06T09:00:05Z"),
+    });
+
+    expect(update).toHaveBeenCalledWith({
+      where: { id: "row-1" },
+      data: expect.objectContaining({
+        firstEngagementKind: "inbound_reply",
+        engagedAt: new Date("2026-08-06T08:00:00Z"),
+      }),
+    });
+  });
+});

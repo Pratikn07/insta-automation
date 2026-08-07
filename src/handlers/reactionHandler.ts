@@ -10,10 +10,14 @@ export async function handleReaction(entry: MessagingEntry): Promise<void> {
     return;
   }
 
-  if (reaction.action === "unreact") {
+  // Allowlist rather than a denylist: an unknown or missing action is not
+  // evidence that anyone engaged, and treating it as such would suppress a
+  // reminder — or, mid-lease, fail to. `unreact` is deliberately a no-op: taking
+  // an emoji back does not un-prove that the DM was opened.
+  if (reaction.action !== "react") {
     logger.info(
-      { mid: reaction.mid, senderId: entry.sender?.id },
-      "Received unreact event — preserving existing suppression",
+      { mid: reaction.mid, action: reaction.action ?? null, senderId: entry.sender?.id },
+      "Reaction event is not a positive react — no engagement recorded",
     );
     return;
   }
