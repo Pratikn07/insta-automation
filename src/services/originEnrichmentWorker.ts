@@ -68,15 +68,17 @@ function startOfTodayUtc(): Date {
  * budget against a table this worker never writes.
  */
 async function spentTodayUsd(): Promise<number> {
-  const rows = await prisma.igUser.findMany({
+  // Only the count is needed, so count in the database. Selecting the rows to
+  // read `.length` grew with a day's throughput — every tick paid to ship a
+  // whole day of ids across the wire to discard them.
+  const classifiedToday = await prisma.igUser.count({
     where: { originCheckedAt: { gte: startOfTodayUtc() }, originMethod: ORIGIN_PROMPT_VERSION },
-    select: { id: true },
   });
   // Cost is per BATCH, not per row, and is not stored per user (a cost column on
   // ig_users would be storing an accounting fact on a person). Reconstruct it
   // from the row count at the batch rate — exact whenever batches are full,
   // and an over-estimate otherwise, which errs toward stopping early.
-  const batches = Math.ceil(rows.length / MAX_ORIGIN_BATCH);
+  const batches = Math.ceil(classifiedToday / MAX_ORIGIN_BATCH);
   return batches * estimateOriginCostUsd(MAX_ORIGIN_BATCH) + unrecordedSpendToday();
 }
 
@@ -143,22 +145,25 @@ async function tickBody(): Promise<OriginEnrichmentResult> {
   };
 
   const classifiable: OriginCandidate[] = [];
+  const noSignal: string[] = [];
   for (const u of due) {
-    if (hasSignal(u)) {
-      classifiable.push(u);
-    } else {
-      await prisma.igUser.update({
-        where: { id: u.id },
-        data: {
-          inferredOrigin: "unknown",
-          originConfidence: "low",
-          originMethod: ORIGIN_PROMPT_VERSION,
-          originEvidence: "no name or username to classify",
-          originCheckedAt: now,
-        },
-      });
-      result.skippedNoSignal++;
-    }
+    if (hasSignal(u)) classifiable.push(u);
+    else noSignal.push(u.id);
+  }
+
+  // Every no-signal row is stamped identically, so one statement does it.
+  if (noSignal.length > 0) {
+    await prisma.igUser.updateMany({
+      where: { id: { in: noSignal } },
+      data: {
+        inferredOrigin: "unknown",
+        originConfidence: "low",
+        originMethod: ORIGIN_PROMPT_VERSION,
+        originEvidence: "no name or username to classify",
+        originCheckedAt: now,
+      },
+    });
+    result.skippedNoSignal += noSignal.length;
   }
 
   if (classifiable.length === 0) return result;
@@ -178,19 +183,23 @@ async function tickBody(): Promise<OriginEnrichmentResult> {
     return result;
   }
 
-  for (const v of verdicts) {
-    await prisma.igUser.update({
-      where: { id: v.id },
-      data: {
-        inferredOrigin: v.origin,
-        originConfidence: v.confidence,
-        originMethod: ORIGIN_PROMPT_VERSION,
-        originEvidence: v.evidence,
-        originCheckedAt: now,
-      },
-    });
-    result.classified++;
-  }
+  // Each verdict differs, so these cannot collapse into one statement — but they
+  // can travel as one round trip instead of up to fifty sequential ones.
+  await prisma.$transaction(
+    verdicts.map((v) =>
+      prisma.igUser.update({
+        where: { id: v.id },
+        data: {
+          inferredOrigin: v.origin,
+          originConfidence: v.confidence,
+          originMethod: ORIGIN_PROMPT_VERSION,
+          originEvidence: v.evidence,
+          originCheckedAt: now,
+        },
+      }),
+    ),
+  );
+  result.classified += verdicts.length;
 
   // The model answered, so anyone it left out is someone it declined to place
   // rather than a failed call. Stamping them `unknown` stops the query
@@ -198,10 +207,10 @@ async function tickBody(): Promise<OriginEnrichmentResult> {
   // indefinitely once the backlog drained. `unknown` never withholds a
   // reminder, so this errs toward sending; a prompt-version bump re-runs them.
   const classified = new Set(verdicts.map((v) => v.id));
-  for (const candidate of classifiable) {
-    if (classified.has(candidate.id)) continue;
-    await prisma.igUser.update({
-      where: { id: candidate.id },
+  const unplaced = classifiable.filter((c) => !classified.has(c.id)).map((c) => c.id);
+  if (unplaced.length > 0) {
+    await prisma.igUser.updateMany({
+      where: { id: { in: unplaced } },
       data: {
         inferredOrigin: "unknown",
         originConfidence: "low",
@@ -210,7 +219,7 @@ async function tickBody(): Promise<OriginEnrichmentResult> {
         originCheckedAt: now,
       },
     });
-    result.skippedNoSignal++;
+    result.skippedNoSignal += unplaced.length;
   }
 
   await logEvent("origin_enrichment_tick", {
