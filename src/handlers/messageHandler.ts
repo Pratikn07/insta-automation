@@ -12,10 +12,12 @@ import { findKeywordInMessage } from "../services/keywordService.js";
 import { sendSequence } from "../services/sequenceSender.js";
 import { sendTrackedText } from "../services/dmDeliveryService.js";
 import {
+  markInboundDeleted,
   markThreadResolved,
   recordInboundMessage,
   updateDmThreadProfile,
 } from "../services/dmThreadService.js";
+import { recordRecoveryInbound } from "../services/dmRecoveryService.js";
 import { queueReplyDraft } from "../services/replyDraftService.js";
 import { scheduleEngagementFollowUp } from "../services/engagementFollowUpService.js";
 import { logger } from "../lib/logger.js";
@@ -120,6 +122,11 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
   const senderId = entry.sender.id;
   if (senderId === env.IG_USER_ID) return;
 
+  if (msg.is_deleted) {
+    await markInboundDeleted(msg.mid, new Date(entry.timestamp));
+    return;
+  }
+
   const text = msg.text ?? "";
 
   // Capture the real message into its thread. Idempotent on Meta's `mid`: Meta
@@ -142,10 +149,31 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     // Meta's timestamp, not ours, so a delayed webhook still orders correctly.
     instagramTimestamp: new Date(entry.timestamp),
   });
-  if (inbound.duplicate || !inbound.becameLatest) {
+  if (inbound.duplicate) {
     logger.debug(
-      { senderId, mid: msg.mid, duplicate: inbound.duplicate },
-      "Inbound webhook ignored",
+      { senderId, mid: msg.mid, duplicate: true },
+      "Inbound webhook ignored (duplicate)",
+    );
+    return;
+  }
+
+  // Record recovery inbound evidence for any newly captured inbound message (even if delayed)
+  const recoveryKind = msg.quick_reply?.payload
+    ? "quick_reply"
+    : msg.attachments?.length
+      ? "attachment"
+      : "inbound_reply";
+  await recordRecoveryInbound({
+    igUserId: senderId,
+    eventAt: new Date(entry.timestamp),
+    receivedAt: new Date(),
+    kind: recoveryKind,
+  });
+
+  if (!inbound.becameLatest) {
+    logger.debug(
+      { senderId, mid: msg.mid, duplicate: false, becameLatest: false },
+      "Inbound webhook ignored for conversation routing (not latest)",
     );
     return;
   }

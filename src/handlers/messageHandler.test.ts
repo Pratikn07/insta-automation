@@ -5,6 +5,8 @@ import type { MessagingEntry } from "../types/meta.js";
 const recordInboundMessage = vi.fn();
 const updateDmThreadProfile = vi.fn();
 const markThreadResolved = vi.fn();
+const markInboundDeleted = vi.fn();
+const recordRecoveryInbound = vi.fn();
 const queueReplyDraft = vi.fn();
 const scheduleEngagementFollowUp = vi.fn();
 const findKeywordInMessage = vi.fn();
@@ -37,7 +39,9 @@ vi.mock("../services/dmThreadService.js", () => ({
   recordInboundMessage,
   updateDmThreadProfile,
   markThreadResolved,
+  markInboundDeleted,
 }));
+vi.mock("../services/dmRecoveryService.js", () => ({ recordRecoveryInbound }));
 vi.mock("../services/replyDraftService.js", () => ({ queueReplyDraft }));
 vi.mock("../services/engagementFollowUpService.js", () => ({ scheduleEngagementFollowUp }));
 vi.mock("../services/keywordService.js", () => ({ findKeywordInMessage }));
@@ -103,6 +107,8 @@ beforeEach(() => {
     recordInboundMessage,
     updateDmThreadProfile,
     markThreadResolved,
+    markInboundDeleted,
+    recordRecoveryInbound,
     queueReplyDraft,
     scheduleEngagementFollowUp,
     findKeywordInMessage,
@@ -646,5 +652,44 @@ describe("handleMessage — thread resolution", () => {
     await handleMessage(inbound("Done"));
 
     expect(markThreadResolved).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleMessage — Recovery & Deletion Integration (Task 8)", () => {
+  it("calls markInboundDeleted when message is_deleted is true", async () => {
+    const timestamp = 1786003200000;
+    await handleMessage({
+      sender: { id: "ig-1" },
+      recipient: { id: "bot-1" },
+      timestamp,
+      message: { mid: "mid-del-1", is_deleted: true },
+    });
+
+    expect(markInboundDeleted).toHaveBeenCalledWith("mid-del-1", new Date(timestamp));
+    expect(recordInboundMessage).not.toHaveBeenCalled();
+    expect(recordRecoveryInbound).not.toHaveBeenCalled();
+  });
+
+  it("suppresses recovery for a captured delayed inbound even when not the latest message", async () => {
+    recordInboundMessage.mockResolvedValue({
+      duplicate: false,
+      becameLatest: false,
+      threadId: "thread-1",
+      messageId: "dm-in-1",
+    });
+
+    await handleMessage({
+      sender: { id: "ig-1" },
+      recipient: { id: "bot-1" },
+      timestamp: 1786003200000,
+      message: { mid: "mid-in-1", text: "hello" },
+    });
+
+    expect(recordRecoveryInbound).toHaveBeenCalledWith({
+      igUserId: "ig-1",
+      eventAt: new Date(1786003200000),
+      receivedAt: expect.any(Date),
+      kind: "inbound_reply",
+    });
   });
 });

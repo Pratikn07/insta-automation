@@ -31,14 +31,21 @@ export interface MessagingEntry {
     mid: string;
     text?: string;
     is_echo?: boolean;
-    // Present when someone sends a photo, video, voice note or file. Meta omits
-    // `text` entirely for those, so without this an image-only DM looks empty and
-    // would be recorded as a blank message.
+    is_deleted?: boolean;
+    quick_reply?: { payload?: string };
     attachments?: Array<{
       type?: string;
-      payload?: { url?: string };
+      payload?: { url?: string; [key: string]: unknown };
     }>;
   };
+  read?: { mid?: string; watermark?: number };
+  reaction?: {
+    mid?: string;
+    action?: "react" | "unreact" | string;
+    reaction?: string;
+    emoji?: string;
+  };
+  postback?: { mid?: string; title?: string; payload?: string };
 }
 
 export type AttachmentType = "image" | "video" | "audio" | "file";

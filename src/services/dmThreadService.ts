@@ -276,3 +276,47 @@ export async function updateDmThreadProfile(input: ThreadProfileInput): Promise<
     );
   }
 }
+
+/**
+ * Mark an outbound DM as seen, preserving the earliest seenAt timestamp.
+ */
+export async function markOutboundSeen(mid: string, eventAt: Date): Promise<void> {
+  try {
+    const existing = await prisma.dmMessage.findFirst({
+      where: { instagramMessageId: mid, direction: "outbound" },
+      select: { id: true, seenAt: true },
+    });
+    if (!existing) return;
+
+    const seenAt = !existing.seenAt || eventAt.getTime() < existing.seenAt.getTime()
+      ? eventAt
+      : existing.seenAt;
+
+    await prisma.dmMessage.update({
+      where: { id: existing.id },
+      data: { seenAt },
+    });
+  } catch {
+    logger.error(
+      { errorCode: "dm_message_mark_seen_failed", instagramMessageId: mid },
+      "Failed to mark outbound DM seen",
+    );
+  }
+}
+
+/**
+ * Mark an inbound DM as deleted.
+ */
+export async function markInboundDeleted(mid: string, deletedAt: Date): Promise<void> {
+  try {
+    await prisma.dmMessage.updateMany({
+      where: { instagramMessageId: mid, direction: "inbound" },
+      data: { deletedAt },
+    });
+  } catch {
+    logger.error(
+      { errorCode: "dm_message_mark_deleted_failed", instagramMessageId: mid },
+      "Failed to mark inbound DM deleted",
+    );
+  }
+}
