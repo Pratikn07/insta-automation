@@ -35,7 +35,12 @@ vi.mock("../meta/replyToComment.js", () => ({
   replyToComment,
 }));
 
-vi.mock("./eventLogger.js", () => ({ logEvent }));
+vi.mock("./eventLogger.js", async (importOriginal) => {
+  // The worker imports describeGraphError as well. Mocking only logEvent made
+  // every error path throw inside the tick, so none of them could be tested.
+  const actual = await importOriginal<typeof import("./eventLogger.js")>();
+  return { ...actual, logEvent };
+});
 vi.mock("../lib/logger.js", () => ({ logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn() } }));
 
 vi.mock("../lib/prisma.js", () => ({
@@ -152,5 +157,164 @@ describe("runDmRecoveryTick", () => {
       skipped: "circuit_open",
     });
     expect(listDueRecoveryIds).not.toHaveBeenCalled();
+  });
+});
+
+describe("runDmRecoveryTick pacing and reentrancy", () => {
+  it("claims at most one batch from a large backlog", async () => {
+    listDueRecoveryIds.mockResolvedValue(["r1", "r2", "r3", "r4", "r5"]);
+    claimRecovery.mockImplementation(async (id: string) => claimedRow({ id }));
+    authorizeClaimForSend.mockResolvedValue({ kind: "send_no_confirmed_read_reminder" });
+    replyToComment.mockResolvedValue({ replyId: "pub" });
+
+    const res = await runDmRecoveryTick();
+
+    expect(listDueRecoveryIds).toHaveBeenCalledWith(expect.any(Date), 5);
+    expect(replyToComment).toHaveBeenCalledTimes(5);
+    expect(res.sent).toBe(5);
+  });
+
+  it("does not run two ticks concurrently", async () => {
+    let openGate!: (ids: string[]) => void;
+    const gate = new Promise<string[]>((resolve) => {
+      openGate = resolve;
+    });
+    listDueRecoveryIds.mockReturnValue(gate);
+
+    const first = runDmRecoveryTick();
+    const second = await runDmRecoveryTick();
+    openGate([]);
+    await first; // never leave the running flag set for later tests
+
+    expect(second).toMatchObject({ skipped: "already_running" });
+  });
+
+  it("keeps processing later records after one fails", async () => {
+    listDueRecoveryIds.mockResolvedValue(["r1", "r2"]);
+    claimRecovery.mockImplementation(async (id: string) => claimedRow({ id }));
+    authorizeClaimForSend.mockResolvedValue({ kind: "send_no_confirmed_read_reminder" });
+    replyToComment
+      .mockRejectedValueOnce(graphError(400, 100))
+      .mockResolvedValueOnce({ replyId: "pub-2" });
+
+    const res = await runDmRecoveryTick();
+
+    expect(replyToComment).toHaveBeenCalledTimes(2);
+    expect(res).toMatchObject({ sent: 1, failed: 1 });
+  });
+});
+
+function graphError(status: number, code: number) {
+  const err: any = new Error("graph");
+  err.isAxiosError = true;
+  err.response = {
+    status,
+    statusText: "",
+    headers: {},
+    config: {},
+    data: { error: { code, fbtrace_id: "t" } },
+  };
+  return err;
+}
+
+describe("runDmRecoveryTick public outcome matrix", () => {
+  beforeEach(() => {
+    listDueRecoveryIds.mockResolvedValue(["rec-1"]);
+    claimRecovery.mockResolvedValue(claimedRow());
+    authorizeClaimForSend.mockResolvedValue({ kind: "send_no_confirmed_read_reminder" });
+  });
+
+  it("treats a 2xx without an id as uncertain, never as sent", async () => {
+    replyToComment.mockResolvedValue({ replyId: null });
+    await runDmRecoveryTick();
+    expect(markRecoveryUncertain).toHaveBeenCalledOnce();
+    expect(markRecoverySent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a deleted comment", () => graphError(400, 100), "markRecoveryFailed"],
+    ["a rate limit", () => graphError(429, 4), "markRecoveryRetryable"],
+  ])("handles %s with exactly one finalizer", async (_l, mkErr, finalizer) => {
+    replyToComment.mockRejectedValue(mkErr());
+    await runDmRecoveryTick();
+
+    const all = { markRecoveryFailed, markRecoveryRetryable, markRecoveryUncertain };
+    for (const [name, fn] of Object.entries(all)) {
+      if (name === finalizer) expect(fn).toHaveBeenCalledOnce();
+      else expect(fn).not.toHaveBeenCalled();
+    }
+  });
+
+  it("opens the circuit and stops the batch on an auth failure", async () => {
+    listDueRecoveryIds.mockResolvedValue(["rec-1", "rec-2"]);
+    claimRecovery.mockImplementation(async (id: string) => claimedRow({ id }));
+    replyToComment.mockRejectedValue(graphError(401, 190));
+
+    await runDmRecoveryTick();
+
+    expect(openRecoveryCircuit).toHaveBeenCalledWith("auth_or_permission", expect.any(Date));
+    expect(replyToComment).toHaveBeenCalledOnce();
+  });
+
+  // authorizeClaimForSend reserves the attempt durably AFTER claimRecovery has
+  // already read the row, so the claimed copy is one behind. Using it for the
+  // ceiling grants an extra public send, and for the exponent it halves the
+  // first backoff.
+  it("stops retrying at the configured attempt ceiling", async () => {
+    claimRecovery.mockResolvedValue(claimedRow({ attempts: 2 })); // reserved -> 3 = max
+    replyToComment.mockRejectedValue(graphError(429, 4));
+
+    await runDmRecoveryTick();
+
+    expect(markRecoveryFailed).toHaveBeenCalledWith("rec-1", {
+      category: "rate_limit_exhausted",
+    });
+    expect(markRecoveryRetryable).not.toHaveBeenCalled();
+  });
+
+  it("never schedules a retry sooner than the configured base delay", async () => {
+    claimRecovery.mockResolvedValue(claimedRow({ attempts: 0 })); // reserved -> 1
+    replyToComment.mockRejectedValue(graphError(429, 4));
+
+    const before = Date.now();
+    await runDmRecoveryTick();
+
+    const { nextAttemptAt } = markRecoveryRetryable.mock.calls[0]![1];
+    const delay = nextAttemptAt.getTime() - before;
+    expect(delay).toBeGreaterThanOrEqual(300000 * 0.8);
+  });
+
+  // Meta already posted. Anything that fails afterwards is bookkeeping, and
+  // must never be classified as a send outcome or produce a second attempt.
+  it("does not retry when persistence fails after Meta accepted", async () => {
+    replyToComment.mockResolvedValue({ replyId: "pub-1" });
+    markRecoverySent.mockRejectedValue(new Error("database unavailable"));
+
+    await runDmRecoveryTick();
+
+    expect(replyToComment).toHaveBeenCalledOnce();
+    expect(markRecoveryRetryable).not.toHaveBeenCalled();
+    expect(markRecoveryFailed).not.toHaveBeenCalled();
+    expect(logEvent).toHaveBeenCalledWith(
+      "dm_recovery_finalize_failed",
+      expect.objectContaining({ id: "rec-1" }),
+    );
+  });
+
+  // A reminder posted days late is not the intervention the experiment
+  // measures, so the lag has to be visible.
+  it("marks a badly delayed send as late", async () => {
+    claimRecovery.mockResolvedValue(
+      claimedRow({ eligibleAt: new Date(Date.now() - 29 * 60 * 60 * 1000) }),
+    );
+    replyToComment.mockResolvedValue({ replyId: "pub-1" });
+
+    await runDmRecoveryTick();
+
+    expect(logEvent).toHaveBeenCalledWith("dm_recovery_sent", expect.anything());
+    expect(logEvent).toHaveBeenCalledWith(
+      "dm_recovery_sent_late",
+      expect.objectContaining({ id: "rec-1" }),
+    );
   });
 });

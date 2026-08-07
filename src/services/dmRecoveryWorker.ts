@@ -27,6 +27,25 @@ export type DmRecoveryTickResult = {
 
 let running = false;
 
+/** A send later than this after eligibility is reported as late. */
+const LATE_SEND_ALLOWANCE_MS = 60_000;
+
+/** Safe identifiers only — never the public text or a provider body. */
+function recoveryEventFields(
+  claimed: { id: string; igUserId: string; conversationId: string; keywordId: string; triggerKind: string; cohort: string },
+  attempt: number,
+): Record<string, unknown> {
+  return {
+    id: claimed.id,
+    conversationId: claimed.conversationId,
+    igUserId: claimed.igUserId,
+    keywordId: claimed.keywordId,
+    triggerKind: claimed.triggerKind,
+    cohort: claimed.cohort,
+    attempt,
+  };
+}
+
 function emptyResult(skipped: DmRecoveryTickResult["skipped"]): DmRecoveryTickResult {
   return { examined: 0, sent: 0, suppressed: 0, failed: 0, uncertain: 0, skipped };
 }
@@ -106,30 +125,21 @@ async function runTickBody(): Promise<DmRecoveryTickResult> {
       continue;
     }
 
-    try {
-      const reply = await replyToComment(claimed.commentId, claimed.publicReplyText);
+    // authorizeClaimForSend durably reserved this attempt after claimRecovery
+    // had already read the row, so the claimed copy is one behind. Using the
+    // stale value granted an extra public send and halved the first backoff.
+    const attemptNumber = claimed.attempts + 1;
 
-      if (reply.replyId) {
-        await markRecoverySent(id, { replyId: reply.replyId, sentAt: new Date() });
-        result.sent++;
-        await logEvent("dm_recovery_sent", {
-          id,
-          igUserId: claimed.igUserId,
-          triggerKind: claimed.triggerKind,
-          cohort: claimed.cohort,
-          attempts: claimed.attempts,
-        });
-      } else {
-        await markRecoveryUncertain(id, { category: "success_without_id" });
-        result.uncertain++;
-        await logEvent("dm_recovery_send_uncertain", {
-          id,
-          igUserId: claimed.igUserId,
-          category: "success_without_id",
-        });
-      }
+    let reply: { replyId: string | null } | null = null;
+    let sendError: unknown = null;
+    try {
+      reply = await replyToComment(claimed.commentId, claimed.publicReplyText);
     } catch (error) {
-      const meta = describeGraphError(error);
+      sendError = error;
+    }
+
+    if (sendError) {
+      const meta = describeGraphError(sendError);
       const category = classifyPublicReplyFailure(meta);
 
       if (category === "open_circuit") {
@@ -139,23 +149,23 @@ async function runTickBody(): Promise<DmRecoveryTickResult> {
         });
         await openRecoveryCircuit("auth_or_permission", now);
         result.failed++;
-        break; // Stop batch on auth failure
+        break; // Credentials will not fix themselves within this batch.
       }
 
       if (category === "safe_retry") {
-        const backoffMs =
-          env.DM_RECOVERY_RETRY_BASE_MS *
-          Math.pow(2, claimed.attempts - 1) *
-          (0.8 + Math.random() * 0.4);
-        const nextAttemptAt = new Date(now.getTime() + backoffMs);
-
-        if (claimed.attempts >= env.DM_RECOVERY_MAX_ATTEMPTS) {
+        if (attemptNumber >= env.DM_RECOVERY_MAX_ATTEMPTS) {
           await markRecoveryFailed(id, { category: "rate_limit_exhausted" });
-          result.failed++;
         } else {
-          await markRecoveryRetryable(id, { category: "rate_limit", nextAttemptAt });
-          result.failed++;
+          const backoffMs =
+            env.DM_RECOVERY_RETRY_BASE_MS *
+            Math.pow(2, attemptNumber - 1) *
+            (0.8 + Math.random() * 0.4);
+          await markRecoveryRetryable(id, {
+            category: "rate_limit",
+            nextAttemptAt: new Date(now.getTime() + backoffMs),
+          });
         }
+        result.failed++;
         continue;
       }
 
@@ -164,21 +174,57 @@ async function runTickBody(): Promise<DmRecoveryTickResult> {
         await markRecoveryFailed(id, { category: errCat });
         result.failed++;
         await logEvent("dm_recovery_send_failed", {
-          id,
-          igUserId: claimed.igUserId,
+          ...recoveryEventFields(claimed, attemptNumber),
           category: errCat,
         });
         continue;
       }
 
-      // Timeout, connection_reset, unknown → uncertain (no auto retry)
+      // Timeout, reset, or anything unrecognised: the send may have landed, so
+      // it is never retried automatically.
       const errCat = meta.category ?? "unknown";
       await markRecoveryUncertain(id, { category: errCat });
       result.uncertain++;
       await logEvent("dm_recovery_send_uncertain", {
-        id,
-        igUserId: claimed.igUserId,
+        ...recoveryEventFields(claimed, attemptNumber),
         category: errCat,
+      });
+      continue;
+    }
+
+    // Meta has answered. Everything below is bookkeeping and must never cause
+    // another send — a failure here is a reconciliation problem, not a send
+    // outcome, and misclassifying it through the Graph classifier would be
+    // accidental rather than deliberate safety.
+    try {
+      if (reply!.replyId) {
+        const sentAt = new Date();
+        await markRecoverySent(id, { replyId: reply!.replyId, sentAt });
+        result.sent++;
+        await logEvent("dm_recovery_sent", {
+          ...recoveryEventFields(claimed, attemptNumber),
+          latenessMs: sentAt.getTime() - claimed.eligibleAt.getTime(),
+        });
+        // A reminder posted long after it became eligible is not the
+        // intervention the experiment measures, so the lag must be visible.
+        if (sentAt.getTime() - claimed.eligibleAt.getTime() > LATE_SEND_ALLOWANCE_MS) {
+          await logEvent("dm_recovery_sent_late", {
+            ...recoveryEventFields(claimed, attemptNumber),
+            latenessMs: sentAt.getTime() - claimed.eligibleAt.getTime(),
+          });
+        }
+      } else {
+        await markRecoveryUncertain(id, { category: "success_without_id" });
+        result.uncertain++;
+        await logEvent("dm_recovery_send_uncertain", {
+          ...recoveryEventFields(claimed, attemptNumber),
+          category: "success_without_id",
+        });
+      }
+    } catch {
+      // The lease reconciles this row to send_uncertain on a later tick.
+      await logEvent("dm_recovery_finalize_failed", {
+        ...recoveryEventFields(claimed, attemptNumber),
       });
     }
   }
