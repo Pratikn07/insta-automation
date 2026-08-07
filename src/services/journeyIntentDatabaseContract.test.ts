@@ -3,6 +3,11 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { PrismaClient } from "@prisma/client";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+  resolveJourneyIntent,
+  JOURNEY_WINDOW_MS,
+  type JourneyTriggerInput,
+} from "./journeyIntentService.js";
 
 // Gated on a real Postgres, like the other contract suites: a skipped test looks
 // identical to a passing one in the summary line, so `npm test` alone cannot be
@@ -297,5 +302,222 @@ describeWithLocalDatabase("journey intent database contract", () => {
     expect(convo!.canonicalIntentId).toBeNull();
     expect(convo!.reconciledAt).toBeNull();
     expect(convo!.reconciliationReason).toBeNull();
+  });
+});
+
+// ── A2: resolveJourneyIntent ──────────────────────────────────────────────
+//
+// The behaviour these assert cannot be proven by reading the code: the 48-hour
+// boundary depends on database time, and the concurrency guarantee depends on a
+// real unique index under a real serializable transaction.
+
+describeWithLocalDatabase("resolveJourneyIntent", () => {
+  afterEach(async () => {
+    if (!prisma) return;
+    await prisma.journeyTrigger.deleteMany({ where: { intent: { igUserId: fixture.igUserId } } });
+    await prisma.conversation.updateMany({
+      where: { igUserId: fixture.igUserId },
+      data: { canonicalIntentId: null },
+    });
+    await prisma.journeyIntent.deleteMany({ where: { igUserId: fixture.igUserId } });
+    await prisma.conversation.deleteMany({
+      where: { igUserId: fixture.igUserId, id: { not: fixture.conversationId } },
+    });
+  });
+
+  function trigger(overrides: Partial<JourneyTriggerInput> = {}): JourneyTriggerInput {
+    return {
+      igUserId: fixture.igUserId,
+      keywordId: fixture.keywordId,
+      commentId: `resolve-contract-${randomUUID()}`,
+      receivedAt: new Date(),
+      triggerKind: "comment",
+      ...overrides,
+    };
+  }
+
+  // Each new journey needs its own conversation, mirroring what openConversation
+  // does on the live path.
+  const makeConversation = (tx: Parameters<Parameters<typeof resolveJourneyIntent>[1]>[0]) =>
+    tx.conversation.create({
+      data: { igUserId: fixture.igUserId, keywordId: fixture.keywordId },
+      select: { id: true },
+    });
+
+  it("opens a journey for a first-time request and authorises the gate", async () => {
+    const result = await resolveJourneyIntent(trigger(), makeConversation);
+
+    expect(result.disposition).toBe("new_journey");
+    expect(result.maySendGate).toBe(true);
+    expect(result.conversationId).not.toBeNull();
+
+    // The conversation points back at its intent, so reconciliation can find it.
+    const convo = await prisma.conversation.findUnique({ where: { id: result.conversationId! } });
+    expect(convo!.canonicalIntentId).toBe(result.intentId);
+  });
+
+  // The whole point of Feature 3: this is the case that sent a duplicate gate DM
+  // 342 times in production.
+  it("reuses the journey for a second comment inside the window and forbids a second gate", async () => {
+    const first = await resolveJourneyIntent(trigger(), makeConversation);
+    const second = await resolveJourneyIntent(trigger(), makeConversation);
+
+    expect(second.disposition).toBe("reused_active");
+    expect(second.maySendGate).toBe(false);
+    expect(second.intentId).toBe(first.intentId);
+    expect(second.conversationId).toBe(first.conversationId);
+
+    // One journey, but both asks retained.
+    const intents = await prisma.journeyIntent.findMany({ where: { igUserId: fixture.igUserId } });
+    expect(intents).toHaveLength(1);
+    const triggers = await prisma.journeyTrigger.findMany({ where: { intentId: first.intentId } });
+    expect(triggers).toHaveLength(2);
+  });
+
+  // Media id is deliberately not part of the identity (design §20): the same
+  // keyword on two different reels is one request, not two guide funnels.
+  it("reuses the journey for the same keyword on a different post", async () => {
+    const first = await resolveJourneyIntent(trigger({ mediaId: "media-a" }), makeConversation);
+    const second = await resolveJourneyIntent(trigger({ mediaId: "media-b" }), makeConversation);
+
+    expect(second.disposition).toBe("reused_active");
+    expect(second.intentId).toBe(first.intentId);
+  });
+
+  it("opens a new journey once the window has lapsed", async () => {
+    const first = await resolveJourneyIntent(trigger(), makeConversation);
+
+    // Age the whole window rather than sleeping 48 hours. windowStartedAt must
+    // move too: chk_intent_trigger_after_start correctly forbids a trigger that
+    // predates its own window.
+    const aged = new Date(Date.now() - JOURNEY_WINDOW_MS - 60_000);
+    await prisma.journeyIntent.update({
+      where: { id: first.intentId },
+      data: {
+        windowStartedAt: aged,
+        lastTriggerAt: aged,
+        windowExpiresAt: new Date(Date.now() - 60_000),
+      },
+    });
+
+    const second = await resolveJourneyIntent(trigger(), makeConversation);
+
+    expect(second.disposition).toBe("new_journey");
+    expect(second.maySendGate).toBe(true);
+    expect(second.intentId).not.toBe(first.intentId);
+  });
+
+  // A redelivered webhook must be inert: no second trigger, no refreshed window,
+  // and above all no second gate DM.
+  it("treats a redelivered comment as a replay and changes nothing", async () => {
+    const input = trigger();
+    const first = await resolveJourneyIntent(input, makeConversation);
+    const before = await prisma.journeyIntent.findUnique({ where: { id: first.intentId } });
+
+    const replay = await resolveJourneyIntent(input, makeConversation);
+
+    expect(replay.disposition).toBe("replayed_comment");
+    expect(replay.maySendGate).toBe(false);
+    expect(replay.intentId).toBe(first.intentId);
+
+    const triggers = await prisma.journeyTrigger.findMany({ where: { intentId: first.intentId } });
+    expect(triggers).toHaveLength(1);
+
+    const after = await prisma.journeyIntent.findUnique({ where: { id: first.intentId } });
+    expect(after!.lastTriggerAt.toISOString()).toBe(before!.lastTriggerAt.toISOString());
+  });
+
+  it("reports a completed request inside the window without re-sending", async () => {
+    const first = await resolveJourneyIntent(trigger(), makeConversation);
+    await prisma.journeyIntent.update({
+      where: { id: first.intentId },
+      data: { completedAt: new Date() },
+    });
+
+    const second = await resolveJourneyIntent(trigger(), makeConversation);
+
+    expect(second.disposition).toBe("already_completed_recently");
+    expect(second.maySendGate).toBe(false);
+    expect(second.intentId).toBe(first.intentId);
+  });
+
+  // A completed intent must not have its window extended, or a genuinely new
+  // request after the window would keep reading as "already completed".
+  it("does not extend the window after completion", async () => {
+    const first = await resolveJourneyIntent(trigger(), makeConversation);
+    await prisma.journeyIntent.update({
+      where: { id: first.intentId },
+      data: { completedAt: new Date() },
+    });
+    const before = await prisma.journeyIntent.findUnique({ where: { id: first.intentId } });
+
+    await resolveJourneyIntent(trigger(), makeConversation);
+
+    const after = await prisma.journeyIntent.findUnique({ where: { id: first.intentId } });
+    expect(after!.windowExpiresAt.toISOString()).toBe(before!.windowExpiresAt.toISOString());
+  });
+
+  // The race the unique index exists for. Two comments arriving together must not
+  // both conclude they are first, or the person gets two gate DMs.
+  it("gives exactly one of two simultaneous first triggers the new journey", async () => {
+    const results = await Promise.all([
+      resolveJourneyIntent(trigger(), makeConversation),
+      resolveJourneyIntent(trigger(), makeConversation),
+    ]);
+
+    const opened = results.filter((r) => r.disposition === "new_journey");
+    expect(opened).toHaveLength(1);
+    expect(results.filter((r) => r.maySendGate)).toHaveLength(1);
+
+    // And one journey exists, not two.
+    const intents = await prisma.journeyIntent.findMany({ where: { igUserId: fixture.igUserId } });
+    expect(intents).toHaveLength(1);
+  });
+
+  it("survives a burst of concurrent triggers with a single journey", async () => {
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => resolveJourneyIntent(trigger(), makeConversation)),
+    );
+
+    expect(results.filter((r) => r.maySendGate)).toHaveLength(1);
+    const intents = await prisma.journeyIntent.findMany({ where: { igUserId: fixture.igUserId } });
+    expect(intents).toHaveLength(1);
+    const triggers = await prisma.journeyTrigger.findMany({ where: { intentId: intents[0]!.id } });
+    expect(triggers).toHaveLength(5);
+  });
+
+  it("keeps different keywords as separate journeys", async () => {
+    const otherKeywordId = randomUUID();
+    await prisma.keyword.create({
+      data: {
+        id: otherKeywordId,
+        keyword: `intent-contract-other-${otherKeywordId}`,
+        resourceId: fixture.resourceId,
+        publicReply: "test",
+        gateMessage: "test",
+      },
+    });
+
+    const first = await resolveJourneyIntent(trigger(), makeConversation);
+    const second = await resolveJourneyIntent(
+      trigger({ keywordId: otherKeywordId }),
+      (tx) =>
+        tx.conversation.create({
+          data: { igUserId: fixture.igUserId, keywordId: otherKeywordId },
+          select: { id: true },
+        }),
+    );
+
+    expect(second.disposition).toBe("new_journey");
+    expect(second.intentId).not.toBe(first.intentId);
+
+    await prisma.journeyTrigger.deleteMany({ where: { intentId: second.intentId } });
+    await prisma.conversation.updateMany({
+      where: { keywordId: otherKeywordId },
+      data: { canonicalIntentId: null },
+    });
+    await prisma.journeyIntent.deleteMany({ where: { keywordId: otherKeywordId } });
+    await prisma.conversation.deleteMany({ where: { keywordId: otherKeywordId } });
+    await prisma.keyword.delete({ where: { id: otherKeywordId } });
   });
 });
