@@ -48,8 +48,8 @@ describe("DM recovery policy", () => {
 
   describe("decideRecovery policy evaluation", () => {
     const now = new Date("2026-08-06T18:00:00.000Z");
-    const eligibleAt = new Date("2026-08-06T18:00:00.000Z"); // eligible at now
-    const acceptedAt = new Date("2026-08-06T08:00:00.000Z"); // 10 hours ago
+    const eligibleAt = new Date("2026-08-06T18:00:00.000Z");
+    const acceptedAt = new Date("2026-08-06T08:00:00.000Z");
 
     const baseInput: RecoveryPolicyInput = {
       now,
@@ -64,51 +64,111 @@ describe("DM recovery policy", () => {
       engagedAt: null,
       firstEngagementKind: null,
       conversationCompletedAt: null,
+      conversationCompletedElsewhere: false,
       cancelledAt: null,
       hasRecentSentReminderForPerson: false,
       hasNewerEligibleCandidate: false,
       isSourceCommentAvailable: true,
     };
 
-    it("returns wait if current time is before eligibleAt", () => {
+    it.each([
+      "sent",
+      "send_failed",
+      "send_uncertain",
+      "sending",
+      "suppressed",
+      "cancelled",
+    ])("prevents re-evaluation for terminal status %s", (status) => {
+      const res = decideRecovery({ ...baseInput, status });
+      expect(res.kind).toBe("suppress");
+    });
+
+    it("prevents re-evaluation for terminal status control", () => {
+      expect(decideRecovery({ ...baseInput, status: "control" })).toEqual({
+        kind: "holdout",
+      });
+    });
+
+    it("prevents re-evaluation for terminal status tracking_unavailable", () => {
+      expect(decideRecovery({ ...baseInput, status: "tracking_unavailable" })).toEqual({
+        kind: "suppress",
+        reason: "tracking_unavailable",
+      });
+    });
+
+    it.each([
+      ["seen", { seenAt: now }, "seen"],
+      ["inbound_reply", { engagedAt: now, firstEngagementKind: "inbound_reply" }, "inbound_reply"],
+      ["quick_reply", { engagedAt: now, firstEngagementKind: "quick_reply" }, "quick_reply"],
+      ["attachment", { engagedAt: now, firstEngagementKind: "attachment" }, "attachment"],
+      ["reaction", { engagedAt: now, firstEngagementKind: "reaction" }, "reaction"],
+      ["postback", { engagedAt: now, firstEngagementKind: "postback" }, "postback"],
+      ["completed", { conversationCompletedAt: now }, "completed"],
+      ["completed_elsewhere", { conversationCompletedAt: now, conversationCompletedElsewhere: true }, "completed_elsewhere"],
+      ["owner_cancelled", { cancelledAt: now }, "owner_cancelled"],
+    ])("suppresses for %s", (_name, evidence, expectedReason) => {
+      expect(decideRecovery({ ...baseInput, ...evidence })).toEqual({
+        kind: "suppress",
+        reason: expectedReason,
+      });
+    });
+
+    it("suppresses tracking_unavailable if gate message ID is missing for no_confirmed_read", () => {
+      expect(decideRecovery({ ...baseInput, instagramGateMessageId: null })).toEqual({
+        kind: "suppress",
+        reason: "tracking_unavailable",
+      });
+    });
+
+    it("suppresses settings_blocked when person has a recent sent reminder in 24h", () => {
+      const settingsInput: RecoveryPolicyInput = {
+        ...baseInput,
+        triggerKind: "settings_blocked",
+        hasRecentSentReminderForPerson: true,
+      };
+      expect(decideRecovery(settingsInput)).toEqual({
+        kind: "suppress",
+        reason: "person_cooldown",
+      });
+    });
+
+    it("suppresses settings_blocked when a newer eligible candidate exists for the person", () => {
+      const settingsInput: RecoveryPolicyInput = {
+        ...baseInput,
+        triggerKind: "settings_blocked",
+        hasNewerEligibleCandidate: true,
+      };
+      expect(decideRecovery(settingsInput)).toEqual({
+        kind: "suppress",
+        reason: "newer_candidate",
+      });
+    });
+
+    it("evaluates person_cooldown before checking eligibleAt eligibility time", () => {
+      const futureEligible = new Date(now.getTime() + 3600_000);
+      expect(
+        decideRecovery({
+          ...baseInput,
+          eligibleAt: futureEligible,
+          hasRecentSentReminderForPerson: true,
+        }),
+      ).toEqual({
+        kind: "suppress",
+        reason: "person_cooldown",
+      });
+    });
+
+    it("returns wait if not eligible yet and no cooldown/evidence suppresses it", () => {
       const futureEligible = new Date(now.getTime() + 60_000);
       expect(decideRecovery({ ...baseInput, eligibleAt: futureEligible })).toEqual({
         kind: "wait",
       });
     });
 
-    it.each([
-      ["seen", { seenAt: now }],
-      ["inbound_reply", { engagedAt: now, firstEngagementKind: "inbound_reply" }],
-      ["reaction", { engagedAt: now, firstEngagementKind: "reaction" }],
-      ["postback", { engagedAt: now, firstEngagementKind: "postback" }],
-      ["completed", { conversationCompletedAt: now }],
-      ["owner_cancelled", { cancelledAt: now }],
-    ])("suppresses for %s", (reason, evidence) => {
-      expect(decideRecovery({ ...baseInput, ...evidence })).toEqual({
-        kind: "suppress",
-        reason,
-      });
-    });
-
-    it("suppresses if source comment is unavailable", () => {
-      expect(decideRecovery({ ...baseInput, isSourceCommentAvailable: false })).toEqual({
-        kind: "suppress",
-        reason: "source_unavailable",
-      });
-    });
-
-    it("suppresses for person_cooldown if person had recent sent reminder in 24h", () => {
-      expect(decideRecovery({ ...baseInput, hasRecentSentReminderForPerson: true })).toEqual({
-        kind: "suppress",
-        reason: "person_cooldown",
-      });
-    });
-
-    it("suppresses for newer_candidate if a newer eligible candidate exists for the person", () => {
-      expect(decideRecovery({ ...baseInput, hasNewerEligibleCandidate: true })).toEqual({
-        kind: "suppress",
-        reason: "newer_candidate",
+    it("sends an overdue reminder after a 29-hour outage", () => {
+      const pastEligible = new Date(now.getTime() - 29 * 3600_000);
+      expect(decideRecovery({ ...baseInput, eligibleAt: pastEligible })).toEqual({
+        kind: "send_no_confirmed_read_reminder",
       });
     });
 
@@ -124,22 +184,15 @@ describe("DM recovery policy", () => {
       });
     });
 
-    it("returns send_settings_fallback immediately for verified settings_blocked trigger", () => {
+    it("returns send_settings_fallback for settings_blocked trigger when no cooldown or newer candidate exists", () => {
       const settingsInput: RecoveryPolicyInput = {
         ...baseInput,
         triggerKind: "settings_blocked",
-        cohort: "not_applicable",
+        cohort: "treatment",
         eligibleAt: acceptedAt,
       };
       expect(decideRecovery(settingsInput)).toEqual({
         kind: "send_settings_fallback",
-      });
-    });
-
-    it("returns suppress source_unavailable if gate message ID is missing for no_confirmed_read", () => {
-      expect(decideRecovery({ ...baseInput, instagramGateMessageId: null })).toEqual({
-        kind: "suppress",
-        reason: "source_unavailable",
       });
     });
   });

@@ -98,4 +98,14 @@ describe("env configuration schema for DM recovery", () => {
       }).success,
     ).toBe(true);
   });
+
+  it("normalizes empty string experiment dates to undefined", () => {
+    const parsed = envSchema.parse({
+      ...baseEnv,
+      DM_RECOVERY_EXPERIMENT_START_AT: "",
+      DM_RECOVERY_EXPERIMENT_END_AT: "",
+    });
+    expect(parsed.DM_RECOVERY_EXPERIMENT_START_AT).toBeUndefined();
+    expect(parsed.DM_RECOVERY_EXPERIMENT_END_AT).toBeUndefined();
+  });
 });
