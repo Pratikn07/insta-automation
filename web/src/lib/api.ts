@@ -1,4 +1,10 @@
 import { supabase } from "./supabase";
+import type {
+  RecoveryCounts,
+  RecoveryMetrics,
+  RecoveryReminderDetail,
+  RecoveryReminderRow,
+} from "./types";
 
 const apiBase = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
 
@@ -69,3 +75,18 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   return body as T;
 }
+
+// ── DM recovery ───────────────────────────────────────────────────────────
+
+export const recoveryApi = {
+  list: (query: string) =>
+    api<{ rows: RecoveryReminderRow[]; nextCursor: string | null }>(
+      `/recovery-reminders${query ? `?${query}` : ""}`,
+    ),
+  counts: () => api<RecoveryCounts>("/recovery-reminders/counts"),
+  metrics: () => api<RecoveryMetrics>("/recovery-reminders/metrics"),
+  detail: (id: string) => api<RecoveryReminderDetail>(`/recovery-reminders/${id}`),
+  cancel: (id: string) => api<void>(`/recovery-reminders/${id}/cancel`, { method: "POST" }),
+  markReviewed: (id: string) =>
+    api<void>(`/recovery-reminders/${id}/mark-reviewed`, { method: "POST" }),
+};

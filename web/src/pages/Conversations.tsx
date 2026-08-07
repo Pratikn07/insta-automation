@@ -13,6 +13,8 @@ import {
   User,
 } from "lucide-react";
 import { useState } from "react";
+import { DmRecoveryList } from "../components/conversations/DmRecoveryList";
+import { DmRecoveryDrawer } from "../components/conversations/DmRecoveryDrawer";
 import { api } from "@/lib/api";
 import type {
   Conversation,
@@ -41,7 +43,7 @@ type StateFilter = ConversationState | "all";
 // approval surface; the journey views are the existing keyword→gate→guide funnel,
 // unchanged. Kept side by side rather than replaced, because a journey row and a
 // DM thread answer different questions.
-type Lens = "needs_reply" | "dms" | "journeys";
+type Lens = "needs_reply" | "dms" | "recovery" | "journeys";
 
 // Plain-English tab labels. "DONE" is internal jargon (the word the user types) —
 // a marketer tracks outcomes: who's waiting, who got it, who never replied.
@@ -49,13 +51,19 @@ const FILTERS: { value: StateFilter; label: string; countKey?: keyof Conversatio
   { value: "all", label: "All" },
   { value: "awaiting_done", label: "Waiting", countKey: "awaiting_done" },
   { value: "completed", label: "Delivered", countKey: "completed" },
-  { value: "expired", label: "No reply", countKey: "expired" },
+  // Not "No reply": a journey can end here because the gate DM never landed,
+  // which is not the same as the person choosing not to answer.
+  { value: "expired", label: "No confirmed reply", countKey: "expired" },
 ];
 
 const stateMeta: Record<ConversationState, { label: string; tone: string; Icon: typeof Clock }> = {
   awaiting_done: { label: "Waiting for reply", tone: "text-amber-400 bg-amber-400/10", Icon: Clock },
   completed: { label: "Delivered", tone: "text-emerald-400 bg-emerald-400/10", Icon: CheckCircle2 },
-  expired: { label: "No reply", tone: "text-muted-foreground bg-muted/40", Icon: AlertCircle },
+  expired: {
+    label: "No confirmed reply",
+    tone: "text-muted-foreground bg-muted/40",
+    Icon: AlertCircle,
+  },
 };
 
 // The "we couldn't reach them yet — auto-retrying" row style. Deliberately calm
@@ -81,12 +89,13 @@ export function Conversations() {
   const [selected, setSelected] = useState<Conversation | null>(null);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [lineageUser, setLineageUser] = useState<string | null>(null);
+  const [selectedRecoveryId, setSelectedRecoveryId] = useState<string | null>(null);
 
   const dmScope = lens === "needs_reply" ? "needs_reply" : "all";
   const dmThreadsQ = useQuery<Paginated<DmThreadRow>>({
     queryKey: ["dm-threads", dmScope],
     queryFn: () => api<Paginated<DmThreadRow>>(`/dm-threads?scope=${dmScope}`),
-    enabled: lens !== "journeys",
+    enabled: lens === "needs_reply" || lens === "dms",
   });
 
   const capabilitiesQ = useQuery<AiCapabilities>({
@@ -144,6 +153,7 @@ export function Conversations() {
           [
             { value: "needs_reply", label: "Needs reply" },
             { value: "dms", label: "DMs" },
+            { value: "recovery", label: "DM recovery" },
           ] as const
         ).map((l) => (
           <button
@@ -202,7 +212,19 @@ export function Conversations() {
         </div>
       )}
 
-      {lens !== "journeys" ? (
+      {lens === "recovery" ? (
+        <div className="mt-4">
+          <DmRecoveryList onSelect={setSelectedRecoveryId} />
+          {selectedRecoveryId ? (
+            <div className="mt-4 rounded-lg border">
+              <DmRecoveryDrawer
+                id={selectedRecoveryId}
+                onClose={() => setSelectedRecoveryId(null)}
+              />
+            </div>
+          ) : null}
+        </div>
+      ) : lens !== "journeys" ? (
         <DmThreadList
           rows={dmThreadsQ.data?.items ?? []}
           isLoading={dmThreadsQ.isLoading}
