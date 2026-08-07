@@ -6,33 +6,36 @@ const findFirst = vi.fn();
 const updateMany = vi.fn();
 const update = vi.fn();
 const count = vi.fn();
-const queryRaw = vi.fn().mockResolvedValue([]);
+const queryRaw = vi.fn();
+const controlFindUnique = vi.fn();
+const convoFindUnique = vi.fn();
 const logEvent = vi.fn();
+
+const txClient = {
+  dmRecoveryReminder: { findMany, findUnique, findFirst, updateMany, update, count },
+  dmRecoveryControl: { findUnique: controlFindUnique },
+  conversation: { findUnique: convoFindUnique },
+  $queryRaw: queryRaw,
+};
+
+const $transaction = vi.fn(async (fn: Function) => fn(txClient));
 
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
-    dmRecoveryReminder: { findMany, findUnique, updateMany, update, count, findFirst },
-    dmRecoveryControl: { findUnique: vi.fn() },
-    conversation: { findUnique: vi.fn() },
+    dmRecoveryReminder: { findMany, findUnique, findFirst, updateMany, update, count },
+    dmRecoveryControl: { findUnique: controlFindUnique },
+    conversation: { findUnique: convoFindUnique },
     $queryRaw: queryRaw,
-    $transaction: vi.fn(async (fn: Function) =>
-      fn({
-        dmRecoveryReminder: { findMany, findUnique, updateMany, update, count, findFirst },
-        dmRecoveryControl: { findUnique: vi.fn().mockResolvedValue({ circuitOpen: false }) },
-        conversation: { findUnique: vi.fn().mockResolvedValue({ state: "awaiting_done" }) },
-        $queryRaw: queryRaw,
-      }),
-    ),
+    $transaction,
   },
 }));
 
 vi.mock("./eventLogger.js", () => ({ logEvent }));
+vi.mock("../lib/logger.js", () => ({
+  logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
+}));
 vi.mock("../config/env.js", () => ({
-  env: {
-    LOG_LEVEL: "info",
-    DM_RECOVERY_LEASE_MS: 900000,
-    DM_RECOVERY_MAX_PER_HOUR: 20,
-  },
+  env: { DM_RECOVERY_LEASE_MS: 900_000, DM_RECOVERY_HOURLY_CAP: 30 },
 }));
 
 const {
@@ -40,147 +43,296 @@ const {
   claimRecovery,
   authorizeClaimForSend,
   markRecoverySent,
-  markRecoveryRetryable,
-  markRecoveryFailed,
-  markRecoveryUncertain,
   releaseOrSuppressClaim,
 } = await import("./dmRecoveryRepository.js");
 
+const NOW = new Date("2026-08-06T10:00:00Z");
+const LEASE = new Date("2026-08-06T10:15:00Z");
+
+function candidate(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "rec-1",
+    igUserId: "ig-1",
+    conversationId: "convo-1",
+    commentId: "comment-1",
+    status: "waiting",
+    cohort: "treatment",
+    triggerKind: "no_confirmed_read",
+    instagramGateMessageId: "mid-1",
+    eligibleAt: new Date("2026-08-06T09:00:00Z"),
+    createdAt: new Date("2026-08-05T23:00:00Z"),
+    nextAttemptAt: null,
+    acceptedAt: new Date("2026-08-05T23:00:00Z"),
+    attempts: 0,
+    claimExpiresAt: LEASE,
+    seenAt: null,
+    engagedAt: null,
+    firstEngagementKind: null,
+    cancelledAt: null,
+    publicReplyText: "copy",
+    ...overrides,
+  };
+}
+
+/** findFirst serves two different lookups; route by the shape of the where. */
+function routeFindFirst(opts: { cooldown?: unknown; newer?: unknown } = {}) {
+  findFirst.mockImplementation(async (args: any) =>
+    args?.where?.status === "waiting" ? (opts.newer ?? null) : (opts.cooldown ?? null),
+  );
+}
+
 beforeEach(() => {
-  findMany.mockReset();
-  findUnique.mockReset();
-  findFirst.mockReset();
-  updateMany.mockReset();
-  update.mockReset();
-  count.mockReset();
-  queryRaw.mockReset().mockResolvedValue([]);
-  logEvent.mockReset();
+  for (const fn of [
+    findMany, findUnique, findFirst, updateMany, update, count,
+    queryRaw, controlFindUnique, convoFindUnique, logEvent, $transaction,
+  ]) {
+    fn.mockReset();
+  }
+  $transaction.mockImplementation(async (fn: Function) => fn(txClient));
+  queryRaw.mockResolvedValue([]);
+  convoFindUnique.mockResolvedValue({ state: "awaiting_done", completedAt: null });
+  controlFindUnique.mockResolvedValue({ circuitOpen: false });
+  count.mockResolvedValue(0);
+  updateMany.mockResolvedValue({ count: 1 });
+  routeFindFirst();
 });
 
-describe("dmRecoveryRepository", () => {
-  describe("listDueRecoveryIds", () => {
-    it("returns due waiting recovery IDs ordered by eligibleAt ASC", async () => {
-      findMany.mockResolvedValue([{ id: "rec-1" }, { id: "rec-2" }]);
-
-      const now = new Date("2026-08-06T10:00:00Z");
-      const ids = await listDueRecoveryIds(now, 5);
-
-      expect(ids).toEqual(["rec-1", "rec-2"]);
-      expect(findMany).toHaveBeenCalledWith({
-        where: {
-          status: "waiting",
-          eligibleAt: { lte: now },
-          OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
-        },
-        select: { id: true },
-        orderBy: [{ eligibleAt: "asc" }, { createdAt: "asc" }],
-        take: 5,
-      });
-    });
-  });
-
-  describe("claimRecovery", () => {
-    it("claims an eligible treatment record compare-and-set style", async () => {
-      const now = new Date("2026-08-06T10:00:00Z");
-      const lease = new Date("2026-08-06T10:15:00Z");
-
-      findUnique.mockResolvedValue({
-        id: "rec-1",
-        igUserId: "ig-1",
-        conversationId: "convo-1",
+describe("listDueRecoveryIds", () => {
+  it("selects only due waiting rows, oldest first", async () => {
+    findMany.mockResolvedValue([{ id: "rec-1" }]);
+    await expect(listDueRecoveryIds(NOW, 5)).resolves.toEqual(["rec-1"]);
+    expect(findMany).toHaveBeenCalledWith({
+      where: {
         status: "waiting",
-        eligibleAt: new Date("2026-08-06T09:00:00Z"),
-        nextAttemptAt: null,
-      });
-      findMany.mockResolvedValue([]); // no recent sends
-      updateMany.mockResolvedValue({ count: 1 });
-
-      const res = await claimRecovery("rec-1", now, lease);
-
-      expect(updateMany).toHaveBeenCalledWith({
-        where: {
-          id: "rec-1",
-          status: "waiting",
-          eligibleAt: { lte: now },
-          OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
-        },
-        data: {
-          status: "sending",
-          claimedAt: now,
-          claimExpiresAt: lease,
-        },
-      });
+        eligibleAt: { lte: NOW },
+        OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: NOW } }],
+      },
+      select: { id: true },
+      orderBy: [{ eligibleAt: "asc" }, { createdAt: "asc" }],
+      take: 5,
     });
+  });
+});
 
-    it("suppresses candidate if user had a sent reminder in past 24h", async () => {
-      const now = new Date("2026-08-06T10:00:00Z");
-      const lease = new Date("2026-08-06T10:15:00Z");
+describe("claimRecovery", () => {
+  it("claims an eligible treatment row compare-and-set style", async () => {
+    findUnique.mockResolvedValue(candidate());
 
-      findUnique.mockResolvedValue({
+    await claimRecovery("rec-1", NOW, LEASE);
+
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
         id: "rec-1",
-        igUserId: "ig-1",
-        conversationId: "convo-1",
         status: "waiting",
-        eligibleAt: new Date("2026-08-06T09:00:00Z"),
-        nextAttemptAt: null,
-      });
-      // Person had a recent send
-      findFirst.mockResolvedValue({ id: "other-sent-row" });
-
-      const res = await claimRecovery("rec-1", now, lease);
-
-      expect(res).toBeNull();
-      expect(update).toHaveBeenCalledWith({
-        where: { id: "rec-1" },
-        data: {
-          status: "suppressed",
-          suppressedAt: now,
-          suppressionReason: "person_cooldown",
-        },
-      });
+        eligibleAt: { lte: NOW },
+        OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: NOW } }],
+      },
+      data: { status: "sending", claimedAt: NOW, claimExpiresAt: LEASE },
     });
   });
 
-  describe("authorizeClaimForSend", () => {
-    it("authorizes a valid sending claim when capacity and circuit check hold", async () => {
-      const now = new Date("2026-08-06T10:00:00Z");
-      count.mockResolvedValue(0); // hourly count ok
-      findUnique.mockResolvedValue({
-        id: "rec-1",
-        status: "sending",
-        claimExpiresAt: new Date("2026-08-06T10:15:00Z"),
-        triggerKind: "no_confirmed_read",
-        templateVersion: "v1",
-        attempts: 0,
-        conversationId: "convo-1",
-      });
+  it("returns null when another worker won the compare-and-set", async () => {
+    findUnique.mockResolvedValue(candidate());
+    updateMany.mockResolvedValue({ count: 0 });
 
-      const decision = await authorizeClaimForSend("rec-1", now);
+    await expect(claimRecovery("rec-1", NOW, LEASE)).resolves.toBeNull();
+  });
 
-      expect(decision).toEqual({
-        kind: "send_no_confirmed_read_reminder",
-      });
+  // The claim must run the approved policy rather than a hand-rolled subset,
+  // otherwise the audited precedence in dmRecoveryPolicy is not what executes.
+  it.each([
+    ["read receipt", { seenAt: NOW }, "seen"],
+    ["engagement", { engagedAt: NOW, firstEngagementKind: "reaction" }, "reaction"],
+    ["owner cancellation", { cancelledAt: NOW }, "owner_cancelled"],
+    ["no gate message id", { instagramGateMessageId: null }, "tracking_unavailable"],
+  ])("suppresses a candidate with %s instead of claiming", async (_l, extra, reason) => {
+    findUnique.mockResolvedValue(candidate(extra));
+
+    await expect(claimRecovery("rec-1", NOW, LEASE)).resolves.toBeNull();
+
+    expect(update).toHaveBeenCalledWith({
+      where: { id: "rec-1" },
+      data: expect.objectContaining({ status: "suppressed", suppressionReason: reason }),
+    });
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it("suppresses when the conversation already completed", async () => {
+    findUnique.mockResolvedValue(candidate());
+    convoFindUnique.mockResolvedValue({ state: "completed", completedAt: NOW });
+
+    await expect(claimRecovery("rec-1", NOW, LEASE)).resolves.toBeNull();
+    expect(update).toHaveBeenCalledWith({
+      where: { id: "rec-1" },
+      data: expect.objectContaining({ suppressionReason: "completed" }),
     });
   });
 
-  describe("finalizers", () => {
-    it("markRecoverySent updates sending row to sent with replyId and sentAt", async () => {
-      updateMany.mockResolvedValue({ count: 1 });
-      const sentAt = new Date();
+  it("suppresses when the person already had a reminder inside the cooldown", async () => {
+    findUnique.mockResolvedValue(candidate());
+    routeFindFirst({ cooldown: { id: "other" } });
 
-      const ok = await markRecoverySent("rec-1", { replyId: "rep-1", sentAt });
+    await expect(claimRecovery("rec-1", NOW, LEASE)).resolves.toBeNull();
+    expect(update).toHaveBeenCalledWith({
+      where: { id: "rec-1" },
+      data: expect.objectContaining({ suppressionReason: "person_cooldown" }),
+    });
+  });
 
-      expect(ok).toBe(true);
-      expect(updateMany).toHaveBeenCalledWith({
-        where: { id: "rec-1", status: "sending" },
-        data: {
-          status: "sent",
-          publicReplyId: "rep-1",
-          sentAt,
-          claimedAt: null,
-          claimExpiresAt: null,
-        },
-      });
+  // "The most recently eligible record wins" — without this the OLDEST wins,
+  // because listDueRecoveryIds orders eligibleAt ascending for fairness.
+  it("suppresses a candidate superseded by a newer eligible one for the same person", async () => {
+    findUnique.mockResolvedValue(candidate());
+    routeFindFirst({ newer: { id: "rec-2" } });
+
+    await expect(claimRecovery("rec-1", NOW, LEASE)).resolves.toBeNull();
+    expect(update).toHaveBeenCalledWith({
+      where: { id: "rec-1" },
+      data: expect.objectContaining({ suppressionReason: "newer_candidate" }),
+    });
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it("serialises decisions for one person with a row lock", async () => {
+    findUnique.mockResolvedValue(candidate());
+    await claimRecovery("rec-1", NOW, LEASE);
+    expect(queryRaw).toHaveBeenCalled();
+  });
+});
+
+describe("authorizeClaimForSend", () => {
+  function sendingRow(overrides: Record<string, unknown> = {}) {
+    return candidate({ status: "sending", ...overrides });
+  }
+
+  it("authorises a healthy claim and reserves the attempt", async () => {
+    findUnique.mockResolvedValue(sendingRow());
+
+    await expect(authorizeClaimForSend("rec-1", NOW)).resolves.toEqual({
+      kind: "send_no_confirmed_read_reminder",
+    });
+    expect(update).toHaveBeenCalledWith({
+      where: { id: "rec-1" },
+      data: { lastAttemptAt: NOW, attempts: 1 },
+    });
+  });
+
+  // Circuit state and hourly capacity are process-wide, so the singleton must
+  // be locked or two workers can both read spare capacity and both send.
+  it("locks the control row before reading circuit state or capacity", async () => {
+    findUnique.mockResolvedValue(sendingRow());
+
+    await authorizeClaimForSend("rec-1", NOW);
+
+    const locked = queryRaw.mock.calls.some(([strings]) =>
+      String(Array.isArray(strings) ? strings.join("?") : strings)
+        .toUpperCase()
+        .includes("FOR UPDATE"),
+    );
+    expect(locked).toBe(true);
+  });
+
+  it.each([
+    ["an open circuit", () => controlFindUnique.mockResolvedValue({ circuitOpen: true }), "circuit_open"],
+    ["a full hourly cap", () => count.mockResolvedValue(30), "hourly_cap"],
+  ])("pauses for %s without suppressing the person", async (_l, arrange, reason) => {
+    findUnique.mockResolvedValue(sendingRow());
+    arrange();
+
+    await expect(authorizeClaimForSend("rec-1", NOW)).resolves.toEqual({
+      kind: "pause",
+      reason,
+    });
+  });
+
+  it("releases a claim whose lease already expired", async () => {
+    findUnique.mockResolvedValue(
+      sendingRow({ claimExpiresAt: new Date("2026-08-06T09:00:00Z") }),
+    );
+
+    const decision = await authorizeClaimForSend("rec-1", NOW);
+    expect(decision.kind).toBe("release");
+  });
+
+  // Evidence, cooldown and supersession can all land during the lease window.
+  it.each([
+    ["read evidence", () => findUnique.mockResolvedValue(sendingRow({ seenAt: NOW })), "seen"],
+    [
+      "a completed conversation",
+      () => {
+        findUnique.mockResolvedValue(sendingRow());
+        convoFindUnique.mockResolvedValue({ state: "completed", completedAt: NOW });
+      },
+      "completed",
+    ],
+    [
+      "a reminder inside the person cooldown",
+      () => {
+        findUnique.mockResolvedValue(sendingRow());
+        routeFindFirst({ cooldown: { id: "other" } });
+      },
+      "person_cooldown",
+    ],
+    [
+      "a newer eligible candidate",
+      () => {
+        findUnique.mockResolvedValue(sendingRow());
+        routeFindFirst({ newer: { id: "rec-2" } });
+      },
+      "newer_candidate",
+    ],
+  ])("suppresses before sending for %s", async (_l, arrange, reason) => {
+    arrange();
+
+    await expect(authorizeClaimForSend("rec-1", NOW)).resolves.toEqual({
+      kind: "suppress",
+      reason,
+    });
+  });
+});
+
+describe("finalizers", () => {
+  it("markRecoverySent records a confirmed reply", async () => {
+    const sentAt = new Date();
+    await expect(markRecoverySent("rec-1", { replyId: "rep-1", sentAt })).resolves.toBe(true);
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { id: "rec-1", status: "sending" },
+      data: {
+        status: "sent",
+        publicReplyId: "rep-1",
+        sentAt,
+        claimedAt: null,
+        claimExpiresAt: null,
+      },
+    });
+  });
+
+  // Without an id from Meta the send is unconfirmed; recording it as `sent`
+  // would both claim delivery we cannot prove and start the person's cooldown.
+  it.each([["an empty id", ""], ["whitespace", "   "]])(
+    "markRecoverySent refuses %s",
+    async (_l, replyId) => {
+      await expect(
+        markRecoverySent("rec-1", { replyId, sentAt: new Date() }),
+      ).resolves.toBe(false);
+      expect(updateMany).not.toHaveBeenCalled();
+    },
+  );
+
+  // Every non-send outcome must move the row out of `sending`. A row left
+  // claimed is reconciled to send_uncertain when its lease expires, which sends
+  // a healthy hold to manual review for no reason.
+  it.each([
+    ["pause", { kind: "pause", reason: "circuit_open" }, "waiting"],
+    ["release", { kind: "release", reason: "stale_claim" }, "waiting"],
+    ["wait", { kind: "wait" }, "waiting"],
+    ["holdout", { kind: "holdout" }, "control"],
+    ["suppress", { kind: "suppress", reason: "seen" }, "suppressed"],
+  ])("releaseOrSuppressClaim moves a %s decision out of sending", async (_l, decision, status) => {
+    await expect(releaseOrSuppressClaim("rec-1", decision as never, NOW)).resolves.toBe(true);
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { id: "rec-1", status: "sending" },
+      data: expect.objectContaining({ status, claimedAt: null, claimExpiresAt: null }),
     });
   });
 });

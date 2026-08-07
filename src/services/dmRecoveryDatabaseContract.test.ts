@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { PrismaClient, type Prisma } from "@prisma/client";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { claimRecovery } from "./dmRecoveryRepository.js";
 
 const databaseUrl = process.env.MIGRATION_TEST_DATABASE_URL;
 const describeWithLocalDatabase = databaseUrl ? describe.sequential : describe.skip;
@@ -331,6 +332,58 @@ describeWithLocalDatabase("dm recovery database contract", () => {
     expect(nameMap["claimed_at"]).toBe("timestamp with time zone");
     expect(nameMap["claim_expires_at"]).toBe("timestamp with time zone");
     expect(nameMap["media_id"]).toBe("text");
+  });
+
+  // ── Concurrent claim contract ──────────────────────────────────────────
+  //
+  // The unit tests mock Prisma, so the claim's serialisable transaction and
+  // compare-and-set are only ever exercised for real here.
+
+  it("lets exactly one of two concurrent workers claim the same due row", async () => {
+    const eligibleAt = new Date(Date.now() - 60_000);
+    const row = await prisma.dmRecoveryReminder.create({
+      // A claimable row must be correlatable, or the policy correctly
+      // withholds it as tracking_unavailable.
+      data: reminderData({ eligibleAt, instagramGateMessageId: `mid-${randomUUID()}` }),
+    });
+
+    const now = new Date();
+    const lease = new Date(now.getTime() + 900_000);
+    const results = await Promise.all([
+      claimRecovery(row.id, now, lease),
+      claimRecovery(row.id, now, lease),
+    ]);
+
+    expect(results.filter(Boolean)).toHaveLength(1);
+    const after = await prisma.dmRecoveryReminder.findUnique({ where: { id: row.id } });
+    expect(after?.status).toBe("sending");
+  });
+
+  it("never lets one person hold two sending claims at once", async () => {
+    const older = await prisma.dmRecoveryReminder.create({
+      data: reminderData({
+        eligibleAt: new Date(Date.now() - 120_000),
+        instagramGateMessageId: `mid-${randomUUID()}`,
+      }),
+    });
+    const newer = await prisma.dmRecoveryReminder.create({
+      data: reminderData({
+        eligibleAt: new Date(Date.now() - 60_000),
+        instagramGateMessageId: `mid-${randomUUID()}`,
+      }),
+    });
+
+    const now = new Date();
+    const lease = new Date(now.getTime() + 900_000);
+    await Promise.all([
+      claimRecovery(older.id, now, lease),
+      claimRecovery(newer.id, now, lease),
+    ]);
+
+    const sending = await prisma.dmRecoveryReminder.count({
+      where: { igUserId: fixture.igUserId, status: "sending" },
+    });
+    expect(sending).toBeLessThanOrEqual(1);
   });
 
   // ── Terminal-state consistency constraints ──────────────────────────────

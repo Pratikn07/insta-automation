@@ -102,23 +102,23 @@ async function runTickBody(): Promise<DmRecoveryTickResult> {
 
     const decision = await authorizeClaimForSend(id, now);
 
-    if (decision.kind === "pause") {
-      await releaseOrSuppressClaim(id, decision, now);
-      result.skipped = decision.reason as "circuit_open" | "hourly_cap";
-      break; // Stop batch on pause
-    }
-
+    // Only an explicit send decision may reach Meta. Written as a positive
+    // check so any decision kind added later defaults to NOT posting a public
+    // comment — the previous shape made sending the fall-through, so a released
+    // stale claim was posted.
     if (
-      decision.kind === "suppress" ||
-      decision.kind === "holdout" ||
-      decision.kind === "wait"
+      decision.kind !== "send_no_confirmed_read_reminder" &&
+      decision.kind !== "send_settings_fallback"
     ) {
       await releaseOrSuppressClaim(id, decision, now);
+      if (decision.kind === "pause") {
+        result.skipped = decision.reason;
+        break; // Stop the batch: the circuit or the hourly cap closed.
+      }
       result.suppressed++;
       continue;
     }
 
-    // decision.kind is send_no_confirmed_read_reminder or send_settings_fallback
     try {
       const reply = await replyToComment(claimed.commentId, claimed.publicReplyText);
 

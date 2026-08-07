@@ -117,6 +117,27 @@ describe("runDmRecoveryTick", () => {
     expect(res).toMatchObject({ examined: 1, sent: 1, failed: 0 });
   });
 
+  // Anything that is not an explicit send decision must not reach Meta. The
+  // send branch used to be the fall-through, so any decision the worker did not
+  // name — a released stale claim, or any kind added later — posted a public
+  // comment.
+  it.each([
+    ["a released stale claim", { kind: "release", reason: "stale_claim" }],
+    ["a holdout", { kind: "holdout" }],
+    ["a wait", { kind: "wait" }],
+    ["a suppression", { kind: "suppress", reason: "seen" }],
+  ])("never posts publicly for %s", async (_label, decision) => {
+    listDueRecoveryIds.mockResolvedValue(["rec-1"]);
+    claimRecovery.mockResolvedValue(claimedRow());
+    authorizeClaimForSend.mockResolvedValue(decision);
+
+    await runDmRecoveryTick();
+
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(markRecoverySent).not.toHaveBeenCalled();
+    expect(releaseOrSuppressClaim).toHaveBeenCalledWith("rec-1", decision, expect.any(Date));
+  });
+
   it("stops and returns circuit_open when health check fails", async () => {
     evaluateRecoveryHealth.mockResolvedValue({ circuitOpen: true, reason: "hourly_cap" });
 
