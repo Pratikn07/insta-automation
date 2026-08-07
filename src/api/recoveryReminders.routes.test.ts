@@ -1,0 +1,352 @@
+import express from "express";
+import request from "supertest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const findMany = vi.fn();
+const findUnique = vi.fn();
+const updateMany = vi.fn();
+const groupBy = vi.fn();
+const count = vi.fn();
+const getIgUsers = vi.fn();
+const getRecoveryHealthSnapshot = vi.fn();
+const logEvent = vi.fn();
+
+const eventFindFirst = vi.fn();
+vi.mock("../lib/prisma.js", () => ({
+  prisma: {
+    dmRecoveryReminder: { findMany, findUnique, updateMany, groupBy, count },
+    eventLog: { findFirst: eventFindFirst },
+  },
+}));
+vi.mock("../services/igUserService.js", () => ({ getIgUsers }));
+vi.mock("../services/dmRecoveryHealth.js", () => ({ getRecoveryHealthSnapshot }));
+vi.mock("../services/eventLogger.js", () => ({ logEvent }));
+vi.mock("../lib/logger.js", () => ({
+  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
+}));
+vi.mock("../config/env.js", () => ({
+  env: {
+    DM_RECOVERY_EXPERIMENT_VERSION: "read-recovery-v1",
+    DM_RECOVERY_EXPERIMENT_START_AT: "2026-08-01T00:00:00.000Z",
+    DM_RECOVERY_EXPERIMENT_END_AT: "2026-08-15T00:00:00.000Z",
+  },
+}));
+
+const { recoveryRemindersRouter, viewWhere } = await import("./recoveryReminders.routes.js");
+
+function makeApp() {
+  const app = express();
+  app.use(express.json());
+  app.use("/api/recovery-reminders", recoveryRemindersRouter);
+  return app;
+}
+
+const NOW = new Date("2026-08-06T12:00:00.000Z");
+
+function row(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "rec-1",
+    conversationId: "convo-1",
+    igUserId: "ig-1",
+    keyword: { id: "kw-1", keyword: "SLEEP" },
+    mediaId: "media-1",
+    triggerKind: "no_confirmed_read",
+    status: "waiting",
+    cohort: "treatment",
+    acceptedAt: new Date("2026-08-06T00:00:00.000Z"),
+    eligibleAt: new Date("2026-08-06T10:00:00.000Z"),
+    seenAt: null,
+    engagedAt: null,
+    firstEngagementKind: null,
+    suppressionReason: null,
+    sentAt: null,
+    attempts: 0,
+    lastAttemptAt: null,
+    lastErrorCategory: null,
+    reviewedAt: null,
+    createdAt: new Date("2026-08-05T23:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+beforeEach(() => {
+  for (const fn of [findMany, findUnique, updateMany, groupBy, count, getIgUsers, getRecoveryHealthSnapshot, logEvent, eventFindFirst]) {
+    fn.mockReset();
+  }
+  findMany.mockResolvedValue([]);
+  groupBy.mockResolvedValue([]);
+  count.mockResolvedValue(0);
+  getIgUsers.mockResolvedValue({});
+  getRecoveryHealthSnapshot.mockResolvedValue({ circuitOpen: false });
+  eventFindFirst.mockResolvedValue(null);
+});
+
+describe("viewWhere", () => {
+  it.each([
+    ["scheduled", { status: "waiting", eligibleAt: { gt: NOW } }],
+    ["ready", { status: "waiting", eligibleAt: { lte: NOW } }],
+    ["sent", { status: "sent" }],
+    ["suppressed", { status: "suppressed" }],
+    ["control", { status: "control" }],
+    [
+      "attention",
+      { status: { in: ["send_failed", "send_uncertain", "tracking_unavailable"] } },
+    ],
+    ["all", {}],
+  ])("maps the %s view", (view, expected) => {
+    expect(viewWhere(view as never, NOW)).toEqual(expected);
+  });
+});
+
+describe("GET /", () => {
+  it("rejects an unknown view", async () => {
+    const res = await request(makeApp()).get("/api/recovery-reminders?view=nope");
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a non-uuid cursor", async () => {
+    const res = await request(makeApp()).get("/api/recovery-reminders?cursor=abc");
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a limit above the maximum", async () => {
+    const res = await request(makeApp()).get("/api/recovery-reminders?limit=101");
+    expect(res.status).toBe(400);
+  });
+
+  it("returns the stable row shape with the person resolved", async () => {
+    findMany.mockResolvedValue([row()]);
+    getIgUsers.mockResolvedValue({ "ig-1": { username: "sarah", name: "Sarah" } });
+
+    const res = await request(makeApp()).get("/api/recovery-reminders");
+
+    expect(res.status).toBe(200);
+    expect(res.body.rows[0]).toEqual({
+      id: "rec-1",
+      conversationId: "convo-1",
+      igUserId: "ig-1",
+      username: "sarah",
+      name: "Sarah",
+      keyword: { id: "kw-1", keyword: "SLEEP" },
+      media: { id: "media-1", permalink: null, caption: null },
+      triggerKind: "no_confirmed_read",
+      status: "waiting",
+      cohort: "treatment",
+      acceptedAt: "2026-08-06T00:00:00.000Z",
+      eligibleAt: "2026-08-06T10:00:00.000Z",
+      seenAt: null,
+      engagedAt: null,
+      firstEngagementKind: null,
+      suppressionReason: null,
+      sentAt: null,
+      attempts: 0,
+      lastAttemptAt: null,
+      lastErrorCategory: null,
+      reviewedAt: null,
+      createdAt: "2026-08-05T23:00:00.000Z",
+    });
+  });
+
+  // publicReplyText is the message we would post; it is not the owner's to read
+  // from a list endpoint, and raw provider data must never appear here.
+  it("never leaks the public reply text or provider fields", async () => {
+    findMany.mockResolvedValue([row()]);
+    const res = await request(makeApp()).get("/api/recovery-reminders");
+
+    const select = findMany.mock.calls[0]![0].select;
+    expect(select).not.toHaveProperty("publicReplyText");
+    expect(JSON.stringify(res.body)).not.toContain("publicReplyText");
+  });
+
+  it("resolves every person in one batched call", async () => {
+    findMany.mockResolvedValue([row({ id: "a", igUserId: "ig-1" }), row({ id: "b", igUserId: "ig-2" })]);
+
+    await request(makeApp()).get("/api/recovery-reminders");
+
+    expect(getIgUsers).toHaveBeenCalledOnce();
+    expect(getIgUsers).toHaveBeenCalledWith(["ig-1", "ig-2"]);
+  });
+
+  it("pages with limit + 1 and returns the next cursor", async () => {
+    findMany.mockResolvedValue([row({ id: "a" }), row({ id: "b" }), row({ id: "c" })]);
+
+    const res = await request(makeApp()).get("/api/recovery-reminders?limit=2");
+
+    expect(findMany.mock.calls[0]![0].take).toBe(3);
+    expect(res.body.rows).toHaveLength(2);
+    expect(res.body.nextCursor).toBe("c");
+  });
+
+  it("returns a null cursor on the last page", async () => {
+    findMany.mockResolvedValue([row({ id: "a" })]);
+    const res = await request(makeApp()).get("/api/recovery-reminders?limit=2");
+    expect(res.body.nextCursor).toBeNull();
+  });
+
+  it("applies the keyword and cohort filters", async () => {
+    await request(makeApp()).get(
+      "/api/recovery-reminders?cohort=control&keywordId=11111111-1111-4111-8111-111111111111",
+    );
+
+    expect(findMany.mock.calls[0]![0].where).toMatchObject({
+      cohort: "control",
+      keywordId: "11111111-1111-4111-8111-111111111111",
+    });
+  });
+});
+
+describe("GET /counts", () => {
+  it("reports records and unique people for every view", async () => {
+    // One groupBy per view: rows carry igUserId so people can be counted distinctly.
+    groupBy.mockImplementation(async () => [
+      { igUserId: "ig-1", _count: { _all: 2 } },
+      { igUserId: "ig-2", _count: { _all: 1 } },
+    ]);
+
+    const res = await request(makeApp()).get("/api/recovery-reminders/counts");
+
+    expect(res.status).toBe(200);
+    for (const view of ["all", "scheduled", "ready", "sent", "suppressed", "control", "attention"]) {
+      expect(res.body[view]).toEqual({ records: 3, people: 2 });
+    }
+  });
+
+  it("is registered before the :id route", async () => {
+    await request(makeApp()).get("/api/recovery-reminders/counts");
+    expect(findUnique).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /metrics", () => {
+  // Registered after /:id, Express captures "metrics" as an id and the
+  // endpoint 404s.
+  it("is not captured by the :id route", async () => {
+    const res = await request(makeApp()).get("/api/recovery-reminders/metrics");
+    expect(res.status).toBe(200);
+    expect(findUnique).not.toHaveBeenCalled();
+  });
+
+  it("excludes settings_blocked rows from the cohort comparison", async () => {
+    await request(makeApp()).get("/api/recovery-reminders/metrics");
+    expect(findMany.mock.calls[0]![0].where).toMatchObject({
+      triggerKind: "no_confirmed_read",
+    });
+  });
+
+  it("returns null rates rather than dividing by zero", async () => {
+    const res = await request(makeApp()).get("/api/recovery-reminders/metrics");
+    expect(res.body.experiment.treatment.completionRate48h).toBeNull();
+    expect(res.body.experiment.absoluteLiftPercentagePoints).toBeNull();
+    expect(res.body.experiment.relativeLiftPercent).toBeNull();
+    expect(res.body.accuracy.readEventCoverage).toBeNull();
+  });
+
+  it("includes the health snapshot", async () => {
+    getRecoveryHealthSnapshot.mockResolvedValue({ circuitOpen: true, reason: "hourly_cap" });
+    const res = await request(makeApp()).get("/api/recovery-reminders/metrics");
+    expect(res.body.health).toEqual({ circuitOpen: true, reason: "hourly_cap" });
+  });
+});
+
+describe("GET /:id", () => {
+  it("returns 404 for a missing record", async () => {
+    findUnique.mockResolvedValue(null);
+    const res = await request(makeApp()).get("/api/recovery-reminders/rec-1");
+    expect(res.status).toBe(404);
+  });
+
+  // The timeline is assembled from stored timestamps, never from a replayed
+  // provider response, and is ordered so the owner can read what happened.
+  it("builds an ordered timeline from stored timestamps", async () => {
+    findUnique.mockResolvedValue(
+      row({
+        seenAt: new Date("2026-08-06T11:00:00.000Z"),
+        sentAt: new Date("2026-08-06T12:30:00.000Z"),
+        status: "sent",
+      }),
+    );
+
+    const res = await request(makeApp()).get("/api/recovery-reminders/rec-1");
+
+    expect(res.status).toBe(200);
+    const kinds = res.body.timeline.map((entry: { kind: string }) => entry.kind);
+    expect(kinds).toEqual(["created", "accepted", "eligible", "seen", "sent"]);
+    const times = res.body.timeline.map((e: { at: string }) => Date.parse(e.at));
+    expect(times).toEqual([...times].sort((a, b) => a - b));
+  });
+
+  it("never returns the public reply text", async () => {
+    findUnique.mockResolvedValue(row());
+    const res = await request(makeApp()).get("/api/recovery-reminders/rec-1");
+    expect(JSON.stringify(res.body)).not.toContain("publicReplyText");
+  });
+});
+
+describe("POST /:id/cancel", () => {
+  it.each(["waiting", "control", "tracking_unavailable", "send_failed"])(
+    "cancels an unsent %s item",
+    async () => {
+      updateMany.mockResolvedValue({ count: 1 });
+
+      const res = await request(makeApp()).post("/api/recovery-reminders/rec-1/cancel");
+
+      expect(res.status).toBe(204);
+      expect(updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            id: "rec-1",
+            status: { in: ["waiting", "control", "tracking_unavailable", "send_failed"] },
+            sentAt: null,
+            publicReplyId: null,
+          }),
+        }),
+      );
+      expect(logEvent).toHaveBeenCalledWith("dm_recovery_cancelled", expect.anything());
+    },
+  );
+
+  it.each(["sending", "sent", "send_uncertain", "cancelled"])(
+    "returns 409 for %s",
+    async (status) => {
+      updateMany.mockResolvedValue({ count: 0 });
+      findUnique.mockResolvedValue({ id: "rec-1", status });
+
+      const res = await request(makeApp()).post("/api/recovery-reminders/rec-1/cancel");
+
+      expect(res.status).toBe(409);
+      expect(logEvent).not.toHaveBeenCalled();
+    },
+  );
+
+  it("returns 404 when the record does not exist", async () => {
+    updateMany.mockResolvedValue({ count: 0 });
+    findUnique.mockResolvedValue(null);
+
+    const res = await request(makeApp()).post("/api/recovery-reminders/rec-1/cancel");
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("POST /:id/mark-reviewed", () => {
+  it("stamps reviewedAt without touching send status", async () => {
+    updateMany.mockResolvedValue({ count: 1 });
+
+    const res = await request(makeApp()).post("/api/recovery-reminders/rec-1/mark-reviewed");
+
+    expect(res.status).toBe(204);
+    const call = updateMany.mock.calls[0]![0];
+    expect(call.where.status).toEqual({
+      in: ["send_failed", "send_uncertain", "tracking_unavailable"],
+    });
+    expect(call.data).toEqual({ reviewedAt: expect.any(Date) });
+    expect(call.data).not.toHaveProperty("status");
+  });
+
+  it("returns 409 for a record that is not awaiting review", async () => {
+    updateMany.mockResolvedValue({ count: 0 });
+    findUnique.mockResolvedValue({ id: "rec-1", status: "sent" });
+
+    const res = await request(makeApp()).post("/api/recovery-reminders/rec-1/mark-reviewed");
+    expect(res.status).toBe(409);
+  });
+});
