@@ -124,6 +124,10 @@ export async function runGateQueueTick(): Promise<void> {
         where: {
           id: item.id,
           status: "pending",
+          // Ticks are not guarded against overlapping, so a row an earlier tick
+          // just pushed into backoff is still `pending`. Without this predicate
+          // it would be re-claimed and sent immediately, skipping the backoff.
+          nextAttemptAt: { lte: now },
         },
         data: {
           status: "sending",
@@ -270,13 +274,30 @@ export async function runGateQueueTick(): Promise<void> {
               triggerKind: "tracking_unavailable",
             });
           }
-        } else if (classification === "permanent" || attempts >= env.GATE_MAX_ATTEMPTS) {
+        } else if (
+          classification === "permanent" ||
+          // Retrying a revoked or expired token cannot succeed: it burns the
+          // attempt budget on every queued row and delays the operator noticing.
+          classification === "permission_or_auth" ||
+          attempts >= env.GATE_MAX_ATTEMPTS
+        ) {
           await prisma.gateQueue.update({
             where: { id: row.id },
             data: { status: "exhausted", attempts, lastError: metadata.category },
           });
+          if (classification === "permission_or_auth") {
+            logger.error(
+              {
+                errorCode: "gate_retry_auth_failure",
+                conversationId: row.conversationId,
+                graphCode: metadata.graphCode,
+                graphSubcode: metadata.graphSubcode,
+              },
+              "Gate retry retired: Instagram rejected the send as unauthorised",
+            );
+          }
         } else {
-          // rate_limited or retryable_transport or permission_or_auth
+          // rate_limited or retryable_transport
           const backoff = Math.min(BASE_BACKOFF_MS * 2 ** (attempts - 1), MAX_BACKOFF_MS);
           await prisma.gateQueue.update({
             where: { id: row.id },

@@ -275,3 +275,67 @@ describe("runGateQueueTick Recovery Scheduling (Task 7)", () => {
     );
   });
 });
+
+describe("runGateQueueTick claim safety (Task 7)", () => {
+  // The plan pins nextAttemptAt into the compare-and-set. Ticks are not guarded
+  // against overlapping (5 min interval, no running flag), so a row this tick
+  // just pushed into backoff is still `pending` and would otherwise be
+  // re-claimed and sent immediately by an overlapping tick, bypassing the
+  // backoff entirely.
+  it("will not claim a row whose backoff has been pushed into the future", async () => {
+    gateQueue.findMany.mockImplementation(async (args?: { where?: { status?: string } }) => {
+      if (args?.where?.status === "sending") return [];
+      if (args?.where?.status === "pending") return [row];
+      return [];
+    });
+    sendTrackedPrivateReply.mockResolvedValue({
+      instagramMessageId: "mid-1",
+      dmMessageId: "dm-1",
+      acceptedAt: new Date(),
+    });
+
+    await runGateQueueTick();
+
+    const claim = gateQueue.updateMany.mock.calls.find(
+      ([args]) => args?.data?.status === "sending",
+    );
+    expect(claim).toBeDefined();
+    expect(claim![0].where).toMatchObject({
+      id: "gate-1",
+      status: "pending",
+      nextAttemptAt: { lte: expect.any(Date) },
+    });
+  });
+
+  it("skips an item another worker already claimed", async () => {
+    gateQueue.findMany.mockImplementation(async (args?: { where?: { status?: string } }) => {
+      if (args?.where?.status === "sending") return [];
+      if (args?.where?.status === "pending") return [row];
+      return [];
+    });
+    // The compare-and-set matched nothing: someone else won the claim.
+    gateQueue.updateMany.mockResolvedValue({ count: 0 });
+
+    await runGateQueueTick();
+
+    expect(sendTrackedPrivateReply).not.toHaveBeenCalled();
+  });
+
+  // Retrying a revoked or expired token cannot succeed. It burns the attempt
+  // budget on every queued row and delays the operator noticing the outage.
+  it("retires an auth failure instead of retrying it", async () => {
+    gateQueue.findMany.mockImplementation(async (args?: { where?: { status?: string } }) => {
+      if (args?.where?.status === "sending") return [];
+      if (args?.where?.status === "pending") return [row];
+      return [];
+    });
+    sendTrackedPrivateReply.mockRejectedValue(graphFailure(190, 460));
+
+    await runGateQueueTick();
+
+    const finalise = gateQueue.update.mock.calls.at(-1)![0];
+    expect(finalise.data.status).toBe("exhausted");
+    expect(finalise.data).not.toHaveProperty("nextAttemptAt");
+    expect(scheduleSettingsBlockedRecovery).not.toHaveBeenCalled();
+  });
+});
