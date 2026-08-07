@@ -32,17 +32,19 @@ the pre-fix code and pass after it:
 | 1. Metrics endpoint dead by default | `1d3be2b` |
 | 2. Completion voided by bookkeeping | `8c7d38b` |
 | 3. Gate batch stranded, falsely recorded | `4f13ff7` |
-| 4. Gate `send_uncertain` has no consumer | Open — needs a product decision, see below |
+| 4. Gate `send_uncertain` has no consumer | `4bd0e07` |
 | 5. Pagination drops rows between pages | `be2aa39` |
+
+The quality findings are closed too: `105f57c` (dead policy inputs), `980aaf0`
+(unbounded count and per-row writes), `dc84f6e` (duplicate formatter and
+cross-layer action lists). A sixth defect, not in the original review, was found
+by turning the classifier on in production: `8f74eff`.
 
 Backend: 913 tests pass, `tsc` clean. Web: 346 tests pass, `tsc` clean.
 
-Defect 4 is deliberately left open: closing it means either building a reviewer surface for
-gate-queue `send_uncertain` rows or documenting that the recovery mirror row is the sole review
-path. That is a product call, not a mechanical fix.
-
-The quality findings below are also unaddressed, by choice — they are not correctness issues and
-are better handled as one deliberate cleanup pass than folded into defect fixes.
+Defect 4 was closed by making the state visible rather than by building a second reviewer UI: the
+count is surfaced in Automation health when non-zero, and `docs/meta-verification.md` records why
+that was chosen. A dedicated review queue is only worth building if the count starts moving.
 
 ## Confirmed defects
 
