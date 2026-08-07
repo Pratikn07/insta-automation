@@ -442,15 +442,22 @@ async function metricsHandler(_req: import("express").Request, res: import("expr
   // Only prospective no-confirmed-read journeys inside the configured window
   // are comparable. settings_blocked rows are always treatment by design, so
   // including them would bias the treatment arm.
-  const experimentRows = await prisma.dmRecoveryReminder.findMany({
-    where: {
-      triggerKind: "no_confirmed_read",
-      ...(startAt && endAt
-        ? { acceptedAt: { gte: new Date(startAt), lt: new Date(endAt) } }
-        : { id: "" }),
-    },
-    select: METRICS_SELECT,
-  });
+  //
+  // With no window configured there is no experiment to report, so skip the
+  // query rather than asking the database for an empty cohort. `id` is a uuid
+  // column, so a sentinel like `id: ""` cannot express "match nothing" — Prisma
+  // rejects it with P2023 before any SQL is sent, and the unconfigured window is
+  // the documented default deploy state.
+  const experimentRows =
+    startAt && endAt
+      ? await prisma.dmRecoveryReminder.findMany({
+          where: {
+            triggerKind: "no_confirmed_read",
+            acceptedAt: { gte: new Date(startAt), lt: new Date(endAt) },
+          },
+          select: METRICS_SELECT,
+        })
+      : [];
 
   const treatmentRows = experimentRows.filter((row) => row.cohort === "treatment");
   const controlRows = experimentRows.filter((row) => row.cohort === "control");

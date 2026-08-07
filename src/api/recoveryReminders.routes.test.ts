@@ -259,6 +259,38 @@ describe("GET /metrics", () => {
     const res = await request(makeApp()).get("/api/recovery-reminders/metrics");
     expect(res.body.health).toEqual({ circuitOpen: true, reason: "hourly_cap" });
   });
+
+  // `.env.example` ships the window empty until the experiment starts, so this
+  // is the default deploy state. It must not query for the cohort at all: `id`
+  // is a uuid column, so an `id: ""` sentinel is rejected with P2023 before any
+  // SQL is sent, and Express 4 does not catch the async rejection — the request
+  // hangs instead of returning.
+  it("reports an empty experiment without querying when the window is unset", async () => {
+    vi.resetModules();
+    vi.doMock("../config/env.js", () => ({
+      env: {
+        DM_RECOVERY_EXPERIMENT_VERSION: "read-recovery-v1",
+        DM_RECOVERY_EXPERIMENT_START_AT: undefined,
+        DM_RECOVERY_EXPERIMENT_END_AT: undefined,
+      },
+    }));
+    const isolated = await import("./recoveryReminders.routes.js");
+    vi.doUnmock("../config/env.js");
+
+    const app = express();
+    app.use(express.json());
+    app.use("/api/recovery-reminders", isolated.recoveryRemindersRouter);
+
+    const res = await request(app).get("/api/recovery-reminders/metrics");
+
+    expect(res.status).toBe(200);
+    expect(res.body.experiment.treatment.eligiblePeople).toBe(0);
+    expect(res.body.experiment.control.withheld).toBe(0);
+    // The cohort query is skipped entirely, not issued with a sentinel filter.
+    for (const call of findMany.mock.calls) {
+      expect(call[0]?.where?.id).toBeUndefined();
+    }
+  });
 });
 
 describe("GET /:id", () => {
