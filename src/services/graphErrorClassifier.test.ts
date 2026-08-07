@@ -113,7 +113,15 @@ describe("graphErrorClassifier", () => {
       ).toBe("permanent");
     });
 
-    it("lets an operator allowlist 100:2534025 through to settings_blocked", () => {
+    // The classifier is a pure function of the allowlist it is handed, so it
+    // WILL honour this pair. That is exactly why the pair must never reach it:
+    // 100:2534025 is the invalid-comment family, not a settings rejection, and
+    // it is 1,347 of the 1,356 dm_failed events in production history.
+    //
+    // The refusal therefore lives at the config boundary — see
+    // `refuses the invalid-comment signature` in src/config/env.test.ts. This
+    // case documents the mechanism, not a supported configuration.
+    it("would honour 100:2534025 if configured, which is why env refuses it", () => {
       expect(
         classifyPrivateGateFailure(
           graphMetadata({ httpStatus: 400, graphCode: 100, graphSubcode: 2534025 }),

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { envSchema } from "./env.js";
+import { envSchema, FORBIDDEN_SETTINGS_SIGNATURE } from "./env.js";
 
 const baseEnv = {
   META_APP_SECRET: "mock_secret",
@@ -113,14 +113,39 @@ describe("env configuration schema for DM recovery", () => {
   // the settings fallback disarmed while looking configured. Fail at startup.
   it.each([
     ["empty (the shipped default)", "", true],
-    ["one valid pair", "100:2534025", true],
-    ["several valid pairs with spacing", "100:2534025, 10:12345", true],
+    ["one valid pair", "10:12345", true],
+    ["several valid pairs with spacing", "10:12345, 25:9876", true],
     ["a wrong separator", "100;2534025", false],
     ["a missing subcode", "100:", false],
-    ["one bad pair among good ones", "100:2534025, oops", false],
+    ["one bad pair among good ones", "10:12345, oops", false],
   ])("accepts settings signatures that are %s", (_label, value, valid) => {
     expect(
       envSchema.safeParse({ ...baseEnv, DM_RECOVERY_SETTINGS_BLOCKED_SIGNATURES: value }).success,
     ).toBe(valid);
+  });
+
+  // 100:2534025 is "the comment is invalid for a private reply" — the
+  // invalid-comment family, not a settings rejection — and 1,347 of the 1,356
+  // dm_failed events in production history. Allowlisting it would publicly tell
+  // over a thousand people their message-request settings blocked a DM those
+  // settings never touched. The docs forbid it; this makes the refusal real.
+  it.each([
+    ["alone", FORBIDDEN_SETTINGS_SIGNATURE],
+    ["among valid pairs", `10:12345, ${FORBIDDEN_SETTINGS_SIGNATURE}`],
+    ["with surrounding whitespace", `  ${FORBIDDEN_SETTINGS_SIGNATURE}  `],
+  ])("refuses the invalid-comment signature %s", (_label, value) => {
+    const result = envSchema.safeParse({
+      ...baseEnv,
+      DM_RECOVERY_SETTINGS_BLOCKED_SIGNATURES: value,
+    });
+
+    expect(result.success).toBe(false);
+    // The message must explain WHY, not just reject: whoever hits this is
+    // reading the docs cold and reaching for the obvious pair.
+    if (!result.success) {
+      const message = result.error.issues.map((i) => i.message).join(" ");
+      expect(message).toContain("not a settings rejection");
+      expect(message).toContain("docs/meta-verification.md");
+    }
   });
 });
