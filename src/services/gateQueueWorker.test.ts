@@ -139,13 +139,16 @@ describe("runGateQueueTick Graph failure privacy", () => {
 
     await runGateQueueTick();
 
+    // An HTTP 500 leaves the send outcome unknown, so the row is parked for
+    // review rather than retried — a retry could deliver the gate DM twice.
+    // It previously scheduled a retry only because subcode 2534025 was matched
+    // bare as a rate limit.
     expect(gateQueue.update).toHaveBeenCalledWith({
       where: { id: "gate-1" },
       data: {
-        status: "pending",
+        status: "send_uncertain",
         attempts: 1,
         lastError: "graph_response",
-        nextAttemptAt: expect.any(Date),
       },
     });
     const captured = JSON.stringify({
@@ -184,6 +187,7 @@ describe("runGateQueueTick Graph failure privacy", () => {
       graphCode: 2,
       graphSubcode: 460,
       traceId: "trace_GATE-1",
+      transportCode: null,
     });
     const captured = JSON.stringify(logEvent.mock.calls);
     for (const sentinel of SENTINELS) expect(captured).not.toContain(sentinel);

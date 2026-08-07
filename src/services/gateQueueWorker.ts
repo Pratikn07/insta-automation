@@ -254,7 +254,10 @@ export async function runGateQueueTick(): Promise<void> {
               triggerKind: "settings_blocked",
             });
           }
-        } else if (classification === "uncertain") {
+        } else if (
+          classification === "uncertain" ||
+          classification === "transport_uncertain"
+        ) {
           await prisma.gateQueue.update({
             where: { id: row.id },
             data: { status: "send_uncertain", attempts, lastError: metadata.category },

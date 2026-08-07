@@ -59,6 +59,7 @@ describe("Graph client error logging", () => {
         graphCode: 100,
         graphSubcode: 2534025,
         traceId: "trace_SAFE-123",
+        transportCode: null,
       },
       "Graph API error",
     );

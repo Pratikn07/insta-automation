@@ -4,7 +4,10 @@ export type PrivateGateFailure =
   | "settings_blocked"
   | "rate_limited"
   | "permission_or_auth"
+  /** Provably never delivered — safe to retry without duplicating a DM. */
   | "retryable_transport"
+  /** May have been delivered. Must never be retried automatically. */
+  | "transport_uncertain"
   | "permanent"
   | "uncertain";
 
@@ -25,20 +28,38 @@ export function parseGraphSignatures(value: string): ReadonlySet<string> {
   );
 }
 
+/**
+ * Rate limiting is identified by HTTP status or error code only.
+ *
+ * Deliberately NOT matched on a bare subcode. A subcode is only meaningful
+ * paired with its code: 2534025 belongs to code 100 ("the comment is invalid
+ * for a private reply" — deleted, older than seven days, already replied to, or
+ * blocked by the recipient's settings), which is permanent, not a rate limit.
+ * Matching it bare classified the most common private-reply failure as a rate
+ * limit, which both retried a permanently failing send and made the
+ * settings-blocked allowlist unreachable, because this check runs first.
+ */
 function isRateLimit(metadata: GraphErrorMetadata): boolean {
   if (metadata.httpStatus === 429) return true;
-  if (
+
+  return (
     metadata.graphCode === 4 ||
     metadata.graphCode === 17 ||
     metadata.graphCode === 32 ||
     metadata.graphCode === 613
-  ) {
-    return true;
-  }
-  if (metadata.graphSubcode === 2534025) return true;
-
-  return false;
+  );
 }
+
+/**
+ * Transport codes proving the request never reached Meta. Everything else,
+ * including an unrecognised code, is ambiguous: the send may have been
+ * processed before the connection died, so retrying could deliver twice.
+ */
+const NEVER_DELIVERED_TRANSPORT: ReadonlySet<string> = new Set([
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+]);
 
 export function classifyPrivateGateFailure(
   metadata: GraphErrorMetadata,
@@ -69,9 +90,16 @@ export function classifyPrivateGateFailure(
     return "permission_or_auth";
   }
 
-  // 4. Retryable transport errors
+  // 4. Response-less failures: retryable only when provably undelivered.
+  if (metadata.category === "graph_transport") {
+    return metadata.transportCode !== null &&
+      NEVER_DELIVERED_TRANSPORT.has(metadata.transportCode)
+      ? "retryable_transport"
+      : "transport_uncertain";
+  }
+
+  // 5. Gateway errors — Meta answered, so the send was not accepted.
   if (
-    metadata.category === "graph_transport" ||
     metadata.httpStatus === 502 ||
     metadata.httpStatus === 503 ||
     metadata.httpStatus === 504
@@ -79,7 +107,7 @@ export function classifyPrivateGateFailure(
     return "retryable_transport";
   }
 
-  // 5. Permanent client or Graph errors
+  // 6. Permanent client or Graph errors
   if (metadata.httpStatus === 400 || metadata.httpStatus === 404) {
     return "permanent";
   }

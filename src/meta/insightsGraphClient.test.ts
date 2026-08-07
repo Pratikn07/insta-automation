@@ -62,6 +62,7 @@ describe("Insights Graph client error logging", () => {
         graphCode: 190,
         graphSubcode: 460,
         traceId: "trace_INSIGHTS-1",
+        transportCode: null,
       },
       "Insights Graph API error",
     );

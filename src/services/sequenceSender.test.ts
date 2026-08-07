@@ -78,6 +78,7 @@ describe("sendSequence Graph failure privacy", () => {
         graphCode: 100,
         graphSubcode: 2534025,
         traceId: "trace_SEQUENCE-1",
+        transportCode: null,
       },
       "Sequence step failed",
     );

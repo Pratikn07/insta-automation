@@ -121,7 +121,21 @@ export const envSchema = z.object({
   DM_RECOVERY_EXPERIMENT_START_AT: z.preprocess((val) => (val === "" ? undefined : val), z.string().datetime().optional()),
   DM_RECOVERY_EXPERIMENT_END_AT: z.preprocess((val) => (val === "" ? undefined : val), z.string().datetime().optional()),
   DM_RECOVERY_POST_EXPERIMENT_ENABLED: booleanFlag(false),
-  DM_RECOVERY_SETTINGS_BLOCKED_SIGNATURES: z.string().default(""),
+  // Comma-separated Graph `code:subcode` pairs. Parsing silently discards
+  // anything malformed, so a typo would leave the operator believing the public
+  // fallback is armed when it is not. Reject it at startup instead.
+  DM_RECOVERY_SETTINGS_BLOCKED_SIGNATURES: z
+    .string()
+    .default("")
+    .refine(
+      (value) =>
+        value
+          .split(",")
+          .map((part) => part.trim())
+          .filter((part) => part.length > 0)
+          .every((part) => /^\d+:\d+$/.test(part)),
+      { message: "must be comma-separated code:subcode pairs, e.g. \"100:2534025\"" },
+    ),
   DM_RECOVERY_HEALTH_SAMPLE_SIZE: z.coerce.number().int().min(10).max(500).default(50),
   DM_RECOVERY_FAILURE_RATE_PERCENT: z.coerce.number().int().min(1).max(100).default(50),
   DM_RECOVERY_BACKLOG_ALERT_THRESHOLD: z.coerce.number().int().min(1).default(500),

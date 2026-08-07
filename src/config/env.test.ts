@@ -108,4 +108,19 @@ describe("env configuration schema for DM recovery", () => {
     expect(parsed.DM_RECOVERY_EXPERIMENT_START_AT).toBeUndefined();
     expect(parsed.DM_RECOVERY_EXPERIMENT_END_AT).toBeUndefined();
   });
+
+  // A malformed signature is dropped silently by the parser, which would leave
+  // the settings fallback disarmed while looking configured. Fail at startup.
+  it.each([
+    ["empty (the shipped default)", "", true],
+    ["one valid pair", "100:2534025", true],
+    ["several valid pairs with spacing", "100:2534025, 10:12345", true],
+    ["a wrong separator", "100;2534025", false],
+    ["a missing subcode", "100:", false],
+    ["one bad pair among good ones", "100:2534025, oops", false],
+  ])("accepts settings signatures that are %s", (_label, value, valid) => {
+    expect(
+      envSchema.safeParse({ ...baseEnv, DM_RECOVERY_SETTINGS_BLOCKED_SIGNATURES: value }).success,
+    ).toBe(valid);
+  });
 });

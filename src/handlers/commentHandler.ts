@@ -183,7 +183,10 @@ export async function handleComment(comment: CommentValue): Promise<void> {
       lastError: metadata.category,
       initialErrorCategory: classification,
     });
-    if (classification === "uncertain") {
+    // An ambiguous outcome may already have delivered the gate DM, so the queue
+    // row is parked for review rather than retried, and a recovery row is
+    // created so the owner can see it.
+    if (classification === "uncertain" || classification === "transport_uncertain") {
       try {
         await scheduleTrackingUnavailableRecovery({
           conversationId: convo.id,

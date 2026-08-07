@@ -142,7 +142,10 @@ describe("handleComment Graph failure privacy", () => {
       graphCode: 100,
       graphSubcode: 2534025,
       traceId: "trace_COMMENT-1",
-      classification: "rate_limited",
+      transportCode: null,
+      // 100:2534025 is "comment invalid for a private reply" — permanent for
+      // this comment, not a rate limit.
+      classification: "permanent",
     };
     expect(logEvent).toHaveBeenCalledWith("dm_failed", {
       conversationId: "conversation-1",
@@ -155,7 +158,7 @@ describe("handleComment Graph failure privacy", () => {
       expect.objectContaining({
         lastError: "graph_response",
         mediaId: "media-1",
-        initialErrorCategory: "rate_limited",
+        initialErrorCategory: "permanent",
       }),
     );
 
