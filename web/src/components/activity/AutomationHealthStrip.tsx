@@ -56,10 +56,19 @@ export function AutomationHealthStrip({ stats, isLoading }: AutomationHealthStri
     );
   }
 
+  // An ambiguous gate send is never retried, because the DM may already have
+  // landed and a retry would double-send. That makes each one a person who might
+  // never have received their gate, with nothing else on screen saying so. It
+  // should read as zero almost always, so it replaces the retry tile only when
+  // there is something to act on rather than occupying a slot permanently.
+  const uncertain = stats.gateQueueSendUncertain ?? 0;
+
   const items = [
     { label: "Sequences today", value: stats.completedToday, Icon: CheckCircle2, tone: "text-emerald-300 bg-emerald-400/10" },
     { label: "Awaiting reply", value: stats.conversationsAwaiting, Icon: Clock3, tone: "text-amber-200 bg-amber-300/10" },
-    { label: "Retries queued", value: stats.gateQueuePending, Icon: RefreshCw, tone: "text-violet-200 bg-violet-400/10" },
+    uncertain > 0
+      ? { label: "Needs review", value: uncertain, Icon: AlertTriangle, tone: "text-rose-200 bg-rose-400/10" }
+      : { label: "Retries queued", value: stats.gateQueuePending, Icon: RefreshCw, tone: "text-violet-200 bg-violet-400/10" },
   ];
 
   return (

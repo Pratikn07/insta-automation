@@ -136,6 +136,12 @@ export interface Stats {
   lastError: { kind: string; createdAt: string; payload: unknown } | null;
   gateQueuePending: number;
   gateQueueExhausted: number;
+  /**
+   * Gate sends with an ambiguous outcome. Never auto-retried — the DM may
+   * already have landed — so each one is a person who may never have received
+   * their gate. Optional because an older API build omits it.
+   */
+  gateQueueSendUncertain?: number;
   followConversion?: FollowConversion;
   tokenHealth?: TokenHealth | null;
 }

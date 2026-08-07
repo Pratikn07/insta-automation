@@ -281,7 +281,8 @@ overdue row and sends gradually rather than in a burst.
 | Stale leases | metrics → `staleLeases` | zero outside restarts |
 | Public failures | metrics → `failed` | near zero |
 | Uncertain outcomes | metrics → `uncertain`, `attention` view | reviewed, not accumulating |
-| `send_uncertain` rows | `attention` view | each one reviewed by hand; the send may or may not have posted, so it is never retried automatically |
+| `send_uncertain` recovery rows | `attention` view | each one reviewed by hand; the send may or may not have posted, so it is never retried automatically |
+| `send_uncertain` **gate queue** rows | Automation health → "Needs review" | normally zero. These are a different table from the row above and have no reviewer of their own — see below |
 | Delayed webhooks | metrics → `delayedPreSendSignalFalsePositives` | low; high means we comment on people who had already read |
 | Signal coverage | metrics → `readEventCoverage` | high; a fall means the subscription may have lapsed |
 
@@ -350,3 +351,29 @@ absent, unknown, and low-confidence all fall through to sending.
 duplicate rows created before comment webhooks became idempotent. Adding the
 index requires inspecting and cleaning that data first; it is deliberately not
 part of the recovery work.
+
+### `send_uncertain` gate rows have no reviewer of their own
+
+A gate send whose outcome is ambiguous is parked as `send_uncertain` and **never
+retried** — Meta may already have delivered the DM, and a retry would send it
+twice. That decision stands.
+
+The consequence is that the row is terminal by accident. `runGateQueueTick` only
+ever claims `pending`, and nothing else in the codebase reads gate-queue
+`send_uncertain`: `conversations.routes.ts` filters `pending`, `statsService`
+counted only `pending` and `exhausted`, and `conversationService` updates only
+`pending`. So the person may never have received their gate, with nothing saying
+so.
+
+Both creators — `reconcileStaleSendingClaims` and the `commentHandler` uncertain
+path — schedule a `tracking_unavailable` recovery row as the intended review
+surface, and that row *is* reachable from the `attention` view. But the mirror is
+best-effort: `reconcileStaleSendingClaims` skips it when the conversation or
+keyword is missing, and both call sites swallow a scheduling failure. When the
+mirror is absent, the gate row is invisible.
+
+**What was done instead of a second reviewer UI:** `statsService` now counts
+`send_uncertain`, and Automation health surfaces it as "Needs review" only when
+non-zero. That makes a mirror-less row impossible to miss without building a
+review queue for a state that should read zero almost always. A dedicated
+reviewer is only worth building if that count starts moving.

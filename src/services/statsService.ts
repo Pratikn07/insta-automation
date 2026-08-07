@@ -36,6 +36,8 @@ export interface DashboardStats {
   lastError: { kind: string; createdAt: Date; payload: unknown } | null;
   gateQueuePending: number;
   gateQueueExhausted: number;
+  /** Parked for human review; never auto-retried because the DM may have landed. */
+  gateQueueSendUncertain: number;
   followConversion: FollowConversion;
   // Instagram token countdown. The refresh worker should keep this permanently
   // healthy; a warning here means the worker itself has stopped, which is the
@@ -137,6 +139,7 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     lastError,
     gateQueuePending,
     gateQueueExhausted,
+    gateQueueSendUncertain,
     followConversion,
     tokenHealth,
   ] = await Promise.all([
@@ -156,6 +159,11 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     }),
     prisma.gateQueue.count({ where: { status: "pending" } }),
     prisma.gateQueue.count({ where: { status: "exhausted" } }),
+    // `send_uncertain` is never retried — the DM may already have landed, so a
+    // retry could double-send. It is also not reachable from any queue view, so
+    // without this count a row whose recovery mirror failed to schedule is
+    // invisible: the person never receives the gate and nothing says so.
+    prisma.gateQueue.count({ where: { status: "send_uncertain" } }),
     getFollowConversion(),
     // Non-fatal: a stats page must still render if this lookup fails.
     readTokenHealth().catch(() => null),
@@ -170,6 +178,7 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     lastError,
     gateQueuePending,
     gateQueueExhausted,
+    gateQueueSendUncertain,
     followConversion,
     tokenHealth,
   };
