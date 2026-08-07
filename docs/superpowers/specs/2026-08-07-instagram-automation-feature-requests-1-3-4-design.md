@@ -80,10 +80,23 @@ All three features must follow these rules:
    the other.
 7. **Every automated decision is explainable.** The dashboard must show the trigger, evidence,
    suppression reason, send outcome, and related canonical journey.
-8. **No sensitive-trait targeting.** Eligibility must not depend on inferred ethnicity, national
-   origin, religion, caste, or similar identity traits derived from names, usernames, language, or
-   writing. Geographic targeting, if later required, must use non-sensitive, directly supplied or
-   account-level market signals.
+8. **Western-market audience targeting.** @tinysoho is a parenting product sold to a Western
+   market, and its automation is scoped to that audience. Public recovery comments are withheld
+   from an audience outside that market.
+
+   Meta exposes no per-user country, so the only available signal is a name and username proxy
+   (`DM_RECOVERY_WESTERN_ONLY`, see `docs/meta-verification.md`). Its limits are real and must stay
+   documented rather than assumed away: it is not geography, it misses diaspora users in the West,
+   and roughly 30% of users have no usable name and fall through as `unknown`.
+
+   Two boundaries hold regardless:
+
+   - **Withholding applies only to the unsolicited public comment**, never to the guide. Anyone who
+     asks receives the gate DM and, on completing the journey, the guide. The market filter decides
+     only whether the account posts a public reminder to someone who has gone quiet.
+   - **No other trait may gate eligibility.** Religion, caste, and language are not targeting
+     inputs. Where a directly supplied or account-level market signal becomes available, it should
+     replace the name proxy.
 9. **Kill switches preserve evidence.** Disabling outbound recovery stops new public comments but
    continues safe ingestion and keeps pending records intact.
 10. **Source comments must still exist.** The automation never redirects a reminder onto a
@@ -671,8 +684,10 @@ Never enroll:
 - a DM-origin conversation;
 - a missing/deleted/unresolvable source comment;
 - a record whose only basis is the Business Suite gray warning;
-- a record selected through name, ethnicity, national origin, language, or inferred cultural
-  identity;
+- a high-confidence out-of-market audience verdict, when `DM_RECOVERY_WESTERN_ONLY` is on — the same
+  Western-market filter the prospective feature applies (§4.8). Historical campaigns must apply it
+  at selection AND recheck it before send, since a verdict is retired when the name it came from
+  changes;
 - a record with an ambiguous prior public-send outcome;
 - a person who received another recovery inside cooldown;
 - all historical unknown-read users at once.
@@ -1010,4 +1025,8 @@ Suggested slices:
 - Feature 4 never labels historical users unread and never contacts the entire unknown-read pool at
   once.
 - Feature 4 is dependent on prospective recovery measurement and journey reconciliation.
-- None of these features may infer ethnicity or national origin to determine eligibility.
+- The automation targets a Western parenting audience. Public recovery comments are withheld from a
+  high-confidence out-of-market audience via `DM_RECOVERY_WESTERN_ONLY`; the guide itself is never
+  withheld from anyone who asks for it.
+- No trait beyond that market signal may gate eligibility, and the name proxy should be replaced if
+  Meta ever exposes an account-level market signal.

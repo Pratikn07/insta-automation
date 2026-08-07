@@ -2,6 +2,12 @@ import "dotenv/config";
 import { z } from "zod";
 import { booleanFlag } from "./booleanFlag.js";
 
+/**
+ * The one Graph signature that must never enter the settings-blocked allowlist.
+ * Exported so the classifier's tests can name it rather than repeat the literal.
+ */
+export const FORBIDDEN_SETTINGS_SIGNATURE = "100:2534025";
+
 export const envSchema = z.object({
   PORT: z.coerce.number().default(3000),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
@@ -153,6 +159,29 @@ export const envSchema = z.object({
         // real example — 100:2534025 — is the one pair docs/meta-verification.md
         // says never to allowlist, and an error message is a copy-paste target.
         message: 'must be comma-separated code:subcode pairs, e.g. "123:456"',
+      },
+    )
+    // `100:2534025` means "the comment is invalid for a private reply" — a
+    // per-comment failure, NOT a recipient settings rejection. It is also 1,347
+    // of the 1,356 dm_failed events in production history, so allowlisting it
+    // would publicly tell over a thousand people that their message-request
+    // settings blocked a DM the settings had nothing to do with.
+    //
+    // Both the design (§9) and docs/meta-verification.md already forbid it, but
+    // a prose prohibition is not a guard: it is the obvious pair to reach for,
+    // and Feature 1 is dormant, so whoever arms it will be reading those docs
+    // cold months from now. Refuse it here instead.
+    .refine(
+      (value) =>
+        !value
+          .split(",")
+          .map((part) => part.trim())
+          .includes(FORBIDDEN_SETTINGS_SIGNATURE),
+      {
+        message:
+          `${FORBIDDEN_SETTINGS_SIGNATURE} is not a settings rejection — it is the invalid-comment ` +
+          "family, and the most common failure in this account's history. See the signature " +
+          "verification process in docs/meta-verification.md before allowlisting any pair.",
       },
     ),
   DM_RECOVERY_HEALTH_SAMPLE_SIZE: z.coerce.number().int().min(10).max(500).default(50),

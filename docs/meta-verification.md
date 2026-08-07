@@ -306,6 +306,11 @@ not execute.
 
 ## Audience origin enrichment
 
+**@tinysoho is a parenting product for a Western market, and its automation is
+scoped to that audience.** This is a recorded product decision, not a default to
+be rediscovered — see §4.8 of
+`docs/superpowers/specs/2026-08-07-instagram-automation-feature-requests-1-3-4-design.md`.
+
 A separate worker classifies each gate user's likely audience origin from their
 name and username, and — when `DM_RECOVERY_WESTERN_ONLY` is on — a
 high-confidence South-Asian verdict withholds the public recovery comment. The
@@ -313,12 +318,22 @@ suppressed row is recorded with reason `audience_out_of_market`, which the
 dashboard shows as "Withheld by the audience filter" so the decision is
 reviewable rather than indistinguishable from an ordinary suppression.
 
+**What is withheld is the unsolicited public comment, never the guide.** Anyone
+who comments a keyword still receives the gate DM and, on completing the journey,
+the guide. The filter decides only whether this account posts a public reminder
+to someone who has gone quiet.
+
+Measured on the first 785 classified users: 47% high-confidence `south_asian`,
+9% high-confidence `us_western`, 17% `unknown`, the rest low confidence. Since
+only a high-confidence South-Asian verdict withholds, expect the filter to
+suppress roughly a third of reminders once the backlog is fully classified.
+
 ### Switches, and the order to use them
 
 | Variable | Default | Effect |
 |---|---|---|
 | `DM_RECOVERY_ORIGIN_LLM_ENABLED` | `false` | Runs the enrichment worker and populates `inferred_origin` / `origin_confidence` / `origin_evidence`. Sends nothing, gates nothing. |
-| `DM_RECOVERY_WESTERN_ONLY` | `false` | Uses those verdicts to withhold public comments. |
+| `DM_RECOVERY_WESTERN_ONLY` | `false` (ships off; **intended on** in production) | Uses those verdicts to withhold public comments from an out-of-market audience. |
 | `DM_RECOVERY_ORIGIN_BATCH_SIZE` | `25` | Users per Gemini call. |
 | `DM_RECOVERY_ORIGIN_INTERVAL_MS` | `120000` | Worker pacing. |
 
