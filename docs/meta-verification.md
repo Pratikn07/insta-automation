@@ -209,8 +209,14 @@ Two things that surprise people:
 
 ## Rollback
 
-Set `DM_RECOVERY_ENABLED=false` and redeploy or restart. That is the whole
-rollback:
+**There are two switches, and one does not stop the other.**
+
+`DM_RECOVERY_ENABLED=false` stops public comments. It does **not** stop the
+origin enrichment worker, which runs on `DM_RECOVERY_ORIGIN_LLM_ENABLED` and
+keeps calling Gemini every two minutes. To stop everything, clear both.
+
+Set `DM_RECOVERY_ENABLED=false` and redeploy or restart. That stops the sending
+half:
 
 - Ingestion and persistence continue; evidence keeps accruing.
 - No new public sends occur.
@@ -276,6 +282,47 @@ MIGRATION_TEST_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:55432/inst
 
 A correct run reports **0 skipped**. Any skipped count means the contracts did
 not execute.
+
+## Audience origin enrichment
+
+A separate worker classifies each gate user's likely audience origin from their
+name and username, and — when `DM_RECOVERY_WESTERN_ONLY` is on — a
+high-confidence South-Asian verdict withholds the public recovery comment. The
+suppressed row is recorded with reason `audience_out_of_market`, which the
+dashboard shows as "Withheld by the audience filter" so the decision is
+reviewable rather than indistinguishable from an ordinary suppression.
+
+### Switches, and the order to use them
+
+| Variable | Default | Effect |
+|---|---|---|
+| `DM_RECOVERY_ORIGIN_LLM_ENABLED` | `false` | Runs the enrichment worker and populates `inferred_origin` / `origin_confidence` / `origin_evidence`. Sends nothing, gates nothing. |
+| `DM_RECOVERY_WESTERN_ONLY` | `false` | Uses those verdicts to withhold public comments. |
+| `DM_RECOVERY_ORIGIN_BATCH_SIZE` | `25` | Users per Gemini call. |
+| `DM_RECOVERY_ORIGIN_INTERVAL_MS` | `120000` | Worker pacing. |
+
+Enable the first on its own, let it backfill, then read `inferred_origin` and
+`origin_evidence` and judge the verdicts against your own audience before
+enabling the second. They are deliberately independent so that is possible.
+
+### Production dependency
+
+**`GEMINI_API_KEY` must be set in Railway.** A local `.env` value does not
+propagate. Without it the worker no-ops, the column stays null, and the gate
+silently falls back to the weaker name-token screen — so an unset key does not
+fail loudly, it just quietly changes which screen is running. Spend is bounded
+by the existing `GEMINI_DAILY_BUDGET_USD`.
+
+### What this is, and is not
+
+It is a **name-based proxy, not geography.** Meta exposes no per-user country.
+Some diaspora users in the US will be withheld from, and some South Asian users
+with Western handles will not be. Roughly 30% of gate users have no usable name
+at all and are classified `unknown`, which no classifier fixes.
+
+Verdicts are stored, not recomputed per send, and are retired when the name they
+were derived from changes. Only a high-confidence verdict withholds anything;
+absent, unknown, and low-confidence all fall through to sending.
 
 ## Known follow-up
 

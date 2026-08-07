@@ -58,6 +58,10 @@ const SUPPRESSION_LABELS: Record<string, string> = {
   completed: "Completed—reminder not needed",
   completed_elsewhere: "Completed—reminder not needed",
   person_cooldown: "Another reminder was recently sent",
+  // Named for the decision, not the person. A withheld row that reads like an
+  // ordinary suppression cannot be audited or reversed, so this one says who
+  // withheld it and on what basis.
+  audience_out_of_market: "Withheld by the audience filter",
   newer_candidate: "Superseded by a newer reminder",
   source_unavailable: "Original comment unavailable",
   tracking_unavailable: "Tracking unavailable",
@@ -114,13 +118,19 @@ export function recoveryStatusView(row: RecoveryReminderRow, now: Date): Recover
           "This person was assigned to the holdout, so no public reminder is posted. Withheld records are the comparison the experiment depends on.",
         tone: "neutral",
       };
-    case "suppressed":
+    case "suppressed": {
+      const withheldByFilter = row.suppressionReason === "audience_out_of_market";
       return {
         ...base,
         label: SUPPRESSION_LABELS[row.suppressionReason ?? ""] ?? "Reminder not needed",
-        description: "Positive evidence arrived, so no public reminder was posted.",
-        tone: "positive",
+        description: withheldByFilter
+          ? "Withheld because the audience filter judged this person out of market. That is a name-based inference, not measured location — check the stored origin evidence before relying on it."
+          : "Positive evidence arrived, so no public reminder was posted.",
+        // Withheld deliberately, like a control row: a decision to review, not
+        // an error to alarm about.
+        tone: withheldByFilter ? "neutral" : "positive",
       };
+    }
     case "tracking_unavailable":
       return {
         ...base,

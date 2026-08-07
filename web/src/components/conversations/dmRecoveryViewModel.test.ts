@@ -59,6 +59,10 @@ describe("recoveryStatusView", () => {
     ],
     [row({ triggerKind: "settings_blocked", status: "waiting" }), "Settings blocked"],
     [row({ status: "control" }), "Control group—reminder intentionally withheld"],
+    [
+      row({ status: "suppressed", suppressionReason: "audience_out_of_market" }),
+      "Withheld by the audience filter",
+    ],
     [row({ status: "tracking_unavailable" }), "Tracking unavailable"],
     [row({ status: "cancelled" }), "Cancelled by owner"],
     [row({ status: "send_failed" }), "Couldn’t post public reminder"],
@@ -148,6 +152,23 @@ describe("recoveryStatusView", () => {
       );
       expect(view.canMarkReviewed).toBe(false);
     });
+  });
+
+  // A row withheld by the filter must not read like an ordinary suppression:
+  // an operator auditing verdicts cannot review what they cannot distinguish.
+  it("distinguishes an audience withholding from evidence-based suppression", () => {
+    const filtered = recoveryStatusView(
+      row({ status: "suppressed", suppressionReason: "audience_out_of_market" }),
+      NOW,
+    );
+    const seen = recoveryStatusView(
+      row({ status: "suppressed", suppressionReason: "seen" }),
+      NOW,
+    );
+
+    expect(filtered.label).not.toBe(seen.label);
+    expect(filtered.description).not.toBe(seen.description);
+    expect(filtered.description).toMatch(/name-based inference, not measured location/);
   });
 
   it("labels a due treatment row's action state separately from its evidence", () => {
