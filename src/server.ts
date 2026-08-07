@@ -13,6 +13,8 @@ import { runFollowRecheckTick } from "./services/followRecheckWorker.js";
 import { runFollowThroughTick } from "./services/followThroughWorker.js";
 import { runReplyDraftTick } from "./services/replyDraftWorker.js";
 import { runReplyDraftRecoveryTick } from "./services/replyDraftRecoveryWorker.js";
+import { startDmRecoveryScheduler } from "./services/dmRecoveryScheduler.js";
+import { runDmRecoveryTick } from "./services/dmRecoveryWorker.js";
 import { internalAiRouter } from "./api/internalAi.routes.js";
 import { seedTokenFromEnv } from "./meta/tokenStore.js";
 import { runTokenRefreshTick } from "./meta/tokenRefresher.js";
@@ -162,6 +164,14 @@ function recoverStaleReplyDraftSends(): void {
     });
 }
 setInterval(recoverStaleReplyDraftSends, REPLY_DRAFT_RECOVERY_INTERVAL_MS);
+
+startDmRecoveryScheduler({
+  enabled: env.DM_RECOVERY_ENABLED,
+  intervalMs: env.DM_RECOVERY_WORKER_INTERVAL_MS,
+  setInterval: globalThis.setInterval,
+  clearInterval: globalThis.clearInterval,
+  runTick: runDmRecoveryTick,
+});
 
 app.listen(env.PORT, () => {
   logger.info({ port: env.PORT, env: env.NODE_ENV }, "insta-automation listening");
