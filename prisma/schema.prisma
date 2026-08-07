@@ -601,3 +601,19 @@ model IgToken {
 
   @@map("ig_token")
 }
+
+/// One row per comment webhook we have acted on.
+///
+/// Meta delivers webhooks at least once, and handleComment is not otherwise
+/// idempotent: a repeat ran end to end, posting a second public reply and
+/// sending a second gate DM to the same person. The primary key is the guard —
+/// the insert either wins or raises, so two deliveries interleaving cannot both
+/// pass a check-then-act window.
+model ProcessedComment {
+  commentId String   @id @map("comment_id")
+  igUserId  String   @map("ig_user_id")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([createdAt])
+  @@map("processed_comment")
+}
