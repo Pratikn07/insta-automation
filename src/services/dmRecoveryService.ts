@@ -2,6 +2,10 @@ import type { DmRecoveryStatus } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
 import { recordRecoveryDatabaseFailure } from "./dmRecoveryHealth.js";
+// One-directional: the repository does not import this module, so there is no
+// cycle. Shared so the snapshot and the send-time check cannot disagree on how a
+// verdict is read.
+import { resolveAudienceOrigin } from "./dmRecoveryRepository.js";
 import { env } from "../config/env.js";
 import {
   assignRecoveryCohort,
@@ -170,6 +174,17 @@ export async function scheduleAcceptedGateRecovery(
     input.acceptedAt,
   );
 
+  // Freeze the origin verdict onto the row. The send-time check reads ig_users
+  // live, which is correct for deciding, but ig_users is rewritten continuously
+  // and a verdict is retired when the name behind it changes — so the live value
+  // cannot say afterwards which population a row belonged to.
+  //
+  // Control rows are why this matters. They are terminal at creation and never
+  // reach the origin check, so without a snapshot the treatment arm is filtered
+  // by market and the control arm is not. Comparing them then compares two
+  // different populations and understates the reminder's effect.
+  const audience = await readAudienceOriginSnapshot(input.igUserId);
+
   const delayMs = env.DM_RECOVERY_DELAY_HOURS * 60 * 60 * 1000;
   const eligibleAt = new Date(input.acceptedAt.getTime() + delayMs);
   const publicReplyText = renderRecoveryCopy("no_confirmed_read", input.keywordSnapshot);
@@ -191,6 +206,8 @@ export async function scheduleAcceptedGateRecovery(
     acceptedAt: input.acceptedAt,
     eligibleAt,
     lastErrorCategory,
+    audienceOrigin: audience.origin,
+    audienceOriginConfidence: audience.confidence,
   };
 
   const row = await prisma.dmRecoveryReminder.upsert({
@@ -569,6 +586,42 @@ export async function recordRecoveryInbound(
       },
       "Failed to record recovery inbound evidence",
     );
+  }
+}
+
+/**
+ * The audience-origin verdict as it stood when a reminder was created.
+ *
+ * Returns nulls rather than throwing: this is measurement, and a failed lookup
+ * must never stop a reminder being recorded. A null reads as "not known at
+ * creation" — which is also the honest value when the classifier has not reached
+ * this person yet — and stays recoverable from ig_users later.
+ */
+async function readAudienceOriginSnapshot(
+  igUserId: string,
+): Promise<{ origin: string | null; confidence: string | null }> {
+  try {
+    const person = await prisma.igUser.findUnique({
+      where: { id: igUserId },
+      select: {
+        username: true,
+        name: true,
+        inferredOrigin: true,
+        originConfidence: true,
+        originMethod: true,
+      },
+    });
+    // Same resolver the send-time check uses, so the snapshot cannot disagree
+    // with the decision for reasons other than elapsed time.
+    const resolved = resolveAudienceOrigin(person);
+    return { origin: resolved.origin, confidence: resolved.confidence };
+  } catch {
+    recordRecoveryDatabaseFailure();
+    logger.error(
+      { errorCode: "audience_origin_snapshot_failed", igUserId },
+      "Could not snapshot audience origin; recording the reminder without it",
+    );
+    return { origin: null, confidence: null };
   }
 }
 

@@ -409,6 +409,7 @@ const METRICS_SELECT = {
   attempts: true,
   suppressionReason: true,
   lastErrorCategory: true,
+  audienceOrigin: true,
   keyword: { select: { keyword: true } },
   conversation: { select: { completedAt: true } },
 } as const;
@@ -478,11 +479,30 @@ async function metricsHandler(_req: import("express").Request, res: import("expr
         })
       : [];
 
-  const treatmentRows = experimentRows.filter((row) => row.cohort === "treatment");
-  const controlRows = experimentRows.filter((row) => row.cohort === "control");
+  // Compare like with like. When the market filter is on, a treatment row for an
+  // out-of-market person is suppressed and never sent — but the equivalent
+  // control row is stamped terminal at creation and never runs that check, so it
+  // stays in the control arm. Splitting on cohort alone therefore puts
+  // never-sent people in treatment while control holds every origin, and the
+  // measured lift reads low: those people convert at the no-reminder rate inside
+  // the arm that is supposed to show the reminder's effect.
+  //
+  // Filtering both arms on the snapshot fixes it symmetrically. Rows predating
+  // the snapshot column have a null origin and are kept — excluding them would
+  // silently drop the start of the experiment.
+  const inMarket = (row: { audienceOrigin: string | null }) =>
+    !env.DM_RECOVERY_WESTERN_ONLY || row.audienceOrigin !== "south_asian";
+
+  const comparableRows = experimentRows.filter(inMarket);
+  const treatmentRows = comparableRows.filter((row) => row.cohort === "treatment");
+  const controlRows = comparableRows.filter((row) => row.cohort === "control");
 
   const treatment = { ...cohortSummary(treatmentRows), sent: treatmentRows.filter((r) => r.sentAt).length };
   const control = { ...cohortSummary(controlRows), withheld: controlRows.length };
+
+  // Reported alongside the comparison so the filter's cost is visible rather
+  // than inferred from a gap between two numbers.
+  const withheldOutOfMarket = experimentRows.length - comparableRows.length;
 
   const tRate = treatment.completionRate48h;
   const cRate = control.completionRate48h;
@@ -575,6 +595,10 @@ async function metricsHandler(_req: import("express").Request, res: import("expr
       endAt,
       treatment,
       control,
+      // Assigned rows excluded from the comparison above because the market
+      // filter would withhold from them. Not a failure — it is the filter's
+      // measured cost, and both arms are reduced by it equally.
+      withheldOutOfMarket,
       absoluteLiftPercentagePoints,
       relativeLiftPercent,
       medianReminderToReplyMinutes: median(reminderToReplyMinutes),

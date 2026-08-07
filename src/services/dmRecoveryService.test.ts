@@ -10,10 +10,12 @@ const $transaction = vi.fn();
 const loggerInfo = vi.fn();
 const loggerError = vi.fn();
 const assignRecoveryCohortMock = vi.fn();
+const igUserFindUnique = vi.fn();
 
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
     dmRecoveryReminder: { upsert, updateMany, findMany, update },
+    igUser: { findUnique: igUserFindUnique },
     $transaction,
   },
 }));
@@ -120,6 +122,15 @@ beforeEach(() => {
   loggerInfo.mockReset();
   loggerError.mockReset();
   assignRecoveryCohortMock.mockReset();
+  igUserFindUnique.mockReset();
+  // Default: an unclassified person, so the name screen decides.
+  igUserFindUnique.mockResolvedValue({
+    username: "someone",
+    name: null,
+    inferredOrigin: null,
+    originConfidence: null,
+    originMethod: null,
+  });
 
   // Default: treatment assignment
   assignRecoveryCohortMock.mockReturnValue("treatment");
@@ -171,6 +182,80 @@ describe("scheduleAcceptedGateRecovery", () => {
   it("returns the created row id and status", async () => {
     const result = await scheduleAcceptedGateRecovery(ACCEPTED_INPUT);
     expect(result).toEqual({ id: "row-1", status: "waiting" });
+  });
+
+  // The send-time check reads origin live from ig_users, which is rewritten
+  // continuously and retires a verdict when the name behind it changes. Freezing
+  // it on the row is what lets the experiment be measured afterwards.
+  describe("audience origin snapshot", () => {
+    it("freezes the stored verdict onto the row", async () => {
+      igUserFindUnique.mockResolvedValue({
+        username: "priya_m",
+        name: "Priya M",
+        inferredOrigin: "south_asian",
+        originConfidence: "high",
+        originMethod: "llm_v1",
+      });
+
+      await scheduleAcceptedGateRecovery(ACCEPTED_INPUT);
+
+      expect(upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({
+            audienceOrigin: "south_asian",
+            audienceOriginConfidence: "high",
+          }),
+        }),
+      );
+    });
+
+    // The asymmetry this whole column exists to fix: a control row is stamped
+    // terminal at creation and never runs the origin check, so without the
+    // snapshot there is no record of which population it belonged to.
+    it("snapshots a control row too, not just treatment", async () => {
+      assignRecoveryCohortMock.mockReturnValue("control");
+      igUserFindUnique.mockResolvedValue({
+        username: "priya_m",
+        name: "Priya M",
+        inferredOrigin: "south_asian",
+        originConfidence: "high",
+        originMethod: "llm_v1",
+      });
+
+      await scheduleAcceptedGateRecovery(ACCEPTED_INPUT);
+
+      expect(upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({
+            cohort: "control",
+            audienceOrigin: "south_asian",
+            audienceOriginConfidence: "high",
+          }),
+        }),
+      );
+    });
+
+    // Measurement must never cost a reminder. A null reads as "not known at
+    // creation" and stays recoverable from ig_users.
+    it("still records the reminder when the lookup fails", async () => {
+      igUserFindUnique.mockRejectedValue(new Error("connection terminated"));
+
+      const result = await scheduleAcceptedGateRecovery(ACCEPTED_INPUT);
+
+      expect(result.status).toBe("waiting");
+      expect(upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({
+            audienceOrigin: null,
+            audienceOriginConfidence: null,
+          }),
+        }),
+      );
+      expect(loggerError).toHaveBeenCalledWith(
+        expect.objectContaining({ errorCode: "audience_origin_snapshot_failed" }),
+        expect.any(String),
+      );
+    });
   });
 
   // Recovery posts its reply on the source comment, so a journey that began in

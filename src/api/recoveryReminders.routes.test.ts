@@ -24,13 +24,13 @@ vi.mock("../services/eventLogger.js", () => ({ logEvent }));
 vi.mock("../lib/logger.js", () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
-vi.mock("../config/env.js", () => ({
-  env: {
-    DM_RECOVERY_EXPERIMENT_VERSION: "read-recovery-v1",
-    DM_RECOVERY_EXPERIMENT_START_AT: "2026-08-01T00:00:00.000Z",
-    DM_RECOVERY_EXPERIMENT_END_AT: "2026-08-15T00:00:00.000Z",
-  },
-}));
+const envMock = {
+  DM_RECOVERY_EXPERIMENT_VERSION: "read-recovery-v1",
+  DM_RECOVERY_EXPERIMENT_START_AT: "2026-08-01T00:00:00.000Z",
+  DM_RECOVERY_EXPERIMENT_END_AT: "2026-08-15T00:00:00.000Z",
+  DM_RECOVERY_WESTERN_ONLY: true,
+};
+vi.mock("../config/env.js", () => ({ env: envMock }));
 
 const { recoveryRemindersRouter, viewWhere } = await import("./recoveryReminders.routes.js");
 
@@ -79,6 +79,7 @@ beforeEach(() => {
   getIgUsers.mockResolvedValue({});
   getRecoveryHealthSnapshot.mockResolvedValue({ circuitOpen: false });
   eventFindFirst.mockResolvedValue(null);
+  envMock.DM_RECOVERY_WESTERN_ONLY = true;
 });
 
 describe("viewWhere", () => {
@@ -305,6 +306,73 @@ describe("GET /metrics", () => {
     expect(res.body.experiment.absoluteLiftPercentagePoints).toBeNull();
     expect(res.body.experiment.relativeLiftPercent).toBeNull();
     expect(res.body.accuracy.readEventCoverage).toBeNull();
+  });
+
+  // With the market filter on, a treatment row for an out-of-market person is
+  // suppressed and never sent, but the equivalent control row is terminal at
+  // creation and never runs that check. Splitting on cohort alone therefore
+  // leaves never-sent people in treatment while control holds every origin, and
+  // the lift reads low. Both arms must be filtered on the same snapshot.
+  describe("arm comparability", () => {
+    // METRICS_SELECT pulls `conversation` and `repliedAt`; the metrics maths
+    // dereferences them, so a metrics fixture needs both.
+    const metricsRow = (id: string, cohort: string, audienceOrigin: string | null) =>
+      row({
+        id,
+        // eligiblePeople counts DISTINCT people, so each fixture needs its own
+        // user or two rows collapse into one and the assertion lies.
+        igUserId: `ig-${id}`,
+        cohort,
+        audienceOrigin,
+        triggerKind: "no_confirmed_read",
+        acceptedAt: new Date("2026-08-06T00:00:00.000Z"),
+        repliedAt: null,
+        conversation: { completedAt: null },
+      });
+    const inMarket = (id: string, cohort: string) => metricsRow(id, cohort, "us_western");
+    const outOfMarket = (id: string, cohort: string) => metricsRow(id, cohort, "south_asian");
+
+    it("excludes out-of-market rows from BOTH arms", async () => {
+      findMany.mockResolvedValue([
+        inMarket("t1", "treatment"),
+        outOfMarket("t2", "treatment"),
+        inMarket("c1", "control"),
+        outOfMarket("c2", "control"),
+      ]);
+
+      const res = await request(makeApp()).get("/api/recovery-reminders/metrics");
+
+      // One in-market row per arm survives; the two out-of-market ones do not.
+      expect(res.body.experiment.treatment.eligiblePeople).toBe(1);
+      expect(res.body.experiment.control.withheld).toBe(1);
+      expect(res.body.experiment.withheldOutOfMarket).toBe(2);
+    });
+
+    it("keeps every row when the market filter is off", async () => {
+      envMock.DM_RECOVERY_WESTERN_ONLY = false;
+      findMany.mockResolvedValue([
+        inMarket("t1", "treatment"),
+        outOfMarket("t2", "treatment"),
+      ]);
+
+      const res = await request(makeApp()).get("/api/recovery-reminders/metrics");
+
+      expect(res.body.experiment.treatment.eligiblePeople).toBe(2);
+      expect(res.body.experiment.withheldOutOfMarket).toBe(0);
+    });
+
+    // Rows created before the snapshot column existed carry a null origin.
+    // Dropping them would silently discard the start of the experiment.
+    it("keeps rows that predate the snapshot column", async () => {
+      findMany.mockResolvedValue([
+        metricsRow("old", "treatment", null),
+      ]);
+
+      const res = await request(makeApp()).get("/api/recovery-reminders/metrics");
+
+      expect(res.body.experiment.treatment.eligiblePeople).toBe(1);
+      expect(res.body.experiment.withheldOutOfMarket).toBe(0);
+    });
   });
 
   it("includes the health snapshot", async () => {
