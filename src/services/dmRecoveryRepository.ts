@@ -5,6 +5,7 @@ import { env } from "../config/env.js";
 import { logEvent } from "./eventLogger.js";
 import { recordRecoveryDatabaseFailure } from "./dmRecoveryHealth.js";
 import { inferOrigin, type Origin } from "./originInference.js";
+import { ORIGIN_PROMPT_VERSION } from "./originClassifier.js";
 import {
   decideRecovery,
   type RecoveryDecision,
@@ -89,16 +90,29 @@ async function loadPolicyContext(
   });
 
   // Classified live from the current name/username rather than read from
-  // ig_users.inferred_origin. That column is written only by the one-time
-  // backfill script, so for anyone who arrived after the last run it is null —
-  // and a null read as "not South Asian" would silently disable the gate for
-  // exactly the newest people. inferOrigin is pure, so this costs nothing
-  // beyond the row we already need.
+  // Two-tier origin resolution.
+  //
+  // Tier 1 is the stored verdict from the Gemini enrichment pass, which is far
+  // more accurate than name tokens (measured on 50 real gate users: 22 caught
+  // vs 3). Tier 2 is the pure name-token screen.
+  //
+  // The fallback is the safety property, not an optimisation. The stored column
+  // is null for anyone the worker has not reached yet — a brand-new user, a
+  // paused worker, an exhausted budget, or an unset API key — and reading null
+  // as "not South Asian" would silently open the gate for exactly the newest
+  // people. Falling back keeps the weaker screen instead of no screen.
   const person = await tx.igUser.findUnique({
     where: { id: row.igUserId },
-    select: { username: true, name: true },
+    select: {
+      username: true,
+      name: true,
+      inferredOrigin: true,
+      originConfidence: true,
+      originMethod: true,
+    },
   });
-  const origin = inferOrigin(person?.username ?? null, person?.name ?? null);
+
+  const origin = resolveAudienceOrigin(person);
 
   return {
     now,
@@ -109,6 +123,47 @@ async function loadPolicyContext(
     audienceOrigin: origin.origin,
     audienceOriginConfidence: origin.confidence,
   };
+}
+
+/** Row shape the origin resolver needs. Exported for the test's fixtures. */
+export type OriginSource = {
+  username: string | null;
+  name: string | null;
+  inferredOrigin: string | null;
+  originConfidence: string | null;
+  originMethod: string | null;
+} | null;
+
+/**
+ * Prefer a stored LLM verdict; otherwise classify the name live.
+ *
+ * Only a verdict written by the CURRENT prompt version is trusted. The same
+ * columns are also written by the one-time backfill script (origin_method
+ * "name"), whose values are just the token screen already available here — and
+ * by any future prompt. Pinning the version means a prompt change re-earns
+ * trust through the worker rather than inheriting it.
+ */
+export function resolveAudienceOrigin(person: OriginSource): {
+  origin: Origin;
+  confidence: "high" | "low";
+} {
+  const stored = person?.inferredOrigin;
+  if (person && person.originMethod === ORIGIN_PROMPT_VERSION && isOrigin(stored)) {
+    return {
+      origin: stored,
+      // Anything not exactly "high" reads as low: "high" is the value that
+      // withholds a public reminder, so a malformed column must not grant it.
+      confidence: person.originConfidence === "high" ? "high" : "low",
+    };
+  }
+  const inferred = inferOrigin(person?.username ?? null, person?.name ?? null);
+  return { origin: inferred.origin, confidence: inferred.confidence };
+}
+
+const ORIGINS = new Set(["us_western", "south_asian", "other", "unknown"]);
+
+function isOrigin(value: string | null | undefined): value is Origin {
+  return typeof value === "string" && ORIGINS.has(value);
 }
 
 function toPolicyInput(

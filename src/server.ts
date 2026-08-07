@@ -15,6 +15,7 @@ import { runReplyDraftTick } from "./services/replyDraftWorker.js";
 import { runReplyDraftRecoveryTick } from "./services/replyDraftRecoveryWorker.js";
 import { startDmRecoveryScheduler } from "./services/dmRecoveryScheduler.js";
 import { runDmRecoveryTick } from "./services/dmRecoveryWorker.js";
+import { runOriginEnrichmentTick } from "./services/originEnrichmentWorker.js";
 import { internalAiRouter } from "./api/internalAi.routes.js";
 import { seedTokenFromEnv } from "./meta/tokenStore.js";
 import { runTokenRefreshTick } from "./meta/tokenRefresher.js";
@@ -171,6 +172,17 @@ startDmRecoveryScheduler({
   setInterval: globalThis.setInterval,
   clearInterval: globalThis.clearInterval,
   runTick: runDmRecoveryTick,
+});
+
+// Origin enrichment runs on its own switch, independent of DM_RECOVERY_ENABLED:
+// the column is worth populating and auditing before it gates any send, and the
+// recovery gate falls back to the name-token screen whenever it is absent.
+startDmRecoveryScheduler({
+  enabled: env.DM_RECOVERY_ORIGIN_LLM_ENABLED,
+  intervalMs: env.DM_RECOVERY_ORIGIN_INTERVAL_MS,
+  setInterval: globalThis.setInterval,
+  clearInterval: globalThis.clearInterval,
+  runTick: runOriginEnrichmentTick,
 });
 
 app.listen(env.PORT, () => {

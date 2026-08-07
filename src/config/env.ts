@@ -124,6 +124,13 @@ export const envSchema = z.object({
   // as an Indian-market account to the US audience the algorithm is being
   // trained on. Off by default so enabling it is a deliberate act.
   DM_RECOVERY_WESTERN_ONLY: booleanFlag(false),
+  // Upgrade the name-token origin guess with a Gemini pass. Measured on 50 real
+  // gate users: the token list caught 3, the model caught 22, with no Western
+  // false positives. Independent of DM_RECOVERY_WESTERN_ONLY so the column can
+  // be populated and audited before it gates anything.
+  DM_RECOVERY_ORIGIN_LLM_ENABLED: booleanFlag(false),
+  DM_RECOVERY_ORIGIN_BATCH_SIZE: z.coerce.number().int().min(1).max(50).default(25),
+  DM_RECOVERY_ORIGIN_INTERVAL_MS: z.coerce.number().int().min(30_000).default(120_000),
   DM_RECOVERY_EXPERIMENT_VERSION: z.string().min(1).default("read-recovery-v1"),
   DM_RECOVERY_EXPERIMENT_START_AT: z.preprocess((val) => (val === "" ? undefined : val), z.string().datetime().optional()),
   DM_RECOVERY_EXPERIMENT_END_AT: z.preprocess((val) => (val === "" ? undefined : val), z.string().datetime().optional()),

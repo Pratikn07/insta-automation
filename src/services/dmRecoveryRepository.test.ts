@@ -47,6 +47,7 @@ const {
   authorizeClaimForSend,
   markRecoverySent,
   releaseOrSuppressClaim,
+  resolveAudienceOrigin,
 } = await import("./dmRecoveryRepository.js");
 
 const NOW = new Date("2026-08-06T10:00:00Z");
@@ -328,18 +329,21 @@ describe("authorizeClaimForSend", () => {
   // The gate is a policy decision, but the ORIGIN behind it is resolved here.
   // These prove the wiring, which the pure policy tests cannot see.
   describe("out-of-market audience", () => {
-    it("classifies the person from their current name, not a stored column", async () => {
+    it("reads the identity and the stored verdict in one query", async () => {
       findUnique.mockResolvedValue(sendingRow());
       igUserFindUnique.mockResolvedValue({ username: "priya_s", name: "Priya Sharma" });
 
       const decision = await authorizeClaimForSend("rec-1", NOW);
 
-      // ig_users.inferred_origin is written only by the one-time backfill, so a
-      // read of that column would return null for anyone newer than the last
-      // run and silently disable the gate for exactly those people.
       expect(igUserFindUnique).toHaveBeenCalledWith({
         where: { id: "ig-1" },
-        select: { username: true, name: true },
+        select: {
+          username: true,
+          name: true,
+          inferredOrigin: true,
+          originConfidence: true,
+          originMethod: true,
+        },
       });
       // The flag is off in the env mock, so the send still goes through — this
       // asserts the lookup, not the suppression.
@@ -355,6 +359,89 @@ describe("authorizeClaimForSend", () => {
       });
     });
   });
+});
+
+describe("resolveAudienceOrigin", () => {
+  const LLM = "llm_v1";
+
+  it("prefers a stored verdict from the current prompt over the name screen", () => {
+    // The name alone yields nothing; the stored verdict is the only signal.
+    expect(
+      resolveAudienceOrigin({
+        username: "handle123",
+        name: null,
+        inferredOrigin: "south_asian",
+        originConfidence: "high",
+        originMethod: LLM,
+      }),
+    ).toEqual({ origin: "south_asian", confidence: "high" });
+  });
+
+  // The fallback is the safety property. A null column means "not yet checked",
+  // never "not South Asian" — reading it as a verdict would silently open the
+  // gate for every user newer than the worker's last pass.
+  it("falls back to the name screen when nothing is stored", () => {
+    expect(
+      resolveAudienceOrigin({
+        username: "priya_s",
+        name: "Priya Sharma",
+        inferredOrigin: null,
+        originConfidence: null,
+        originMethod: null,
+      }),
+    ).toEqual({ origin: "south_asian", confidence: "high" });
+  });
+
+  it("falls back when the row is missing entirely", () => {
+    expect(resolveAudienceOrigin(null)).toEqual({ origin: "unknown", confidence: "low" });
+  });
+
+  // The one-time backfill script writes these same columns with method "name".
+  // Those values ARE the token screen, so trusting them would just be an
+  // indirection — and a future prompt must re-earn trust through the worker.
+  it.each([["name"], ["name_bio"], ["llm_v0"], [null]])(
+    "ignores a verdict written by method %p",
+    (method) => {
+      expect(
+        resolveAudienceOrigin({
+          username: "handle123",
+          name: null,
+          inferredOrigin: "south_asian",
+          originConfidence: "high",
+          originMethod: method,
+        }),
+      ).toEqual({ origin: "unknown", confidence: "low" });
+    },
+  );
+
+  it("ignores a stored origin outside the known set", () => {
+    expect(
+      resolveAudienceOrigin({
+        username: "handle123",
+        name: null,
+        inferredOrigin: "martian",
+        originConfidence: "high",
+        originMethod: LLM,
+      }),
+    ).toEqual({ origin: "unknown", confidence: "low" });
+  });
+
+  // "high" is the value that withholds a public reminder, so a malformed
+  // confidence column must never be read as granting it.
+  it.each([["HIGH"], ["true"], [null], ["medium"]])(
+    "treats a stored confidence %p as low",
+    (confidence) => {
+      expect(
+        resolveAudienceOrigin({
+          username: "handle123",
+          name: null,
+          inferredOrigin: "south_asian",
+          originConfidence: confidence,
+          originMethod: LLM,
+        }),
+      ).toEqual({ origin: "south_asian", confidence: "low" });
+    },
+  );
 });
 
 describe("finalizers", () => {
