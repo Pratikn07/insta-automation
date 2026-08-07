@@ -1,6 +1,11 @@
 node_modules/
 dist/
 .env
+# Any .env variant — backups included. A file like .env.bak.1786082926 was not
+# covered by the three patterns below it and would have been swept up by a bare
+# `git add -A`, putting live production credentials into git history.
+.env.*
+!.env.example
 .env.local
 .env.*.local
 *.log
@@ -17,3 +22,4 @@ prisma/migrations/dev.db*
 
 # Local isolated development worktrees
 .worktrees/
+.vercel
