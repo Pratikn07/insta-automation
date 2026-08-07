@@ -103,17 +103,19 @@ describe("DM recovery policy", () => {
         ).toEqual({ kind: "send_no_confirmed_read_reminder" });
       });
 
-      // A low-confidence south_asian call cannot happen today, but the guard is
-      // written on confidence rather than on origin alone, so a future bio pass
-      // that starts emitting low-confidence calls cannot quietly widen this.
-      it("does not withhold on a low-confidence South-Asian call", () => {
+      // Withholding is on origin, not confidence. The LLM marks an ordinary
+      // given name low ("Priya", "Manisha", surname "Khan") and reserves high for
+      // a script hit or an unambiguous token — but both are out of market for a
+      // Western product. Measured on 2,787 classified users this widened the
+      // filter from 41.9% to 45.9%, so the confidence split was not buying much.
+      it("withholds on a low-confidence South-Asian call too", () => {
         expect(
           decideRecovery({
             ...western,
             audienceOrigin: "south_asian",
             audienceOriginConfidence: "low",
           }),
-        ).toEqual({ kind: "send_no_confirmed_read_reminder" });
+        ).toEqual({ kind: "suppress", reason: "audience_out_of_market" });
       });
 
       it("sends to a Western origin", () => {

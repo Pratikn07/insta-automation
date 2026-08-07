@@ -179,18 +179,18 @@ export function decideRecovery(input: RecoveryPolicyInput): RecoveryDecision {
   // 3b. Out-of-market audience. Applies to BOTH trigger kinds: the settings
   // fallback is the same public comment and carries the same cost.
   //
-  // Only a HIGH-confidence south_asian call withholds. `inferOrigin` returns
-  // low confidence for its Western calls and leaves ~70% of this audience
-  // `unknown`, so suppressing anything short of a script hit or a distinctive
-  // token would silently cancel most of the feature while looking like a
-  // targeting rule. A high-confidence call is a non-Latin script or an
-  // unambiguous name token — a false positive there costs one withheld
-  // reminder, which is the cheap direction to be wrong in.
-  if (
-    input.westernOnly &&
-    input.audienceOrigin === "south_asian" &&
-    input.audienceOriginConfidence === "high"
-  ) {
+  // ANY south_asian verdict withholds, at either confidence. This is a Western
+  // parenting product, so an out-of-market reminder is spend with no upside, and
+  // the confidence distinction turned out not to be worth defending: measured on
+  // 2,787 classified users, high confidence is 41.9% and adding low takes it to
+  // 45.9% — a 4pp change. The low-confidence calls are also not noise, they are
+  // ordinary given names the model declined to call unambiguous ("Priya",
+  // "Manisha", surname "Khan").
+  //
+  // `unknown` and low-confidence non-south_asian still fall through and send:
+  // roughly a fifth of this audience has no usable name, and withholding from
+  // them would cancel much of the feature while looking like a targeting rule.
+  if (input.westernOnly && input.audienceOrigin === "south_asian") {
     return { kind: "suppress", reason: "audience_out_of_market" };
   }
 
