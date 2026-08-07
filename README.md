@@ -22,7 +22,17 @@ npm run dev                # start server on :3000
 ngrok http 3000            # expose to Meta webhook
 ```
 
-Register the ngrok URL in Meta Developer Dashboard → Webhooks, subscribe to `comments` and `messages` fields, then comment a configured keyword on your test reel.
+Register the ngrok URL in Meta Developer Dashboard → Webhooks, subscribe to the
+`comments`, `messages`, `messaging_seen`, `message_reactions`, and
+`messaging_postbacks` fields, then comment a configured keyword on your test reel.
+
+The last three carry read and engagement evidence for DM recovery. Without them
+the system never learns that anyone opened a gate DM — and because absence of a
+receipt means **No confirmed read**, never `Unread`, the recovery worker would
+treat healthy journeys as unread ones. Do not enable
+`DM_RECOVERY_ENABLED=true` until they are subscribed and a real signal has been
+observed; see [docs/meta-verification.md](docs/meta-verification.md) for the
+launch runbook.
 
 ## Layout
 
