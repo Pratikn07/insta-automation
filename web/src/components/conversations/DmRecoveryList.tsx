@@ -82,15 +82,22 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
     // Every filter belongs in the key: a narrowed result under the previous
     // filter's badge is the same lie as the wrong tab's rows.
     queryKey: ["recovery-reminders", "list", view, keywordId, cohort],
-    initialPageParam: null as string | null,
+    initialPageParam: null as { cursor: string; asOf: string } | null,
     queryFn: ({ pageParam }) => {
       const params = new URLSearchParams({ view });
       if (keywordId) params.set("keywordId", keywordId);
       if (cohort) params.set("cohort", cohort);
-      if (pageParam) params.set("cursor", pageParam);
+      if (pageParam) {
+        params.set("cursor", pageParam.cursor);
+        // The scheduled/ready split is an eligibleAt comparison against a
+        // timestamp. Replaying page 1's keeps every page of this run on the same
+        // boundary; letting it advance drops the rows that cross it.
+        params.set("asOf", pageParam.asOf);
+      }
       return recoveryApi.list(params.toString());
     },
-    getNextPageParam: (last: { nextCursor: string | null }) => last.nextCursor,
+    getNextPageParam: (last: { nextCursor: string | null; asOf: string }) =>
+      last.nextCursor ? { cursor: last.nextCursor, asOf: last.asOf } : null,
   });
 
   const health = metricsQ.data?.health;

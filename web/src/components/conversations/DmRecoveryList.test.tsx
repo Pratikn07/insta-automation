@@ -187,6 +187,39 @@ describe("DmRecoveryList", () => {
     });
   });
 
+  // The scheduled/ready split is an eligibleAt comparison against a timestamp.
+  // Letting the server pick a fresh one per page moved the boundary between
+  // pages, and a row that crossed it appeared on neither, so page 1's boundary
+  // has to travel with the cursor.
+  it("replays the first page's boundary on later pages", async () => {
+    const user = userEvent.setup();
+    const asOf = "2026-08-06T12:00:00.000Z";
+    list.mockResolvedValueOnce({ rows: [row({ id: "a" })], nextCursor: "cursor-2", asOf });
+    list.mockResolvedValueOnce({
+      rows: [row({ id: "b", username: "mo" })],
+      nextCursor: null,
+      // A later server read would hand back a drifted boundary; the client must
+      // keep sending the original.
+      asOf: "2026-08-06T12:00:30.000Z",
+    });
+
+    renderList();
+    await user.click(await screen.findByRole("button", { name: /Load more/i }));
+
+    await waitFor(() => {
+      const query = list.mock.calls.at(-1)![0] as string;
+      expect(new URLSearchParams(query).get("asOf")).toBe(asOf);
+    });
+  });
+
+  it("omits the boundary on the first page", async () => {
+    renderList();
+
+    await waitFor(() => expect(list).toHaveBeenCalled());
+    const query = list.mock.calls[0]![0] as string;
+    expect(new URLSearchParams(query).has("asOf")).toBe(false);
+  });
+
   // The banner must reassure, not alarm: nothing is lost while the circuit is open.
   it("explains a paused circuit without leaking provider detail", async () => {
     metrics.mockResolvedValue({

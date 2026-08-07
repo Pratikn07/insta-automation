@@ -230,6 +230,59 @@ describe("GET /counts", () => {
   });
 });
 
+// `scheduled` and `ready` are split by an eligibleAt comparison against now, so
+// recomputing it per request moved the boundary mid-pagination. A row eligible
+// between page 1 and page 2 was `scheduled` on page 1 and `ready` by page 2,
+// where it sorted above the cursor — so it appeared on neither page.
+describe("GET / boundary stability across pages", () => {
+  beforeEach(() => {
+    findMany.mockReset();
+    findMany.mockResolvedValue([]);
+    getIgUsers.mockResolvedValue({});
+  });
+
+  it("returns the boundary it read at", async () => {
+    const res = await request(makeApp()).get("/api/recovery-reminders?view=scheduled");
+
+    expect(res.status).toBe(200);
+    expect(typeof res.body.asOf).toBe("string");
+    expect(Number.isNaN(Date.parse(res.body.asOf))).toBe(false);
+  });
+
+  it("reuses a supplied boundary instead of advancing it", async () => {
+    const asOf = "2026-08-06T12:00:00.000Z";
+
+    const res = await request(makeApp()).get(
+      `/api/recovery-reminders?view=scheduled&asOf=${encodeURIComponent(asOf)}`,
+    );
+
+    expect(res.body.asOf).toBe(asOf);
+    expect(findMany.mock.calls[0]![0].where.eligibleAt).toEqual({ gt: new Date(asOf) });
+  });
+
+  it("keeps page two on page one's boundary for the ready view", async () => {
+    const first = await request(makeApp()).get("/api/recovery-reminders?view=ready&limit=1");
+    const boundary = first.body.asOf;
+
+    await request(makeApp()).get(
+      `/api/recovery-reminders?view=ready&limit=1&cursor=11111111-1111-4111-8111-111111111111&asOf=${encodeURIComponent(boundary)}`,
+    );
+
+    const pageOne = findMany.mock.calls[0]![0].where.eligibleAt;
+    const pageTwo = findMany.mock.calls[1]![0].where.eligibleAt;
+    expect(pageTwo).toEqual(pageOne);
+  });
+
+  it("rejects an unparseable boundary rather than silently drifting", async () => {
+    const res = await request(makeApp()).get(
+      "/api/recovery-reminders?view=ready&asOf=not-a-timestamp",
+    );
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: "invalid_query" });
+  });
+});
+
 describe("GET /metrics", () => {
   // Registered after /:id, Express captures "metrics" as an id and the
   // endpoint 404s.

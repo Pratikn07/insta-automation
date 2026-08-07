@@ -80,7 +80,9 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export const recoveryApi = {
   list: (query: string) =>
-    api<{ rows: RecoveryReminderRow[]; nextCursor: string | null }>(
+    // `asOf` is the eligibleAt boundary this page was read at. Echo it back with
+    // the cursor so a paginated run stays on one boundary.
+    api<{ rows: RecoveryReminderRow[]; nextCursor: string | null; asOf: string }>(
       `/recovery-reminders${query ? `?${query}` : ""}`,
     ),
   counts: () => api<RecoveryCounts>("/recovery-reminders/counts"),

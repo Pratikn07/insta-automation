@@ -86,6 +86,12 @@ const listQuerySchema = z.object({
   cohort: z.enum(["treatment", "control", "not_applicable"]).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   cursor: z.string().uuid().optional(),
+  // The `scheduled` and `ready` views are split by an `eligibleAt` comparison
+  // against now, so a fresh `now` per request moves the boundary mid-pagination
+  // and a row can land on neither page: page 1 sees it as `scheduled`, and by
+  // page 2 it has become `ready` and sorts above the cursor. The client echoes
+  // this back so every page of one run shares page 1's boundary.
+  asOf: z.coerce.date().optional(),
 });
 
 function iso(value: Date | null): string | null {
@@ -154,8 +160,10 @@ recoveryRemindersRouter.get("/", async (req, res) => {
   const parsed = listQuerySchema.safeParse(req.query);
   if (!parsed.success) return res.status(400).json({ error: "invalid_query" });
 
-  const { view, keywordId, cohort, limit, cursor } = parsed.data;
-  const now = new Date();
+  const { view, keywordId, cohort, limit, cursor, asOf } = parsed.data;
+  // Page 1 establishes the boundary; later pages reuse the one they are handed.
+  // Without this the time-split views silently drop rows mid-pagination.
+  const now = asOf ?? new Date();
 
   const rows = await prisma.dmRecoveryReminder.findMany({
     where: {
@@ -182,6 +190,7 @@ recoveryRemindersRouter.get("/", async (req, res) => {
   res.json({
     rows: page.map((row) => serializeRow(row, people)),
     nextCursor,
+    asOf: now.toISOString(),
   });
 });
 
