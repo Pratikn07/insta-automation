@@ -10,6 +10,7 @@ const sendTrackedPrivateReply = vi.fn();
 const logEvent = vi.fn();
 const rememberUsername = vi.fn();
 const enqueueGate = vi.fn();
+const claimComment = vi.fn();
 const childLogger = {
   debug: vi.fn(),
   info: vi.fn(),
@@ -34,6 +35,7 @@ vi.mock("../services/eventLogger.js", async (importOriginal) => {
 });
 vi.mock("../services/igUserService.js", () => ({ rememberUsername }));
 vi.mock("../services/gateQueueService.js", () => ({ enqueueGate }));
+vi.mock("../services/commentClaimService.js", () => ({ claimComment }));
 vi.mock("../lib/logger.js", () => ({ logger: { child: () => childLogger } }));
 vi.mock("../config/env.js", () => ({
   env: {
@@ -99,10 +101,17 @@ beforeEach(() => {
     scheduleAcceptedGateRecovery,
     scheduleSettingsBlockedRecovery,
     scheduleTrackingUnavailableRecovery,
+    claimComment,
     ...Object.values(childLogger),
   ]) {
     fn.mockReset();
   }
+
+  // The database enforces this in production; here a set stands in for it.
+  const claimed = new Set<string>();
+  claimComment.mockImplementation(async (commentId: string) =>
+    claimed.has(commentId) ? false : (claimed.add(commentId), true),
+  );
   extractCandidates.mockReturnValue(["sleep"]);
   findKeywordForComment.mockResolvedValue({
     mode: "global_fallback",
@@ -320,5 +329,62 @@ describe("handleComment gate failure routing", () => {
     expect(enqueueGate).not.toHaveBeenCalled();
     expect(scheduleAcceptedGateRecovery).not.toHaveBeenCalled();
     expect(logEvent).not.toHaveBeenCalled();
+  });
+});
+
+// Meta delivers webhooks at least once. Without an idempotency key the handler
+// runs end to end again: measured before this guard existed, one duplicate
+// produced two public replies, two gate DMs, and two conversations.
+describe("duplicate comment webhook delivery", () => {
+  const COMMENT = {
+    id: "comment_sarah_001",
+    text: "sleep",
+    from: { id: "ig_sarah", username: "sarah" },
+    media: { id: "reel_42", media_product_type: "REELS" },
+  };
+
+  it("does exactly one of everything when the gate DM succeeds", async () => {
+    sendTrackedPrivateReply.mockResolvedValue({ messageId: "mid-1" });
+
+    await handleComment(COMMENT);
+    await handleComment(COMMENT);
+
+    expect(replyToComment).toHaveBeenCalledTimes(1);
+    expect(sendTrackedPrivateReply).toHaveBeenCalledTimes(1);
+    expect(openConversation).toHaveBeenCalledTimes(1);
+    expect(enqueueGate).not.toHaveBeenCalled();
+  });
+
+  it("does exactly one of everything when the gate DM fails and is queued", async () => {
+    sendTrackedPrivateReply.mockRejectedValue(new Error("rate limited"));
+
+    await handleComment(COMMENT);
+    await handleComment(COMMENT);
+
+    expect(replyToComment).toHaveBeenCalledTimes(1);
+    expect(openConversation).toHaveBeenCalledTimes(1);
+    expect(enqueueGate).toHaveBeenCalledTimes(1);
+  });
+
+  // The guard is an insert whose uniqueness the database enforces, so two
+  // deliveries interleaving cannot both pass a check-then-act window.
+  it("claims the comment before anything reaches Instagram", async () => {
+    sendTrackedPrivateReply.mockResolvedValue({ messageId: "mid-1" });
+
+    await handleComment(COMMENT);
+
+    expect(claimComment).toHaveBeenCalledWith("comment_sarah_001", "ig_sarah");
+    const claimOrder = claimComment.mock.invocationCallOrder[0]!;
+    expect(claimOrder).toBeLessThan(replyToComment.mock.invocationCallOrder[0]!);
+    expect(claimOrder).toBeLessThan(sendTrackedPrivateReply.mock.invocationCallOrder[0]!);
+    expect(claimOrder).toBeLessThan(openConversation.mock.invocationCallOrder[0]!);
+  });
+
+  it("ignores a comment that matches no keyword without consuming a claim", async () => {
+    findKeywordForComment.mockResolvedValue(null);
+
+    await handleComment(COMMENT);
+
+    expect(claimComment).not.toHaveBeenCalled();
   });
 });

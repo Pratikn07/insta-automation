@@ -7,6 +7,7 @@ import { logger } from "../lib/logger.js";
 import { logEvent, describeGraphError } from "../services/eventLogger.js";
 import { rememberUsername } from "../services/igUserService.js";
 import { enqueueGate } from "../services/gateQueueService.js";
+import { claimComment } from "../services/commentClaimService.js";
 import { env } from "../config/env.js";
 import {
   classifyPrivateGateFailure,
@@ -97,6 +98,15 @@ export async function handleComment(comment: CommentValue): Promise<void> {
     { keyword: keyword.keyword, scope, matchMode: match.mode, mediaId: comment.media?.id },
     "Keyword matched",
   );
+
+  // Claim the comment before anything outward-facing happens. Meta delivers
+  // webhooks at least once, and everything below — the conversation, the public
+  // reply, the gate DM — would otherwise run a second time for one comment.
+  // Claimed after keyword matching so a non-matching comment consumes nothing.
+  if (!(await claimComment(comment.id, senderId))) {
+    log.debug("Comment already handled — skipping duplicate delivery");
+    return;
+  }
 
   const convo = await openConversation(senderId, keyword.id);
   log.info({ conversationId: convo.id }, "Conversation opened");
