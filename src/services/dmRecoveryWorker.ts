@@ -13,7 +13,6 @@ import {
   releaseOrSuppressClaim,
 } from "./dmRecoveryRepository.js";
 import { evaluateRecoveryHealth, openRecoveryCircuit } from "./dmRecoveryHealth.js";
-import type { HealthInput } from "./dmRecoveryHealth.js";
 import { replyToComment } from "../meta/replyToComment.js";
 import { classifyPublicReplyFailure } from "./graphErrorClassifier.js";
 
@@ -67,22 +66,10 @@ async function runTickBody(): Promise<DmRecoveryTickResult> {
     },
   });
 
-  // 2. Evaluate health
-  const healthInput: HealthInput = {
-    now,
-    dueCount: await prisma.dmRecoveryReminder.count({
-      where: { status: "waiting", eligibleAt: { lte: now } },
-    }),
-    sentLastHour: await prisma.dmRecoveryReminder.count({
-      where: { sentAt: { gte: new Date(now.getTime() - 60 * 60 * 1000) } },
-    }),
-    outcomeCount: 0,
-    publicFailureCount: 0,
-    acceptedCount: 0,
-    seenOrEngagedCount: 0,
-    recentDatabaseFailures: 0,
-  };
-  const health = await evaluateRecoveryHealth(healthInput);
+  // 2. Evaluate health. The module gathers its own observations: the worker
+  // used to hand it hardcoded zeros for the sample inputs, which made the
+  // webhook-gap, failure-rate and database-failure trips unreachable.
+  const health = await evaluateRecoveryHealth(now);
   if (health.circuitOpen) {
     return emptyResult("circuit_open");
   }

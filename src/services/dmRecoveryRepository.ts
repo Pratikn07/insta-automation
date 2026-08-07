@@ -3,6 +3,7 @@ import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
 import { env } from "../config/env.js";
 import { logEvent } from "./eventLogger.js";
+import { recordRecoveryDatabaseFailure } from "./dmRecoveryHealth.js";
 import {
   decideRecovery,
   type RecoveryDecision,
@@ -267,6 +268,7 @@ export async function claimRecovery(
         await sleep(20 + Math.random() * 30);
         continue;
       }
+      recordRecoveryDatabaseFailure();
       logger.error({ errorCode: "claim_recovery_failed", id, err }, "claimRecovery error");
       return null;
     }
@@ -334,6 +336,7 @@ export async function authorizeClaimForSend(
       return decision;
     });
   } catch (err) {
+    recordRecoveryDatabaseFailure();
     logger.error({ errorCode: "authorize_claim_failed", id, err }, "authorizeClaimForSend failed");
     return { kind: "pause", reason: "circuit_open" };
   }
