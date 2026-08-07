@@ -361,4 +361,42 @@ describe("runGateQueueTick early batch stop", () => {
       data: { status: "pending", claimedAt: null, claimExpiresAt: null },
     });
   });
+
+  // The release used to sit inside the try, so a throw from the conversation
+  // load skipped it and stranded the whole claimed batch in `sending`. The lease
+  // then expired, reconciliation marked every row send_uncertain, and each got a
+  // recovery row asserting the DM may have been delivered — to people who were
+  // never messaged.
+  it("releases the whole batch when loading conversations throws", async () => {
+    const second = { ...row, id: "gate-2", commentId: "comment-2" };
+    gateQueue.findMany.mockImplementation(async (args?: { where?: { status?: string } }) => {
+      if (args?.where?.status === "sending") return [];
+      if (args?.where?.status === "pending") return [row, second];
+      return [];
+    });
+    conversation.findMany.mockRejectedValue(new Error("connection terminated"));
+
+    await runGateQueueTick();
+
+    expect(gateQueue.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ["gate-1", "gate-2"] }, status: "sending" },
+      data: { status: "pending", claimedAt: null, claimExpiresAt: null },
+    });
+    // Nothing was attempted, so no row may be recorded as maybe-delivered.
+    expect(sendTrackedPrivateReply).not.toHaveBeenCalled();
+    expect(scheduleTrackingUnavailableRecovery).not.toHaveBeenCalled();
+  });
+
+  it("still reports the tick failure after releasing", async () => {
+    gateQueue.findMany.mockImplementation(async (args?: { where?: { status?: string } }) => {
+      if (args?.where?.status === "sending") return [];
+      if (args?.where?.status === "pending") return [row];
+      return [];
+    });
+    conversation.findMany.mockRejectedValue(new Error("connection terminated"));
+
+    await expect(runGateQueueTick()).resolves.toBeUndefined();
+
+    expect(logger.error).toHaveBeenCalled();
+  });
 });
