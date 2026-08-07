@@ -3,7 +3,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const recordRecoveryReaction = vi.fn();
 
 vi.mock("../services/dmRecoveryService.js", () => ({ recordRecoveryReaction }));
-vi.mock("../lib/logger.js", () => ({ logger: { debug: vi.fn(), info: vi.fn(), error: vi.fn() } }));
+vi.mock("../lib/logger.js", () => ({
+  logger: { debug: vi.fn(), info: vi.fn(), error: vi.fn(), warn: vi.fn() },
+}));
 
 const { handleReaction } = await import("./reactionHandler.js");
 

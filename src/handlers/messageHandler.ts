@@ -21,6 +21,7 @@ import { recordRecoveryInbound } from "../services/dmRecoveryService.js";
 import { queueReplyDraft } from "../services/replyDraftService.js";
 import { scheduleEngagementFollowUp } from "../services/engagementFollowUpService.js";
 import { logger } from "../lib/logger.js";
+import { parseProviderTimestamp } from "../lib/providerTime.js";
 import { logEvent, describeGraphError } from "../services/eventLogger.js";
 import { resolveUsername } from "../services/igUserService.js";
 import { env } from "../config/env.js";
@@ -123,7 +124,7 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
   if (senderId === env.IG_USER_ID) return;
 
   if (msg.is_deleted) {
-    await markInboundDeleted(msg.mid, new Date(entry.timestamp));
+    await markInboundDeleted(msg.mid, parseProviderTimestamp(entry.timestamp));
     return;
   }
 
@@ -147,7 +148,7 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     messageType,
     mediaUrl,
     // Meta's timestamp, not ours, so a delayed webhook still orders correctly.
-    instagramTimestamp: new Date(entry.timestamp),
+    instagramTimestamp: parseProviderTimestamp(entry.timestamp),
   });
   if (inbound.duplicate) {
     logger.debug(
@@ -165,7 +166,7 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
       : "inbound_reply";
   await recordRecoveryInbound({
     igUserId: senderId,
-    eventAt: new Date(entry.timestamp),
+    eventAt: parseProviderTimestamp(entry.timestamp),
     receivedAt: new Date(),
     kind: recoveryKind,
   });
@@ -246,7 +247,7 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
           conversationId: convo.id,
           threadId: inbound.threadId,
           inboundMessageId: inbound.messageId,
-          inboundAt: new Date(entry.timestamp),
+          inboundAt: parseProviderTimestamp(entry.timestamp),
           deliveredAt: completed.completedAt,
         });
         await markThreadResolved({
@@ -361,7 +362,7 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
           conversationId: convo.id,
           threadId: inbound.threadId,
           inboundMessageId: inbound.messageId,
-          inboundAt: new Date(entry.timestamp),
+          inboundAt: parseProviderTimestamp(entry.timestamp),
           deliveredAt: completed.completedAt,
         });
         await markThreadResolved({
@@ -452,7 +453,7 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
         conversationId: convo.id,
         threadId: inbound.threadId,
         inboundMessageId: inbound.messageId,
-        inboundAt: new Date(entry.timestamp),
+        inboundAt: parseProviderTimestamp(entry.timestamp),
         deliveredAt: completed.completedAt,
       });
       await markThreadResolved({
