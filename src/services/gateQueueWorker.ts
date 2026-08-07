@@ -1,4 +1,3 @@
-import { isAxiosError } from "axios";
 import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
 import { env } from "../config/env.js";
@@ -15,20 +14,11 @@ import {
   scheduleTrackingUnavailableRecovery,
 } from "./dmRecoveryService.js";
 
-// The rate-limit subcode. When we see it again we back off for the rest of the tick.
-const RATE_LIMIT_SUBCODE = 2534025;
-
 const BASE_BACKOFF_MS = 15 * 60 * 1000; // 15 min
 const MAX_BACKOFF_MS = 2 * 60 * 60 * 1000; // 2 h
 const PER_SEND_GAP_MS = 4000; // gentle spacing between sends within a tick
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-function isRateLimit(err: unknown): boolean {
-  if (!isAxiosError(err)) return false;
-  const data = err.response?.data as { error?: { error_subcode?: number } } | undefined;
-  return data?.error?.error_subcode === RATE_LIMIT_SUBCODE;
-}
 
 /**
  * Reconcile stale sending claims (leases that expired while worker crashed/restarted).
@@ -69,6 +59,7 @@ async function reconcileStaleSendingClaims(now: Date): Promise<void> {
           keywordSnapshot: convo.keyword.keyword,
           commentId: row.commentId,
           mediaId: row.mediaId,
+          observedAt: new Date(),
         });
       } catch {
         await logEvent("dm_recovery_schedule_failed", {
@@ -270,6 +261,7 @@ export async function runGateQueueTick(): Promise<void> {
               keywordSnapshot: convo.keyword.keyword,
               commentId: row.commentId,
               mediaId: row.mediaId,
+          observedAt: new Date(),
             });
           } catch {
             await logEvent("dm_recovery_schedule_failed", {
@@ -297,7 +289,11 @@ export async function runGateQueueTick(): Promise<void> {
           });
         }
 
-        if (isRateLimit(err)) {
+        // Only a genuine rate limit should stop the tick. This used to test for
+        // subcode 2534025, which is "comment invalid for a private reply" — a
+        // permanent, per-comment failure. One deleted or expired comment
+        // therefore aborted every remaining queued send in the batch.
+        if (classification === "rate_limited") {
           logger.info(
             { sentThisTick: sent, remaining: claimedRows.length - sent },
             "Gate retry hit rate limit — backing off for this tick",

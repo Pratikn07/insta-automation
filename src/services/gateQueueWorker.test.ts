@@ -194,6 +194,39 @@ describe("runGateQueueTick Graph failure privacy", () => {
   });
 });
 
+describe("runGateQueueTick batch pacing", () => {
+  // Subcode 2534025 is "comment invalid for a private reply" — permanent for
+  // that one comment. Treating it as a rate limit aborted the whole remaining
+  // batch, so a single deleted or expired comment starved every other queued
+  // gate DM in the tick.
+  it("keeps draining the batch after one comment is permanently invalid", async () => {
+    const second = { ...row, id: "gate-2", commentId: "comment-2" };
+    gateQueue.findMany.mockImplementation(async (args?: { where?: { status?: string } }) => {
+      if (args?.where?.status === "sending") return [];
+      if (args?.where?.status === "pending") return [row, second];
+      return [];
+    });
+    conversation.findMany.mockResolvedValue([
+      { ...convoObj, id: "conversation-1" },
+    ]);
+    sendTrackedPrivateReply
+      .mockRejectedValueOnce(graphFailure(100, 2534025))
+      .mockResolvedValueOnce({
+        instagramMessageId: "mid-2",
+        dmMessageId: "dm-2",
+        acceptedAt: new Date(),
+      });
+
+    await runGateQueueTick();
+
+    expect(sendTrackedPrivateReply).toHaveBeenCalledTimes(2);
+    expect(logger.info).not.toHaveBeenCalledWith(
+      expect.anything(),
+      "Gate retry hit rate limit — backing off for this tick",
+    );
+  });
+});
+
 describe("runGateQueueTick Recovery Scheduling (Task 7)", () => {
   it("schedules accepted-DM recovery after a queued send succeeds", async () => {
     const acceptedAt = new Date("2026-08-06T08:00:00Z");

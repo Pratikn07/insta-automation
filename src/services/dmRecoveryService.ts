@@ -39,6 +39,8 @@ export type TrackingUnavailableRecoveryInput = {
   keywordSnapshot: string;
   commentId: string;
   mediaId: string | null;
+  /** When the untrackable outcome was observed. */
+  observedAt: Date;
 };
 
 export type MessageCorrelatedEvidence = {
@@ -130,6 +132,18 @@ function decideExperimentCohort(
   };
 }
 
+/**
+ * Statuses whose rows still carry meaning for the experiment.
+ *
+ * `waiting` transitions to `suppressed` on evidence; `control`, `sending` and
+ * `sent` keep their status so a late webhook can still be measured. Everything
+ * else is finished — a suppressed, failed, uncertain, untrackable or
+ * owner-cancelled row must not be annotated after the fact, and scoping the
+ * query this way also stops one inbound webhook rewriting a person's entire
+ * recovery history.
+ */
+const EVIDENCE_ELIGIBLE_STATUSES = ["waiting", "control", "sending", "sent"] as const;
+
 // ── Creation functions ───────────────────────────────────────────────────
 
 export async function scheduleAcceptedGateRecovery(
@@ -146,6 +160,7 @@ export async function scheduleAcceptedGateRecovery(
       keywordSnapshot: input.keywordSnapshot,
       commentId,
       mediaId: input.mediaId,
+      observedAt: input.acceptedAt,
     });
   }
 
@@ -193,6 +208,20 @@ export async function scheduleAcceptedGateRecovery(
     },
     "Recovery reminder created",
   );
+
+  // Withheld rows are the experiment's counterfactual, so record why this
+  // person was held back — assignment is deterministic and never revisited.
+  if (row.cohort === "control") {
+    logger.info(
+      {
+        eventCode: "dm_recovery_control_assigned",
+        id: row.id,
+        reason: row.lastErrorCategory ?? "holdout",
+        experimentVersion: env.DM_RECOVERY_EXPERIMENT_VERSION,
+      },
+      "Recovery reminder withheld as control",
+    );
+  }
 
   return { id: row.id, status: row.status };
 }
@@ -248,9 +277,6 @@ export async function scheduleTrackingUnavailableRecovery(
   const commentId = requireCommentOrigin(input.commentId);
   const publicReplyText = renderRecoveryCopy("no_confirmed_read", input.keywordSnapshot);
 
-  // Far-future eligibleAt ensures automatic worker never selects this.
-  const farFuture = new Date("2099-12-31T23:59:59Z");
-
   const createData = {
     conversationId: input.conversationId,
     igUserId: input.igUserId,
@@ -266,7 +292,10 @@ export async function scheduleTrackingUnavailableRecovery(
     status: "tracking_unavailable" as const,
     cohort: "not_applicable" as const,
     acceptedAt: null,
-    eligibleAt: farFuture,
+    // The status keeps this row away from the worker, which only ever selects
+    // `waiting`. eligibleAt therefore records when the untrackable outcome was
+    // observed, rather than a sentinel date the dashboard would render as one.
+    eligibleAt: input.observedAt,
     lastErrorCategory: "private_send_outcome_unknown",
   };
 
@@ -301,7 +330,10 @@ export async function recordRecoverySeen(
   try {
     await prisma.$transaction(async (tx) => {
       const rows = await tx.dmRecoveryReminder.findMany({
-        where: { instagramGateMessageId: input.instagramMessageId },
+        where: {
+          instagramGateMessageId: input.instagramMessageId,
+          status: { in: [...EVIDENCE_ELIGIBLE_STATUSES] },
+        },
       });
 
       for (const row of rows) {
@@ -355,7 +387,10 @@ export async function recordRecoveryReaction(
   try {
     await prisma.$transaction(async (tx) => {
       const rows = await tx.dmRecoveryReminder.findMany({
-        where: { instagramGateMessageId: input.instagramMessageId },
+        where: {
+          instagramGateMessageId: input.instagramMessageId,
+          status: { in: [...EVIDENCE_ELIGIBLE_STATUSES] },
+        },
       });
 
       for (const row of rows) {
@@ -408,7 +443,10 @@ export async function recordRecoveryPostback(
   try {
     await prisma.$transaction(async (tx) => {
       const rows = await tx.dmRecoveryReminder.findMany({
-        where: { instagramGateMessageId: input.instagramMessageId },
+        where: {
+          instagramGateMessageId: input.instagramMessageId,
+          status: { in: [...EVIDENCE_ELIGIBLE_STATUSES] },
+        },
       });
 
       for (const row of rows) {
@@ -465,7 +503,10 @@ export async function recordRecoveryInbound(
   try {
     await prisma.$transaction(async (tx) => {
       const rows = await tx.dmRecoveryReminder.findMany({
-        where: { igUserId: input.igUserId },
+        where: {
+          igUserId: input.igUserId,
+          status: { in: [...EVIDENCE_ELIGIBLE_STATUSES] },
+        },
       });
 
       for (const row of rows) {

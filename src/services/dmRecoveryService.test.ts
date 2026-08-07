@@ -81,6 +81,7 @@ const TRACKING_INPUT = {
   keywordSnapshot: "PROTEIN",
   commentId: "comment-3",
   mediaId: "media-1",
+  observedAt: new Date("2026-08-06T08:30:00Z"),
 };
 
 function makeRow(overrides: Record<string, unknown> = {}) {
@@ -448,8 +449,13 @@ describe("scheduleTrackingUnavailableRecovery", () => {
     expect(upsert).not.toHaveBeenCalled();
   });
 
-  it("creates tracking_unavailable with far-future eligibleAt and no acceptedAt", async () => {
-    const result = await scheduleTrackingUnavailableRecovery(TRACKING_INPUT);
+  // eligibleAt records when the untrackable outcome was observed. The row is
+  // kept away from the worker by its status, not by a sentinel date — a
+  // year-2099 placeholder is not a time and would surface as one on the
+  // dashboard this row exists to populate.
+  it("creates tracking_unavailable stamped with the observation time", async () => {
+    const observedAt = new Date("2026-08-06T08:30:00Z");
+    const result = await scheduleTrackingUnavailableRecovery({ ...TRACKING_INPUT, observedAt });
 
     expect(result.status).toBe("tracking_unavailable");
     expect(upsert).toHaveBeenCalledWith(
@@ -458,6 +464,7 @@ describe("scheduleTrackingUnavailableRecovery", () => {
           status: "tracking_unavailable",
           cohort: "not_applicable",
           acceptedAt: null,
+          eligibleAt: observedAt,
           lastErrorCategory: "private_send_outcome_unknown",
           instagramGateMessageId: null,
         }),
@@ -492,7 +499,10 @@ describe("recordRecoverySeen", () => {
     });
 
     expect(findMany).toHaveBeenCalledWith({
-      where: { instagramGateMessageId: "mid-1" },
+      where: {
+        instagramGateMessageId: "mid-1",
+        status: { in: ["waiting", "control", "sending", "sent"] },
+      },
     });
     expect(update).toHaveBeenCalledWith({
       where: { id: "row-1" },
@@ -659,7 +669,9 @@ describe("recordRecoveryInbound", () => {
       kind: "inbound_reply",
     });
 
-    expect(findMany).toHaveBeenCalledWith({ where: { igUserId: "ig-1" } });
+    expect(findMany).toHaveBeenCalledWith({
+      where: { igUserId: "ig-1", status: { in: ["waiting", "control", "sending", "sent"] } },
+    });
     expect(update).toHaveBeenCalledTimes(2);
 
     for (const call of update.mock.calls) {
@@ -673,6 +685,33 @@ describe("recordRecoveryInbound", () => {
         suppressionReason: "inbound_reply",
       });
     }
+  });
+
+  // Verified against Postgres: without the status filter one inbound webhook
+  // rewrote engagedAt onto every row for the user, including a cancelled one.
+  // A finished row is not evidence for the experiment and the owner's
+  // cancellation must not be quietly annotated after the fact.
+  it("never rewrites evidence onto a finished row", async () => {
+    findMany.mockResolvedValue([]);
+
+    await recordRecoveryInbound({
+      igUserId: "ig-1",
+      eventAt: new Date(),
+      receivedAt: new Date(),
+      kind: "inbound_reply",
+    });
+
+    const where = findMany.mock.calls[0]![0].where;
+    for (const finished of [
+      "suppressed",
+      "send_failed",
+      "send_uncertain",
+      "tracking_unavailable",
+      "cancelled",
+    ]) {
+      expect(where.status.in).not.toContain(finished);
+    }
+    expect(update).not.toHaveBeenCalled();
   });
 
   it("preserves firstEngagementKind when already set", async () => {

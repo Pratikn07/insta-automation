@@ -195,6 +195,7 @@ export async function handleComment(comment: CommentValue): Promise<void> {
           keywordSnapshot: keyword.keyword,
           commentId: comment.id,
           mediaId: comment.media?.id ?? null,
+          observedAt: new Date(),
         });
       } catch {
         await logEvent("dm_recovery_schedule_failed", {
