@@ -58,22 +58,30 @@ export async function findLatestIncompleteConversation(igUserId: string) {
   });
 }
 
+import { suppressRecoveriesForCompletion } from "./dmRecoveryService.js";
+
 export async function markCompleted(conversationId: string) {
-  // Completing a conversation also cancels any still-pending gate retries for
-  // it: the user has the guide, so another "reply DONE to unlock" would be pure
-  // spam (Meta sometimes delivers a private reply while returning an error, so
-  // a "failing" queue row may in fact be reaching the user's inbox).
-  const [convo] = await prisma.$transaction([
-    prisma.conversation.update({
+  const completedAt = new Date();
+  return prisma.$transaction(async (tx) => {
+    const convo = await tx.conversation.update({
       where: { id: conversationId },
-      data: { state: "completed", completedAt: new Date() },
-    }),
-    prisma.gateQueue.updateMany({
+      data: { state: "completed", completedAt },
+    });
+
+    await tx.gateQueue.updateMany({
       where: { conversationId, status: "pending" },
       data: { status: "abandoned", lastError: "conversation_completed" },
-    }),
-  ]);
-  return convo;
+    });
+
+    await suppressRecoveriesForCompletion(tx, {
+      conversationId,
+      igUserId: convo.igUserId,
+      keywordId: convo.keywordId,
+      completedAt,
+    });
+
+    return convo;
+  });
 }
 
 /**

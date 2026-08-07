@@ -498,6 +498,60 @@ export async function recordRecoveryInbound(
   }
 }
 
+// ── Completion suppression ────────────────────────────────────────────────
+
+import type { Prisma } from "@prisma/client";
+
+export async function suppressRecoveriesForCompletion(
+  tx: Prisma.TransactionClient,
+  input: { conversationId: string; igUserId: string; keywordId: string; completedAt: Date },
+): Promise<void> {
+  const rows = await tx.dmRecoveryReminder.findMany({
+    where: {
+      OR: [
+        { conversationId: input.conversationId },
+        { igUserId: input.igUserId, keywordId: input.keywordId },
+      ],
+    },
+  });
+
+  for (const row of rows) {
+    const isSourceConvo = row.conversationId === input.conversationId;
+    const reason = isSourceConvo ? "completed" : "completed_elsewhere";
+
+    if (row.status === "waiting") {
+      await tx.dmRecoveryReminder.update({
+        where: { id: row.id },
+        data: {
+          status: "suppressed",
+          suppressedAt: input.completedAt,
+          suppressionReason: reason,
+        },
+      });
+      logger.info(
+        {
+          eventCode: "dm_recovery_evidence_recorded",
+          id: row.id,
+          evidenceKind: "completion",
+          previousStatus: "waiting",
+          newStatus: "suppressed",
+          suppressionReason: reason,
+        },
+        "Recovery suppressed on journey completion",
+      );
+    } else if (row.status === "control") {
+      // Record observed completion timestamp/reason on control rows for counterfactual analysis without changing cohort status
+      await tx.dmRecoveryReminder.update({
+        where: { id: row.id },
+        data: {
+          suppressedAt: input.completedAt,
+          suppressionReason: reason,
+        },
+      });
+    }
+  }
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 function earlierOf(existing: Date | null, candidate: Date): Date {

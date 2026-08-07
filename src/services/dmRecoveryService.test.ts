@@ -682,3 +682,72 @@ describe("recordRecoveryInbound", () => {
     );
   });
 });
+
+// ── suppressRecoveriesForCompletion ──────────────────────────────────────
+
+describe("suppressRecoveriesForCompletion", () => {
+  it("suppresses source waiting row as 'completed' and other matching rows as 'completed_elsewhere'", async () => {
+    const { suppressRecoveriesForCompletion } = await import("./dmRecoveryService.js");
+
+    const sourceRow = makeRow({ id: "row-source", conversationId: "convo-1", status: "waiting" });
+    const otherRow = makeRow({ id: "row-other", conversationId: "convo-2", status: "waiting" });
+    findMany.mockResolvedValue([sourceRow, otherRow]);
+
+    const tx = {
+      dmRecoveryReminder: { findMany, update },
+    } as any;
+
+    const completedAt = new Date("2026-08-06T15:00:00Z");
+    await suppressRecoveriesForCompletion(tx, {
+      conversationId: "convo-1",
+      igUserId: "ig-1",
+      keywordId: "kw-1",
+      completedAt,
+    });
+
+    expect(update).toHaveBeenCalledTimes(2);
+    expect(update).toHaveBeenNthCalledWith(1, {
+      where: { id: "row-source" },
+      data: {
+        status: "suppressed",
+        suppressedAt: completedAt,
+        suppressionReason: "completed",
+      },
+    });
+    expect(update).toHaveBeenNthCalledWith(2, {
+      where: { id: "row-other" },
+      data: {
+        status: "suppressed",
+        suppressedAt: completedAt,
+        suppressionReason: "completed_elsewhere",
+      },
+    });
+  });
+
+  it("retains status on control rows while updating suppressedAt and suppressionReason", async () => {
+    const { suppressRecoveriesForCompletion } = await import("./dmRecoveryService.js");
+
+    const controlRow = makeRow({ id: "row-ctrl", conversationId: "convo-1", status: "control", cohort: "control" });
+    findMany.mockResolvedValue([controlRow]);
+
+    const tx = {
+      dmRecoveryReminder: { findMany, update },
+    } as any;
+
+    const completedAt = new Date("2026-08-06T15:00:00Z");
+    await suppressRecoveriesForCompletion(tx, {
+      conversationId: "convo-1",
+      igUserId: "ig-1",
+      keywordId: "kw-1",
+      completedAt,
+    });
+
+    expect(update).toHaveBeenCalledWith({
+      where: { id: "row-ctrl" },
+      data: {
+        suppressedAt: completedAt,
+        suppressionReason: "completed",
+      },
+    });
+  });
+});

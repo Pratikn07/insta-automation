@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const findFirst = vi.fn();
+const suppressRecoveriesForCompletion = vi.fn();
 vi.mock("../lib/prisma.js", () => ({
   prisma: { conversation: { findFirst } },
 }));
+vi.mock("./dmRecoveryService.js", () => ({ suppressRecoveriesForCompletion }));
 
-const { findLatestIncompleteConversation, hasCompletedKeyword } = await import(
+const { findLatestIncompleteConversation, hasCompletedKeyword, markCompleted } = await import(
   "./conversationService.js"
 );
 
@@ -28,21 +30,6 @@ describe("findLatestIncompleteConversation", () => {
   });
 });
 
-// WHY THIS TEST EXISTS.
-//
-// hasCompletedKeyword is the duplicate-delivery chokepoint, and it dedupes on
-// keywordId — NOT on the keyword WORD. That distinction used to be invisible
-// because SLEEP was a single global row: a user who commented SLEEP on six reels
-// hit one keywordId and got one guide.
-//
-// Now that a word can exist as one row PER POST, the same code means something
-// different: six SLEEP rows are six keywordIds, so that user receives each post's
-// guide. That is the intended behaviour (decision: different posts, different
-// content) — measured at ~50 users per 90 days.
-//
-// Nothing in the codebase would break if someone "fixed" this by matching on the
-// word instead; it would just silently withhold guides. These tests pin the
-// semantics so that change fails loudly.
 describe("hasCompletedKeyword", () => {
   beforeEach(() => findFirst.mockReset());
 
@@ -57,16 +44,13 @@ describe("hasCompletedKeyword", () => {
       keywordId: "kw-sleep-postA",
       state: "completed",
     });
-    // A `keyword` filter here would mean per-WORD dedupe — the regression.
     expect(where).not.toHaveProperty("keyword");
   });
 
   it("treats the same word on two posts as two separate guides", async () => {
-    // Completed on post A...
     findFirst.mockResolvedValueOnce({ id: "convo-1" });
     expect(await hasCompletedKeyword("user-1", "kw-sleep-postA")).toBe(true);
 
-    // ...but post B's SLEEP is a different keywordId, so it is still deliverable.
     findFirst.mockResolvedValueOnce(null);
     expect(await hasCompletedKeyword("user-1", "kw-sleep-postB")).toBe(false);
   });
@@ -75,5 +59,53 @@ describe("hasCompletedKeyword", () => {
     findFirst.mockResolvedValue({ id: "convo-1" });
 
     expect(await hasCompletedKeyword("user-1", "kw-sleep-postA")).toBe(true);
+  });
+});
+
+describe("markCompleted", () => {
+  const conversationUpdate = vi.fn();
+  const gateQueueUpdateMany = vi.fn();
+
+  beforeEach(async () => {
+    findFirst.mockReset();
+    conversationUpdate.mockReset();
+    gateQueueUpdateMany.mockReset();
+    suppressRecoveriesForCompletion.mockReset();
+
+    const { prisma } = await import("../lib/prisma.js");
+    (prisma as any).$transaction = vi.fn(async (fn: Function) =>
+      fn({
+        conversation: { update: conversationUpdate },
+        gateQueue: { updateMany: gateQueueUpdateMany },
+      }),
+    );
+  });
+
+  it("completes conversation, abandons pending gate queue rows, and suppresses recoveries", async () => {
+    conversationUpdate.mockResolvedValue({
+      id: "convo-1",
+      igUserId: "ig-1",
+      keywordId: "kw-1",
+      state: "completed",
+    });
+
+    await markCompleted("convo-1");
+
+    expect(conversationUpdate).toHaveBeenCalledWith({
+      where: { id: "convo-1" },
+      data: expect.objectContaining({ state: "completed", completedAt: expect.any(Date) }),
+    });
+    expect(gateQueueUpdateMany).toHaveBeenCalledWith({
+      where: { conversationId: "convo-1", status: "pending" },
+      data: { status: "abandoned", lastError: "conversation_completed" },
+    });
+    expect(suppressRecoveriesForCompletion).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        conversationId: "convo-1",
+        igUserId: "ig-1",
+        keywordId: "kw-1",
+      }),
+    );
   });
 });
