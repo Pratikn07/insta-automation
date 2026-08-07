@@ -2,12 +2,21 @@ import type { CommentValue } from "../types/meta.js";
 import { extractCandidates, findKeywordForComment } from "../services/keywordService.js";
 import { openConversation, markGated } from "../services/conversationService.js";
 import { replyToComment } from "../meta/replyToComment.js";
-import { sendTrackedPrivateReply } from "../services/dmDeliveryService.js";
+import { sendTrackedPrivateReply, type TrackedPrivateReplyReceipt } from "../services/dmDeliveryService.js";
 import { logger } from "../lib/logger.js";
 import { logEvent, describeGraphError } from "../services/eventLogger.js";
 import { rememberUsername } from "../services/igUserService.js";
 import { enqueueGate } from "../services/gateQueueService.js";
 import { env } from "../config/env.js";
+import {
+  classifyPrivateGateFailure,
+  parseGraphSignatures,
+} from "../services/graphErrorClassifier.js";
+import {
+  scheduleAcceptedGateRecovery,
+  scheduleSettingsBlockedRecovery,
+  scheduleTrackingUnavailableRecovery,
+} from "../services/dmRecoveryService.js";
 
 /**
  * Human-readable scope for a media-attached keyword, from the webhook's
@@ -123,40 +132,105 @@ export async function handleComment(comment: CommentValue): Promise<void> {
     });
   }
 
+  let receipt: TrackedPrivateReplyReceipt;
   try {
-    // A private reply is addressed by comment_id but lands in the commenter's DM
-    // thread, so it is recorded against the user rather than the comment.
-    await sendTrackedPrivateReply({
+    receipt = await sendTrackedPrivateReply({
       recipientIgUserId: senderId,
       commentId: comment.id,
       text: keyword.gateMessage,
       source: "keyword_automation",
     });
-    // Stamp gatedAt so the DONE-window is measured from delivery (consistent with
-    // the retry path). markGated keeps state awaiting_done + sets gatedAt=now.
-    await markGated(convo.id);
-    await logEvent("dm_sent", { conversationId: convo.id, kind: "gate" });
-  } catch (err) {
-    // This is the gate private reply — the call that fails with subcode 2534025.
-    // Capture the closed safe descriptor plus parentId/commentId, tied to the
-    // conversation so it surfaces in the Conversations timeline.
-    const detail = describeGraphError(err);
-    log.warn(detail, "Gate private reply failed");
+  } catch (error) {
+    const metadata = describeGraphError(error);
+    const classification = classifyPrivateGateFailure(
+      metadata,
+      parseGraphSignatures(env.DM_RECOVERY_SETTINGS_BLOCKED_SIGNATURES),
+    );
     await logEvent("dm_failed", {
       conversationId: convo.id,
       stage: "gate_private_reply",
       commentId: comment.id,
       parentId: comment.parent_id ?? null,
-      ...detail,
+      classification,
+      ...metadata,
     });
-    // Remember it so the retry worker can re-attempt within the 7-day window —
-    // this is what recovers the comment-only users the rate limit otherwise loses.
+    if (classification === "settings_blocked") {
+      try {
+        await scheduleSettingsBlockedRecovery({
+          conversationId: convo.id,
+          igUserId: senderId,
+          keywordId: keyword.id,
+          keywordSnapshot: keyword.keyword,
+          commentId: comment.id,
+          mediaId: comment.media?.id ?? null,
+          rejectedAt: new Date(),
+        });
+      } catch {
+        await logEvent("dm_recovery_schedule_failed", {
+          conversationId: convo.id,
+          commentId: comment.id,
+          triggerKind: "settings_blocked",
+        });
+      }
+      return;
+    }
     await enqueueGate({
       conversationId: convo.id,
       igUserId: senderId,
       commentId: comment.id,
+      mediaId: comment.media?.id ?? null,
       gateMessage: keyword.gateMessage,
-      lastError: detail.category,
+      lastError: metadata.category,
+      initialErrorCategory: classification,
+    });
+    if (classification === "uncertain") {
+      try {
+        await scheduleTrackingUnavailableRecovery({
+          conversationId: convo.id,
+          igUserId: senderId,
+          keywordId: keyword.id,
+          keywordSnapshot: keyword.keyword,
+          commentId: comment.id,
+          mediaId: comment.media?.id ?? null,
+        });
+      } catch {
+        await logEvent("dm_recovery_schedule_failed", {
+          conversationId: convo.id,
+          commentId: comment.id,
+          triggerKind: "tracking_unavailable",
+        });
+      }
+    }
+    return;
+  }
+
+  await logEvent("dm_sent", { conversationId: convo.id, kind: "gate" });
+
+  const [gateStateResult, recoveryResult] = await Promise.allSettled([
+    markGated(convo.id),
+    scheduleAcceptedGateRecovery({
+      conversationId: convo.id,
+      igUserId: senderId,
+      keywordId: keyword.id,
+      keywordSnapshot: keyword.keyword,
+      commentId: comment.id,
+      mediaId: comment.media?.id ?? null,
+      gateDmMessageId: receipt.dmMessageId,
+      instagramGateMessageId: receipt.instagramMessageId,
+      acceptedAt: receipt.acceptedAt,
+    }),
+  ]);
+  if (gateStateResult.status === "rejected") {
+    await logEvent("gate_state_reconciliation_failed", {
+      conversationId: convo.id,
+      commentId: comment.id,
+    });
+  }
+  if (recoveryResult.status === "rejected") {
+    await logEvent("dm_recovery_schedule_failed", {
+      conversationId: convo.id,
+      commentId: comment.id,
+      triggerKind: "no_confirmed_read",
     });
   }
 }
