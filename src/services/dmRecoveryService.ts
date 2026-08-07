@@ -640,6 +640,39 @@ export async function suppressRecoveriesForCompletion(
   );
 }
 
+/**
+ * Suppress on completion without letting the attempt escape as an exception.
+ *
+ * Call this from the completion path. `suppressRecoveriesForCompletion` itself
+ * must not be run inside the caller's completion transaction: a failure there
+ * rolls back the completion and the gate abandon, so the gate worker re-sends
+ * "reply DONE to unlock" to someone who already has the guide.
+ *
+ * Dropping the suppression is the safe failure. The recovery worker re-runs the
+ * full policy in its final pre-send transaction, where `conversationCompletedAt`
+ * suppresses the row before any public comment is posted.
+ */
+export async function suppressRecoveriesForCompletionSafely(input: {
+  conversationId: string;
+  igUserId: string;
+  keywordId: string;
+  completedAt: Date;
+}): Promise<void> {
+  try {
+    await prisma.$transaction((tx) => suppressRecoveriesForCompletion(tx, input));
+  } catch {
+    recordRecoveryDatabaseFailure();
+    logger.error(
+      {
+        errorCode: "dm_recovery_completion_suppression_failed",
+        conversationId: input.conversationId,
+        igUserId: input.igUserId,
+      },
+      "Failed to suppress recovery on journey completion",
+    );
+  }
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 /**

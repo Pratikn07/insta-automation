@@ -774,9 +774,9 @@ describe("recordRecoveryInbound", () => {
 // ── suppressRecoveriesForCompletion ──────────────────────────────────────
 
 describe("suppressRecoveriesForCompletion", () => {
-  // Runs inside the completion transaction, so it must be bulk statements
-  // rather than a read plus a per-row update loop: an N+1 here holds the
-  // completion transaction open for as long as the person has history.
+  // Runs in its own transaction, so it must be bulk statements rather than a
+  // read plus a per-row update loop: an N+1 here holds that transaction open
+  // for as long as the person has history.
   function txWith(updateManyFn: ReturnType<typeof vi.fn>) {
     return { dmRecoveryReminder: { updateMany: updateManyFn } } as any;
   }
@@ -864,6 +864,41 @@ describe("suppressRecoveriesForCompletion", () => {
 
     expect(findManyFn).not.toHaveBeenCalled();
     expect(updateFn).not.toHaveBeenCalled();
+  });
+});
+
+// The completion path must never be able to fail because of this bookkeeping.
+// Dropping the suppression is safe: the worker re-runs the full policy in its
+// final pre-send transaction, where conversationCompletedAt suppresses the row
+// before any public comment is posted.
+describe("suppressRecoveriesForCompletionSafely", () => {
+  const input = {
+    conversationId: "convo-1",
+    igUserId: "ig-1",
+    keywordId: "kw-1",
+    completedAt: new Date("2026-08-06T15:00:00Z"),
+  };
+
+  it("swallows a database failure instead of propagating it", async () => {
+    $transaction.mockRejectedValueOnce(new Error("relation does not exist"));
+    const { suppressRecoveriesForCompletionSafely } = await import("./dmRecoveryService.js");
+
+    await expect(suppressRecoveriesForCompletionSafely(input)).resolves.toBeUndefined();
+    expect(loggerError).toHaveBeenCalledWith(
+      expect.objectContaining({ errorCode: "dm_recovery_completion_suppression_failed" }),
+      expect.any(String),
+    );
+  });
+
+  it("opens its own transaction rather than joining the caller's", async () => {
+    $transaction.mockImplementationOnce(async (fn: Function) =>
+      fn({ dmRecoveryReminder: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) } }),
+    );
+    const { suppressRecoveriesForCompletionSafely } = await import("./dmRecoveryService.js");
+
+    await suppressRecoveriesForCompletionSafely(input);
+
+    expect($transaction).toHaveBeenCalledTimes(1);
   });
 });
 
