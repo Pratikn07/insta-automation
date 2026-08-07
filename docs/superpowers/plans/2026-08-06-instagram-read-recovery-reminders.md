@@ -13,7 +13,6 @@
 ## Global Constraints
 
 - Implement only prospective comment-origin keyword journeys. Do not backfill historical `No reply` rows.
-- Do not infer whether a person is South Asian—or any ethnicity, nationality, or origin—from names, scripts, profile data, or content. No identity-based eligibility filter belongs in this feature.
 - Treat `messaging_seen` and engagement as positive suppression evidence. Absence of those signals means **No confirmed read**, never proof of unread delivery.
 - Use the exact approved copy:
   - No confirmed read: `I sent your guide 💛 Check your DMs/Requests. If you don’t see it, DM @tinysoho “{KEYWORD}”.`
@@ -2755,11 +2754,9 @@ rg -n 'Unread|never replied' web/src src docs/meta-verification.md README.md
 rg -n 'raw.*error|error\.message|response\.data|access_token' \
   src/services/dmRecovery* src/handlers/seenHandler.ts \
   src/handlers/reactionHandler.ts src/handlers/postbackHandler.ts
-rg -n 'South Asian|Indian|Pakistani|ethnicity|national origin|name classifier' \
-  src web/src prisma README.md docs/meta-verification.md
 ```
 
-Expected: `Unread` appears only inside the approved uncertainty tooltip sentence if capitalization happens to match; `never replied` is removed from journey outcome copy; no recovery logger exposes raw provider/token data; no identity-based targeting logic was added.
+Expected: `Unread` appears only inside the approved uncertainty tooltip sentence if capitalization happens to match; `never replied` is removed from journey outcome copy; and no recovery logger exposes raw provider/token data.
 
 - [ ] **Step 5: Audit every approved behavior against live code**
 
