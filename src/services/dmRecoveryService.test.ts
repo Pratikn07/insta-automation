@@ -172,6 +172,19 @@ describe("scheduleAcceptedGateRecovery", () => {
     expect(result).toEqual({ id: "row-1", status: "waiting" });
   });
 
+  // Recovery posts its reply on the source comment, so a journey that began in
+  // the DMs has nowhere to post. Such a request must be rejected outright
+  // rather than persisted with a blank comment id.
+  it.each([
+    ["an empty string", ""],
+    ["whitespace only", "   "],
+  ])("rejects a DM-origin request whose commentId is %s", async (_label, commentId) => {
+    await expect(
+      scheduleAcceptedGateRecovery({ ...ACCEPTED_INPUT, commentId }),
+    ).rejects.toThrow("invalid_comment_origin");
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
   it("replays of the same commentId return the existing row without mutation", async () => {
     upsert.mockResolvedValue({
       id: "existing-row",
@@ -282,6 +295,28 @@ describe("scheduleAcceptedGateRecovery", () => {
     );
   });
 
+  // Enabling post-experiment treatment applies to newly created rows only. A
+  // person already stored as control stays control forever, otherwise flipping
+  // the flag would retroactively rewrite the holdout and destroy the
+  // experiment's counterfactual.
+  it("does not release an already stored control row when post-experiment is enabled", async () => {
+    envMock.DM_RECOVERY_POST_EXPERIMENT_ENABLED = true as any;
+    assignRecoveryCohortMock.mockReturnValue("treatment");
+    upsert.mockResolvedValue({
+      id: "stored-control-row",
+      status: "control",
+      cohort: "control",
+    });
+
+    const result = await scheduleAcceptedGateRecovery({
+      ...ACCEPTED_INPUT,
+      acceptedAt: new Date("2026-08-20T08:00:00Z"),
+    });
+
+    expect(result).toEqual({ id: "stored-control-row", status: "control" });
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({ update: {} }));
+  });
+
   it("routes to tracking_unavailable when instagramGateMessageId is null", async () => {
     const noMidInput = {
       ...ACCEPTED_INPUT,
@@ -369,6 +404,13 @@ describe("scheduleSettingsBlockedRecovery", () => {
     );
   });
 
+  it("rejects a DM-origin request with no commentId", async () => {
+    await expect(
+      scheduleSettingsBlockedRecovery({ ...SETTINGS_INPUT, commentId: "" }),
+    ).rejects.toThrow("invalid_comment_origin");
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
   it("never enters control — cohort is always not_applicable", async () => {
     await scheduleSettingsBlockedRecovery(SETTINGS_INPUT);
 
@@ -399,6 +441,13 @@ describe("scheduleSettingsBlockedRecovery", () => {
 // ── scheduleTrackingUnavailableRecovery ──────────────────────────────────
 
 describe("scheduleTrackingUnavailableRecovery", () => {
+  it("rejects a DM-origin request with no commentId", async () => {
+    await expect(
+      scheduleTrackingUnavailableRecovery({ ...TRACKING_INPUT, commentId: "" }),
+    ).rejects.toThrow("invalid_comment_origin");
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
   it("creates tracking_unavailable with far-future eligibleAt and no acceptedAt", async () => {
     const result = await scheduleTrackingUnavailableRecovery(TRACKING_INPUT);
 

@@ -71,16 +71,22 @@ describe("DM recovery policy", () => {
       isSourceCommentAvailable: true,
     };
 
+    // The reason matters as much as the kind. A finalized row that was never
+    // read must not be labelled "seen": absence of a read signal is never
+    // evidence of a read, and the reason is what feeds experiment denominators
+    // and the dashboard.
     it.each([
-      "sent",
-      "send_failed",
-      "send_uncertain",
-      "sending",
-      "suppressed",
-      "cancelled",
-    ])("prevents re-evaluation for terminal status %s", (status) => {
-      const res = decideRecovery({ ...baseInput, status });
-      expect(res.kind).toBe("suppress");
+      ["sent", "already_finalized"],
+      ["send_failed", "already_finalized"],
+      ["send_uncertain", "already_finalized"],
+      ["sending", "already_finalized"],
+      ["suppressed", "already_finalized"],
+      ["cancelled", "owner_cancelled"],
+    ])("suppresses terminal status %s without inventing read evidence", (status, reason) => {
+      expect(decideRecovery({ ...baseInput, status, seenAt: null, engagedAt: null })).toEqual({
+        kind: "suppress",
+        reason,
+      });
     });
 
     it("prevents re-evaluation for terminal status control", () => {

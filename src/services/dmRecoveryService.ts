@@ -53,6 +53,24 @@ export type PersonEvidence = {
   receivedAt: Date;
 };
 
+// ── Guards ───────────────────────────────────────────────────────────────
+
+/**
+ * Recovery is comment-origin only. The public reply is posted on the source
+ * comment, so a journey that began in the DMs has nowhere to post — such a
+ * request must be rejected rather than persisted with a blank comment id,
+ * which would also collide on the unique `comment_id` index.
+ */
+function requireCommentOrigin(commentId: string | null | undefined): string {
+  const trimmed = commentId?.trim() ?? "";
+  if (!trimmed) {
+    throw new Error(
+      "invalid_comment_origin: commentId is required — recovery is comment-origin only",
+    );
+  }
+  return trimmed;
+}
+
 // ── Experiment / cohort assignment ───────────────────────────────────────
 
 type CohortDecision = {
@@ -117,6 +135,8 @@ function decideExperimentCohort(
 export async function scheduleAcceptedGateRecovery(
   input: AcceptedGateRecoveryInput,
 ): Promise<{ id: string; status: DmRecoveryStatus }> {
+  const commentId = requireCommentOrigin(input.commentId);
+
   // A null instagramGateMessageId means we can never correlate read receipts.
   if (!input.instagramGateMessageId) {
     return scheduleTrackingUnavailableRecovery({
@@ -124,7 +144,7 @@ export async function scheduleAcceptedGateRecovery(
       igUserId: input.igUserId,
       keywordId: input.keywordId,
       keywordSnapshot: input.keywordSnapshot,
-      commentId: input.commentId,
+      commentId,
       mediaId: input.mediaId,
     });
   }
@@ -145,7 +165,7 @@ export async function scheduleAcceptedGateRecovery(
     keywordSnapshot: input.keywordSnapshot,
     templateVersion: RECOVERY_TEMPLATE_VERSION,
     publicReplyText,
-    commentId: input.commentId,
+    commentId,
     mediaId: input.mediaId,
     gateDmMessageId: input.gateDmMessageId,
     instagramGateMessageId: input.instagramGateMessageId,
@@ -158,7 +178,7 @@ export async function scheduleAcceptedGateRecovery(
   };
 
   const row = await prisma.dmRecoveryReminder.upsert({
-    where: { commentId: input.commentId },
+    where: { commentId },
     create: createData,
     update: {},
   });
@@ -180,6 +200,7 @@ export async function scheduleAcceptedGateRecovery(
 export async function scheduleSettingsBlockedRecovery(
   input: SettingsBlockedRecoveryInput,
 ): Promise<{ id: string; status: DmRecoveryStatus }> {
+  const commentId = requireCommentOrigin(input.commentId);
   const publicReplyText = renderRecoveryCopy("settings_blocked", input.keywordSnapshot);
 
   const createData = {
@@ -189,7 +210,7 @@ export async function scheduleSettingsBlockedRecovery(
     keywordSnapshot: input.keywordSnapshot,
     templateVersion: RECOVERY_TEMPLATE_VERSION,
     publicReplyText,
-    commentId: input.commentId,
+    commentId,
     mediaId: input.mediaId,
     gateDmMessageId: null,
     instagramGateMessageId: null,
@@ -202,7 +223,7 @@ export async function scheduleSettingsBlockedRecovery(
   };
 
   const row = await prisma.dmRecoveryReminder.upsert({
-    where: { commentId: input.commentId },
+    where: { commentId },
     create: createData,
     update: {},
   });
@@ -224,6 +245,7 @@ export async function scheduleSettingsBlockedRecovery(
 export async function scheduleTrackingUnavailableRecovery(
   input: TrackingUnavailableRecoveryInput,
 ): Promise<{ id: string; status: "tracking_unavailable" }> {
+  const commentId = requireCommentOrigin(input.commentId);
   const publicReplyText = renderRecoveryCopy("no_confirmed_read", input.keywordSnapshot);
 
   // Far-future eligibleAt ensures automatic worker never selects this.
@@ -236,7 +258,7 @@ export async function scheduleTrackingUnavailableRecovery(
     keywordSnapshot: input.keywordSnapshot,
     templateVersion: RECOVERY_TEMPLATE_VERSION,
     publicReplyText,
-    commentId: input.commentId,
+    commentId,
     mediaId: input.mediaId,
     gateDmMessageId: null,
     instagramGateMessageId: null,
@@ -249,7 +271,7 @@ export async function scheduleTrackingUnavailableRecovery(
   };
 
   const row = await prisma.dmRecoveryReminder.upsert({
-    where: { commentId: input.commentId },
+    where: { commentId },
     create: createData,
     update: {},
   });
@@ -258,7 +280,7 @@ export async function scheduleTrackingUnavailableRecovery(
     {
       eventCode: "dm_recovery_tracking_unavailable",
       id: row.id,
-      commentId: input.commentId,
+      commentId,
     },
     "Recovery reminder created (tracking unavailable)",
   );

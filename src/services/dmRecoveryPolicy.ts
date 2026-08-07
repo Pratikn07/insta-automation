@@ -16,6 +16,11 @@ export type RecoverySuppressionReason =
   | "newer_candidate"
   | "source_unavailable"
   | "tracking_unavailable"
+  // The row already reached a terminal state, so there is nothing left to
+  // decide. Distinct from the evidence reasons on purpose: a finalized row
+  // carries no claim about whether the person ever read the DM, and callers
+  // must not overwrite the reason already stored on the row.
+  | "already_finalized"
   | "owner_cancelled";
 
 export type RecoveryDecision =
@@ -108,15 +113,16 @@ export function decideRecovery(input: RecoveryPolicyInput): RecoveryDecision {
     if (input.status === "cancelled" || input.cancelledAt) {
       return { kind: "suppress", reason: "owner_cancelled" };
     }
-    // Already in a terminal state; suppress generically using the closest reason
     if (input.status === "tracking_unavailable") {
       return { kind: "suppress", reason: "tracking_unavailable" };
     }
     if (input.status === "control") {
       return { kind: "holdout" };
     }
-    // sent, send_failed, send_uncertain, sending, suppressed
-    return { kind: "suppress", reason: "seen" };
+    // sent, send_failed, send_uncertain, sending, suppressed. Never report a
+    // read/engagement reason here — the row may have been finalized for reasons
+    // that have nothing to do with the person opening the DM.
+    return { kind: "suppress", reason: "already_finalized" };
   }
 
   // Owner cancellation (even without a terminal status row)
