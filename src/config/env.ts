@@ -148,7 +148,12 @@ export const envSchema = z.object({
           .map((part) => part.trim())
           .filter((part) => part.length > 0)
           .every((part) => /^\d+:\d+$/.test(part)),
-      { message: "must be comma-separated code:subcode pairs, e.g. \"100:2534025\"" },
+      {
+        // Deliberately a placeholder shape rather than a real pair. The obvious
+        // real example — 100:2534025 — is the one pair docs/meta-verification.md
+        // says never to allowlist, and an error message is a copy-paste target.
+        message: 'must be comma-separated code:subcode pairs, e.g. "123:456"',
+      },
     ),
   DM_RECOVERY_HEALTH_SAMPLE_SIZE: z.coerce.number().int().min(10).max(500).default(50),
   DM_RECOVERY_FAILURE_RATE_PERCENT: z.coerce.number().int().min(1).max(100).default(50),

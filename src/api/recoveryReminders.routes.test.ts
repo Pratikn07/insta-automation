@@ -167,14 +167,27 @@ describe("GET /", () => {
     expect(getIgUsers).toHaveBeenCalledWith(["ig-1", "ig-2"]);
   });
 
-  it("pages with limit + 1 and returns the next cursor", async () => {
+  // Prisma's `skip: 1` steps over the cursor row, so the cursor must be the LAST
+  // row of THIS page. Pointing it at the extra limit+1 row made the next page
+  // start after that row and drop it — one lost record per page boundary.
+  it("pages with limit + 1 and hands back the last row of this page", async () => {
     findMany.mockResolvedValue([row({ id: "a" }), row({ id: "b" }), row({ id: "c" })]);
 
     const res = await request(makeApp()).get("/api/recovery-reminders?limit=2");
 
     expect(findMany.mock.calls[0]![0].take).toBe(3);
-    expect(res.body.rows).toHaveLength(2);
-    expect(res.body.nextCursor).toBe("c");
+    expect(res.body.rows.map((r: { id: string }) => r.id)).toEqual(["a", "b"]);
+    expect(res.body.nextCursor).toBe("b");
+  });
+
+  it("skips the cursor row itself so no record is lost or repeated", async () => {
+    findMany.mockResolvedValue([row({ id: "c" })]);
+
+    await request(makeApp()).get("/api/recovery-reminders?limit=2&cursor=11111111-1111-4111-8111-111111111111");
+
+    const args = findMany.mock.calls[0]![0];
+    expect(args.cursor).toEqual({ id: "11111111-1111-4111-8111-111111111111" });
+    expect(args.skip).toBe(1);
   });
 
   it("returns a null cursor on the last page", async () => {
@@ -285,23 +298,29 @@ describe("GET /:id", () => {
 describe("POST /:id/cancel", () => {
   it.each(["waiting", "control", "tracking_unavailable", "send_failed"])(
     "cancels an unsent %s item",
-    async () => {
+    async (status) => {
+      findUnique.mockResolvedValue({ id: "rec-1", status });
       updateMany.mockResolvedValue({ count: 1 });
 
       const res = await request(makeApp()).post("/api/recovery-reminders/rec-1/cancel");
 
       expect(res.status).toBe(204);
+      // Guarded on the exact status observed, not the whole cancellable set:
+      // that is what makes the logged transition provable rather than assumed.
       expect(updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({
             id: "rec-1",
-            status: { in: ["waiting", "control", "tracking_unavailable", "send_failed"] },
+            status,
             sentAt: null,
             publicReplyId: null,
           }),
         }),
       );
-      expect(logEvent).toHaveBeenCalledWith("dm_recovery_cancelled", expect.anything());
+      expect(logEvent).toHaveBeenCalledWith(
+        "dm_recovery_cancelled",
+        expect.objectContaining({ previousStatus: status, newStatus: "cancelled" }),
+      );
     },
   );
 
@@ -329,6 +348,7 @@ describe("POST /:id/cancel", () => {
 
 describe("POST /:id/mark-reviewed", () => {
   it("stamps reviewedAt without touching send status", async () => {
+    findUnique.mockResolvedValue({ id: "rec-1", status: "send_failed", reviewedAt: null });
     updateMany.mockResolvedValue({ count: 1 });
 
     const res = await request(makeApp()).post("/api/recovery-reminders/rec-1/mark-reviewed");
@@ -340,13 +360,56 @@ describe("POST /:id/mark-reviewed", () => {
     });
     expect(call.data).toEqual({ reviewedAt: expect.any(Date) });
     expect(call.data).not.toHaveProperty("status");
+    // Review is an acknowledgement, so the status it reports is the one it left
+    // in place — stated on both sides rather than left to be inferred.
+    expect(logEvent).toHaveBeenCalledWith(
+      "dm_recovery_reviewed",
+      expect.objectContaining({ previousStatus: "send_failed", newStatus: "send_failed" }),
+    );
+  });
+
+  // A second click, or a retried request, must not move the timestamp off the
+  // moment a person actually looked, and must not add a second audit entry.
+  it("is idempotent: a repeat review neither rewrites the time nor re-logs", async () => {
+    findUnique.mockResolvedValue({
+      id: "rec-1",
+      status: "send_failed",
+      reviewedAt: new Date("2026-08-06T09:00:00.000Z"),
+    });
+
+    const res = await request(makeApp()).post("/api/recovery-reminders/rec-1/mark-reviewed");
+
+    expect(res.status).toBe(204);
+    expect(updateMany).not.toHaveBeenCalled();
+    expect(logEvent).not.toHaveBeenCalled();
+  });
+
+  // Two owners clicking at once is not a conflict — both wanted it reviewed, and
+  // it is. Only the loser's write is dropped, not their intent.
+  it("succeeds for the loser of a concurrent review", async () => {
+    findUnique
+      .mockResolvedValueOnce({ id: "rec-1", status: "send_failed", reviewedAt: null })
+      .mockResolvedValueOnce({ reviewedAt: new Date() });
+    updateMany.mockResolvedValue({ count: 0 });
+
+    const res = await request(makeApp()).post("/api/recovery-reminders/rec-1/mark-reviewed");
+
+    expect(res.status).toBe(204);
+    expect(logEvent).not.toHaveBeenCalled();
   });
 
   it("returns 409 for a record that is not awaiting review", async () => {
     updateMany.mockResolvedValue({ count: 0 });
-    findUnique.mockResolvedValue({ id: "rec-1", status: "sent" });
+    findUnique.mockResolvedValue({ id: "rec-1", status: "sent", reviewedAt: null });
 
     const res = await request(makeApp()).post("/api/recovery-reminders/rec-1/mark-reviewed");
     expect(res.status).toBe(409);
+  });
+
+  it("returns 404 when the record does not exist", async () => {
+    findUnique.mockResolvedValue(null);
+
+    const res = await request(makeApp()).post("/api/recovery-reminders/rec-1/mark-reviewed");
+    expect(res.status).toBe(404);
   });
 });

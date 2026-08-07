@@ -2,7 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -39,7 +39,13 @@ function renderPage() {
 afterEach(cleanup);
 
 beforeEach(() => {
-  api.mockReset().mockResolvedValue({ items: [], nextCursor: null });
+  // The generic client serves several endpoints on this page, and they do not
+  // share a response shape — /keywords returns a bare array, the paged endpoints
+  // return an envelope. One blanket value makes whichever caller it does not fit
+  // fail somewhere unrelated.
+  api.mockReset().mockImplementation((path: string) =>
+    Promise.resolve(String(path).startsWith("/keywords") ? [] : { items: [], nextCursor: null }),
+  );
   recoveryList.mockReset().mockResolvedValue({ rows: [], nextCursor: null });
   recoveryCounts.mockReset().mockResolvedValue({
     all: { records: 21, people: 18 },
@@ -78,7 +84,9 @@ describe("Conversations recovery lens", () => {
 
     expect(await screen.findByRole("button", { name: /Ready/ })).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: /Attention/ })).toBeInTheDocument();
-    expect(await screen.findByText("18 people · 21 journeys")).toBeInTheDocument();
+    // The summary describes the tab in view, and Ready is the default. The
+    // grand total is still one click away under the All tab.
+    expect(await screen.findByText("2 people · 3 journeys")).toBeInTheDocument();
   });
 
   // The old label asserted the person chose not to answer. A journey can end
@@ -87,5 +95,38 @@ describe("Conversations recovery lens", () => {
     renderPage();
     expect(screen.getByRole("button", { name: /No confirmed reply/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^No reply/ })).not.toBeInTheDocument();
+  });
+
+  // Each lens renders one list. Fetching the others' pages costs the user data
+  // and the API load for rows that are never displayed — and the journeys query
+  // is paginated, so it kept fetching.
+  it.each([
+    ["Needs reply", "needs_reply"],
+    ["DM recovery", "recovery"],
+  ])("does not fetch journeys while viewing %s", async (label) => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole("button", { name: label }));
+    await waitFor(() => expect(api).toHaveBeenCalled());
+
+    // /conversations/counts feeds the always-visible journey filter pills and is
+    // expected on every lens; the paginated list is the one that was waste.
+    const paths = api.mock.calls.map((c) => String(c[0]));
+    expect(paths.some((p) => p.startsWith("/conversations?"))).toBe(false);
+  });
+
+  it("does fetch journeys once a journey filter selects that lens", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    // The journeys lens has no tab of its own — its filter pills select it.
+    await user.click(screen.getByRole("button", { name: /Waiting/ }));
+
+    await waitFor(() =>
+      expect(
+        api.mock.calls.map((c) => String(c[0])).some((p) => p.startsWith("/conversations?")),
+      ).toBe(true),
+    );
   });
 });

@@ -10,15 +10,33 @@ const detail = vi.fn();
 const cancel = vi.fn();
 const markReviewed = vi.fn();
 
-vi.mock("../../lib/api", () => ({
-  recoveryApi: {
-    detail: (id: string) => detail(id),
-    cancel: (id: string) => cancel(id),
-    markReviewed: (id: string) => markReviewed(id),
-  },
-}));
+// The real module reads Supabase env at import time, so importOriginal() cannot
+// run here. ApiError is declared inside the factory instead: the component and
+// this file both resolve it through the mock, so they share one class object and
+// `instanceof` behaves exactly as it does in the browser.
+vi.mock("../../lib/api", () => {
+  class ApiError extends Error {
+    status: number;
+    constructor(status: number, message: string) {
+      super(message);
+      this.status = status;
+    }
+  }
+  return {
+    ApiError,
+    recoveryApi: {
+      detail: (id: string) => detail(id),
+      cancel: (id: string) => cancel(id),
+      markReviewed: (id: string) => markReviewed(id),
+    },
+  };
+});
 
-const { DmRecoveryDrawer } = await import("./DmRecoveryDrawer");
+const { ApiError } = (await import("../../lib/api")) as unknown as {
+  ApiError: new (status: number, message: string) => Error & { status: number };
+};
+
+const { DmRecoveryDrawer, RECOVERY_CONFLICT_MESSAGE } = await import("./DmRecoveryDrawer");
 
 function makeDetail(overrides: Partial<RecoveryReminderDetail> = {}): RecoveryReminderDetail {
   return {
@@ -61,13 +79,22 @@ function makeDetail(overrides: Partial<RecoveryReminderDetail> = {}): RecoveryRe
 
 let queryClient: QueryClient;
 
-function renderDrawer(overrides: Partial<RecoveryReminderDetail> = {}) {
+function renderDrawer(
+  overrides: Partial<RecoveryReminderDetail> = {},
+  handlers: { onClose?: () => void; onOpenUser?: (id: string) => void } = {},
+) {
   detail.mockResolvedValue(makeDetail(overrides));
-  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
   vi.spyOn(queryClient, "invalidateQueries");
   return render(
     <QueryClientProvider client={queryClient}>
-      <DmRecoveryDrawer id="recovery-1" onClose={vi.fn()} />
+      <DmRecoveryDrawer
+        id="recovery-1"
+        onClose={handlers.onClose ?? vi.fn()}
+        onOpenUser={handlers.onOpenUser}
+      />
     </QueryClientProvider>,
   );
 }
@@ -188,5 +215,67 @@ describe("DmRecoveryDrawer", () => {
       await screen.findByRole("heading", { name: /@sarah/ });
       expect(screen.queryByRole("button", { name: "Mark reviewed" })).not.toBeInTheDocument();
     });
+  });
+
+  // A 409 means the worker changed the row between load and click. Retrying
+  // cannot succeed, so the owner is told the state moved and the stale view goes
+  // away — rather than being offered a button that can only fail again.
+  describe("losing a race with the worker", () => {
+    it("explains the conflict and closes instead of offering a retry", async () => {
+      const onClose = vi.fn();
+      cancel.mockRejectedValue(new ApiError(409, "conflict"));
+      renderDrawer({ status: "waiting" }, { onClose });
+
+      await userEvent.click(await screen.findByRole("button", { name: /cancel reminder/i }));
+      await userEvent.click(screen.getByRole("button", { name: /yes, cancel it/i }));
+
+      expect(await screen.findByText(RECOVERY_CONFLICT_MESSAGE)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /try again/i })).not.toBeInTheDocument();
+      await waitFor(() => expect(queryClient.invalidateQueries).toHaveBeenCalled());
+      await waitFor(() => expect(onClose).toHaveBeenCalled(), { timeout: 3000 });
+    });
+
+    it("keeps a non-conflict failure retryable without closing", async () => {
+      const onClose = vi.fn();
+      cancel.mockRejectedValue(new ApiError(500, "boom"));
+      renderDrawer({ status: "waiting" }, { onClose });
+
+      await userEvent.click(await screen.findByRole("button", { name: /cancel reminder/i }));
+      await userEvent.click(screen.getByRole("button", { name: /yes, cancel it/i }));
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(/couldn’t complete that action/i);
+      expect(screen.getByRole("button", { name: /try again/i })).toBeInTheDocument();
+      expect(screen.queryByText(RECOVERY_CONFLICT_MESSAGE)).not.toBeInTheDocument();
+      expect(onClose).not.toHaveBeenCalled();
+    });
+
+    // Raw provider text is never shown: a 409 body could carry anything.
+    it("never renders the server's error text", async () => {
+      cancel.mockRejectedValue(new ApiError(500, "PGRST-INTERNAL-SENTINEL"));
+      renderDrawer({ status: "waiting" });
+
+      await userEvent.click(await screen.findByRole("button", { name: /cancel reminder/i }));
+      await userEvent.click(screen.getByRole("button", { name: /yes, cancel it/i }));
+
+      await screen.findByRole("alert");
+      expect(document.body.textContent).not.toContain("PGRST-INTERNAL-SENTINEL");
+    });
+  });
+
+  it("offers the user journey when the page can show one", async () => {
+    const onOpenUser = vi.fn();
+    renderDrawer({}, { onOpenUser });
+
+    await userEvent.click(await screen.findByRole("button", { name: /view user journey/i }));
+
+    expect(onOpenUser).toHaveBeenCalledWith("ig-1");
+  });
+
+  // Silently dropping the link left no way to tell "there is no post" from "we
+  // failed to render one".
+  it("says the original post is unavailable rather than omitting it", async () => {
+    renderDrawer({ media: { id: null, permalink: null, caption: null } });
+
+    expect(await screen.findByText(/original post unavailable/i)).toBeInTheDocument();
   });
 });

@@ -197,6 +197,44 @@ describe("runDmRecoveryTick pacing and reentrancy", () => {
     expect(res.sent).toBe(5);
   });
 
+  // listDueRecoveryIds returns headroom above the batch so a suppressed row does
+  // not consume a send slot. Without a cap here that headroom becomes extra
+  // public comments — a configured batch of 5 posting up to 15.
+  it("never sends more than the configured batch, even with due headroom", async () => {
+    listDueRecoveryIds.mockResolvedValue(
+      Array.from({ length: 15 }, (_, i) => `rec-${i}`),
+    );
+    claimRecovery.mockImplementation(async (id: string) => claimedRow({ id }));
+    authorizeClaimForSend.mockResolvedValue({ kind: "send_no_confirmed_read_reminder" });
+    replyToComment.mockResolvedValue({ replyId: "pub" });
+
+    const res = await runDmRecoveryTick();
+
+    expect(replyToComment).toHaveBeenCalledTimes(5);
+    expect(res.sent).toBe(5);
+  });
+
+  // A finalizer returning false means the durable write did not happen, so
+  // counting the outcome would make the metrics disagree with the table.
+  it.each([
+    ["a permanent failure", () => graphError(400, 100), () => markRecoveryFailed],
+    ["an uncertain outcome", () => graphError(500, 2), () => markRecoveryUncertain],
+  ])("does not count %s that failed to persist", async (_l, mkErr, getFn) => {
+    listDueRecoveryIds.mockResolvedValue(["rec-1"]);
+    claimRecovery.mockResolvedValue(claimedRow());
+    authorizeClaimForSend.mockResolvedValue({ kind: "send_no_confirmed_read_reminder" });
+    replyToComment.mockRejectedValue(mkErr());
+    getFn().mockResolvedValue(false);
+
+    const res = await runDmRecoveryTick();
+
+    expect(res.failed + res.uncertain).toBe(0);
+    expect(logEvent).toHaveBeenCalledWith(
+      "dm_recovery_finalize_failed",
+      expect.anything(),
+    );
+  });
+
   it("does not run two ticks concurrently", async () => {
     let openGate!: (ids: string[]) => void;
     const gate = new Promise<string[]>((resolve) => {

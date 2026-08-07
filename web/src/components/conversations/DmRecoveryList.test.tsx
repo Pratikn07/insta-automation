@@ -9,8 +9,11 @@ import type { RecoveryReminderRow } from "../../lib/types";
 const list = vi.fn();
 const counts = vi.fn();
 const metrics = vi.fn();
+const apiGet = vi.fn();
 
 vi.mock("../../lib/api", () => ({
+  // The keyword filter's options come from the generic client, not recoveryApi.
+  api: (path: string) => apiGet(path),
   recoveryApi: {
     list: (...a: unknown[]) => list(...a),
     counts: () => counts(),
@@ -60,6 +63,48 @@ const COUNTS = {
 
 const HEALTHY = { health: { circuitOpen: false, reason: null, dueCount: 3 } };
 
+const cohortSummary = {
+  eligiblePeople: 40,
+  eligibleJourneys: 44,
+  repliedWithin24h: 10,
+  repliedWithin48h: 12,
+  completedWithin24h: 8,
+  completedWithin48h: 10,
+  completionRate48h: 25,
+};
+
+const METRICS = {
+  ...HEALTHY,
+  experiment: {
+    version: "v1",
+    startAt: null,
+    endAt: null,
+    treatment: { ...cohortSummary, completionRate48h: 31.5, sent: 30 },
+    control: { ...cohortSummary, withheld: 4 },
+    absoluteLiftPercentagePoints: 6.5,
+    relativeLiftPercent: 26,
+    medianReminderToReplyMinutes: 42,
+    byKeyword: [],
+  },
+  accuracy: {
+    eventualRepliers: 12,
+    eventualRepliersWithPriorSeen: 3,
+    readEventCoverage: 61.2,
+    sent: 30,
+    laterSeen: 9,
+    laterEngaged: 7,
+    laterCompleted: 5,
+    delayedPreSendSignalFalsePositives: 0,
+    withoutLaterPositiveEvidence: 18,
+    uncertain: 1,
+    duplicateAttempts: 0,
+    cooldownSuppressions: 2,
+    staleLeases: 0,
+    failed: 1,
+    settingsClassifierMatches: 4,
+  },
+};
+
 function renderList() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -76,7 +121,11 @@ afterEach(cleanup);
 beforeEach(() => {
   list.mockReset().mockResolvedValue({ rows: [row()], nextCursor: null });
   counts.mockReset().mockResolvedValue(COUNTS);
-  metrics.mockReset().mockResolvedValue(HEALTHY);
+  apiGet.mockReset().mockResolvedValue([
+    { id: "kw-1", keyword: "SLEEP" },
+    { id: "kw-2", keyword: "CALM" },
+  ]);
+  metrics.mockReset().mockResolvedValue(METRICS);
 });
 
 describe("DmRecoveryList", () => {
@@ -89,7 +138,7 @@ describe("DmRecoveryList", () => {
 
   it("summarises people and journeys separately", async () => {
     renderList();
-    expect(await screen.findByText("18 people · 21 journeys")).toBeInTheDocument();
+    expect(await screen.findByText("2 people · 3 journeys")).toBeInTheDocument();
   });
 
   // The product's central claim. Meta exposes no unread signal, so a due row
@@ -152,7 +201,7 @@ describe("DmRecoveryList", () => {
 
   it("hides the banner when the circuit is closed", async () => {
     renderList();
-    await screen.findByText("18 people · 21 journeys");
+    await screen.findByText("2 people · 3 journeys");
     expect(screen.queryByText(CIRCUIT_PAUSED_MESSAGE)).not.toBeInTheDocument();
   });
 
@@ -163,5 +212,84 @@ describe("DmRecoveryList", () => {
     });
     renderList();
     expect(await screen.findByText("ig-1")).toBeInTheDocument();
+  });
+
+  // The experiment is measured in people and the queue is worked in journeys.
+  // A tab showing one number cannot say which it means.
+  it("carries both people and journeys on every status tab", async () => {
+    renderList();
+
+    expect(
+      await screen.findByRole("button", { name: "Scheduled: 6 people, 6 journeys" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Ready: 2 people, 3 journeys" })).toBeInTheDocument();
+  });
+
+  describe("filters", () => {
+    it("narrows the query by keyword and cohort", async () => {
+      renderList();
+      // The select renders before its options arrive, so waiting for the
+      // combobox alone races the keyword fetch.
+      await screen.findByRole("option", { name: "CALM" });
+
+      await userEvent.selectOptions(screen.getByRole("combobox", { name: /keyword/i }), "kw-2");
+      await waitFor(() => expect(list).toHaveBeenCalledWith(expect.stringContaining("keywordId=kw-2")));
+
+      await userEvent.selectOptions(screen.getByRole("combobox", { name: /cohort/i }), "control");
+      await waitFor(() => expect(list).toHaveBeenCalledWith(expect.stringContaining("cohort=control")));
+    });
+
+    // A filtered result under the previous filter's badge is the same lie as the
+    // wrong tab's rows, so the filters have to be part of the cache key.
+    it("does not show the unfiltered rows under a filter", async () => {
+      list.mockReset();
+      list.mockResolvedValueOnce({ rows: [row({ id: "unfiltered", username: "before" })], nextCursor: null });
+      list.mockResolvedValue({ rows: [row({ id: "filtered", username: "after" })], nextCursor: null });
+
+      renderList();
+      await screen.findByText("@before");
+
+      await userEvent.selectOptions(screen.getByRole("combobox", { name: /cohort/i }), "control");
+
+      expect(await screen.findByText("@after")).toBeInTheDocument();
+      expect(screen.queryByText("@before")).not.toBeInTheDocument();
+    });
+  });
+
+  // The cohort split costs real reminders that are deliberately withheld. If the
+  // comparison is never displayed, that cost buys nothing.
+  it("renders the experiment comparison, not just the health banner", async () => {
+    renderList();
+
+    expect(await screen.findByText(/treatment 48h/i)).toBeInTheDocument();
+    expect(screen.getByText(/control 48h/i)).toBeInTheDocument();
+    expect(screen.getByText(/lift/i)).toBeInTheDocument();
+  });
+
+  // A rate nobody has enough data for is not a rate of zero, and an experiment
+  // readout that rounds the difference away is worse than no readout.
+  it("shows an absent rate as absent rather than as zero", async () => {
+    metrics.mockResolvedValue({
+      ...METRICS,
+      experiment: {
+        ...METRICS.experiment,
+        treatment: { ...METRICS.experiment.treatment, completionRate48h: null },
+        absoluteLiftPercentagePoints: null,
+      },
+    });
+    renderList();
+
+    await screen.findByText(/treatment 48h/i);
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+  });
+
+  it("says the original post is unavailable rather than dropping the link", async () => {
+    list.mockResolvedValue({
+      rows: [row({ media: { id: null, permalink: null, caption: null } })],
+      nextCursor: null,
+    });
+    renderList();
+
+    expect(await screen.findByText(/original post unavailable/i)).toBeInTheDocument();
   });
 });

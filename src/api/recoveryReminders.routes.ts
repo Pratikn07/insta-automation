@@ -170,7 +170,10 @@ recoveryRemindersRouter.get("/", async (req, res) => {
   });
 
   const page = rows.slice(0, limit);
-  const nextCursor = rows.length > limit ? (rows[limit]?.id ?? null) : null;
+  // Cursor is the LAST row of THIS page, because Prisma's `skip: 1` steps over
+  // the cursor row itself. Pointing it at the extra limit+1 row made the next
+  // page start after that row, dropping it entirely.
+  const nextCursor = rows.length > limit ? (page[page.length - 1]?.id ?? null) : null;
 
   const people = page.length
     ? await getIgUsers(page.map((row) => row.igUserId))
@@ -286,10 +289,25 @@ async function resolveActionConflict(id: string, res: import("express").Response
 
 recoveryRemindersRouter.post("/:id/cancel", async (req, res) => {
   const now = new Date();
+
+  const before = await prisma.dmRecoveryReminder.findUnique({
+    where: { id: req.params.id },
+    select: { status: true },
+  });
+  if (!before) return void res.status(404).json({ error: "not_found" });
+
+  if (!CANCELLABLE.includes(before.status as (typeof CANCELLABLE)[number])) {
+    return resolveActionConflict(req.params.id, res);
+  }
+
+  // Guarded on the exact status just read, not on the whole cancellable set.
+  // That makes this a compare-and-set: if it updates a row, the status it
+  // replaced was provably the one being reported, so the audit entry cannot
+  // name a state the row was never in.
   const result = await prisma.dmRecoveryReminder.updateMany({
     where: {
       id: req.params.id,
-      status: { in: [...CANCELLABLE] },
+      status: before.status,
       sentAt: null,
       publicReplyId: null,
     },
@@ -302,25 +320,51 @@ recoveryRemindersRouter.post("/:id/cancel", async (req, res) => {
     id: req.params.id,
     actor: req.adminEmail ?? null,
     action: "cancel",
+    previousStatus: before.status,
     newStatus: "cancelled",
   });
   res.status(204).end();
 });
 
 recoveryRemindersRouter.post("/:id/mark-reviewed", async (req, res) => {
+  const before = await prisma.dmRecoveryReminder.findUnique({
+    where: { id: req.params.id },
+    select: { status: true, reviewedAt: true },
+  });
+  if (!before) return void res.status(404).json({ error: "not_found" });
+
+  // Already acknowledged. Succeed without touching the row: a second click —
+  // or a retried request — must not move the review timestamp off the moment a
+  // person actually looked, nor add a second entry to the audit trail.
+  if (before.reviewedAt !== null) return void res.status(204).end();
+
   const result = await prisma.dmRecoveryReminder.updateMany({
     // Reviewing is an acknowledgement, never a state change: the send status
-    // stays exactly as it was.
-    where: { id: req.params.id, status: { in: [...REVIEWABLE] } },
+    // stays exactly as it was. `reviewedAt: null` is what makes the write
+    // happen once even when two requests race.
+    where: { id: req.params.id, status: { in: [...REVIEWABLE] }, reviewedAt: null },
     data: { reviewedAt: new Date() },
   });
 
-  if (result.count === 0) return resolveActionConflict(req.params.id, res);
+  // Lost the race to a concurrent review rather than to a status change, so the
+  // caller's intent still holds: the row is reviewed.
+  if (result.count === 0) {
+    const now = await prisma.dmRecoveryReminder.findUnique({
+      where: { id: req.params.id },
+      select: { reviewedAt: true },
+    });
+    if (now?.reviewedAt) return void res.status(204).end();
+    return resolveActionConflict(req.params.id, res);
+  }
 
   await logEvent("dm_recovery_reviewed", {
     id: req.params.id,
     actor: req.adminEmail ?? null,
     action: "mark_reviewed",
+    // Review does not change status, so both fields carry the same value —
+    // stated explicitly so an auditor reading the stream never has to infer it.
+    previousStatus: before.status,
+    newStatus: before.status,
   });
   res.status(204).end();
 });

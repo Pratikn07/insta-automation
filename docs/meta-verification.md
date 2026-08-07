@@ -4,8 +4,18 @@
 
 Our comment→DM gate uses Instagram's **Private Replies API**. It fails ~92% of the
 time with error `code 100 / subcode 2534025` ("comment is invalid for a private
-reply"). We proved (via the event logs) this is an **account-level rate/quota
-limit**, not a bug and not a per-comment problem:
+reply").
+
+Two separate things are true about that error, and conflating them causes the
+wrong fix. **What Meta means by it** is a catch-all: the comment cannot receive a
+private reply — deleted, older than seven days, already replied to, or otherwise
+ineligible. **Why we get so many of them** is, on the evidence below, an
+account-level rate/quota limit; a quota rejection surfaces through this same
+catch-all rather than through a dedicated rate-limit code.
+
+So this playbook treats it as a quota problem *to solve*, while the code never
+classifies it as a rate limit — see "Do not add `100:2534025`" below. The
+evidence that the cause is quota, not per-comment eligibility:
 
 - At low volume it succeeds 100%; under real volume it drops to a few sends/hour.
 - Our traffic (~50–100 comments/hr) is far below Meta's documented 750/hr cap, so
@@ -162,7 +172,9 @@ To add a `code:subcode` pair:
 1. Reproduce the blocked-settings case with a controlled Instagram account.
 2. Confirm Meta **rejected** the private-reply request rather than accepting it.
 3. Capture only the numeric `graphCode` and `graphSubcode` from `describeGraphError`.
-4. Confirm it is not a rate-limit signature.
+4. Confirm it is not a rate-limit signature: HTTP status is not `429`, and
+   `graphCode` is not `4`, `17`, `32`, or `613`. Those are the only rate-limit
+   matches the classifier makes — it never matches on a subcode.
 5. Add the exact pair to the environment variable.
 6. Redeploy and audit the first immediate fallback row.
 
@@ -175,10 +187,18 @@ fails the deploy instead of quietly disarming the fallback.
 > would tell people their message-request settings blocked a DM when none of that
 > applies to them.
 >
+> **This does not contradict the opening section.** There, `100:2534025` is
+> described as our quota symptom — that is a claim about the *cause* of the
+> volume we see, established from how the rate tracks traffic. Here the claim is
+> about *classification*: the subcode itself is not evidence of a rate limit,
+> because the identical code and subcode arrive for a deleted or expired comment,
+> where retrying is pointless and where "your settings blocked this" would be
+> false. Raising the quota is the right fix; branching on the subcode is not.
+>
 > Note also that the implementation plan's Task 3 and Task 7 describe `2534025`
 > as a rate-limit subcode. That is wrong, and the code deliberately does not
-> follow it: rate limiting is matched by HTTP status or error code only, never by
-> a bare subcode.
+> follow it: rate limiting is matched by HTTP status `429` or error code `4`,
+> `17`, `32`, or `613` only — never by a bare subcode.
 
 Never classify by error message text, and never by the Business Suite gray
 warning.

@@ -15,6 +15,7 @@ import {
 import { useState } from "react";
 import { DmRecoveryList } from "../components/conversations/DmRecoveryList";
 import { DmRecoveryDrawer } from "../components/conversations/DmRecoveryDrawer";
+import { journeyRowMarkers } from "../components/conversations/journeyRowMarkers";
 import { api } from "@/lib/api";
 import type {
   Conversation,
@@ -115,6 +116,10 @@ export function Conversations() {
     },
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last) => last.nextCursor ?? undefined,
+    // Only the journeys lens renders these rows. Without this the page fetched
+    // journey pages — and paged through them — while showing Needs reply or DM
+    // recovery.
+    enabled: lens === "journeys",
   });
 
   // Tab counts so the page reads like a dashboard ("Waiting 416 · Delivered 351").
@@ -216,14 +221,6 @@ export function Conversations() {
       {lens === "recovery" ? (
         <div className="mt-4">
           <DmRecoveryList onSelect={setSelectedRecoveryId} />
-          {selectedRecoveryId ? (
-            <div className="mt-4 rounded-lg border">
-              <DmRecoveryDrawer
-                id={selectedRecoveryId}
-                onClose={() => setSelectedRecoveryId(null)}
-              />
-            </div>
-          ) : null}
         </div>
       ) : lens !== "journeys" ? (
         <DmThreadList
@@ -293,6 +290,20 @@ export function Conversations() {
       </Drawer>
 
       <Drawer
+        open={selectedRecoveryId !== null}
+        onClose={() => setSelectedRecoveryId(null)}
+        title="DM recovery reminder"
+      >
+        {selectedRecoveryId && (
+          <DmRecoveryDrawer
+            id={selectedRecoveryId}
+            onClose={() => setSelectedRecoveryId(null)}
+            onOpenUser={(id) => setLineageUser(id)}
+          />
+        )}
+      </Drawer>
+
+      <Drawer
         open={lineageUser !== null}
         onClose={() => setLineageUser(null)}
         title="User journey"
@@ -317,6 +328,7 @@ function isRetrying(c: Conversation): boolean {
 
 function ConversationRow({ c, onClick }: { c: Conversation; onClick: () => void }) {
   const meta = rowBadge(c);
+  const markers = journeyRowMarkers(c);
   return (
     <Card className="group transition-colors hover:bg-accent/40">
       <CardContent className="p-0">
@@ -342,7 +354,24 @@ function ConversationRow({ c, onClick }: { c: Conversation; onClick: () => void 
               {formatRelative(c.createdAt)}
               {c.completedAt && ` · completed ${formatRelative(c.completedAt)}`}
             </p>
+            {/* An old journey has no receipts because none were ever collected.
+                Without this the older half of the table reads as failures. */}
+            {markers.note && (
+              <p className="mt-0.5 text-[11px] text-muted-foreground/80">{markers.note}</p>
+            )}
           </div>
+          {markers.recovery && (
+            <span
+              className={cn(
+                "inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium",
+                markers.recovery.pending
+                  ? "bg-sky-400/10 text-sky-400"
+                  : "bg-muted/40 text-muted-foreground",
+              )}
+            >
+              {markers.recovery.label}
+            </span>
+          )}
           <span
             className={cn(
               "inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium",

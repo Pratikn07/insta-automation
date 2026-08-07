@@ -553,6 +553,13 @@ export function parseGraphSignatures(value: string): ReadonlySet<string> {
 
 Check known rate-limit signatures—including subcode `2534025`—before checking the settings allowlist, so a bad configuration cannot turn a rate limit into a public fallback. Do not inspect `safeMessage` or raw error text for settings-blocked classification.
 
+> **Correction (superseded).** `2534025` is not a rate-limit subcode. It belongs
+> to error code 100, "the comment is invalid for a private reply", which also
+> covers deleted, expired, and already-replied comments. The shipped classifier
+> matches rate limits by HTTP `429` or error code `4`/`17`/`32`/`613` only, and
+> never by a bare subcode. See docs/meta-verification.md.
+
+
 For public replies, distinguish failures known to occur before acceptance from ambiguous transport failures. The classifier returns only the stable category; the caller owns transitions.
 
 - [ ] **Step 4: Verify GREEN**
@@ -1222,6 +1229,13 @@ Claim `pending -> sending` with `updateMany` and a lease before calling Meta. On
 For known failures before acceptance:
 
 - rate limit / retryable provider response: `sending -> pending`, increment attempts, and set `nextAttemptAt` to `min(15 minutes * 2^(attempts - 1), 2 hours)`; subcode `2534025` also stops the rest of the tick;
+
+> **Correction (superseded).** `2534025` is not a rate-limit subcode. It belongs
+> to error code 100, "the comment is invalid for a private reply", which also
+> covers deleted, expired, and already-replied comments. The shipped classifier
+> matches rate limits by HTTP `429` or error code `4`/`17`/`32`/`613` only, and
+> never by a bare subcode. See docs/meta-verification.md.
+
 - attempt cap, closed seven-day window, or definite permanent rejection: `sending -> exhausted`;
 - verified settings blocked: `sending -> abandoned`, then schedule the immediate settings recovery exactly once;
 - auth/permission not allowlisted: terminal queue failure and operational log, no public recovery;
@@ -2628,7 +2642,8 @@ State that `DM_RECOVERY_SETTINGS_BLOCKED_SIGNATURES` begins empty. To add `code:
 1. reproduce the blocked-settings case with a controlled Instagram account;
 2. confirm Meta rejected the private-reply request rather than accepting it;
 3. capture only numeric `graphCode` and `graphSubcode` through `describeGraphError`;
-4. ensure it is not a rate-limit signature, especially subcode `2534025`;
+4. ensure it is not a rate-limit signature — HTTP status is not `429` and
+   `graphCode` is not `4`, `17`, `32`, or `613`;
 5. add the exact pair to the environment variable;
 6. redeploy and audit the first immediate fallback row.
 

@@ -1,7 +1,9 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { recoveryApi } from "../../lib/api";
+import { api, recoveryApi } from "../../lib/api";
 import type {
+  Keyword,
+  RecoveryCohort,
   RecoveryCounts,
   RecoveryMetrics,
   RecoveryReminderRow,
@@ -36,6 +38,12 @@ const TONE_CLASS: Record<RecoveryTone, string> = {
   danger: "text-rose-400 bg-rose-400/10",
 };
 
+/** Percentages are the experiment's headline, so an absent one must read as
+ *  absent rather than as zero. */
+function pct(value: number | null): string {
+  return value === null ? "—" : `${value.toFixed(1)}%`;
+}
+
 function formatWhen(iso: string): string {
   return new Date(iso).toLocaleString(undefined, {
     month: "short",
@@ -47,7 +55,14 @@ function formatWhen(iso: string): string {
 
 export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void }) {
   const [view, setView] = useState<RecoveryView>("ready");
+  const [keywordId, setKeywordId] = useState<string>("");
+  const [cohort, setCohort] = useState<"" | RecoveryCohort>("");
   const now = new Date();
+
+  const keywordsQ = useQuery<Keyword[]>({
+    queryKey: ["keywords"],
+    queryFn: () => api<Keyword[]>("/keywords"),
+  });
 
   const countsQ = useQuery<RecoveryCounts>({
     queryKey: ["recovery-reminders", "counts"],
@@ -64,10 +79,14 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
   const rowsQ = useInfiniteQuery({
     // The view is part of the key: switching tabs must not show the previous
     // tab's rows under the new tab's badge.
-    queryKey: ["recovery-reminders", "list", view],
+    // Every filter belongs in the key: a narrowed result under the previous
+    // filter's badge is the same lie as the wrong tab's rows.
+    queryKey: ["recovery-reminders", "list", view, keywordId, cohort],
     initialPageParam: null as string | null,
     queryFn: ({ pageParam }) => {
       const params = new URLSearchParams({ view });
+      if (keywordId) params.set("keywordId", keywordId);
+      if (cohort) params.set("cohort", cohort);
       if (pageParam) params.set("cursor", pageParam);
       return recoveryApi.list(params.toString());
     },
@@ -75,8 +94,12 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
   });
 
   const health = metricsQ.data?.health;
+  const experiment = metricsQ.data?.experiment;
+  const accuracy = metricsQ.data?.accuracy;
   const rows: RecoveryReminderRow[] = rowsQ.data?.pages.flatMap((p) => p.rows) ?? [];
-  const total = countsQ.data?.all;
+  // The active view, not the grand total: a count that never changes as tabs
+  // change is not describing what is on screen.
+  const active = countsQ.data?.[view];
 
   return (
     <div className="space-y-4">
@@ -94,12 +117,20 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
 
       <div className="flex flex-wrap items-center gap-2">
         {VIEWS.map((v) => {
-          const count = countsQ.data?.[v.value]?.records;
+          const entry = countsQ.data?.[v.value];
           return (
             <button
               key={v.value}
               type="button"
               onClick={() => setView(v.value)}
+              title={
+                entry ? `${entry.people} people · ${entry.records} journeys` : undefined
+              }
+              aria-label={
+                entry
+                  ? `${v.label}: ${entry.people} people, ${entry.records} journeys`
+                  : v.label
+              }
               className={cn(
                 "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
                 view === v.value
@@ -108,20 +139,88 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
               )}
             >
               {v.label}
-              {count !== undefined ? (
-                <span className="ml-1.5 tabular-nums text-muted-foreground">{count}</span>
+              {entry ? (
+                <span className="ml-1.5 tabular-nums text-muted-foreground">
+                  {entry.people}/{entry.records}
+                </span>
               ) : null}
             </button>
           );
         })}
-        {total ? (
+        {active ? (
           // People and journeys are different numbers and the experiment is
           // measured by people, so neither is allowed to stand in for the other.
           <span className="ml-auto text-xs text-muted-foreground">
-            {total.people} people · {total.records} journeys
+            {active.people} people · {active.records} journeys
           </span>
         ) : null}
       </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="text-xs text-muted-foreground">
+          Keyword{" "}
+          <select
+            value={keywordId}
+            onChange={(e) => setKeywordId(e.target.value)}
+            className="rounded-md border bg-background px-2 py-1 text-xs"
+          >
+            <option value="">All keywords</option>
+            {(keywordsQ.data ?? []).map((k) => (
+              <option key={k.id} value={k.id}>
+                {k.keyword}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="text-xs text-muted-foreground">
+          Cohort{" "}
+          <select
+            value={cohort}
+            onChange={(e) => setCohort(e.target.value as "" | RecoveryCohort)}
+            className="rounded-md border bg-background px-2 py-1 text-xs"
+          >
+            <option value="">Both cohorts</option>
+            <option value="treatment">Treatment</option>
+            <option value="control">Control</option>
+          </select>
+        </label>
+      </div>
+
+      {experiment && accuracy ? (
+        // The cohort split only pays for itself if the comparison is visible.
+        <dl className="grid grid-cols-2 gap-3 rounded-lg border px-3 py-2 text-xs sm:grid-cols-4">
+          <div>
+            <dt className="text-muted-foreground">Treatment 48h</dt>
+            <dd className="tabular-nums">
+              {pct(experiment.treatment.completionRate48h)}{" "}
+              <span className="text-muted-foreground">
+                ({experiment.treatment.eligiblePeople} people)
+              </span>
+            </dd>
+          </div>
+          <div>
+            <dt className="text-muted-foreground">Control 48h</dt>
+            <dd className="tabular-nums">
+              {pct(experiment.control.completionRate48h)}{" "}
+              <span className="text-muted-foreground">
+                ({experiment.control.eligiblePeople} people)
+              </span>
+            </dd>
+          </div>
+          <div>
+            <dt className="text-muted-foreground">Lift</dt>
+            <dd className="tabular-nums">
+              {experiment.absoluteLiftPercentagePoints === null
+                ? "—"
+                : `${experiment.absoluteLiftPercentagePoints.toFixed(1)} pp`}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-muted-foreground">Read-event coverage</dt>
+            <dd className="tabular-nums">{pct(accuracy.readEventCoverage)}</dd>
+          </div>
+        </dl>
+      ) : null}
 
       {rowsQ.isPending ? (
         <div className="space-y-2" aria-busy="true">
@@ -149,11 +248,14 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
           {rows.map((row) => {
             const state = recoveryStatusView(row, now);
             return (
-              <li key={row.id}>
+              // The post link is a sibling of the row button, not a child: an
+              // anchor inside a button is invalid, and nesting it would make the
+              // link swallow or trigger the row selection.
+              <li key={row.id} className="flex items-center gap-2 rounded-lg border px-3 py-2">
                 <button
                   type="button"
                   onClick={() => onSelect(row.id)}
-                  className="flex w-full items-center gap-3 rounded-lg border px-3 py-2 text-left text-sm hover:bg-accent/20"
+                  className="flex min-w-0 flex-1 items-center gap-3 text-left text-sm"
                 >
                   <span className="min-w-0 flex-1">
                     <span className="block truncate font-medium">
@@ -172,6 +274,20 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
                     {state.label}
                   </span>
                 </button>
+                {row.media.permalink ? (
+                  <a
+                    href={row.media.permalink}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="shrink-0 text-xs underline text-muted-foreground"
+                  >
+                    View post
+                  </a>
+                ) : (
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    Original post unavailable
+                  </span>
+                )}
               </li>
             );
           })}

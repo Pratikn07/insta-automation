@@ -108,6 +108,11 @@ async function runTickBody(): Promise<DmRecoveryTickResult> {
   // 4. Process sequentially
   const leaseMs = env.DM_RECOVERY_LEASE_MS;
   for (const id of ids) {
+    // listDueRecoveryIds deliberately returns more than one batch, so a row
+    // suppressed during the claim does not consume a send slot. The cap has to
+    // be applied here or that headroom becomes extra public comments — a
+    // configured batch of 5 would post up to 15.
+    if (result.sent >= batchSize) break;
     result.examined++;
     const leaseUntil = new Date(now.getTime() + leaseMs);
 
@@ -171,25 +176,36 @@ async function runTickBody(): Promise<DmRecoveryTickResult> {
       }
 
       if (category === "safe_retry") {
+        let committed: boolean;
         if (attemptNumber >= env.DM_RECOVERY_MAX_ATTEMPTS) {
-          await markRecoveryFailed(id, { category: "rate_limit_exhausted" });
+          committed = await markRecoveryFailed(id, { category: "rate_limit_exhausted" });
         } else {
           const backoffMs =
             env.DM_RECOVERY_RETRY_BASE_MS *
             Math.pow(2, attemptNumber - 1) *
             (0.8 + Math.random() * 0.4);
-          await markRecoveryRetryable(id, {
+          committed = await markRecoveryRetryable(id, {
             category: "rate_limit",
             nextAttemptAt: new Date(now.getTime() + backoffMs),
           });
         }
-        result.failed++;
+        if (committed) result.failed++;
+        else await logEvent("dm_recovery_finalize_failed", {
+          ...recoveryEventFields(claimed, attemptNumber),
+          stage: "rate_limit",
+        });
         continue;
       }
 
       if (category === "permanent") {
         const errCat = meta.graphCode ? `code_${meta.graphCode}` : "permanent";
-        await markRecoveryFailed(id, { category: errCat });
+        if (!(await markRecoveryFailed(id, { category: errCat }))) {
+          await logEvent("dm_recovery_finalize_failed", {
+            ...recoveryEventFields(claimed, attemptNumber),
+            stage: "permanent",
+          });
+          continue;
+        }
         result.failed++;
         await logEvent("dm_recovery_send_failed", {
           ...recoveryEventFields(claimed, attemptNumber),
@@ -201,7 +217,13 @@ async function runTickBody(): Promise<DmRecoveryTickResult> {
       // Timeout, reset, or anything unrecognised: the send may have landed, so
       // it is never retried automatically.
       const errCat = meta.category ?? "unknown";
-      await markRecoveryUncertain(id, { category: errCat });
+      if (!(await markRecoveryUncertain(id, { category: errCat }))) {
+        await logEvent("dm_recovery_finalize_failed", {
+          ...recoveryEventFields(claimed, attemptNumber),
+          stage: "uncertain",
+        });
+        continue;
+      }
       result.uncertain++;
       await logEvent("dm_recovery_send_uncertain", {
         ...recoveryEventFields(claimed, attemptNumber),
@@ -242,7 +264,13 @@ async function runTickBody(): Promise<DmRecoveryTickResult> {
           });
         }
       } else {
-        await markRecoveryUncertain(id, { category: "success_without_id" });
+        if (!(await markRecoveryUncertain(id, { category: "success_without_id" }))) {
+          await logEvent("dm_recovery_finalize_failed", {
+            ...recoveryEventFields(claimed, attemptNumber),
+            stage: "success_without_id",
+          });
+          continue;
+        }
         result.uncertain++;
         await logEvent("dm_recovery_send_uncertain", {
           ...recoveryEventFields(claimed, attemptNumber),

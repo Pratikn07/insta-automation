@@ -1,8 +1,22 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
-import { recoveryApi } from "../../lib/api";
+import { useEffect, useState } from "react";
+import { ApiError, recoveryApi } from "../../lib/api";
 import type { RecoveryReminderDetail } from "../../lib/types";
 import { recoveryStatusView } from "./dmRecoveryViewModel";
+
+/**
+ * Shown when the worker changed the row between load and click.
+ *
+ * A 409 is not an error the owner can fix by trying again — the reminder they
+ * were looking at no longer exists in that state. Saying so and refetching is
+ * the only honest response; a generic failure would invite a retry that must
+ * also fail.
+ */
+export const RECOVERY_CONFLICT_MESSAGE =
+  "This reminder changed before your action. Refreshing…";
+
+/** How long the conflict message stays up before the stale view is dismissed. */
+const CONFLICT_CLOSE_DELAY_MS = 1500;
 
 /** Narrative labels for the stored timestamps the API returns. */
 const TIMELINE_LABELS: Record<string, string> = {
@@ -30,9 +44,26 @@ function formatWhen(iso: string): string {
   });
 }
 
-export function DmRecoveryDrawer({ id, onClose }: { id: string; onClose: () => void }) {
+export function DmRecoveryDrawer({
+  id,
+  onClose,
+  onOpenUser,
+}: {
+  id: string;
+  onClose: () => void;
+  onOpenUser?: (igUserId: string) => void;
+}) {
   const queryClient = useQueryClient();
   const [confirmingCancel, setConfirmingCancel] = useState(false);
+  const [conflicted, setConflicted] = useState(false);
+
+  // The row is gone in the shape the owner acted on, so the stale view is closed
+  // rather than left showing controls that can only 409 again.
+  useEffect(() => {
+    if (!conflicted) return;
+    const timer = setTimeout(onClose, CONFLICT_CLOSE_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [conflicted, onClose]);
 
   const detailQ = useQuery<RecoveryReminderDetail>({
     queryKey: ["recovery-reminders", "detail", id],
@@ -44,8 +75,15 @@ export function DmRecoveryDrawer({ id, onClose }: { id: string; onClose: () => v
   // counts, and a stale badge next to a changed row is worse than a refetch.
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["recovery-reminders"] });
 
+  // A lost race is a different outcome from a failed request: one is the
+  // worker having moved on, the other is worth retrying.
+  const onConflict = (error: unknown) => {
+    if (error instanceof ApiError && error.status === 409) setConflicted(true);
+  };
+
   const cancelM = useMutation({
     mutationFn: () => recoveryApi.cancel(id),
+    onError: onConflict,
     onSettled: () => {
       setConfirmingCancel(false);
       return refresh();
@@ -54,8 +92,13 @@ export function DmRecoveryDrawer({ id, onClose }: { id: string; onClose: () => v
 
   const reviewM = useMutation({
     mutationFn: () => recoveryApi.markReviewed(id),
+    onError: onConflict,
     onSettled: refresh,
   });
+
+  const retryableError = [cancelM, reviewM].find(
+    (m) => m.error instanceof ApiError && m.error.status !== 409,
+  );
 
   if (detailQ.isPending) return <div className="p-4 text-sm text-muted-foreground">Loading…</div>;
   if (detailQ.isError || !detailQ.data) {
@@ -74,14 +117,14 @@ export function DmRecoveryDrawer({ id, onClose }: { id: string; onClose: () => v
         </h2>
         <p className="text-xs text-muted-foreground">
           {row.keyword.keyword}
+          {" · "}
           {row.media.permalink ? (
-            <>
-              {" · "}
-              <a href={row.media.permalink} className="underline" target="_blank" rel="noreferrer">
-                View post
-              </a>
-            </>
-          ) : null}
+            <a href={row.media.permalink} className="underline" target="_blank" rel="noreferrer">
+              View post
+            </a>
+          ) : (
+            <span>Original post unavailable</span>
+          )}
         </p>
         <p className="font-medium">{state.label}</p>
         <p className="text-xs text-muted-foreground">{state.description}</p>
@@ -123,7 +166,24 @@ export function DmRecoveryDrawer({ id, onClose }: { id: string; onClose: () => v
         ) : null}
       </section>
 
-      {state.canCancel || state.canMarkReviewed ? (
+      {conflicted ? (
+        <p role="status" className="rounded-md border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs text-amber-100">
+          {RECOVERY_CONFLICT_MESSAGE}
+        </p>
+      ) : retryableError ? (
+        <div role="alert" className="rounded-md border border-rose-400/30 bg-rose-400/10 px-3 py-2 text-xs">
+          <p className="text-rose-100">Couldn’t complete that action.</p>
+          <button
+            type="button"
+            onClick={() => retryableError.mutate()}
+            className="mt-2 rounded-md border px-2 py-1 hover:bg-accent/20"
+          >
+            Try again
+          </button>
+        </div>
+      ) : null}
+
+      {state.canCancel || state.canMarkReviewed || onOpenUser ? (
         <footer className="flex flex-wrap gap-2 border-t pt-3">
           {state.canCancel ? (
             <button
@@ -142,6 +202,15 @@ export function DmRecoveryDrawer({ id, onClose }: { id: string; onClose: () => v
               className="rounded-md border px-3 py-1.5 text-xs hover:bg-accent/20 disabled:opacity-50"
             >
               Mark reviewed
+            </button>
+          ) : null}
+          {onOpenUser ? (
+            <button
+              type="button"
+              onClick={() => onOpenUser(row.igUserId)}
+              className="rounded-md border px-3 py-1.5 text-xs hover:bg-accent/20"
+            >
+              View user journey
             </button>
           ) : null}
           <button
