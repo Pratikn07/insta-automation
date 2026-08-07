@@ -349,17 +349,59 @@ describeWithLocalDatabase("dm recovery database contract", () => {
     ).rejects.toThrow(/chk_claim_expires_after_claimed/);
   });
 
-  // ── last_attempt_at column exists ──────────────────────────────────────
+  // ── Partial sending index enforcement ──────────────────────────────
 
-  it("has the last_attempt_at column on dm_recovery_reminder", async () => {
-    const columns = await prisma.$queryRaw<ColumnRow[]>`
-      SELECT table_name, column_name, data_type
-      FROM information_schema.columns
-      WHERE table_schema = 'public'
-        AND table_name = 'dm_recovery_reminder'
-        AND column_name = 'last_attempt_at'
+  it("prevents two sending rows for the same ig_user_id via partial unique index", async () => {
+    const userSendingComment1 = `chk-sending-1-${Date.now()}`;
+    const userSendingComment2 = `chk-sending-2-${Date.now()}`;
+
+    // First sending row for user succeeds
+    await prisma.$executeRaw`
+      INSERT INTO "dm_recovery_reminder" (
+        "id", "conversation_id", "ig_user_id", "keyword_id",
+        "keyword_snapshot", "template_version", "public_reply_text",
+        "comment_id", "trigger_kind", "status", "cohort",
+        "eligible_at", "created_at", "updated_at"
+      )
+      SELECT
+        gen_random_uuid(), c.id, iu.id, k.id,
+        'TEST', 'v1', 'test',
+        ${userSendingComment1},
+        'no_confirmed_read'::"dm_recovery_trigger_kind",
+        'sending'::"dm_recovery_status",
+        'treatment'::"dm_recovery_cohort",
+        NOW(), NOW(), NOW()
+      FROM (SELECT id FROM "conversations" LIMIT 1) c,
+           (SELECT id FROM "ig_users" LIMIT 1) iu,
+           (SELECT id FROM "keywords" LIMIT 1) k
     `;
-    expect(columns).toHaveLength(1);
-    expect(columns[0]!.data_type).toBe("timestamp with time zone");
+
+    // Second sending row for same user fails with unique index violation
+    await expect(
+      prisma.$executeRaw`
+        INSERT INTO "dm_recovery_reminder" (
+          "id", "conversation_id", "ig_user_id", "keyword_id",
+          "keyword_snapshot", "template_version", "public_reply_text",
+          "comment_id", "trigger_kind", "status", "cohort",
+          "eligible_at", "created_at", "updated_at"
+        )
+        SELECT
+          gen_random_uuid(), c.id, iu.id, k.id,
+          'TEST', 'v1', 'test',
+          ${userSendingComment2},
+          'no_confirmed_read'::"dm_recovery_trigger_kind",
+          'sending'::"dm_recovery_status",
+          'treatment'::"dm_recovery_cohort",
+          NOW(), NOW(), NOW()
+        FROM (SELECT id FROM "conversations" LIMIT 1) c,
+             (SELECT id FROM "ig_users" LIMIT 1) iu,
+             (SELECT id FROM "keywords" LIMIT 1) k
+      `,
+    ).rejects.toThrow(/unique/i);
+
+    // Clean up
+    await prisma.$executeRaw`
+      DELETE FROM "dm_recovery_reminder" WHERE "comment_id" = ${userSendingComment1}
+    `;
   });
 });
