@@ -248,3 +248,71 @@ describe("handleComment Recovery Scheduling (Task 6)", () => {
     expect(enqueueGate).not.toHaveBeenCalled();
   });
 });
+
+// The plan's Task 6 acceptance list. Each of these guards a way the handler
+// could either send a person a second DM or say the wrong thing to them.
+describe("handleComment gate failure routing", () => {
+  const COMMENT = {
+    id: "comment-1",
+    text: "sleep",
+    from: { id: "ig-user-1", username: "parent" },
+    media: { id: "media-1", media_product_type: "REELS" },
+  };
+
+  // A response-less failure may already have delivered the DM. It is parked for
+  // review with an attention row, never silently retried.
+  it("parks an ambiguous transport failure instead of queueing a retry", async () => {
+    const timeout = new AxiosError("network", "ETIMEDOUT");
+    sendTrackedPrivateReply.mockRejectedValue(timeout);
+
+    await handleComment(COMMENT);
+
+    expect(enqueueGate).toHaveBeenCalledWith(
+      expect.objectContaining({ initialErrorCategory: "transport_uncertain" }),
+    );
+    expect(scheduleTrackingUnavailableRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({ commentId: "comment-1", mediaId: "media-1" }),
+    );
+    expect(scheduleSettingsBlockedRecovery).not.toHaveBeenCalled();
+  });
+
+  // Settings-specific copy tells the person their own settings blocked the DM.
+  // Saying that when it is not true is worse than saying nothing.
+  it("never uses the settings path for a non-allowlisted error", async () => {
+    // 10:99999 is not in the configured allowlist (10:12345).
+    sendTrackedPrivateReply.mockRejectedValue(graphFailure(10, 99999));
+
+    await handleComment(COMMENT);
+
+    expect(scheduleSettingsBlockedRecovery).not.toHaveBeenCalled();
+    expect(enqueueGate).toHaveBeenCalledOnce();
+  });
+
+  it("still sends the gate and schedules recovery when the public reply fails", async () => {
+    replyToComment.mockRejectedValue(new Error("public reply rejected"));
+    sendTrackedPrivateReply.mockResolvedValue({
+      instagramMessageId: "mid-1",
+      dmMessageId: "dm-1",
+      acceptedAt: new Date("2026-08-06T08:00:00Z"),
+    });
+
+    await handleComment(COMMENT);
+
+    expect(sendTrackedPrivateReply).toHaveBeenCalledOnce();
+    expect(scheduleAcceptedGateRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({ commentId: "comment-1", instagramGateMessageId: "mid-1" }),
+    );
+  });
+
+  // Our own public replies come back through the webhook like anyone else's.
+  // Acting on them is a self-reply loop.
+  it("creates nothing for a comment authored by the business account", async () => {
+    await handleComment({ ...COMMENT, from: { id: "ig-account-owner", username: "tinysoho" } });
+
+    expect(openConversation).not.toHaveBeenCalled();
+    expect(sendTrackedPrivateReply).not.toHaveBeenCalled();
+    expect(enqueueGate).not.toHaveBeenCalled();
+    expect(scheduleAcceptedGateRecovery).not.toHaveBeenCalled();
+    expect(logEvent).not.toHaveBeenCalled();
+  });
+});
