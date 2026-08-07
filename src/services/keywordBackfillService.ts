@@ -2,7 +2,8 @@ import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
 import { env } from "../config/env.js";
 import { normalizeKeyword, textContainsKeyword } from "./keywordService.js";
-import { openConversation } from "./conversationService.js";
+import { openConversationIn } from "./conversationService.js";
+import { resolveJourneyIntent } from "./journeyIntentService.js";
 import { enqueueGate, PRIVATE_REPLY_WINDOW_MS } from "./gateQueueService.js";
 import { logEvent } from "./eventLogger.js";
 
@@ -71,9 +72,39 @@ export async function backfillKeyword(keywordId: string): Promise<number> {
 
     let enqueued = 0;
     for (const c of byUser.values()) {
-      const convo = await openConversation(c.fromId, kw.id);
+      // The conversation filter above already removed anyone the live path
+      // handled, so these should all be genuinely new. Going through the resolver
+      // anyway means the backfill records its triggers like every other entry
+      // point, and cannot enqueue a second gate if a race or a re-run puts someone
+      // back in this list — the guard is the same one the comment path uses.
+      const journey = await resolveJourneyIntent(
+        {
+          igUserId: c.fromId,
+          keywordId: kw.id,
+          commentId: c.commentId,
+          mediaId: c.mediaId,
+          // The original comment's time, not now: this gate is being sent late and
+          // the 7-day private-reply window is measured from the comment.
+          receivedAt: c.createdAt,
+          triggerKind: "comment",
+        },
+        (tx) => openConversationIn(tx, c.fromId, kw.id),
+      );
+
+      if (!journey.maySendGate) {
+        await logEvent("backfill_skipped_existing_journey", {
+          conversationId: journey.conversationId,
+          keyword: kw.keyword,
+          commentId: c.commentId,
+          fromId: c.fromId,
+          disposition: journey.disposition,
+        });
+        continue;
+      }
+
+      const conversationId = journey.conversationId!;
       await enqueueGate({
-        conversationId: convo.id,
+        conversationId,
         igUserId: c.fromId,
         commentId: c.commentId,
         mediaId: c.mediaId,
@@ -81,7 +112,7 @@ export async function backfillKeyword(keywordId: string): Promise<number> {
         commentAt: c.createdAt,
       });
       await logEvent("backfill_enqueued", {
-        conversationId: convo.id,
+        conversationId,
         keyword: kw.keyword,
         commentId: c.commentId,
         fromId: c.fromId,

@@ -13,7 +13,8 @@ const findKeywordInMessage = vi.fn();
 const findActiveAwaitingDone = vi.fn();
 const findLatestIncompleteConversation = vi.fn();
 const hasCompletedKeyword = vi.fn();
-const openConversation = vi.fn();
+const openConversationIn = vi.fn();
+const resolveJourneyIntent = vi.fn();
 const markCompleted = vi.fn();
 const markGated = vi.fn();
 const sendSequence = vi.fn();
@@ -45,11 +46,14 @@ vi.mock("../services/dmRecoveryService.js", () => ({ recordRecoveryInbound }));
 vi.mock("../services/replyDraftService.js", () => ({ queueReplyDraft }));
 vi.mock("../services/engagementFollowUpService.js", () => ({ scheduleEngagementFollowUp }));
 vi.mock("../services/keywordService.js", () => ({ findKeywordInMessage }));
+// The resolver is contract-tested against real Postgres; here the DM path's own
+// contract is that it records the trigger and still delivers.
+vi.mock("../services/journeyIntentService.js", () => ({ resolveJourneyIntent }));
 vi.mock("../services/conversationService.js", () => ({
   findActiveAwaitingDone,
   findLatestIncompleteConversation,
   hasCompletedKeyword,
-  openConversation,
+  openConversationIn,
   markCompleted,
   markGated,
 }));
@@ -115,7 +119,8 @@ beforeEach(() => {
     findActiveAwaitingDone,
     findLatestIncompleteConversation,
     hasCompletedKeyword,
-    openConversation,
+    openConversationIn,
+    resolveJourneyIntent,
     markCompleted,
     markGated,
     sendSequence,
@@ -139,7 +144,13 @@ beforeEach(() => {
   findActiveAwaitingDone.mockResolvedValue(null);
   findLatestIncompleteConversation.mockResolvedValue(null);
   hasCompletedKeyword.mockResolvedValue(false);
-  openConversation.mockResolvedValue({ id: "convo-1" });
+  openConversationIn.mockResolvedValue({ id: "convo-1" });
+  resolveJourneyIntent.mockResolvedValue({
+    disposition: "new_journey",
+    intentId: "intent-1",
+    conversationId: "convo-1",
+    maySendGate: true,
+  });
   logEvent.mockResolvedValue(undefined);
   sendTrackedText.mockResolvedValue({ messageId: "mid-out" });
   sendSequence.mockResolvedValue(undefined);
@@ -183,7 +194,7 @@ describe("handleMessage — inbound capture", () => {
     expect(updateDmThreadProfile).not.toHaveBeenCalled();
     expect(findKeywordInMessage).not.toHaveBeenCalled();
     expect(findActiveAwaitingDone).not.toHaveBeenCalled();
-    expect(openConversation).not.toHaveBeenCalled();
+    expect(resolveJourneyIntent).not.toHaveBeenCalled();
     expect(queueReplyDraft).not.toHaveBeenCalled();
     expect(sendTrackedText).not.toHaveBeenCalled();
     expect(sendSequence).not.toHaveBeenCalled();
@@ -224,7 +235,7 @@ describe("handleMessage — inbound capture", () => {
 
     await handleMessage(inbound("SLEEP"));
 
-    expect(openConversation).toHaveBeenCalledOnce();
+    expect(resolveJourneyIntent).toHaveBeenCalledOnce();
   });
 });
 
@@ -234,7 +245,7 @@ describe("handleMessage — branch order is unchanged", () => {
 
     await handleMessage(inbound("SLEEP"));
 
-    expect(openConversation).toHaveBeenCalledOnce();
+    expect(resolveJourneyIntent).toHaveBeenCalledOnce();
     expect(queueReplyDraft).not.toHaveBeenCalled();
   });
 
@@ -250,7 +261,10 @@ describe("handleMessage — branch order is unchanged", () => {
 
     await handleMessage(inbound("SLEEP"));
 
-    expect(openConversation).toHaveBeenCalledWith("ig-user-1", "keyword-1");
+    expect(resolveJourneyIntent).toHaveBeenCalledWith(
+      expect.objectContaining({ igUserId: "ig-user-1", keywordId: "keyword-1" }),
+      expect.any(Function),
+    );
     expect(findActiveAwaitingDone).not.toHaveBeenCalled();
     // A follower gets the NEW keyword's guide instantly — never the stale gate's.
     expect(sendSequence).toHaveBeenCalledWith(
@@ -709,4 +723,79 @@ describe("untrusted inbound payloads", () => {
       expect(recordRecoveryInbound).not.toHaveBeenCalled();
     },
   );
+});
+
+// The DM path records journeys but must NOT suppress on them.
+//
+// Measured on production: 257 of the 342 same-person-same-keyword repeats inside
+// 48 hours arrive by DM, and 188 of those had already completed. Those are people
+// re-asking for a guide they own, and this path answers that deliberately with
+// REDELIVERY_INTRO. Applying the comment path's guard here would break it.
+describe("handleMessage journey resolution is bookkeeping, not a gate", () => {
+  beforeEach(() => {
+    findKeywordInMessage.mockResolvedValue({
+      id: "keyword-1",
+      keyword: "SLEEP",
+      gateMessage: "gate copy",
+      mediaId: null,
+      inferredFromPost: null,
+      resource: { messages: [{ id: "m1", body: "guide" }] },
+    });
+  });
+
+  it("still delivers instantly to a follower on a reused journey", async () => {
+    resolveJourneyIntent.mockResolvedValue({
+      disposition: "reused_active",
+      intentId: "intent-1",
+      conversationId: "convo-1",
+      maySendGate: false,
+    });
+    resolveUsername.mockResolvedValue({ isFollower: true, username: "parent", name: "Parent" });
+    hasCompletedKeyword.mockResolvedValue(false);
+
+    await handleMessage(inbound("SLEEP"));
+
+    // maySendGate is false, and the guide goes out anyway.
+    expect(sendSequence).toHaveBeenCalledOnce();
+  });
+
+  it("still redelivers to someone who already completed", async () => {
+    resolveJourneyIntent.mockResolvedValue({
+      disposition: "already_completed_recently",
+      intentId: "intent-1",
+      conversationId: "convo-1",
+      maySendGate: false,
+    });
+    resolveUsername.mockResolvedValue({ isFollower: true, username: "parent", name: "Parent" });
+    hasCompletedKeyword.mockResolvedValue(true);
+
+    await handleMessage(inbound("SLEEP"));
+
+    expect(sendSequence).toHaveBeenCalledOnce();
+  });
+
+  // A DM has no comment id, so the inbound message id stands in — that is what
+  // buys the same replay protection the comment path gets.
+  it("records the trigger against the inbound message id", async () => {
+    await handleMessage(inbound("SLEEP"));
+
+    expect(resolveJourneyIntent).toHaveBeenCalledWith(
+      expect.objectContaining({ commentId: "message-1", triggerKind: "dm" }),
+      expect.any(Function),
+    );
+  });
+
+  it("names the journey it joined on keyword_matched", async () => {
+    resolveJourneyIntent.mockResolvedValue({
+      disposition: "reused_active",
+      intentId: "intent-1",
+      conversationId: "convo-1",
+      maySendGate: false,
+    });
+
+    await handleMessage(inbound("SLEEP"));
+
+    const matched = logEvent.mock.calls.find(([kind]) => kind === "keyword_matched");
+    expect(matched?.[1]).toMatchObject({ journeyDisposition: "reused_active", source: "dm" });
+  });
 });

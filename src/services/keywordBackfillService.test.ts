@@ -3,7 +3,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const keywordFindUnique = vi.fn();
 const eventLogFindMany = vi.fn();
 const conversationFindMany = vi.fn();
-const openConversation = vi.fn();
+const openConversationIn = vi.fn();
+const resolveJourneyIntent = vi.fn();
 const enqueueGate = vi.fn();
 const logEvent = vi.fn();
 
@@ -14,7 +15,10 @@ vi.mock("../lib/prisma.js", () => ({
     conversation: { findMany: conversationFindMany },
   },
 }));
-vi.mock("./conversationService.js", () => ({ openConversation }));
+vi.mock("./conversationService.js", () => ({ openConversationIn }));
+// Contract-tested against real Postgres; here the backfill's contract is that it
+// enqueues only for a journey it opened.
+vi.mock("./journeyIntentService.js", () => ({ resolveJourneyIntent }));
 vi.mock("./gateQueueService.js", () => ({ enqueueGate, PRIVATE_REPLY_WINDOW_MS: 604800000 }));
 vi.mock("./eventLogger.js", () => ({ logEvent }));
 vi.mock("../config/env.js", () => ({ env: { IG_USER_ID: "bot-account", LOG_LEVEL: "info" } }));
@@ -25,7 +29,14 @@ beforeEach(() => {
   keywordFindUnique.mockReset();
   eventLogFindMany.mockReset();
   conversationFindMany.mockReset();
-  openConversation.mockReset();
+  openConversationIn.mockReset();
+  resolveJourneyIntent.mockReset();
+  resolveJourneyIntent.mockResolvedValue({
+    disposition: "new_journey",
+    intentId: "intent-1",
+    conversationId: "convo-1",
+    maySendGate: true,
+  });
   enqueueGate.mockReset();
   logEvent.mockReset();
 });
@@ -54,7 +65,7 @@ describe("keywordBackfillService", () => {
     ]);
 
     conversationFindMany.mockResolvedValue([]);
-    openConversation.mockResolvedValue({ id: "convo-1" });
+    openConversationIn.mockResolvedValue({ id: "convo-1" });
     enqueueGate.mockResolvedValue(undefined);
 
     const count = await backfillKeyword("kw-1");
@@ -77,4 +88,39 @@ describe("keywordBackfillService", () => {
     expect(count).toBe(0);
     expect(eventLogFindMany).not.toHaveBeenCalled();
   });
+});
+
+// The conversation filter upstream should already have removed these people, so
+// this is the belt-and-braces case: a race, or a re-run overlapping the live path,
+// must not enqueue a second gate for a journey that already has one.
+it("enqueues nothing when the person already has a live journey", async () => {
+  keywordFindUnique.mockResolvedValue({
+    id: "kw-1",
+    keyword: "SLEEP",
+    active: true,
+    mediaId: null,
+    gateMessage: "Link here",
+  });
+  eventLogFindMany.mockResolvedValue([
+    {
+      createdAt: new Date("2026-08-06T10:00:00Z"),
+      payload: { commentId: "comment-1", fromId: "user-1", text: "sleep please", mediaId: null },
+    },
+  ]);
+  conversationFindMany.mockResolvedValue([]);
+  openConversationIn.mockResolvedValue({ id: "convo-1" });
+
+  resolveJourneyIntent.mockResolvedValue({
+    disposition: "reused_active",
+    intentId: "intent-1",
+    conversationId: "convo-1",
+    maySendGate: false,
+  });
+
+  const enqueued = await backfillKeyword("kw-1");
+
+  expect(enqueued).toBe(0);
+  expect(enqueueGate).not.toHaveBeenCalled();
+  const kinds = logEvent.mock.calls.map(([kind]) => kind);
+  expect(kinds).toContain("backfill_skipped_existing_journey");
 });

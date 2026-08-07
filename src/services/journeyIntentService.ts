@@ -164,9 +164,15 @@ async function resolveInTransaction(
   // and this comparison decides whether a journey is one or two.
   const [{ now }] = await tx.$queryRaw<[{ now: Date }]>`SELECT NOW() AS now`;
 
-  // The newest window for this person and keyword. Only its recency matters:
-  // media id is deliberately not part of the identity, so the same keyword on two
-  // different posts is one request (design §20).
+  // The newest window for this person and this KEYWORD ROW. Identity is the
+  // keyword id, never the word (design §19), and media id is deliberately not
+  // part of it.
+  //
+  // That distinction matters in this data: DINNER exists as three separate
+  // keyword rows — one global and one per reel — each pointing at a DIFFERENT
+  // guide. Two comments on two reels are therefore two different keyword ids, two
+  // intents, and two guides, which is correct because two different things were
+  // asked for. Only a repeat against the SAME keyword row collapses.
   const [live] = await tx.$queryRaw<
     Array<{
       id: string;

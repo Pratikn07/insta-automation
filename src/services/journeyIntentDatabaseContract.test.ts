@@ -374,14 +374,60 @@ describeWithLocalDatabase("resolveJourneyIntent", () => {
     expect(triggers).toHaveLength(2);
   });
 
-  // Media id is deliberately not part of the identity (design §20): the same
-  // keyword on two different reels is one request, not two guide funnels.
-  it("reuses the journey for the same keyword on a different post", async () => {
+  // Media id is not part of the identity, so the SAME keyword row reached from two
+  // different posts is one request. This is the global-keyword case: one row, no
+  // media, reachable from every reel.
+  it("reuses the journey for one keyword row reached from two posts", async () => {
     const first = await resolveJourneyIntent(trigger({ mediaId: "media-a" }), makeConversation);
     const second = await resolveJourneyIntent(trigger({ mediaId: "media-b" }), makeConversation);
 
     expect(second.disposition).toBe("reused_active");
     expect(second.intentId).toBe(first.intentId);
+  });
+
+  // The other half, and the one that is easy to get wrong. Identity is the keyword
+  // ID, never the word (design §19). In this data DINNER exists as three separate
+  // keyword rows — one global, one per reel — each pointing at a DIFFERENT guide.
+  // Two comments on two reels must therefore stay two intents, because two
+  // different things were asked for.
+  it("keeps same-word keyword rows on different posts as separate journeys", async () => {
+    const sameWordOtherPost = randomUUID();
+    const otherResource = randomUUID();
+    await prisma.resource.create({ data: { id: otherResource, name: "Other guide, same word" } });
+    await prisma.keyword.create({
+      data: {
+        id: sameWordOtherPost,
+        // Same displayed word as the fixture keyword, different row and guide.
+        keyword: `intent-contract-${fixture.keywordId}`,
+        mediaId: "media-b",
+        resourceId: otherResource,
+        publicReply: "test",
+        gateMessage: "test",
+      },
+    });
+
+    const first = await resolveJourneyIntent(trigger({ mediaId: "media-a" }), makeConversation);
+    const second = await resolveJourneyIntent(
+      trigger({ keywordId: sameWordOtherPost, mediaId: "media-b" }),
+      (tx) =>
+        tx.conversation.create({
+          data: { igUserId: fixture.igUserId, keywordId: sameWordOtherPost },
+          select: { id: true },
+        }),
+    );
+
+    expect(second.disposition).toBe("new_journey");
+    expect(second.intentId).not.toBe(first.intentId);
+
+    await prisma.journeyTrigger.deleteMany({ where: { intentId: second.intentId } });
+    await prisma.conversation.updateMany({
+      where: { keywordId: sameWordOtherPost },
+      data: { canonicalIntentId: null },
+    });
+    await prisma.journeyIntent.deleteMany({ where: { keywordId: sameWordOtherPost } });
+    await prisma.conversation.deleteMany({ where: { keywordId: sameWordOtherPost } });
+    await prisma.keyword.delete({ where: { id: sameWordOtherPost } });
+    await prisma.resource.delete({ where: { id: otherResource } });
   });
 
   it("opens a new journey once the window has lapsed", async () => {

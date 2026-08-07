@@ -6,9 +6,10 @@ import {
   hasCompletedKeyword,
   markCompleted,
   markGated,
-  openConversation,
+  openConversationIn,
 } from "../services/conversationService.js";
 import { findKeywordInMessage } from "../services/keywordService.js";
+import { resolveJourneyIntent } from "../services/journeyIntentService.js";
 import { sendSequence } from "../services/sequenceSender.js";
 import { sendTrackedText } from "../services/dmDeliveryService.js";
 import {
@@ -211,12 +212,38 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
   // potty gate rather than completing the sleep one.
   const keyword = await findKeywordInMessage(text);
   if (keyword) {
-    const convo = await openConversation(senderId, keyword.id);
+    // Attach the ask to this person's canonical journey for this keyword, so the
+    // dashboard counts one request rather than one per ask. Measured: 257 of the
+    // 342 same-person-same-keyword repeats inside 48 hours arrive by DM, more than
+    // the comment path.
+    //
+    // `maySendGate` is deliberately IGNORED here. 188 of those 257 DM repeats had
+    // already completed — they are people re-asking for a guide they own, and this
+    // path answers that on purpose with REDELIVERY_INTRO below. Suppressing them
+    // would break a working feature. Only the comment path withholds a send; here
+    // resolution is bookkeeping.
+    const journey = await resolveJourneyIntent(
+      {
+        igUserId: senderId,
+        keywordId: keyword.id,
+        // A DM has no comment, so the inbound message id stands in. It is unique
+        // per message, which buys the same replay protection the comment path
+        // gets from its comment id.
+        commentId: inbound.messageId,
+        mediaId: keyword.mediaId ?? null,
+        receivedAt: parseProviderTimestamp(entry.timestamp) ?? new Date(),
+        triggerKind: "dm",
+      },
+      (tx) => openConversationIn(tx, senderId, keyword.id),
+    );
+    const convo = { id: journey.conversationId! };
+
     logger.info(
       {
         conversationId: convo.id,
         keyword: keyword.keyword,
         senderId,
+        disposition: journey.disposition,
         inferredFromPost: keyword.inferredFromPost,
       },
       "Keyword matched in DM",
@@ -226,6 +253,7 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
       keyword: keyword.keyword,
       source: "dm",
       senderId,
+      journeyDisposition: journey.disposition,
       // A DM carries no post, so when only post-scoped rows hold the word we pick
       // the newest post and record which one here. Null means an unambiguous
       // global answered — no inference was needed.
