@@ -13,11 +13,15 @@ vi.mock("./eventLogger.js", () => ({ describeGraphError: () => ({ category: "tes
 
 const { rememberUsername, resolveUsername } = await import("./igUserService.js");
 
-/** The four columns retired when the identity behind a verdict changes. */
+/** The five columns retired when the identity behind a verdict changes. */
 const CLEARED = {
   inferredOrigin: null,
   originConfidence: null,
   originEvidence: null,
+  // Retired with the verdict. A row carrying a prompt version with no verdict to
+  // show for it was reachable in production, and only stayed harmless because
+  // `resolveAudienceOrigin` happens to test the verdict as well as the method.
+  originMethod: null,
   originCheckedAt: null,
 };
 
@@ -83,5 +87,24 @@ describe("origin verdict lifecycle", () => {
     expect(upsert).toHaveBeenCalledWith(
       expect.objectContaining({ update: expect.objectContaining(CLEARED) }),
     );
+  });
+
+  // Observed in production 2026-08-07: a row stamped `origin_method = llm_v1`
+  // with a null verdict, null evidence, and a null checked-at — a combination no
+  // writer produces. The reset cleared the verdict and left the method behind,
+  // so the row claimed to have been classified by a prompt version that had
+  // produced nothing for it. `origin_method` must never outlive the verdict it
+  // describes.
+  it("never leaves the prompt version behind when the verdict is cleared", async () => {
+    findUnique.mockResolvedValue({ username: "old_handle", name: "Old Name" });
+
+    await rememberUsername("ig-1", "new_handle", "New Name");
+
+    const { update } = upsert.mock.calls[0][0];
+    expect(update.originMethod).toBeNull();
+    // The whole set moves together or the row is self-contradictory.
+    for (const column of ["inferredOrigin", "originConfidence", "originEvidence", "originCheckedAt"]) {
+      expect(update[column]).toBeNull();
+    }
   });
 });

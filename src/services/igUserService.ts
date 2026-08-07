@@ -56,6 +56,11 @@ function originResetIfIdentityChanged(
     inferredOrigin: null,
     originConfidence: null,
     originEvidence: null,
+    // Retired together with the verdict. Leaving the method behind described a
+    // row as classified by a prompt version that no longer had a verdict to
+    // show for it, which only stayed harmless because `resolveAudienceOrigin`
+    // also tests the verdict itself.
+    originMethod: null,
     // Null here is what makes the enrichment worker pick the row up again.
     originCheckedAt: null,
   };
