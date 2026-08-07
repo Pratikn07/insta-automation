@@ -224,7 +224,15 @@ export function DmRecoveryDrawer({
       ) : null}
 
       {confirmingCancel ? (
-        <div role="dialog" aria-modal="true" className="rounded-lg border bg-background p-3">
+        // alertdialog, not dialog: this confirms a destructive action, and it
+        // lives inside the Drawer, which is already the modal. Two nested
+        // aria-modal regions leave a screen reader with no single answer to
+        // "what am I in", so the modality stays on the Drawer alone.
+        <div
+          role="alertdialog"
+          aria-label="Cancel this reminder?"
+          className="rounded-lg border bg-background p-3"
+        >
           <p className="text-sm font-medium">Cancel this reminder?</p>
           <p className="mt-1 text-xs text-muted-foreground">
             This will prevent a future public comment on their post. It cannot remove a comment that

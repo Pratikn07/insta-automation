@@ -104,7 +104,7 @@ test.describe("the drawer", () => {
     await page.getByRole("button", { name: /Ready/ }).click();
     await page.getByRole("button", { name: /@sarah/ }).click();
 
-    const link = page.getByRole("link", { name: "View post" });
+    const link = page.getByRole("dialog").getByRole("link", { name: "View post" });
     await expect(link).toHaveAttribute("href", "https://instagram.com/p/sleep");
     await expect(link).toHaveAttribute("target", "_blank");
   });
@@ -147,7 +147,10 @@ test.describe("owner actions", () => {
     await page.getByRole("button", { name: "Cancel reminder" }).click();
     await page.getByRole("button", { name: "Keep reminder" }).click();
 
-    await expect(page.getByRole("dialog")).toHaveCount(0);
+    // The confirmation is an alertdialog inside the Drawer; the Drawer itself
+    // stays open and stays role="dialog", so this asserts the confirmation went
+    // away rather than that every dialog did.
+    await expect(page.getByRole("alertdialog")).toHaveCount(0);
     await expect(page.getByText("Cancelled by owner")).toHaveCount(0);
   });
 

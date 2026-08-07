@@ -158,7 +158,7 @@ describe("DmRecoveryDrawer", () => {
 
       await user.click(await screen.findByRole("button", { name: "Cancel reminder" }));
 
-      const dialog = await screen.findByRole("dialog");
+      const dialog = await screen.findByRole("alertdialog");
       expect(dialog).toHaveTextContent(/prevent/i);
       expect(dialog).toHaveTextContent(/cannot remove a comment that has already been posted/i);
       expect(cancel).not.toHaveBeenCalled();
