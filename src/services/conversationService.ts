@@ -1,5 +1,7 @@
+import type { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { suppressRecoveriesForCompletionSafely } from "./dmRecoveryService.js";
+import { markIntentCompleted } from "./journeyIntentService.js";
 
 // Window during which we'll accept a DONE reply / keep a gate "open", measured
 // from when the gate was DELIVERED (gatedAt), falling back to createdAt for legacy
@@ -10,6 +12,26 @@ const GATE_WINDOW_HOURS = 48;
 export async function openConversation(igUserId: string, keywordId: string) {
   return prisma.conversation.create({
     data: { igUserId, keywordId, state: "awaiting_done" },
+  });
+}
+
+/**
+ * Open a conversation on a caller-supplied transaction.
+ *
+ * `resolveJourneyIntent` creates the journey and its conversation in one
+ * transaction so neither can exist without the other: a conversation with no
+ * intent is invisible to reconciliation, and an intent with no conversation owns
+ * nothing. It therefore needs to create the row on ITS transaction rather than
+ * through a second connection that could commit independently.
+ */
+export async function openConversationIn(
+  tx: Prisma.TransactionClient,
+  igUserId: string,
+  keywordId: string,
+) {
+  return tx.conversation.create({
+    data: { igUserId, keywordId, state: "awaiting_done" },
+    select: { id: true },
   });
 }
 
@@ -75,6 +97,11 @@ export async function markCompleted(conversationId: string) {
       where: { conversationId, status: "pending" },
       data: { status: "abandoned", lastError: "conversation_completed" },
     });
+
+    // Same transaction as the completion: a later comment inside the 48-hour
+    // window must read `already_completed_recently` and stay silent. If these
+    // could diverge, the person would be re-gated for a guide they already have.
+    await markIntentCompleted(tx, conversationId, completedAt);
 
     return updated;
   });

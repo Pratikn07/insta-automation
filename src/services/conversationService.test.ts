@@ -2,10 +2,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const findFirst = vi.fn();
 const suppressRecoveriesForCompletionSafely = vi.fn();
+const markIntentCompleted = vi.fn();
 vi.mock("../lib/prisma.js", () => ({
   prisma: { conversation: { findFirst } },
 }));
 vi.mock("./dmRecoveryService.js", () => ({ suppressRecoveriesForCompletionSafely }));
+vi.mock("./journeyIntentService.js", () => ({ markIntentCompleted }));
 
 const { findLatestIncompleteConversation, hasCompletedKeyword, markCompleted } = await import(
   "./conversationService.js"
