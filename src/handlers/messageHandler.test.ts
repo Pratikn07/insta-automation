@@ -340,6 +340,84 @@ describe("handleMessage — branch order is unchanged", () => {
   });
 });
 
+describe("handleMessage — a story mention is engagement, not consent", () => {
+  // Exactly what Meta delivered on 2026-08-08T04:58:56Z: no text, NO attachments
+  // array, the story tucked under `message.story`. Confirmed by fetching the mid
+  // from the Graph API, which returned {"message":"","story":{"mention":{...}}}.
+  function storyMention(overrides: Record<string, unknown> = {}): MessagingEntry {
+    return {
+      sender: { id: "ig-user-1" },
+      recipient: { id: env.IG_USER_ID },
+      timestamp: 1785895200000,
+      message: { mid: "mid-story", story: { mention: { link: "" } }, ...overrides },
+    };
+  }
+
+  function openGate() {
+    findActiveAwaitingDone.mockResolvedValue({
+      id: "convo-1",
+      keywordId: "keyword-1",
+      keyword: { keyword: "GREEN", resource: { messages: [] } },
+    });
+  }
+
+  it("never delivers the guide when someone tags us in their story", async () => {
+    openGate();
+
+    await handleMessage(storyMention());
+
+    // The production incident: a story tag unlocked a gated guide the person
+    // never asked to unlock.
+    expect(sendSequence).not.toHaveBeenCalled();
+    expect(markCompleted).not.toHaveBeenCalled();
+    expect(sendTrackedText).not.toHaveBeenCalled();
+    expect(logEvent).not.toHaveBeenCalledWith("done_received", expect.anything());
+  });
+
+  it("leaves the gate open so a real reply still unlocks it", async () => {
+    openGate();
+
+    await handleMessage(storyMention());
+
+    expect(markGated).not.toHaveBeenCalled();
+    expect(markCompleted).not.toHaveBeenCalled();
+  });
+
+  it("does not draft a reply to a story mention", async () => {
+    // The live draft said "your message came through blank" — it wasn't blank,
+    // it was a story tag.
+    await handleMessage(storyMention());
+
+    expect(queueReplyDraft).not.toHaveBeenCalled();
+  });
+
+  it("still captures the mention as inbound engagement", async () => {
+    await handleMessage(storyMention());
+
+    expect(recordInboundMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ messageType: "unknown", text: null }),
+    );
+    expect(recordRecoveryInbound).toHaveBeenCalledOnce();
+    expect(logEvent).toHaveBeenCalledWith(
+      "story_mention_received",
+      expect.objectContaining({ senderId: "ig-user-1" }),
+    );
+  });
+
+  it("still unlocks the gate for a reply to OUR story, which is a real reply", async () => {
+    openGate();
+
+    // A story REPLY carries the person's own words and arrives with
+    // `story.reply_to`, not `story.mention`. That is genuine consent.
+    await handleMessage(
+      storyMention({ text: "Done", story: { reply_to: { link: "https://ig/story" } } }),
+    );
+
+    expect(sendSequence).toHaveBeenCalledOnce();
+    expect(markCompleted).toHaveBeenCalledWith("convo-1");
+  });
+});
+
 describe("handleMessage — engagement follow-up scheduling", () => {
   const expectedScheduleInput = {
     conversationId: "convo-1",

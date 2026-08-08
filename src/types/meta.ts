@@ -37,6 +37,23 @@ export interface MessagingEntry {
       type?: string;
       payload?: { url?: string; [key: string]: unknown };
     }>;
+    /**
+     * Story context, and the two cases are opposites.
+     *
+     * `mention` — they tagged us in THEIR story. Meta delivers it as an ordinary
+     * inbound message with no text and NO attachments array, so without this
+     * field it is indistinguishable from the person typing nothing at us.
+     * Verified 2026-08-08 against the Graph API, which returned
+     * `{"message":"","story":{"mention":{"link":""}}}` for such a mid.
+     *
+     * `reply_to` — they replied to OUR story, in their own words. That is a real
+     * message and is treated as one.
+     */
+    story?: {
+      mention?: { link?: string; [key: string]: unknown };
+      reply_to?: { link?: string; [key: string]: unknown };
+      [key: string]: unknown;
+    };
   };
   read?: { mid?: string; watermark?: number };
   reaction?: {
