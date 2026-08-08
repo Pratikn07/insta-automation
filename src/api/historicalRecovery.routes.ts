@@ -144,8 +144,12 @@ historicalRecoveryRouter.get("/candidates", async (req, res) => {
     return;
   }
   const { campaignId, view, limit, cursor } = parsed.data;
+  const effectiveAsOf = parsed.data.asOf ? new Date(parsed.data.asOf) : new Date();
 
-  const base: Prisma.RecoveryCandidateWhereInput = campaignId ? { campaignId } : {};
+  const base: Prisma.RecoveryCandidateWhereInput = {
+    ...(campaignId ? { campaignId } : {}),
+    createdAt: { lte: effectiveAsOf },
+  };
   const where: Prisma.RecoveryCandidateWhereInput = { ...base, ...candidateViewWhere(view) };
 
   const rows = await prisma.recoveryCandidate.findMany({
@@ -177,9 +181,11 @@ historicalRecoveryRouter.get("/candidates", async (req, res) => {
   res.json({
     counts,
     nextCursor: hasMore ? page[page.length - 1]?.id ?? null : null,
+    asOf: effectiveAsOf.toISOString(),
     candidates: page.map((r) => ({
       id: r.id,
       campaignId: r.campaignId,
+      campaignPhase: r.campaignPhase,
       igUserId: r.igUserId,
       username: usersById[r.igUserId]?.username ?? null,
       keywordSnapshot: r.keywordSnapshot,
@@ -197,13 +203,13 @@ historicalRecoveryRouter.get("/candidates", async (req, res) => {
       sentAt: r.sentAt?.toISOString() ?? null,
       publicReplyId: r.publicReplyId,
       suppressionReason: r.suppressionReason,
+      reviewedAt: r.reviewedAt?.toISOString() ?? null,
       laterInboundAt: r.laterInboundAt?.toISOString() ?? null,
       laterCompletedAt: r.laterCompletedAt?.toISOString() ?? null,
+      createdAt: r.createdAt.toISOString(),
     })),
   });
 });
-
-const approveBody = z.object({ approvedBy: z.string().min(1).max(120) });
 
 /**
  * Approve a campaign — the moment public comments become possible.
@@ -213,13 +219,12 @@ const approveBody = z.object({ approvedBy: z.string().min(1).max(120) });
  * for an action that posts on real people's posts.
  */
 historicalRecoveryRouter.post("/campaigns/:id/approve", async (req, res) => {
-  const body = approveBody.safeParse(req.body);
-  if (!body.success) {
-    res.status(400).json({ error: "approver_required" });
+  if (!req.adminEmail) {
+    res.status(401).json({ error: "unauthorized" });
     return;
   }
 
-  const result = await approveCampaign(req.params.id, body.data.approvedBy);
+  const result = await approveCampaign(req.params.id, req.adminEmail);
   if (!result.ok) {
     // 409, not 400: the request was well-formed, the campaign was simply not in a
     // state this action applies to.
