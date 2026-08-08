@@ -9,6 +9,7 @@ import {
   isGraphAuthenticationError,
   type FeedFollowMetricResult,
 } from "../meta/mediaFollowFetcher.js";
+import { dayKeyToSqlDate, toAnalyticsDayKey } from "./analyticsDay.js";
 import { describeGraphError, logEvent } from "./eventLogger.js";
 
 const FEED_SCOPE = "feed";
@@ -83,10 +84,6 @@ function asDate(value: string | null): Date | null {
   if (!value) return null;
   const date = new Date(value);
   return Number.isFinite(date.getTime()) ? date : null;
-}
-
-export function utcDay(value: Date): Date {
-  return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate()));
 }
 
 function errorMessage(details: Record<string, unknown>): string {
@@ -188,7 +185,7 @@ export function createPrismaFeedFollowRepository(client: PrismaClient): FeedFoll
       }
 
       // A newer unsuccessful attempt replaces an older unsuccessful attempt,
-      // but can never erase a successful reading from the same UTC day.
+      // but can never erase a successful reading from the same Pacific analytics day.
       await client.$executeRaw`
         INSERT INTO "feed_follow_daily_snapshot"
           ("media_id", "day", "captured_at", "follows", "status")
@@ -225,7 +222,7 @@ export function createPrismaFeedFollowRepository(client: PrismaClient): FeedFoll
   };
 }
 
-/** Collect one latest cumulative follows reading per FEED post for the UTC day. */
+/** Collect one latest cumulative follows reading per FEED post for the Pacific analytics day. */
 export async function collectFeedFollowSnapshot(
   deps: FeedFollowCollectorDependencies,
   now = new Date(),
@@ -276,7 +273,7 @@ export async function collectFeedFollowSnapshot(
       metricFailed = true;
     }
     const capturedAt = clock();
-    const day = utcDay(capturedAt);
+    const day = dayKeyToSqlDate(toAnalyticsDayKey(capturedAt));
 
     // Fence every persistence group with an ownership check. A collector that
     // stalled beyond its lease must stop before an active successor's data can

@@ -1,6 +1,12 @@
 import type { DailyAddsBasis, FollowerDailyAddsPoint } from "./followerFlowCore.js";
-
-const DAY_MS = 24 * 60 * 60 * 1000;
+import {
+  calendarDaysBetween,
+  enumerateDayKeys,
+  isDayKey,
+  shiftDayKey,
+  sqlDateToDayKey,
+  toAnalyticsDayKey,
+} from "./analyticsDay.js";
 
 export interface FeedAttributionPost {
   mediaId: string;
@@ -89,40 +95,22 @@ interface CalculatedSnapshot {
   spanDays: number | null;
 }
 
-function dayString(value: Date): string {
-  return value.toISOString().slice(0, 10);
-}
-
-function dayNumber(day: string): number {
-  return Date.parse(`${day}T00:00:00Z`);
-}
-
-function calendarDaysBetween(from: string, to: string): number {
-  return Math.round((dayNumber(to) - dayNumber(from)) / DAY_MS);
-}
-
-function enumerateDays(from: string, to: string): string[] {
-  const days: string[] = [];
-  for (let value = dayNumber(from); value <= dayNumber(to); value += DAY_MS) {
-    days.push(new Date(value).toISOString().slice(0, 10));
-  }
-  return days;
-}
-
 function calculateSnapshots(
   post: FeedAttributionPost,
   snapshots: FeedAttributionSnapshot[],
   trackingStartedAt: Date | null,
 ): Map<string, CalculatedSnapshot> {
   let priorCount = post.baselineFollows;
-  let priorDay = post.baselineCapturedAt ? dayString(post.baselineCapturedAt) : null;
+  let priorDay = post.baselineCapturedAt
+    ? toAnalyticsDayKey(post.baselineCapturedAt)
+    : null;
   let firstSuccessfulReading = true;
   const usesPublicationBaseline =
     trackingStartedAt !== null && post.postedAt !== null && post.postedAt >= trackingStartedAt;
   const byDay = new Map<string, CalculatedSnapshot>();
 
   for (const snapshot of snapshots.sort((a, b) => a.day.getTime() - b.day.getTime())) {
-    const day = dayString(snapshot.day);
+    const day = sqlDateToDayKey(snapshot.day);
     let delta: number | null = null;
     let spanDays: number | null = null;
     if (snapshot.status === "ok" && snapshot.follows !== null && priorCount !== null) {
@@ -176,9 +164,11 @@ export function buildFeedFollowAttribution(input: BuildAttributionInput): FeedFo
     ]),
   );
   const followersByDay = new Map(input.followerPoints.map((point) => [point.day, point]));
-  const trackingDay = input.trackingStartedAt ? dayString(input.trackingStartedAt) : null;
+  const trackingDay = input.trackingStartedAt
+    ? toAnalyticsDayKey(input.trackingStartedAt)
+    : null;
 
-  const days = enumerateDays(input.from, input.to).map<FeedAttributionDay>((day) => {
+  const days = enumerateDayKeys(input.from, input.to).map<FeedAttributionDay>((day) => {
     if (trackingDay === null || day < trackingDay) {
       const account = followersByDay.get(day);
       return {
@@ -208,8 +198,8 @@ export function buildFeedFollowAttribution(input: BuildAttributionInput): FeedFo
         post.postedAt >= input.trackingStartedAt;
       const eligibleFrom =
         publishedAfterTracking && post.postedAt
-          ? dayString(post.postedAt)
-          : dayString(post.firstSeenAt);
+          ? toAnalyticsDayKey(post.postedAt)
+          : toAnalyticsDayKey(post.firstSeenAt);
       return eligibleFrom <= day;
     });
     let successfulPosts = 0;
@@ -271,7 +261,7 @@ export function buildFeedFollowAttribution(input: BuildAttributionInput): FeedFo
           ? "partial"
           : "missing";
     // State creation never proves the first count was captured at 00:00:00, so
-    // deployment day is always partial. Comparable windows start next UTC day.
+    // deployment day is always partial. Comparable windows start next Pacific analytics day.
     const trackingPartialDay = day === trackingDay;
     if (trackingPartialDay && collectionStatus === "complete") collectionStatus = "partial";
     const attributedFeedFollows = successfulPosts > 0 ? attributed : null;
@@ -326,22 +316,16 @@ export function buildFeedFollowAttribution(input: BuildAttributionInput): FeedFo
   };
 }
 
-function validDay(value: unknown): value is string {
-  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const parsed = dayNumber(value);
-  return Number.isFinite(parsed) && new Date(parsed).toISOString().slice(0, 10) === value;
-}
-
 export function parseFeedFollowAttributionRange(
   query: { from?: unknown; to?: unknown },
   now = new Date(),
 ): { from: string; to: string } {
-  const today = dayString(now);
+  const today = toAnalyticsDayKey(now);
   const to = query.to ?? today;
-  if (!validDay(to)) throw new Error("invalid_date_range");
-  const defaultFrom = new Date(dayNumber(to) - 29 * DAY_MS).toISOString().slice(0, 10);
+  if (!isDayKey(to)) throw new Error("invalid_date_range");
+  const defaultFrom = shiftDayKey(to, -29);
   const from = query.from ?? defaultFrom;
-  if (!validDay(from)) throw new Error("invalid_date_range");
+  if (!isDayKey(from)) throw new Error("invalid_date_range");
   const span = calendarDaysBetween(from, to);
   if (span < 0 || span > 89) throw new Error("invalid_date_range");
   return { from, to };

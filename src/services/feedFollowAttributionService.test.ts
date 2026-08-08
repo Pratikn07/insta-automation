@@ -81,11 +81,14 @@ describe("getFeedFollowAttribution", () => {
       expect.objectContaining({
         where: {
           OR: [
-            { firstSeenAt: { lt: new Date("2026-08-03T00:00:00Z") } },
-            { postedAt: { lt: new Date("2026-08-03T00:00:00Z") } },
+            { firstSeenAt: { lt: new Date("2026-08-03T07:00:00Z") } },
+            { postedAt: { lt: new Date("2026-08-03T07:00:00Z") } },
           ],
         },
       }),
+    );
+    expect(prisma.feedFollowDailySnapshot.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { day: { lte: new Date("2026-08-02T00:00:00Z") } } }),
     );
     expect(response.range).toEqual({ from: "2026-08-02", to: "2026-08-02" });
     expect(response.tracking).toEqual({

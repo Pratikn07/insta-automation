@@ -179,6 +179,30 @@ describe("FeedFollowAttributionDrawer", () => {
     expect(html).not.toMatch(/reel.+caused|caused.+reel/i);
   });
 
+  it("formats publication instants in Pacific time without shifting the selected day key", () => {
+    const withPost = attributionDay({
+      day: "2026-08-05",
+      posts: [
+        {
+          mediaId: "ig-pacific-boundary",
+          mediaType: "IMAGE",
+          caption: "A post near the UTC day boundary",
+          permalink: "https://www.instagram.com/p/pacific-boundary/",
+          thumbnailUrl: null,
+          postedAt: "2026-08-05T00:30:00Z",
+          follows: 4,
+          delta: 2,
+          spanDays: 1,
+        },
+      ],
+    });
+    const html = renderDrawer({ day: "2026-08-05", data: response(withPost) });
+
+    expect(html).toContain("August 5, 2026");
+    expect(html).toContain("Published Aug 4, 2026 Pacific");
+    expect(html).not.toContain("Published Aug 5, 2026 UTC");
+  });
+
   it("falls back for an empty thumbnail and rejects a non-Instagram link", () => {
     const invalidMedia = attributionDay({
       posts: [

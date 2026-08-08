@@ -99,7 +99,7 @@ export function feedCollectionCopy(day: FeedFollowAttributionDay): FeedCollectio
   ) {
     return {
       label: "Partial collection",
-      detail: `All ${day.eligiblePosts} post readings succeeded, but tracking began partway through this UTC day.`,
+      detail: `All ${day.eligiblePosts} post readings succeeded, but tracking began partway through this Pacific day.`,
       tone: "caution",
     };
   }

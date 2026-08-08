@@ -72,7 +72,7 @@ export const envSchema = z.object({
   // small dev interval can't spam the Graph API.
   SNAPSHOT_INTERVAL_MS: z.coerce.number().int().min(60_000).default(6 * 60 * 60 * 1000),
   // Regular FEED-post follow attribution. The worker can retry throughout the
-  // day, while its composite key keeps storage to one latest row per UTC day.
+  // day, while its composite key keeps storage to one latest row per Pacific analytics day.
   FEED_FOLLOW_SNAPSHOT_INTERVAL_MS: z.coerce
     .number()
     .int()

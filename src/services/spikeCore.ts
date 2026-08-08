@@ -18,7 +18,7 @@ import type { FollowerDailyAddsPoint } from "./followerFlowCore.js";
 export type SpikeConfidence = "high" | "medium" | "low";
 
 export interface Spike {
-  day: string; // UTC calendar day of the spike
+  day: string; // Pacific analytics calendar day of the spike
   net: number; // measured net adds that day
   baselineMedian: number; // trailing median it was compared against
   multiple: number; // net / baselineMedian, rounded to 1dp

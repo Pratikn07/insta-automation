@@ -1,13 +1,12 @@
 import { prisma } from "../lib/prisma.js";
 import { getFollowerDailyAddsPointsForRange } from "./followerFlowService.js";
+import { analyticsDayBounds, dayKeyToSqlDate, sqlDateToDayKey } from "./analyticsDay.js";
 import {
   buildFeedFollowAttribution,
   type FeedAttributionPost,
   type FeedAttributionSnapshot,
   type FeedFollowAttribution,
 } from "./feedFollowAttributionCore.js";
-
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 export interface FeedFollowAttributionResponse extends FeedFollowAttribution {
   range: { from: string; to: string };
@@ -32,8 +31,8 @@ export async function getFeedFollowAttribution(range: {
   from: string;
   to: string;
 }): Promise<FeedFollowAttributionResponse> {
-  const toDay = new Date(`${range.to}T00:00:00Z`);
-  const toExclusive = new Date(toDay.getTime() + DAY_MS);
+  const toDay = dayKeyToSqlDate(range.to);
+  const toExclusive = analyticsDayBounds(range.to).endExclusive;
 
   const state = await prisma.feedFollowCollectorState.findUnique({
     where: { scope: "feed" },
@@ -98,7 +97,7 @@ export async function getFeedFollowAttribution(range: {
       failedCount: state?.failedCount ?? 0,
       lastError: state?.lastError ?? null,
       trackedPosts: posts.length,
-      latestSnapshotDay: latestSnapshot?.day.toISOString().slice(0, 10) ?? null,
+      latestSnapshotDay: latestSnapshot ? sqlDateToDayKey(latestSnapshot.day) : null,
     },
     ...attribution,
     caveats: [

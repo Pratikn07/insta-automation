@@ -47,6 +47,7 @@ export function Home() {
         month: "short",
         day: "numeric",
         year: "numeric",
+        timeZone: flowQ.data?.analyticsTimeZone ?? "America/Los_Angeles",
       })
     : "Waiting for the next snapshot";
 

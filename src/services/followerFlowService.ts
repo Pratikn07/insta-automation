@@ -8,18 +8,24 @@ import {
   type FollowerDailyAddsPoint,
   type FollowerStock,
 } from "./followerFlowCore.js";
+import {
+  ANALYTICS_TIME_ZONE,
+  analyticsDayBounds,
+  shiftDayKey,
+  toAnalyticsDayKey,
+} from "./analyticsDay.js";
 import { getSpikesByDay } from "./spikeService.js";
 
 // DB-facing wrapper around the pure follower-flow core (followerFlowCore.ts) —
 // all diff/gap/staleness semantics live there.
 
 export interface FollowerFlowResult {
+  analyticsTimeZone: typeof ANALYTICS_TIME_ZONE;
   points: FollowerDailyAddsPoint[];
   stock: FollowerStock | null;
 }
 
 const LOOKBACK_DAYS = 90;
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 interface FollowerSnapshotRow {
   capturedAt: Date;
@@ -30,7 +36,7 @@ interface FollowerSnapshotRow {
 function anchorsFromRows(rows: FollowerSnapshotRow[]): AnchorSnapshot[] {
   const anchorsByDay = new Map<string, AnchorSnapshot>();
   for (const row of rows) {
-    const day = row.capturedAt.toISOString().slice(0, 10);
+    const day = toAnalyticsDayKey(row.capturedAt);
     anchorsByDay.set(day, {
       day,
       capturedAt: row.capturedAt,
@@ -50,26 +56,25 @@ export async function getFollowerDailyAddsPointsForRange(range: {
   from: string;
   to: string;
 }): Promise<FollowerDailyAddsPoint[]> {
-  const fromMs = Date.parse(`${range.from}T00:00:00Z`);
-  const toSuccessorExclusive = new Date(Date.parse(`${range.to}T00:00:00Z`) + 3 * DAY_MS);
+  const toSuccessorExclusive = analyticsDayBounds(shiftDayKey(range.to, 3)).start;
   const rows = await prisma.geoDemographicSnapshot.findMany({
     where: { stage: "follower", capturedAt: { lt: toSuccessorExclusive } },
     orderBy: { capturedAt: "asc" },
     select: { capturedAt: true, counts: true, totalCounted: true },
   });
-  return buildDailyPoints(anchorsFromRows(rows)).filter((point) => {
-    const pointMs = Date.parse(`${point.day}T00:00:00Z`);
-    return pointMs >= fromMs && point.day <= range.to;
-  });
+  return buildDailyPoints(anchorsFromRows(rows)).filter(
+    (point) => point.day >= range.from && point.day <= range.to,
+  );
 }
 
 /**
- * The follower-flow read model: one point per calendar day over the lookback,
- * plus the latest cumulative stock. Last snapshot of each UTC day is the anchor
+ * The follower-flow read model: one point per Pacific analytics day over the lookback,
+ * plus the latest cumulative stock. Last snapshot of each Pacific analytics day is the anchor
  * — the first-of-day snapshot systematically still carries yesterday's vector.
  */
 export async function getFollowerDailyAdds(): Promise<FollowerFlowResult> {
-  const cutoff = new Date(Date.now() - LOOKBACK_DAYS * DAY_MS);
+  const today = toAnalyticsDayKey(new Date());
+  const cutoff = analyticsDayBounds(shiftDayKey(today, -LOOKBACK_DAYS)).start;
 
   // Kick off the profile fetch before awaiting the DB read — it's an independent
   // network call, so serializing them would add its latency for nothing. Fetched
@@ -83,7 +88,7 @@ export async function getFollowerDailyAdds(): Promise<FollowerFlowResult> {
     select: { capturedAt: true, counts: true, totalCounted: true },
   });
 
-  // Last row per UTC day wins.
+  // Last row per Pacific analytics day wins.
   const anchors = anchorsFromRows(rows);
   const points = buildDailyPoints(anchors);
 
@@ -97,6 +102,7 @@ export async function getFollowerDailyAdds(): Promise<FollowerFlowResult> {
   const { followersTotal } = await profileTotalsPromise;
 
   return {
+    analyticsTimeZone: ANALYTICS_TIME_ZONE,
     points,
     stock:
       anchors.length > 0

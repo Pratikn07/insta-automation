@@ -1007,15 +1007,27 @@ rg -n "UTC day|UTC calendar day|bucketed by UTC|this UTC day|inclusive UTC dates
 
 Expected: no stale comments or user-facing claims. Deliberate frontend `timeZone: "UTC"` label-formatting options may remain and must carry the abstract-key comment added in Task 6.
 
-- [ ] **Step 4: Apply the migration in the intended deployment environment**
+- [ ] **Step 4: Perform the coordinated application/migration cutover**
 
-Run: `npx prisma migrate deploy`
+Follow `DEPLOY.md` section **One-time Pacific analytics-day cutover** exactly.
+Application startup and migration execution are separate: first deploy the
+compatible application without a Railway Pre-Deploy migration command, wait
+until the old UTC-key deployment and every one of its replicas are `Removed`,
+then apply
+`20260806180000_rekey_feed_follow_snapshots_to_pacific_day` once from the active
+release image. The migration's transaction-local lock timeout must fail and roll
+back cleanly rather than wait indefinitely.
 
-Expected: `20260806180000_rekey_feed_follow_snapshots_to_pacific_day` applies once and its verification block completes without raising an exception. Confirm the command targets the intended project database before running it.
+Do not run `prisma migrate deploy` against production before the compatible
+collector is active, and do not roll back to the UTC-key collector after the
+constraint has committed.
 
-- [ ] **Step 5: Verify the live API payload**
+- [ ] **Step 5: Verify the live API payload with read-only HTTP requests**
 
-Request `/api/insights/follower-daily-adds`, select its August 5 and August 6 points, and confirm:
+Run the exact authenticated `curl`/Node smoke commands in `DEPLOY.md`; they issue
+only `GET` requests to `/api/insights/follower-daily-adds` and
+`/api/insights/feed-follow-attribution?from=2026-08-05&to=2026-08-05`. For the
+follower response, select its August 5 and August 6 points and confirm:
 
 ```json
 {

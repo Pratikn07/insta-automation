@@ -403,7 +403,7 @@ export interface SpikeInfo {
 }
 
 export interface FollowerDailyAddsPoint {
-  day: string; // UTC calendar day, "2026-07-21"
+  day: string; // Pacific analytics calendar day, "2026-07-21"
   capturedAt: string | null;
   us: number | null;
   southAsian: number | null;
@@ -435,6 +435,7 @@ export interface FollowerStock {
 }
 
 export interface FollowerFlowResponse {
+  analyticsTimeZone: "America/Los_Angeles";
   points: FollowerDailyAddsPoint[];
   stock: FollowerStock | null;
 }

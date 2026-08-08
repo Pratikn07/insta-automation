@@ -35,6 +35,7 @@ const HEIGHT = 220;
 const GUTTER_LEFT = 34;
 const X_TICK_COUNT = 6;
 
+// This is an abstract Pacific day key; UTC formatting prevents browser date shifting.
 function tickLabel(day: string): string {
   return new Date(`${day}T00:00:00Z`).toLocaleDateString(undefined, {
     timeZone: "UTC",
