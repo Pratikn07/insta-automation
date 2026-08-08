@@ -286,7 +286,9 @@ export async function selectHistoricalCandidates(input: {
           // your DMs!", which points a person at the exact thing that failed.
           // Chosen by evidence so we never publicly claim the DM failed when all we
           // know is that no read receipt arrived.
-          publicReplyText: recoveryCopyFor(entry.evidence),
+          // Rendered with the keyword, because the instruction IS to DM that keyword.
+          // Copy without it would tell the person to send something we never named.
+          publicReplyText: recoveryCopyFor(entry.evidence, row.keywordSnapshot),
           evidence: entry.evidence,
           audienceOrigin: row.audienceOrigin,
           audienceOriginConfidence: row.audienceOriginConfidence,
