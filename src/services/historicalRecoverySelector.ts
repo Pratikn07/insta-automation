@@ -5,6 +5,8 @@ import {
   keepLatestPerPerson,
   assertNoDuplicates,
   evidenceMatchesPhase,
+  assignArm,
+  validateArmSplit,
   type CampaignPhase,
   type EligibilityFacts,
 } from "./historicalRecoveryEligibility.js";
@@ -272,14 +274,33 @@ export async function selectHistoricalCandidates(input: {
     },
   });
 
-  // Deterministic arm assignment by position, oldest first. A hash on the person id
-  // would be preferable for a prospective experiment, but here the pool is fixed and
-  // known, so an even split across the ordered list gives balanced arms without
-  // depending on id distribution.
+  // Arms assigned by hashing (selectionVersion, igUserId), NOT by list position.
+  // Position-based assignment on an oldest-first list gave 0 treatment for a 25-person
+  // pilot at 50%, and confounded the arm with comment age at scale (QA-07).
+  const arms = new Map(
+    selected.map((entry) => [
+      entry.facts.intentId,
+      assignArm(entry.facts.igUserId, input.selectionVersion, holdoutPercent),
+    ]),
+  );
+
+  // A hash on a small pool does not land on the nominal percentage, so check the
+  // realized split before writing rather than discovering it after approval.
+  const split = validateArmSplit({
+    treatment: [...arms.values()].filter((a) => a === "treatment").length,
+    holdout: [...arms.values()].filter((a) => a === "holdout").length,
+    holdoutPercent,
+  });
+  if (!split.ok) {
+    throw new Error(
+      `historical recovery selection produced an unusable arm split: ${split.reason}`,
+    );
+  }
+
   await prisma.$transaction(
-    selected.map((entry, index) => {
+    selected.map((entry) => {
       const row = byIntent.get(entry.facts.intentId)!.row;
-      const arm = index % 100 < holdoutPercent ? "holdout" : "treatment";
+      const arm = arms.get(entry.facts.intentId)!;
       return prisma.recoveryCandidate.create({
         data: {
           campaignId: campaign.id,
