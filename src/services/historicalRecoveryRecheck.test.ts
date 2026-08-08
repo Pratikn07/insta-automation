@@ -7,8 +7,7 @@ import { recheckBeforeSend, type RecheckFacts } from "./historicalRecoveryRechec
 
 function facts(overrides: Partial<RecheckFacts> = {}): RecheckFacts {
   return {
-    commentStillExists: true,
-    commentHidden: false,
+    sourceComment: "visible",
     repliedSinceSelection: false,
     completedSinceSelection: false,
     contactedSinceSelection: false,
@@ -100,7 +99,7 @@ describe("recheckBeforeSend — the comment must be there", () => {
   // Measured: 1 of 3 sampled 44-day-old comments had been deleted. This is not a
   // rare edge case.
   it("suppresses a deleted comment", () => {
-    expect(recheckBeforeSend(facts({ commentStillExists: false }))).toEqual({
+    expect(recheckBeforeSend(facts({ sourceComment: "missing" }))).toEqual({
       kind: "suppress",
       reason: "source_comment_deleted",
     });
@@ -109,10 +108,41 @@ describe("recheckBeforeSend — the comment must be there", () => {
   // Worse than a deletion: replying to a hidden comment SUCCEEDS, so it would be
   // recorded as sent and counted in the experiment while nobody ever saw it.
   it("suppresses a hidden comment", () => {
-    expect(recheckBeforeSend(facts({ commentHidden: true }))).toEqual({
+    expect(recheckBeforeSend(facts({ sourceComment: "hidden" }))).toEqual({
       kind: "suppress",
       reason: "source_comment_hidden",
     });
+  });
+
+  // QA-09. THE distinction that was missing: a read we could not complete must never
+  // read as "the comment is gone". The worker caught every failure and reported
+  // not-there, so one timeout permanently suppressed a candidate whose comment was
+  // fine — and counted it as a deletion in the source-unavailable metric.
+  it("defers a read we could not complete, never suppresses it", () => {
+    expect(recheckBeforeSend(facts({ sourceComment: "unknown" }))).toEqual({
+      kind: "defer",
+      reason: "source_read_failed",
+    });
+  });
+
+  // Auth is reported separately so the worker can open the shared circuit. One
+  // expired token would otherwise churn the entire remaining pool.
+  it("defers an auth failure under its own reason", () => {
+    expect(recheckBeforeSend(facts({ sourceComment: "auth" }))).toEqual({
+      kind: "defer",
+      reason: "source_read_auth_failed",
+    });
+  });
+
+  // The property that matters more than any single case: only a definitive answer
+  // from Meta may be terminal.
+  it("only ever suppresses on a definitive answer", () => {
+    for (const state of ["auth", "unknown"] as const) {
+      expect(recheckBeforeSend(facts({ sourceComment: state })).kind).toBe("defer");
+    }
+    for (const state of ["missing", "hidden"] as const) {
+      expect(recheckBeforeSend(facts({ sourceComment: state })).kind).toBe("suppress");
+    }
   });
 });
 
@@ -169,14 +199,14 @@ describe("recheckBeforeSend — reason precedence", () => {
   // hunting for a data problem that is not there.
   it("reports the pause ahead of a data problem", () => {
     const decision = recheckBeforeSend(
-      facts({ campaignRunning: false, commentStillExists: false }),
+      facts({ campaignRunning: false, sourceComment: "missing" }),
     );
     expect(decision).toEqual({ kind: "defer", reason: "campaign_not_running" });
   });
 
   it("reports the missing comment ahead of the market rule", () => {
     const decision = recheckBeforeSend(
-      facts({ commentStillExists: false, audienceOrigin: "south_asian" }),
+      facts({ sourceComment: "missing", audienceOrigin: "south_asian" }),
     );
     expect(decision).toEqual({ kind: "suppress", reason: "source_comment_deleted" });
   });
@@ -195,8 +225,10 @@ describe("recheckBeforeSend — reason precedence", () => {
       { campaignRunning: false },
       { sentThisHour: 3 },
       { sentToday: 10 },
-      { commentStillExists: false },
-      { commentHidden: true },
+      { sourceComment: "missing" },
+      { sourceComment: "hidden" },
+      { sourceComment: "auth" },
+      { sourceComment: "unknown" },
       { repliedSinceSelection: true },
       { completedSinceSelection: true },
       { contactedSinceSelection: true },

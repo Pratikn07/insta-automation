@@ -115,6 +115,65 @@ export function classifyPrivateGateFailure(
   return "uncertain";
 }
 
+/**
+ * What a failed read of the source comment means (QA-09).
+ *
+ * Distinct from `PublicReplyFailure` because the question is different: that one asks
+ * "did my post land?", this asks "does the thing I want to reply to still exist?".
+ *
+ *   - `missing`  — Meta answered, and the answer was that the object is not there.
+ *                  Only this may terminally suppress a candidate.
+ *   - `auth`     — credentials or permissions. Opens the shared circuit; suppressing
+ *                  would burn the whole pool on one expired token.
+ *   - `deferred` — rate limit, timeout, 5xx, or anything unrecognised. Try later.
+ */
+export type SourceReadFailure = "missing" | "auth" | "deferred";
+
+/**
+ * Classify a failed source-comment read.
+ *
+ * The worker previously caught every failure and returned null, which the recheck read
+ * as `source_comment_deleted` — terminal. So a timeout, a rate limit, a Meta 5xx, an
+ * expired token, or a permission regression permanently suppressed a candidate whose
+ * comment was fine, and corrupted the source-unavailable metric at the same time.
+ *
+ * Deliberately narrow on `missing`. Code 100 alone is NOT enough: on the private-reply
+ * path it also covers "older than seven days" and "already replied to". Only the two
+ * signatures that mean the object could not be resolved count, and everything
+ * unrecognised defers — the safe direction, because deferring costs a tick while
+ * suppressing costs the candidate permanently.
+ */
+export function classifySourceReadFailure(
+  metadata: GraphErrorMetadata,
+): SourceReadFailure {
+  // Auth first: an expired token 400s on some endpoints, and reading that as
+  // "missing" would suppress every remaining candidate in the campaign.
+  if (
+    metadata.httpStatus === 401 ||
+    metadata.httpStatus === 403 ||
+    metadata.graphCode === 10 ||
+    metadata.graphCode === 190 ||
+    metadata.graphCode === 200
+  ) {
+    return "auth";
+  }
+
+  if (isRateLimit(metadata)) return "deferred";
+
+  // Meta answered that the object is gone. Code 803 is "object does not exist";
+  // subcode 33 on code 100 is "unsupported get request" for an unresolvable id —
+  // both are Meta stating the id resolves to nothing.
+  if (metadata.category === "graph_response") {
+    if (metadata.graphCode === 803) return "missing";
+    if (metadata.graphCode === 100 && metadata.graphSubcode === 33) return "missing";
+    if (metadata.httpStatus === 404) return "missing";
+  }
+
+  // Transport failures, 5xx, and every unrecognised shape. The comment may well be
+  // there; we simply could not ask.
+  return "deferred";
+}
+
 export function classifyPublicReplyFailure(
   metadata: GraphErrorMetadata,
 ): PublicReplyFailure {

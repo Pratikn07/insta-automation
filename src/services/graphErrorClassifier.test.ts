@@ -4,6 +4,7 @@ import { describeGraphError, type GraphErrorMetadata } from "./eventLogger.js";
 import {
   classifyPrivateGateFailure,
   classifyPublicReplyFailure,
+  classifySourceReadFailure,
   parseGraphSignatures,
 } from "./graphErrorClassifier.js";
 
@@ -193,5 +194,78 @@ describe("graphErrorClassifier", () => {
       );
       expect(timedOut).not.toBe(refused);
     });
+  });
+});
+
+// QA-09. The worker read the source comment with `.catch(() => null)`, so EVERY read
+// failure became "the comment is gone" — terminal. A timeout, a 429, a Meta 5xx, an
+// expired token, or a permission regression permanently suppressed candidates whose
+// comments were fine, and each one was counted as a deletion.
+//
+// The property under test is asymmetric on purpose: a wrong `deferred` costs one tick,
+// a wrong `missing` costs the candidate forever. So everything unrecognised must defer.
+describe("classifySourceReadFailure", () => {
+  // Meta answered, and the answer was that the object is not there.
+  it.each([
+    ["code 803, object does not exist", { graphCode: 803 }],
+    ["code 100 subcode 33, unresolvable id", { graphCode: 100, graphSubcode: 33 }],
+    ["HTTP 404", { httpStatus: 404 }],
+  ])("treats %s as missing", (_label, overrides) => {
+    expect(classifySourceReadFailure(graphMetadata(overrides))).toBe("missing");
+  });
+
+  // Credentials or permissions. Suppressing here would burn the whole remaining pool
+  // on one expired token, so it is reported separately and opens the circuit.
+  it.each([
+    ["HTTP 401", { httpStatus: 401 }],
+    ["HTTP 403", { httpStatus: 403 }],
+    ["code 190, invalid token", { graphCode: 190 }],
+    ["code 10, permission denied", { graphCode: 10 }],
+    ["code 200, insufficient permission", { graphCode: 200 }],
+  ])("treats %s as auth", (_label, overrides) => {
+    expect(classifySourceReadFailure(graphMetadata(overrides))).toBe("auth");
+  });
+
+  // Everything that says nothing about whether the comment exists.
+  it.each([
+    ["HTTP 429", { httpStatus: 429 }],
+    ["code 4, application rate limit", { graphCode: 4 }],
+    ["code 613, calls-per-hour limit", { graphCode: 613 }],
+    ["HTTP 500", { httpStatus: 500 }],
+    ["HTTP 503", { httpStatus: 503 }],
+    ["an empty response with no signature", {}],
+  ])("defers on %s", (_label, overrides) => {
+    expect(classifySourceReadFailure(graphMetadata(overrides))).toBe("deferred");
+  });
+
+  // A timeout produces no response at all, which is exactly the case the old
+  // `.catch(() => null)` mislabelled as a deletion.
+  it("defers on a transport failure such as a timeout", () => {
+    expect(classifySourceReadFailure(transportMetadata("ETIMEDOUT"))).toBe("deferred");
+    expect(classifySourceReadFailure(transportMetadata("ECONNRESET"))).toBe("deferred");
+    expect(classifySourceReadFailure(transportMetadata(null))).toBe("deferred");
+  });
+
+  // Bare code 100 also covers "older than seven days" and "already replied to" on the
+  // private-reply path, so on its own it is not proof the object is gone.
+  it("does not treat a bare code 100 as missing", () => {
+    expect(classifySourceReadFailure(graphMetadata({ graphCode: 100 }))).toBe("deferred");
+  });
+
+  // An expired token can 400 on some endpoints. Auth is checked first so that does not
+  // read as a deletion.
+  it("prefers auth over missing when both signatures are present", () => {
+    expect(
+      classifySourceReadFailure(graphMetadata({ httpStatus: 404, graphCode: 190 })),
+    ).toBe("auth");
+  });
+
+  // A transport failure carries no HTTP status, so a `missing` signature can only come
+  // from a real response. Pinned so a future edit cannot let a dropped connection
+  // suppress a candidate.
+  it("never reports missing without a response from Meta", () => {
+    for (const code of ["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "ENOTFOUND", null]) {
+      expect(classifySourceReadFailure(transportMetadata(code))).not.toBe("missing");
+    }
   });
 });

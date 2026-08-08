@@ -39,7 +39,13 @@ vi.mock("../meta/replyToComment.js", () => ({ replyToComment }));
 vi.mock("../meta/fetchComment.js", () => ({ fetchComment }));
 vi.mock("./dmRecoveryHealth.js", () => ({ evaluateRecoveryHealth, openRecoveryCircuit }));
 vi.mock("./eventLogger.js", () => ({ logEvent, describeGraphError }));
-vi.mock("./graphErrorClassifier.js", () => ({ classifyPublicReplyFailure }));
+// classifySourceReadFailure is deliberately NOT mocked: QA-09's defect was
+// misclassification, so a stub here would prove nothing. Only the send-path classifier
+// is faked, because those tests drive it by category on purpose.
+vi.mock("./graphErrorClassifier.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./graphErrorClassifier.js")>()),
+  classifyPublicReplyFailure,
+}));
 vi.mock("../lib/logger.js", () => ({
   logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
@@ -187,15 +193,80 @@ describe("runHistoricalRecoveryTick — the stop switches", () => {
 });
 
 describe("runHistoricalRecoveryTick — pre-send recheck", () => {
+  /**
+   * Make the source read fail with a specific Graph signature.
+   *
+   * `describeGraphError` is mocked in this file, so the metadata is set directly rather
+   * than parsed from a synthetic axios error — the real parser is covered by its own
+   * suite. `classifySourceReadFailure` is NOT mocked, so what runs here is the shipped
+   * classification.
+   *
+   * The test this replaces rejected with a bare `Error("Unsupported get request")` and
+   * asserted `source_comment_deleted`. It passed for the wrong reason: the worker caught
+   * EVERY failure and called it a deletion, so the assertion held no matter what the
+   * error was — exactly the defect QA-09 named.
+   */
+  function failSourceRead(metadata: Partial<typeof SAFE_UNKNOWN>) {
+    fetchComment.mockRejectedValue(new Error("source read failed"));
+    describeGraphError.mockReturnValue({ ...SAFE_UNKNOWN, category: "graph_response", ...metadata });
+  }
+
   // Measured: 1 of 3 sampled 44-day-old comments was already deleted.
-  it("suppresses rather than posting when the comment is gone", async () => {
-    fetchComment.mockRejectedValue(new Error("Unsupported get request"));
+  it("suppresses rather than posting when Meta says the comment is gone", async () => {
+    failSourceRead({ graphCode: 803 });
 
     const result = await runHistoricalRecoveryTick();
 
     expect(replyToComment).not.toHaveBeenCalled();
     expect(markCandidateSuppressed).toHaveBeenCalledWith("cand-1", "token-1", "source_comment_deleted");
     expect(result.suppressed).toBe(1);
+  });
+
+  // QA-09's core case. A timeout says nothing about whether the comment exists, and
+  // suppressing on it burns a valid candidate permanently.
+  it("defers instead of suppressing when the read merely failed", async () => {
+    failSourceRead({ category: "graph_transport", transportCode: "ETIMEDOUT" });
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(markCandidateSuppressed).not.toHaveBeenCalled();
+    expect(result.suppressed).toBe(0);
+    expect(result.deferred).toBe(1);
+  });
+
+  // A rate limit is the same story with a different cause.
+  it("defers on a rate-limited read", async () => {
+    failSourceRead({ httpStatus: 429 });
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(markCandidateSuppressed).not.toHaveBeenCalled();
+    expect(result.deferred).toBe(1);
+  });
+
+  // A deferred read must come back later, not on the very next tick: otherwise one
+  // stubbornly failing comment is re-read forever and starves the queue.
+  it("backs off a deferred read rather than releasing it immediately", async () => {
+    failSourceRead({ httpStatus: 503 });
+
+    await runHistoricalRecoveryTick();
+
+    const [, , nextAttemptAt] = releaseCandidateClaim.mock.calls.at(-1)!;
+    expect(nextAttemptAt).toBeInstanceOf(Date);
+    expect((nextAttemptAt as Date).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  // An expired token would fail every remaining row identically, so it stops the tick
+  // through the shared circuit instead of churning the whole pool one row at a time.
+  it("opens the shared circuit on an auth failure and stops the tick", async () => {
+    failSourceRead({ httpStatus: 401, graphCode: 190 });
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(openRecoveryCircuit).toHaveBeenCalledWith("auth_or_permission", expect.any(Date));
+    expect(markCandidateSuppressed).not.toHaveBeenCalled();
+    expect(result.skipped).toBe("source_read_auth_failed");
   });
 
   // Worse than deletion: a reply to a hidden comment SUCCEEDS, so it would count as
