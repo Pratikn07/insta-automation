@@ -30,6 +30,13 @@ export type RecheckFacts = {
   /** Hourly cap headroom for this campaign. */
   sentThisHour: number;
   hourlyCap: number;
+  /**
+   * Daily headroom. Enforced as well as the hourly cap, because the hourly one alone
+   * permits 24x its own value per day: at 3/hour a "daily cap 10" campaign would post
+   * 72 comments, which is not the conservative launch the caps are meant to describe.
+   */
+  sentToday: number;
+  dailyCap: number;
 };
 
 export type RecheckDecision =
@@ -45,8 +52,14 @@ export function recheckBeforeSend(facts: RecheckFacts): RecheckDecision {
     return { kind: "defer", reason: "campaign_not_running" };
   }
 
-  // The cap is a rate limit, not a judgement about this person, so the row is
-  // deferred rather than suppressed and will send on a later tick.
+  // Caps are rate limits, not judgements about this person, so the row is deferred
+  // rather than suppressed and will send on a later tick.
+  //
+  // Both are checked. The hourly cap alone allows 24x its value per day, so a
+  // campaign configured for 10 a day would have posted 72.
+  if (facts.sentToday >= facts.dailyCap) {
+    return { kind: "defer", reason: "daily_cap_reached" };
+  }
   if (facts.sentThisHour >= facts.hourlyCap) {
     return { kind: "defer", reason: "hourly_cap_reached" };
   }
