@@ -209,3 +209,37 @@ export function assertNoDuplicates(included: Array<{ facts: EligibilityFacts }>)
     seenPeople.set(facts.igUserId, facts.intentId);
   }
 }
+
+/** The two rollout phases, each with exactly one permitted evidence basis. */
+export type CampaignPhase = "confirmed_failure" | "unknown_read_pilot";
+
+/**
+ * The evidence a phase is allowed to contain.
+ *
+ * A campaign's phase decides its copy, its approval, its sequencing, and how its
+ * results are read. If the two cohorts mix, none of those mean what the label says:
+ * a `confirmed_failure` campaign would tell someone "I couldn't send your guide"
+ * when Meta actually accepted it, and a pilot's metrics would blend two populations.
+ *
+ * Verified in production before this existed: a campaign labelled
+ * `unknown_read_pilot` held 988 gate_sent_no_read rows AND 2 gate_exhausted rows.
+ */
+const PHASE_EVIDENCE: Record<CampaignPhase, string> = {
+  confirmed_failure: "gate_exhausted",
+  unknown_read_pilot: "gate_sent_no_read",
+};
+
+export function evidenceForPhase(phase: CampaignPhase): string {
+  return PHASE_EVIDENCE[phase];
+}
+
+/**
+ * Is this candidate's evidence permitted in this phase?
+ *
+ * Exact match rather than a subset rule: an evidence type added later must be
+ * assigned to a phase deliberately, not inherited into whichever cohort happens to
+ * be permissive.
+ */
+export function evidenceMatchesPhase(phase: CampaignPhase, evidence: string): boolean {
+  return PHASE_EVIDENCE[phase] === evidence;
+}

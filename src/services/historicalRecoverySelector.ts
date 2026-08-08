@@ -4,6 +4,8 @@ import {
   summarise,
   keepLatestPerPerson,
   assertNoDuplicates,
+  evidenceMatchesPhase,
+  type CampaignPhase,
   type EligibilityFacts,
 } from "./historicalRecoveryEligibility.js";
 import { recoveryCopyFor } from "./historicalRecoveryCopy.js";
@@ -157,7 +159,7 @@ async function loadRows(cutoff: Date): Promise<SelectionRow[]> {
  * which the `chk_campaign_running_is_approved` constraint enforces.
  */
 export async function selectHistoricalCandidates(input: {
-  phase: "confirmed_failure" | "unknown_read_pilot";
+  phase: CampaignPhase;
   selectionVersion: string;
   copyVersion: string;
   westernOnly: boolean;
@@ -206,10 +208,19 @@ export async function selectHistoricalCandidates(input: {
   });
   const outOfWindow = decided.length - inWindow.length;
 
-  const { included, excludedByReason } = summarise(
+  const { included: allEligible, excludedByReason } = summarise(
     inWindow.map(({ facts, decision }) => ({ facts, decision })),
   );
   if (outOfWindow > 0) excludedByReason.set("outside_age_window", outOfWindow);
+
+  // Phase filter, applied BEFORE dedup, limit, and arm assignment so all three see
+  // the real cohort. A campaign's phase decides its copy and how its results are
+  // read, so a mixed pool makes the label untrue: verified in production, a campaign
+  // labelled unknown_read_pilot contained 2 gate_exhausted rows.
+  const included = allEligible.filter((entry) => evidenceMatchesPhase(input.phase, entry.evidence));
+  if (allEligible.length > included.length) {
+    excludedByReason.set("wrong_phase_for_campaign", allEligible.length - included.length);
+  }
 
   // One public comment per person. 43 people hold 101 eligible intents, so without
   // this the campaign would try to contact them repeatedly; their most recent
@@ -272,6 +283,9 @@ export async function selectHistoricalCandidates(input: {
       return prisma.recoveryCandidate.create({
         data: {
           campaignId: campaign.id,
+          // Denormalised so the database can enforce phase/evidence agreement rather
+          // than trusting the filter above to keep working.
+          campaignPhase: input.phase,
           intentId: row.intentId,
           igUserId: row.igUserId,
           conversationId: row.conversationId,

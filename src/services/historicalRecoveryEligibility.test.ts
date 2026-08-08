@@ -4,6 +4,8 @@ import {
   summarise,
   keepLatestPerPerson,
   assertNoDuplicates,
+  evidenceMatchesPhase,
+  evidenceForPhase,
   type EligibilityFacts,
 } from "./historicalRecoveryEligibility.js";
 
@@ -304,5 +306,45 @@ describe("keepLatestPerPerson", () => {
 
   it("returns nothing for an empty pool", () => {
     expect(keepLatestPerPerson([])).toEqual([]);
+  });
+});
+
+// QA-03. Verified in production before this existed: a campaign labelled
+// `unknown_read_pilot` contained 988 gate_sent_no_read rows AND 2 gate_exhausted
+// rows, so its label, its copy, and its metrics all described something else.
+describe("phase separation", () => {
+  it("permits only confirmed failures in the confirmed_failure phase", () => {
+    expect(evidenceMatchesPhase("confirmed_failure", "gate_exhausted")).toBe(true);
+    expect(evidenceMatchesPhase("confirmed_failure", "gate_sent_no_read")).toBe(false);
+  });
+
+  it("permits only unknown-read rows in the pilot phase", () => {
+    expect(evidenceMatchesPhase("unknown_read_pilot", "gate_sent_no_read")).toBe(true);
+    expect(evidenceMatchesPhase("unknown_read_pilot", "gate_exhausted")).toBe(false);
+  });
+
+  // Exact match, not a subset rule: an evidence type added later must be assigned to
+  // a phase deliberately rather than inherited by whichever cohort is permissive.
+  it("permits nothing unrecognised in either phase", () => {
+    for (const phase of ["confirmed_failure", "unknown_read_pilot"] as const) {
+      expect(evidenceMatchesPhase(phase, "something_new")).toBe(false);
+    }
+  });
+
+  it("maps each phase to exactly one evidence basis", () => {
+    expect(evidenceForPhase("confirmed_failure")).toBe("gate_exhausted");
+    expect(evidenceForPhase("unknown_read_pilot")).toBe("gate_sent_no_read");
+    expect(evidenceForPhase("confirmed_failure")).not.toBe(evidenceForPhase("unknown_read_pilot"));
+  });
+
+  // The two cohorts get different copy, so a mixed campaign would tell someone
+  // "I couldn't send your guide" when Meta actually accepted it.
+  it("keeps the phases disjoint, so no row belongs to both", () => {
+    for (const evidence of ["gate_exhausted", "gate_sent_no_read"]) {
+      const inBoth =
+        evidenceMatchesPhase("confirmed_failure", evidence) &&
+        evidenceMatchesPhase("unknown_read_pilot", evidence);
+      expect(inBoth).toBe(false);
+    }
   });
 });

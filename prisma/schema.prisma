@@ -910,6 +910,9 @@ model RecoveryCampaign {
 model RecoveryCandidate {
   id                       String                   @id @default(uuid()) @db.Uuid
   campaignId               String                   @map("campaign_id") @db.Uuid
+  /// Denormalised from the campaign so a CHECK can enforce that evidence matches the
+  /// phase. A trigger keeps it equal to the campaign's own phase.
+  campaignPhase            RecoveryCampaignPhase    @map("campaign_phase")
   /// Feature 3 guarantees one intent per person-keyword window, which is what
   /// stops the same person being contacted twice for one request.
   intentId                 String                   @map("intent_id") @db.Uuid
