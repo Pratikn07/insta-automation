@@ -32,17 +32,24 @@ export type CampaignRow = {
   id: string;
   phase: string;
   state: CampaignState;
+  selectionVersion: string;
+  copyVersion: string;
+  sourceDataCutoff: string;
   candidateCount: number;
   holdoutPercent: number;
   batchSize: number;
   hourlyCap: number;
+  dailyCap: number;
   approvedBy: string | null;
+  approvedAt: string | null;
   pauseReason: string | null;
+  createdAt: string;
   progress: Record<string, number>;
 };
 
 export type CandidateRow = {
   id: string;
+  campaignPhase: string;
   username: string | null;
   igUserId: string;
   keywordSnapshot: string;
@@ -52,9 +59,33 @@ export type CandidateRow = {
   evidence: string;
   suppressionReason: string | null;
   publicReplyId: string | null;
+  reviewedAt: string | null;
   laterCompletedAt: string | null;
   audienceOrigin: string | null;
+  createdAt: string;
 };
+
+export type CampaignPhaseView = { title: string; description: string };
+
+export function campaignPhaseView(phase: string): CampaignPhaseView {
+  if (phase === "confirmed_failure") {
+    return {
+      title: "Confirmed delivery failures",
+      description: "Instagram confirmed that the original guide could not be delivered.",
+    };
+  }
+  if (phase === "unknown_read_pilot") {
+    return {
+      title: "No read confirmation pilot",
+      description:
+        "Instagram accepted the original DM, but no read confirmation was recorded. The guide may still be in Requests or Hidden Requests.",
+    };
+  }
+  return {
+    title: "Historical recovery",
+    description: "A frozen campaign selected from earlier automation evidence.",
+  };
+}
 
 /**
  * Suppression reasons, in the operator's language.

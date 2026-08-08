@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { AlertTriangle, Pause, Play, Check, X, ArrowUpRight } from "lucide-react";
+import { AlertTriangle, Pause, Play, Check, X, Gauge } from "lucide-react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -10,12 +10,18 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   candidateView,
   campaignActions,
+  campaignPhaseView,
   campaignStatusView,
   recoveryRate,
   type CampaignRow,
   type CandidateRow,
   type CampaignState,
 } from "@/components/historical/historicalRecoveryViewModel";
+import {
+  HistoricalStageForm,
+  type HistoricalStageCaps,
+} from "@/components/historical/HistoricalStageForm";
+import { HistoricalCandidateDrawer } from "@/components/historical/HistoricalCandidateDrawer";
 
 /**
  * Historical recovery — reaching back to people whose guide never arrived.
@@ -42,6 +48,7 @@ type CampaignsResponse = { sendingEnabled: boolean; campaigns: CampaignRow[] };
 type CandidatesResponse = {
   counts: Record<string, number>;
   nextCursor: string | null;
+  asOf: string;
   candidates: CandidateRow[];
 };
 
@@ -60,6 +67,9 @@ function ageInDays(iso: string): number {
 export function HistoricalRecovery() {
   const queryClient = useQueryClient();
   const [tab, setTab] = useState<(typeof TABS)[number]["key"]>("pending");
+  const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
+  const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
+  const [stageOpen, setStageOpen] = useState(false);
   const [confirming, setConfirming] = useState<null | { action: string; campaignId: string }>(null);
 
   const campaigns = useQuery({
@@ -67,16 +77,34 @@ export function HistoricalRecovery() {
     queryFn: () => api<CampaignsResponse>("/historical-recovery/campaigns"),
   });
 
-  const active = campaigns.data?.campaigns[0];
+  const campaignRows = campaigns.data?.campaigns ?? [];
+  const active =
+    campaignRows.find((campaign) => campaign.id === selectedCampaignId) ?? campaignRows[0];
 
-  const candidates = useQuery({
+  const candidates = useInfiniteQuery({
     queryKey: ["historical-candidates", active?.id, tab],
-    queryFn: () =>
-      api<CandidatesResponse>(
-        `/historical-recovery/candidates?view=${tab}${active ? `&campaignId=${active.id}` : ""}`,
-      ),
+    initialPageParam: undefined as { cursor: string; asOf: string } | undefined,
+    queryFn: ({ pageParam }) => {
+      const params = new URLSearchParams({ view: tab, campaignId: active!.id });
+      if (pageParam) {
+        params.set("cursor", pageParam.cursor);
+        params.set("asOf", pageParam.asOf);
+      }
+      return api<CandidatesResponse>(
+        `/historical-recovery/candidates?${params.toString()}`,
+      );
+    },
+    getNextPageParam: (last) =>
+      last.nextCursor ? { cursor: last.nextCursor, asOf: last.asOf } : undefined,
     enabled: Boolean(active),
   });
+
+  const candidateRows = Array.from(
+    new Map(
+      (candidates.data?.pages.flatMap((page) => page.candidates) ?? []).map((row) => [row.id, row]),
+    ).values(),
+  );
+  const candidateCounts = candidates.data?.pages.at(-1)?.counts;
 
   const act = useMutation({
     mutationFn: async ({ action, campaignId }: { action: string; campaignId: string }) => {
@@ -84,9 +112,7 @@ export function HistoricalRecovery() {
       // approve — an unattributable approval is not an audit trail for an action
       // that posts publicly under the account's name.
       const body =
-        action === "approve"
-          ? { approvedBy: "owner" }
-          : action === "pause" || action === "cancel"
+        action === "pause" || action === "cancel"
             ? { reason: "Stopped from the dashboard" }
             : {};
       return api<{ state: string }>(`/historical-recovery/campaigns/${campaignId}/${action}`, {
@@ -98,6 +124,20 @@ export function HistoricalRecovery() {
       toast.success(`Campaign ${variables.action}d`);
       void queryClient.invalidateQueries({ queryKey: ["historical-campaigns"] });
       void queryClient.invalidateQueries({ queryKey: ["historical-candidates"] });
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
+  const stage = useMutation({
+    mutationFn: ({ campaignId, caps }: { campaignId: string; caps: HistoricalStageCaps }) =>
+      api<{ state: string }>(`/historical-recovery/campaigns/${campaignId}/stage`, {
+        method: "POST",
+        body: JSON.stringify(caps),
+      }),
+    onSuccess: () => {
+      setStageOpen(false);
+      toast.success("Campaign stage advanced");
+      void queryClient.invalidateQueries({ queryKey: ["historical-campaigns"] });
     },
     onError: (err: Error) => toast.error(err.message),
   });
@@ -129,17 +169,38 @@ export function HistoricalRecovery() {
   }
 
   const status = campaignStatusView(active, campaigns.data!.sendingEnabled);
+  const phase = campaignPhaseView(active.phase);
   const actions = campaignActions(active.state as CampaignState);
-  const rate = recoveryRate({ ...active.progress, recovered: candidates.data?.counts.recovered ?? 0 });
-  const attention = candidates.data?.counts.attention ?? 0;
+  const rate = recoveryRate({ ...active.progress, recovered: candidateCounts?.recovered ?? 0 });
+  const attention = candidateCounts?.attention ?? 0;
 
   return (
     <div className="space-y-6 p-6">
       <header>
         <h1 className="text-2xl font-semibold tracking-tight">Historical recovery</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          People who asked for a guide weeks ago and never received it.
+          {phase.description}
         </p>
+        <div className="mt-4 max-w-xl space-y-1.5">
+          <label htmlFor="historical-campaign" className="text-xs font-medium text-muted-foreground">
+            Campaign
+          </label>
+          <select
+            id="historical-campaign"
+            value={active.id}
+            onChange={(event) => {
+              setSelectedCampaignId(event.target.value);
+              setStageOpen(false);
+            }}
+            className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+          >
+            {campaignRows.map((campaign) => (
+              <option key={campaign.id} value={campaign.id}>
+                {campaignPhaseView(campaign.phase).title} · {campaign.createdAt.slice(0, 10)}
+              </option>
+            ))}
+          </select>
+        </div>
       </header>
 
       {/* Anything needing a human decision comes before the controls: an uncertain
@@ -219,6 +280,16 @@ export function HistoricalRecovery() {
                 Cancel
               </Button>
             )}
+            {actions.canAdvanceStage && (
+              <Button
+                variant="outline"
+                onClick={() => setStageOpen(true)}
+                disabled={stage.isPending}
+              >
+                <Gauge className="mr-1.5 h-4 w-4" />
+                Advance stage
+              </Button>
+            )}
           </div>
         </div>
 
@@ -248,11 +319,21 @@ export function HistoricalRecovery() {
             </dd>
           </div>
         </dl>
+
+        {stageOpen && (
+          <HistoricalStageForm
+            key={active.id}
+            campaign={active}
+            busy={stage.isPending}
+            onCancel={() => setStageOpen(false)}
+            onSubmit={(caps) => stage.mutate({ campaignId: active.id, caps })}
+          />
+        )}
       </Card>
 
       <div className="flex flex-wrap gap-1 border-b border-border">
         {TABS.map(({ key, label }) => {
-          const count = candidates.data?.counts[key];
+          const count = candidateCounts?.[key];
           return (
             <button
               key={key}
@@ -277,44 +358,58 @@ export function HistoricalRecovery() {
           <Skeleton className="h-14 w-full" />
           <Skeleton className="h-14 w-full" />
         </div>
-      ) : candidates.data?.candidates.length === 0 ? (
+      ) : candidateRows.length === 0 ? (
         <p className="py-8 text-center text-sm text-muted-foreground">
           Nothing in this view.
         </p>
       ) : (
         <ul className="divide-y divide-border">
-          {candidates.data?.candidates.map((row) => {
+          {candidateRows.map((row) => {
             const view = candidateView(row);
             return (
-              <li key={row.id} className="flex flex-wrap items-start gap-x-4 gap-y-1 py-3">
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm">
-                    {row.username ? `@${row.username}` : row.igUserId}
-                    <span className="ml-2 text-muted-foreground">{row.keywordSnapshot}</span>
-                  </p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    Asked {ageInDays(row.commentAt)} days ago
-                  </p>
-                </div>
-                <div className="min-w-0 max-w-md flex-1">
-                  <p className={`text-sm ${TONE_CLASS[view.tone]}`}>{view.label}</p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">{view.description}</p>
-                </div>
-                {row.publicReplyId && (
-                  <a
-                    href={`https://www.instagram.com/p/${row.publicReplyId}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-xs text-muted-foreground hover:text-foreground"
-                  >
-                    View <ArrowUpRight className="inline h-3 w-3" />
-                  </a>
-                )}
+              <li key={row.id}>
+                <button
+                  type="button"
+                  aria-label={`Open ${row.username ? `@${row.username}` : row.igUserId} ${row.keywordSnapshot}`}
+                  onClick={() => setSelectedCandidateId(row.id)}
+                  className="flex w-full flex-wrap items-start gap-x-4 gap-y-1 py-3 text-left hover:bg-accent/20"
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm">
+                      {row.username ? `@${row.username}` : row.igUserId}
+                      <span className="ml-2 text-muted-foreground">{row.keywordSnapshot}</span>
+                    </p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      Asked {ageInDays(row.commentAt)} days ago
+                    </p>
+                  </div>
+                  <div className="min-w-0 max-w-md flex-1">
+                    <p className={`text-sm ${TONE_CLASS[view.tone]}`}>{view.label}</p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">{view.description}</p>
+                  </div>
+                </button>
               </li>
             );
           })}
         </ul>
       )}
+
+      {candidates.hasNextPage && (
+        <div className="flex justify-center">
+          <Button
+            variant="ghost"
+            onClick={() => candidates.fetchNextPage()}
+            disabled={candidates.isFetchingNextPage}
+          >
+            {candidates.isFetchingNextPage ? "Loading…" : "Load more"}
+          </Button>
+        </div>
+      )}
+
+      <HistoricalCandidateDrawer
+        candidateId={selectedCandidateId}
+        onClose={() => setSelectedCandidateId(null)}
+      />
 
       {/* Approve and cancel both need confirmation: one starts posting public
           comments on hundreds of posts, the other abandons work that cannot be
