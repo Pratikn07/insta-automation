@@ -19,6 +19,10 @@ const SAFE_UNKNOWN = { category: "unknown_error", httpStatus: null, graphCode: n
 const describeGraphError = vi.fn(() => SAFE_UNKNOWN);
 const classifyPublicReplyFailure = vi.fn();
 const campaignFindUnique = vi.fn();
+// QA-08: the tick now reads the campaign's staged batch size, and reserves capacity
+// under the shared control lock instead of merely observing counts.
+const campaignAggregate = vi.fn();
+const reserveSendCapacity = vi.fn();
 const igUserFindUnique = vi.fn();
 const dmMessageCount = vi.fn();
 const conversationCount = vi.fn();
@@ -34,6 +38,7 @@ vi.mock("./historicalRecoveryRepository.js", () => ({
   markCandidateFailed,
   markCandidateUncertain,
   countCandidatesSentSince,
+  reserveSendCapacity,
 }));
 vi.mock("../meta/replyToComment.js", () => ({ replyToComment }));
 vi.mock("../meta/fetchComment.js", () => ({ fetchComment }));
@@ -51,7 +56,7 @@ vi.mock("../lib/logger.js", () => ({
 }));
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
-    recoveryCampaign: { findUnique: campaignFindUnique },
+    recoveryCampaign: { findUnique: campaignFindUnique, aggregate: campaignAggregate },
     igUser: { findUnique: igUserFindUnique },
     dmMessage: { count: dmMessageCount },
     conversation: { count: conversationCount },
@@ -107,7 +112,8 @@ beforeEach(() => {
     markCandidateFailed, markCandidateUncertain, countCandidatesSentSince,
     replyToComment, fetchComment, evaluateRecoveryHealth, openRecoveryCircuit,
     logEvent, describeGraphError, classifyPublicReplyFailure,
-    campaignFindUnique, igUserFindUnique, dmMessageCount, conversationCount, reminderCount,
+    campaignFindUnique, campaignAggregate, reserveSendCapacity,
+    igUserFindUnique, dmMessageCount, conversationCount, reminderCount,
   ]) {
     fn.mockReset();
   }
@@ -115,11 +121,15 @@ beforeEach(() => {
   flags.DM_RECOVERY_HISTORICAL_ENABLED = true;
   flags.DM_RECOVERY_WESTERN_ONLY = true;
   describeGraphError.mockReturnValue(SAFE_UNKNOWN);
-  reconcileExpiredCandidateLeases.mockResolvedValue(0);
+  reconcileExpiredCandidateLeases.mockResolvedValue({ uncertain: 0, released: 0 });
   evaluateRecoveryHealth.mockResolvedValue({ circuitOpen: false });
   listDueCandidateIds.mockResolvedValue(["cand-1"]);
   claimCandidate.mockResolvedValue(CANDIDATE);
   campaignFindUnique.mockResolvedValue({ state: "running", hourlyCap: 3, dailyCap: 10 });
+  // No campaign-level batch override by default, so existing cases keep the env value.
+  campaignAggregate.mockResolvedValue({ _min: { batchSize: null } });
+  // Capacity available by default; cases that test the cap return a refusal reason.
+  reserveSendCapacity.mockResolvedValue(null);
   igUserFindUnique.mockResolvedValue({ inferredOrigin: "us_western" });
   dmMessageCount.mockResolvedValue(0);
   conversationCount.mockResolvedValue(0);
@@ -408,13 +418,25 @@ describe("runHistoricalRecoveryTick — failure handling", () => {
 });
 
 describe("runHistoricalRecoveryTick — claims and leases", () => {
-  it("parks leases that expired mid-send", async () => {
-    reconcileExpiredCandidateLeases.mockResolvedValue(2);
+  // QA-10 split this: only leases whose DISPATCH had started become uncertain. A worker
+  // that died while still preparing never called Meta, so its row is released.
+  it("reports both parked and released expired leases", async () => {
+    reconcileExpiredCandidateLeases.mockResolvedValue({ uncertain: 2, released: 3 });
+
+    await runHistoricalRecoveryTick();
+
+    const entry = logEvent.mock.calls.find(([kind]) => kind === "historical_recovery_stale_leases");
+    expect(entry).toBeDefined();
+    expect(entry![1]).toEqual({ uncertain: 2, released: 3 });
+  });
+
+  it("logs nothing when no lease expired", async () => {
+    reconcileExpiredCandidateLeases.mockResolvedValue({ uncertain: 0, released: 0 });
 
     await runHistoricalRecoveryTick();
 
     const kinds = logEvent.mock.calls.map(([kind]) => kind);
-    expect(kinds).toContain("historical_recovery_stale_leases");
+    expect(kinds).not.toContain("historical_recovery_stale_leases");
   });
 
   it("skips a candidate another worker claimed first", async () => {
@@ -448,5 +470,103 @@ describe("runHistoricalRecoveryTick — claims and leases", () => {
       evidence: "gate_sent_no_read",
       publicReplyId: "17900000000000000",
     });
+  });
+});
+
+// QA-08. `batch_size` was stored on the campaign, staged by the dashboard and the API,
+// and then ignored: the worker read only DM_RECOVERY_BATCH_SIZE. Verified in production —
+// two campaigns carried batch_size 1 and 5 while the worker sent 5 regardless. The
+// staged rollout the plan depends on was writing a number nothing consulted.
+describe("runHistoricalRecoveryTick — campaign pacing", () => {
+  it("uses the campaign's batch size instead of the env value", async () => {
+    campaignAggregate.mockResolvedValue({ _min: { batchSize: 1 } });
+    listDueCandidateIds.mockResolvedValue(["cand-1", "cand-2"]);
+
+    const result = await runHistoricalRecoveryTick();
+
+    // env batch is 2, campaign batch is 1: one send, and the loop stops.
+    expect(result.sent).toBe(1);
+    expect(replyToComment).toHaveBeenCalledTimes(1);
+  });
+
+  // The env value stays an emergency ceiling: a campaign cannot stage its way past it.
+  it("never exceeds the env maximum even if a campaign asks for more", async () => {
+    campaignAggregate.mockResolvedValue({ _min: { batchSize: 50 } });
+    listDueCandidateIds.mockResolvedValue(["cand-1", "cand-2", "cand-3"]);
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(result.sent).toBe(2); // DM_RECOVERY_BATCH_SIZE
+  });
+
+  // The reservation replaced a read-then-post pair with nothing holding the gap.
+  it("posts nothing when the reservation refuses a slot", async () => {
+    reserveSendCapacity.mockResolvedValue("global_hourly_cap_reached");
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(releaseCandidateClaim).toHaveBeenCalledWith("cand-1", "token-1");
+    expect(result.skipped).toBe("global_hourly_cap_reached");
+    expect(result.deferred).toBe(1);
+  });
+
+  // The reservation must happen BEFORE Meta is contacted, or it reserves nothing.
+  it("reserves capacity before dispatching", async () => {
+    const order: string[] = [];
+    reserveSendCapacity.mockImplementation(async () => {
+      order.push("reserve");
+      return null;
+    });
+    replyToComment.mockImplementation(async () => {
+      order.push("dispatch");
+      return { replyId: "17900000000000000" };
+    });
+
+    await runHistoricalRecoveryTick();
+
+    expect(order).toEqual(["reserve", "dispatch"]);
+  });
+});
+
+// QA-10. The pre-send reads ran bare in the loop, so a database failure after claiming
+// escaped to the tick's outer catch with the lease still held. Lease reconciliation then
+// marked the row `send_uncertain` — terminal, never retried — even though Meta had never
+// been contacted. One momentary database blip permanently burned a candidate and recorded
+// it as "we may have posted".
+describe("runHistoricalRecoveryTick — a failure before dispatch is not uncertainty", () => {
+  it("returns the candidate for retry when a pre-dispatch read fails", async () => {
+    campaignFindUnique.mockRejectedValue(new Error("connection terminated"));
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(markCandidateUncertain).not.toHaveBeenCalled();
+    expect(markCandidateSuppressed).not.toHaveBeenCalled();
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(result.uncertain).toBe(0);
+    expect(result.deferred).toBe(1);
+  });
+
+  it("releases the claim so a later tick can pick it up", async () => {
+    conversationCount.mockRejectedValue(new Error("connection terminated"));
+
+    await runHistoricalRecoveryTick();
+
+    const [id, token, nextAttemptAt] = releaseCandidateClaim.mock.calls.at(-1)!;
+    expect([id, token]).toEqual(["cand-1", "token-1"]);
+    // Backoff, because whatever broke is likely still broken next tick.
+    expect(nextAttemptAt).toBeInstanceOf(Date);
+  });
+
+  // A failure DURING dispatch is different and must stay uncertain: the comment may
+  // have posted. Pinned so the containment above cannot be widened onto the send path.
+  it("still parks a dispatch-time failure as uncertain", async () => {
+    replyToComment.mockRejectedValue(new Error("socket hang up"));
+    classifyPublicReplyFailure.mockReturnValue("uncertain");
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(result.uncertain).toBe(1);
+    expect(markCandidateUncertain).toHaveBeenCalled();
   });
 });

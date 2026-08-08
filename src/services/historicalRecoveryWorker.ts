@@ -17,6 +17,7 @@ import {
   markCandidateFailed,
   markCandidateUncertain,
   countCandidatesSentSince,
+  reserveSendCapacity,
 } from "./historicalRecoveryRepository.js";
 
 /**
@@ -84,11 +85,16 @@ async function runTickBody(): Promise<HistoricalTickResult> {
   if (!env.DM_RECOVERY_ENABLED) return empty("disabled");
   if (!env.DM_RECOVERY_HISTORICAL_ENABLED) return empty("historical_disabled");
 
-  // A lease that expired means the process died mid-send. The comment may have
-  // posted, so these are parked as uncertain, never retried.
+  // A lease that expired means the process died holding a claim. Rows where dispatch had
+  // started are parked as uncertain, never retried — the comment may exist. Rows that
+  // died while still PREPARING are released with a short backoff: Meta was never called,
+  // so calling them uncertain would burn a valid candidate for a restart (QA-10).
   const reconciled = await reconcileExpiredCandidateLeases(now);
-  if (reconciled > 0) {
-    await logEvent("historical_recovery_stale_leases", { count: reconciled });
+  if (reconciled.uncertain > 0 || reconciled.released > 0) {
+    await logEvent("historical_recovery_stale_leases", {
+      uncertain: reconciled.uncertain,
+      released: reconciled.released,
+    });
   }
 
   // Same circuit as the prospective path: an auth failure or a webhook gap should
@@ -96,7 +102,18 @@ async function runTickBody(): Promise<HistoricalTickResult> {
   const health = await evaluateRecoveryHealth(now);
   if (health.circuitOpen) return empty("circuit_open");
 
-  const batchSize = env.DM_RECOVERY_BATCH_SIZE;
+  // The campaign's staged batch size governs this tick, capped by the env value as an
+  // emergency global maximum (QA-08).
+  //
+  // The worker previously used only DM_RECOVERY_BATCH_SIZE, so advancing batch_size in
+  // the dashboard or the API changed a stored number and nothing else — the staged
+  // rollout the plan depends on had no effect at all. Verified in production: two
+  // campaigns carried batch_size 1 and 5 while the worker sent 5 regardless.
+  //
+  // The smallest batch size among running campaigns wins, because a tick can span
+  // campaigns and the conservative one must not be overrun by a larger sibling.
+  const campaignBatch = await smallestRunningBatchSize();
+  const batchSize = Math.min(campaignBatch ?? env.DM_RECOVERY_BATCH_SIZE, env.DM_RECOVERY_BATCH_SIZE);
   const ids = await listDueCandidateIds(now, batchSize);
   const leaseMs = env.DM_RECOVERY_LEASE_MS;
   const hourAgo = new Date(now.getTime() - 60 * 60 * 1000);
@@ -111,43 +128,36 @@ async function runTickBody(): Promise<HistoricalTickResult> {
     const claimed = await claimCandidate(id, now, new Date(now.getTime() + leaseMs));
     if (!claimed) continue;
 
-    // Read the live facts. All of these could have changed since selection, which is
-    // the whole reason §34 requires a recheck rather than trusting the snapshot.
-    const [campaign, person, recentContact, sourceComment] = await Promise.all([
-      prisma.recoveryCampaign.findUnique({
-        where: { id: claimed.campaignId },
-        select: { state: true, hourlyCap: true, dailyCap: true },
-      }),
-      prisma.igUser.findUnique({
-        where: { id: claimed.igUserId },
-        select: { inferredOrigin: true },
-      }),
-      // Any inbound, completion, or other public recovery since selection.
-      Promise.all([
-        prisma.dmMessage.count({
-          where: { thread: { igUserId: claimed.igUserId }, direction: "inbound" },
-        }),
-        prisma.conversation.count({
-          where: { igUserId: claimed.igUserId, state: "completed" },
-        }),
-        prisma.dmRecoveryReminder.count({
-          where: { igUserId: claimed.igUserId, status: { in: ["sent", "sending", "send_uncertain"] } },
-        }),
-      ]),
-      // The Graph read that catches a deleted or hidden comment.
-      readSourceComment(claimed.commentId),
-    ]);
-
-    const [inboundCount, completedCount, priorRecoveryCount] = recentContact;
-    const [sentThisHour, sentToday] = await Promise.all([
-      countCandidatesSentSince(claimed.campaignId, hourAgo),
-      countCandidatesSentSince(claimed.campaignId, dayAgo),
-    ]);
+    // Everything between the claim and the dispatch happens here, and a failure inside
+    // is CONTAINED (QA-10).
+    //
+    // These reads previously ran bare in the loop, so a database blip after claiming
+    // escaped to the tick's outer catch with the lease still held. Lease reconciliation
+    // then marked the row `send_uncertain` — terminal, never retried — even though Meta
+    // had never been contacted. A momentary database failure permanently burned a
+    // candidate and recorded it as "we may have posted".
+    //
+    // Nothing in here reaches Meta except the source-comment READ, which is idempotent.
+    // So any failure is provably pre-dispatch and the row is safe to hand back.
+    let facts: PreDispatchFacts;
+    try {
+      facts = await gatherPreDispatchFacts(claimed, hourAgo, dayAgo);
+    } catch (err) {
+      logger.error(
+        { errorCode: "historical_prepare_failed", candidateId: id, err: describeGraphError(err) },
+        "Pre-dispatch checks failed; returning the candidate without judging it",
+      );
+      // Backoff rather than a bare release: whatever broke will likely still be broken
+      // on the next tick, and an immediate re-pick would spin.
+      await releaseCandidateClaim(id, claimed.claimToken, nextAttempt(claimed.attempts, now));
+      result.deferred++;
+      continue;
+    }
 
     // An auth failure is not about this candidate: the token or a permission broke, and
     // every remaining row would fail the same way. Open the shared circuit so the tick
     // stops here rather than deferring 600 rows one at a time (QA-09).
-    if (sourceComment === "auth") {
+    if (facts.sourceComment === "auth") {
       await openRecoveryCircuit("auth_or_permission", now);
       await releaseCandidateClaim(claimed.id, claimed.claimToken, now);
       result.deferred++;
@@ -156,17 +166,17 @@ async function runTickBody(): Promise<HistoricalTickResult> {
     }
 
     const decision = recheckBeforeSend({
-      sourceComment,
-      repliedSinceSelection: inboundCount > 0,
-      completedSinceSelection: completedCount > 0,
-      contactedSinceSelection: priorRecoveryCount > 0,
-      audienceOrigin: person?.inferredOrigin ?? null,
+      sourceComment: facts.sourceComment,
+      repliedSinceSelection: facts.inboundCount > 0,
+      completedSinceSelection: facts.completedCount > 0,
+      contactedSinceSelection: facts.priorRecoveryCount > 0,
+      audienceOrigin: facts.audienceOrigin,
       westernOnly: env.DM_RECOVERY_WESTERN_ONLY,
-      campaignRunning: campaign?.state === "running",
-      sentThisHour,
-      hourlyCap: campaign?.hourlyCap ?? 3,
-      sentToday,
-      dailyCap: campaign?.dailyCap ?? 10,
+      campaignRunning: facts.campaignState === "running",
+      sentThisHour: facts.sentThisHour,
+      hourlyCap: facts.hourlyCap,
+      sentToday: facts.sentToday,
+      dailyCap: facts.dailyCap,
     });
 
     if (decision.kind === "defer") {
@@ -216,6 +226,30 @@ async function runTickBody(): Promise<HistoricalTickResult> {
         });
       }
       continue;
+    }
+
+    // Capacity is RESERVED, not merely observed (QA-08).
+    //
+    // The recheck above compared counts read moments earlier, with nothing holding the
+    // gap: two workers could each read "2 of 3 this hour" and both post. This takes the
+    // same `dm_recovery_control` lock the prospective path takes and stamps the row
+    // in-flight inside it, so the slot is genuinely consumed before Meta is called and
+    // the two systems serialise against each other rather than just counting each other.
+    const refused = await reserveSendCapacity({
+      candidateId: id,
+      campaignId: claimed.campaignId,
+      now,
+      hourlyCap: facts.hourlyCap,
+      dailyCap: facts.dailyCap,
+      globalHourlyCap: env.DM_RECOVERY_HOURLY_CAP,
+    });
+    if (refused) {
+      await releaseCandidateClaim(id, claimed.claimToken);
+      result.deferred++;
+      // A cap applies to every remaining row, so continuing would release them all
+      // one at a time for nothing.
+      result.skipped = refused;
+      break;
     }
 
     // Only an explicit `send` reaches Meta. Written as a positive check so any
@@ -360,4 +394,99 @@ async function readSourceComment(commentId: string): Promise<SourceCommentState>
     if (failure === "missing") return "missing";
     return "unknown";
   }
+}
+
+/**
+ * Everything the pre-send recheck needs, read fresh (QA-10).
+ *
+ * Extracted so its failure can be contained by the caller. Nothing here contacts Meta
+ * except the source-comment read, which is a GET and idempotent — so a throw from this
+ * function is provably pre-dispatch, and the claim can be handed back rather than parked
+ * as `send_uncertain`.
+ *
+ * Throws on purpose. Returning partial facts would let the recheck run on defaults and
+ * decide `send` against unread evidence.
+ */
+type PreDispatchFacts = {
+  campaignState: string | null;
+  hourlyCap: number;
+  dailyCap: number;
+  audienceOrigin: string | null;
+  inboundCount: number;
+  completedCount: number;
+  priorRecoveryCount: number;
+  sentThisHour: number;
+  sentToday: number;
+  sourceComment: SourceCommentState;
+};
+
+async function gatherPreDispatchFacts(
+  claimed: { id: string; campaignId: string; igUserId: string; commentId: string },
+  hourAgo: Date,
+  dayAgo: Date,
+): Promise<PreDispatchFacts> {
+  // All of these could have changed since selection, which is the whole reason §34
+  // requires a recheck rather than trusting the snapshot.
+  const [campaign, person, recentContact, sourceComment, capacity] = await Promise.all([
+    prisma.recoveryCampaign.findUnique({
+      where: { id: claimed.campaignId },
+      select: { state: true, hourlyCap: true, dailyCap: true },
+    }),
+    prisma.igUser.findUnique({
+      where: { id: claimed.igUserId },
+      select: { inferredOrigin: true },
+    }),
+    // Any inbound, completion, or other public recovery since selection.
+    Promise.all([
+      prisma.dmMessage.count({
+        where: { thread: { igUserId: claimed.igUserId }, direction: "inbound" },
+      }),
+      prisma.conversation.count({
+        where: { igUserId: claimed.igUserId, state: "completed" },
+      }),
+      prisma.dmRecoveryReminder.count({
+        where: { igUserId: claimed.igUserId, status: { in: ["sent", "sending", "send_uncertain"] } },
+      }),
+    ]),
+    // The Graph read that catches a deleted or hidden comment.
+    readSourceComment(claimed.commentId),
+    Promise.all([
+      countCandidatesSentSince(claimed.campaignId, hourAgo),
+      countCandidatesSentSince(claimed.campaignId, dayAgo),
+    ]),
+  ]);
+
+  const [inboundCount, completedCount, priorRecoveryCount] = recentContact;
+  const [sentThisHour, sentToday] = capacity;
+
+  return {
+    campaignState: campaign?.state ?? null,
+    // Defaults match the conservative launch caps in design §39. A campaign row that
+    // vanished mid-tick reads as not-running above, so these are only ever used for a
+    // campaign whose caps were somehow null.
+    hourlyCap: campaign?.hourlyCap ?? 3,
+    dailyCap: campaign?.dailyCap ?? 10,
+    audienceOrigin: person?.inferredOrigin ?? null,
+    inboundCount,
+    completedCount,
+    priorRecoveryCount,
+    sentThisHour,
+    sentToday,
+    sourceComment,
+  };
+}
+
+/**
+ * The smallest batch size among running campaigns, or null when none are running.
+ *
+ * Smallest rather than per-campaign because one tick can touch rows from several
+ * campaigns, and a campaign still at stage 0 (batch 1) must not have its pacing
+ * overridden by a sibling at stage 3.
+ */
+async function smallestRunningBatchSize(): Promise<number | null> {
+  const row = await prisma.recoveryCampaign.aggregate({
+    where: { state: "running" },
+    _min: { batchSize: true },
+  });
+  return row._min.batchSize ?? null;
 }

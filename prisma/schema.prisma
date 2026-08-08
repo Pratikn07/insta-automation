@@ -944,6 +944,10 @@ model RecoveryCandidate {
   /// forever, because releasing the claim left no record that anything had happened.
   attempts                 Int                      @default(0)
   lastAttemptAt            DateTime?                @map("last_attempt_at") @db.Timestamptz(3)
+  /// Set immediately before the Graph call, inside the capacity reservation. A claimed
+  /// row with this still null is provably pre-network: safe to release rather than park
+  /// as send_uncertain, and it has NOT consumed a send slot.
+  dispatchStartedAt        DateTime?                @map("dispatch_started_at") @db.Timestamptz(3)
   nextAttemptAt            DateTime?                @map("next_attempt_at") @db.Timestamptz(3)
   sentAt                   DateTime?                @map("sent_at") @db.Timestamptz(3)
   publicReplyId            String?                  @map("public_reply_id")
@@ -965,5 +969,6 @@ model RecoveryCandidate {
   @@unique([campaignId, igUserId], map: "recovery_candidate_campaign_person_key")
   @@index([outcome, eligibleAt])
   @@index([igUserId, sentAt])
+  @@index([dispatchStartedAt], map: "recovery_candidate_dispatch_started_idx")
   @@map("recovery_candidate")
 }

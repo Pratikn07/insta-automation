@@ -132,27 +132,54 @@ export async function claimCandidate(
 /**
  * Reconcile leases that expired mid-send.
  *
- * A lease that ran out means the process died after claiming. The comment may or
- * may not have posted, so these become `send_uncertain` and are NEVER retried
- * automatically — a retry would risk a second public comment on someone's post.
+ * A lease that ran out means the process died holding a claim. What that MEANS depends
+ * on whether dispatch had started (QA-10):
+ *
+ *   - `dispatchStartedAt` set  → Meta may have been called, so the comment may exist.
+ *     Terminal `send_uncertain`, never retried: a retry risks a second public comment.
+ *   - `dispatchStartedAt` null → the process died while preparing. Meta was never
+ *     called, so the row is released for a later tick.
+ *
+ * Every expired lease previously became `send_uncertain`, so a worker that died during a
+ * database read — or was simply restarted mid-tick — permanently burned a candidate and
+ * recorded it as "we may have posted".
+ *
+ * Returns the count parked as uncertain; released rows are reported separately.
  */
-export async function reconcileExpiredCandidateLeases(now: Date): Promise<number> {
-  const { count } = await prisma.recoveryCandidate.updateMany({
-    where: {
-      outcome: "pending",
-      claimedAt: { not: null },
-      claimExpiresAt: { lte: now },
-    },
-    data: {
-      outcome: "send_uncertain",
-      suppressionReason: "stale_lease",
-      claimedAt: null,
-      claimExpiresAt: null,
-      // Must be cleared, or the partial unique index keeps the row claimed forever.
-      claimToken: null,
-    },
-  });
-  return count;
+export async function reconcileExpiredCandidateLeases(
+  now: Date,
+): Promise<{ uncertain: number; released: number }> {
+  const expired = {
+    outcome: "pending" as const,
+    claimedAt: { not: null },
+    claimExpiresAt: { lte: now },
+  };
+
+  const [uncertain, released] = await prisma.$transaction([
+    prisma.recoveryCandidate.updateMany({
+      where: { ...expired, dispatchStartedAt: { not: null } },
+      data: {
+        outcome: "send_uncertain",
+        suppressionReason: "stale_lease",
+        claimedAt: null,
+        claimExpiresAt: null,
+        // Must be cleared, or the partial unique index keeps the row claimed forever.
+        claimToken: null,
+      },
+    }),
+    prisma.recoveryCandidate.updateMany({
+      where: { ...expired, dispatchStartedAt: null },
+      data: {
+        claimedAt: null,
+        claimExpiresAt: null,
+        claimToken: null,
+        // Backed off so a repeatedly-dying worker does not spin on the same row.
+        nextAttemptAt: new Date(now.getTime() + 5 * 60 * 1000),
+      },
+    }),
+  ]);
+
+  return { uncertain: uncertain.count, released: released.count };
 }
 
 /**
@@ -286,12 +313,106 @@ export async function countCandidatesSentSince(campaignId: string, since: Date):
       campaignId,
       // `send_uncertain` counts. The comment may be live on Instagram, so excluding it
       // let an unknown number of real public comments escape the cap (QA-08).
-      OR: [
-        { outcome: "sent", sentAt: { gte: since } },
-        { outcome: "send_uncertain", lastAttemptAt: { gte: since } },
-        // In flight right now: claimed and not yet finalised.
-        { outcome: "pending", claimToken: { not: null }, lastAttemptAt: { gte: since } },
-      ],
+      // Same definition the reservation uses, so the advisory count in the recheck and
+      // the authoritative count under the lock cannot disagree.
+      ...consumedSince(since),
     },
   });
+}
+
+/**
+ * Reserve one send slot against the campaign's caps AND the shared global cap (QA-08).
+ *
+ * The worker previously read the hour and day counts, then posted, with nothing holding
+ * the gap. Two workers could each read "2 of 3 this hour" and both post, and the
+ * historical caps were per-campaign only — so two running campaigns, or historical plus
+ * prospective, could each stay inside their own limit while the account posted far more
+ * public comments than any single number suggested.
+ *
+ * `dm_recovery_control` row 1 is locked FOR UPDATE, which is the same row and the same
+ * lock the prospective path already takes. That makes the two systems serialise against
+ * each other rather than merely counting each other.
+ *
+ * `send_uncertain` and in-flight claims consume capacity: an uncertain post may be live
+ * on Instagram, so excluding it would let real comments escape the cap. The caller's own
+ * claim is excluded by id, because it would otherwise count itself.
+ *
+ * Returns the reason a slot was refused, or null when the send may proceed.
+ */
+export async function reserveSendCapacity(input: {
+  candidateId: string;
+  campaignId: string;
+  now: Date;
+  hourlyCap: number;
+  dailyCap: number;
+  globalHourlyCap: number;
+}): Promise<null | "hourly_cap_reached" | "daily_cap_reached" | "global_hourly_cap_reached"> {
+  const hourAgo = new Date(input.now.getTime() - 60 * 60 * 1000);
+  const dayAgo = new Date(input.now.getTime() - 24 * 60 * 60 * 1000);
+
+  return prisma.$transaction(async (tx) => {
+    // The serialisation point, shared with the prospective worker.
+    await tx.$queryRaw`SELECT "id" FROM "dm_recovery_control" WHERE "id" = 1 FOR UPDATE`;
+
+    const [thisHour, today, prospectiveThisHour] = await Promise.all([
+      tx.recoveryCandidate.count({
+        where: { campaignId: input.campaignId, id: { not: input.candidateId }, ...consumedSince(hourAgo) },
+      }),
+      tx.recoveryCandidate.count({
+        where: { campaignId: input.campaignId, id: { not: input.candidateId }, ...consumedSince(dayAgo) },
+      }),
+      // Global: EVERY historical campaign plus the prospective feature. One account
+      // posts all of these under one name, so the ceiling has to be one number.
+      Promise.all([
+        tx.recoveryCandidate.count({
+          where: { id: { not: input.candidateId }, ...consumedSince(hourAgo) },
+        }),
+        tx.dmRecoveryReminder.count({
+          where: {
+            OR: [
+              { sentAt: { gte: hourAgo } },
+              { lastAttemptAt: { gte: hourAgo }, status: { in: ["sending", "send_uncertain"] } },
+            ],
+          },
+        }),
+      ]).then(([historical, prospective]) => historical + prospective),
+    ]);
+
+    if (today >= input.dailyCap) return "daily_cap_reached";
+    if (thisHour >= input.hourlyCap) return "hourly_cap_reached";
+    if (prospectiveThisHour >= input.globalHourlyCap) return "global_hourly_cap_reached";
+
+    // Stamping dispatchStartedAt inside the lock is what makes the reservation real: the
+    // next worker's count sees this row as in-flight and cannot reuse the slot. It also
+    // marks the point after which a failure may mean a comment exists — before this, a
+    // claimed row is provably pre-network and safe to release (QA-10).
+    await tx.recoveryCandidate.updateMany({
+      where: { id: input.candidateId },
+      data: { dispatchStartedAt: input.now, lastAttemptAt: input.now },
+    });
+
+    return null;
+  });
+}
+
+/**
+ * Rows that have consumed a send slot since `since`.
+ *
+ * Keyed on `dispatchStartedAt`, NOT on holding a claim. A claim means "a worker is
+ * preparing this row"; only dispatch means "a public comment may exist". Counting claims
+ * deadlocked the cap: two workers each holding a claim counted the other as in-flight, so
+ * with a cap of 1 neither could reserve the last slot and the campaign stalled — verified
+ * against real Postgres before this fix.
+ *
+ * `send_uncertain` is included even without a dispatch timestamp, because a row parked by
+ * lease reconciliation may have posted before the process died.
+ */
+function consumedSince(since: Date) {
+  return {
+    OR: [
+      { outcome: "sent" as const, sentAt: { gte: since } },
+      { outcome: "send_uncertain" as const, lastAttemptAt: { gte: since } },
+      { outcome: "pending" as const, dispatchStartedAt: { gte: since } },
+    ],
+  };
 }

@@ -19,6 +19,8 @@ let repo: typeof import("./historicalRecoveryRepository.js");
 
 type Fixture = { resourceId: string; keywordId: string; igUserId: string; intentId: string; campaignId: string };
 let fx: Fixture;
+/** Campaigns created per-test for cap isolation; removed in afterAll. */
+const campaignsToClean: string[] = [];
 
 async function seed(): Promise<Fixture> {
   const f: Fixture = {
@@ -50,7 +52,7 @@ async function seed(): Promise<Fixture> {
  * invariant working as designed, so each test row needs fresh identities rather than
  * reusing the fixture's.
  */
-async function makeCandidate(): Promise<string> {
+async function makeCandidate(campaignId: string = fx.campaignId): Promise<string> {
   const now = new Date();
   const igUserId = `${fx.igUserId}-${randomUUID()}`;
   const intentId = randomUUID();
@@ -65,7 +67,7 @@ async function makeCandidate(): Promise<string> {
 
   const row = await prisma.recoveryCandidate.create({
     data: {
-      campaignId: fx.campaignId, campaignPhase: "unknown_read_pilot", intentId,
+      campaignId, campaignPhase: "unknown_read_pilot", intentId,
       igUserId, keywordId: fx.keywordId, commentId: `claim-race-c-${randomUUID()}`,
       commentAt: now, keywordSnapshot: "RACE", publicReplyText: "t",
       evidence: "gate_sent_no_read", arm: "treatment", eligibleAt: now,
@@ -88,7 +90,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (!prisma) return;
   await prisma.recoveryCandidate.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
-  await prisma.recoveryCampaign.deleteMany({ where: { id: fx.campaignId } });
+  await prisma.recoveryCampaign.deleteMany({ where: { id: { in: [fx.campaignId, ...campaignsToClean] } } });
   await prisma.dmRecoveryReminder.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
   await prisma.journeyIntent.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
   await prisma.conversation.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
@@ -275,6 +277,197 @@ describeWithLocalDatabase("final send check sees journey completion", () => {
     expect(await authorizeWithSibling({ siblingCompleted: false, linkIntent: true })).not.toBe(
       "suppress:completed",
     );
+  });
+});
+
+// QA-08. The worker read the hour and day counts, then posted, with nothing holding the
+// gap — so two workers could each read "2 of 3 this hour" and both post. And the caps
+// were per-campaign only, so two running campaigns, or historical plus prospective, could
+// each stay inside their own limit while the account posted far more public comments than
+// any single number described.
+//
+// A mocked client cannot demonstrate either: the fix is a row lock, which only exists in
+// a real database.
+describeWithLocalDatabase("send capacity is reserved, not merely observed", () => {
+  /** The shared lock row both systems serialise on. */
+  async function ensureControlRow(): Promise<void> {
+    await prisma.dmRecoveryControl.upsert({
+      where: { id: 1 },
+      create: { id: 1, circuitOpen: false },
+      update: {},
+    });
+  }
+
+  /**
+   * A campaign of this test's own, plus the shared control row.
+   *
+   * Caps are counted per campaign over a rolling window, so reusing the fixture's
+   * campaign made each test inherit every earlier test's sends — the first version of
+   * these tests failed for exactly that reason, reporting `daily_cap_reached` on a
+   * brand-new candidate. The GLOBAL cap is deliberately still shared, because that is
+   * what it means, so global assertions set their own campaign caps wide open.
+   */
+  async function freshCampaign(): Promise<string> {
+    await ensureControlRow();
+    const id = randomUUID();
+    const now = new Date();
+    await prisma.recoveryCampaign.create({
+      data: {
+        id, phase: "unknown_read_pilot", selectionVersion: `cap-${id}`,
+        sourceDataCutoff: now, copyVersion: "recovery-v2", state: "running",
+        approvedBy: "test", approvedAt: now,
+      },
+    });
+    campaignsToClean.push(id);
+    return id;
+  }
+
+  async function reserveFor(id: string, caps: { hourly: number; daily: number; global: number }) {
+    const row = await prisma.recoveryCandidate.findUnique({ where: { id } });
+    return repo.reserveSendCapacity({
+      candidateId: id,
+      campaignId: row!.campaignId,
+      now: new Date(),
+      hourlyCap: caps.hourly,
+      dailyCap: caps.daily,
+      globalHourlyCap: caps.global,
+    });
+  }
+
+  // THE two-process race. With a cap of 1 and two workers reserving at once, exactly one
+  // may proceed. Before the fix both read zero and both would have posted.
+  it("gives exactly one of two simultaneous workers the last slot", async () => {
+    const campaignId = await freshCampaign();
+    const [a, b] = await Promise.all([makeCandidate(campaignId), makeCandidate(campaignId)]);
+    const now = new Date();
+    const lease = new Date(now.getTime() + 60_000);
+    // Both hold their own claim, which is what the worker state looks like here.
+    await Promise.all([
+      repo.claimCandidate(a, now, lease),
+      repo.claimCandidate(b, now, lease),
+    ]);
+
+    const results = await Promise.all([
+      reserveFor(a, { hourly: 1, daily: 10, global: 50 }),
+      reserveFor(b, { hourly: 1, daily: 10, global: 50 }),
+    ]);
+
+    expect(results.filter((r) => r === null)).toHaveLength(1);
+    expect(results.filter((r) => r === "hourly_cap_reached")).toHaveLength(1);
+  });
+
+  // An uncertain post may be live on Instagram, so it consumes a slot. Excluding it let
+  // an unknown number of real public comments escape the cap.
+  it("counts an uncertain attempt against the cap", async () => {
+    const campaignId = await freshCampaign();
+    const spent = await makeCandidate(campaignId);
+    const next = await makeCandidate(campaignId);
+    const now = new Date();
+    const held = await repo.claimCandidate(spent, now, new Date(now.getTime() + 60_000));
+    await repo.markCandidateUncertain(spent, held!.claimToken, "transport_uncertain");
+
+    expect(await reserveFor(next, { hourly: 1, daily: 10, global: 50 })).toBe("hourly_cap_reached");
+  });
+
+  /**
+   * How many sends the global cap currently sees.
+   *
+   * The global cap is global BY DESIGN, so it counts rows other tests created. Asserting
+   * against an absolute number like 1 therefore fails for the wrong reason — the first
+   * version of this test did exactly that. Measuring the live count and setting the cap
+   * at it makes the NEXT send the one refused, which is the property under test.
+   */
+  async function globalSendsThisHour(): Promise<number> {
+    const hourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    const [historical, prospective] = await Promise.all([
+      prisma.recoveryCandidate.count({
+        where: {
+          OR: [
+            { outcome: "sent", sentAt: { gte: hourAgo } },
+            { outcome: "send_uncertain", lastAttemptAt: { gte: hourAgo } },
+            { outcome: "pending", dispatchStartedAt: { gte: hourAgo } },
+          ],
+        },
+      }),
+      prisma.dmRecoveryReminder.count({
+        where: {
+          OR: [
+            { sentAt: { gte: hourAgo } },
+            { lastAttemptAt: { gte: hourAgo }, status: { in: ["sending", "send_uncertain"] } },
+          ],
+        },
+      }),
+    ]);
+    return historical + prospective;
+  }
+
+  // The prospective feature posts under the same account name, so its sends have to
+  // count. This is the cross-system ceiling the caps previously lacked entirely.
+  it("counts prospective sends against the global cap", async () => {
+    const campaignId = await freshCampaign();
+    const id = await makeCandidate(campaignId);
+    const row = await prisma.recoveryCandidate.findUnique({ where: { id } });
+    const now = new Date();
+    await repo.claimCandidate(id, now, new Date(now.getTime() + 60_000));
+
+    const before = await globalSendsThisHour();
+
+    const prospectivePerson = `${fx.igUserId}-pro-${randomUUID()}`;
+    await prisma.igUser.create({ data: { id: prospectivePerson } });
+    const convo = await prisma.conversation.create({
+      data: { igUserId: prospectivePerson, keywordId: fx.keywordId, state: "expired" },
+    });
+    await prisma.dmRecoveryReminder.create({
+      data: {
+        // A DIFFERENT person, so this exercises the global cap rather than the
+        // per-person cooldown. Created explicitly: the FK requires a real ig_user.
+        conversationId: convo.id, igUserId: prospectivePerson, keywordId: fx.keywordId,
+        keywordSnapshot: "RACE", templateVersion: "v1", publicReplyText: "t",
+        commentId: `glob-c-${randomUUID()}`, triggerKind: "no_confirmed_read",
+        status: "sent", cohort: "treatment", eligibleAt: now, sentAt: now,
+      },
+    });
+
+    // One prospective send arrived, so the count must have moved by exactly one — that
+    // increment IS the cross-system visibility being tested.
+    expect(await globalSendsThisHour()).toBe(before + 1);
+
+    // Campaign caps wide open; the global ceiling set at the pre-existing total means the
+    // prospective send is what pushes this candidate over.
+    expect(await reserveFor(id, { hourly: 50, daily: 200, global: before + 1 })).toBe(
+      "global_hourly_cap_reached",
+    );
+  });
+
+  // The daily cap is checked as well as the hourly one: at 3/hour a "daily cap 10"
+  // campaign would otherwise post 72 a day.
+  it("refuses on the daily cap before the hourly one", async () => {
+    const campaignId = await freshCampaign();
+    const spent = await makeCandidate(campaignId);
+    const next = await makeCandidate(campaignId);
+    const now = new Date();
+    const held = await repo.claimCandidate(spent, now, new Date(now.getTime() + 60_000));
+    await repo.markCandidateSent(spent, held!.claimToken, {
+      publicReplyId: `179${randomUUID().slice(0, 8)}`,
+      sentAt: now,
+    });
+
+    expect(await reserveFor(next, { hourly: 50, daily: 1, global: 50 })).toBe("daily_cap_reached");
+  });
+
+  // The reserving row must not count ITSELF: its own in-flight claim would otherwise
+  // consume the slot it is asking for, and a cap of 1 would never send anything.
+  it("does not let a candidate block its own reservation", async () => {
+    const campaignId = await freshCampaign();
+    const id = await makeCandidate(campaignId);
+    const now = new Date();
+    await repo.claimCandidate(id, now, new Date(now.getTime() + 60_000));
+
+    // Campaign caps of 1: the row's own claim must not consume the slot it is asking
+    // for, or a stage-0 campaign at batch 1 would never send anything. The global cap is
+    // set above the live total so only the self-counting rule is under test.
+    const global = (await globalSendsThisHour()) + 1;
+    expect(await reserveFor(id, { hourly: 1, daily: 1, global })).toBeNull();
   });
 });
 
