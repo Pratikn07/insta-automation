@@ -60,6 +60,34 @@ export async function loadReconciliationRows(): Promise<ReconciliationRow[]> {
   `;
 }
 
+/**
+ * Would this window be declined because the live path owns an overlapping journey?
+ *
+ * Read-only, so the DRY RUN can report declines. Without it the dry run counted zero
+ * every time — declines were only tallied inside the `--write` branch — which made the
+ * review artifact quietly disagree with what applying it would do. That is the same
+ * defect QA-14 exists to fix, in the tool meant to make this reviewable.
+ *
+ * Advisory only. `applyReconciledWindow` re-checks inside its transaction, because a
+ * journey can go live between the report and the write.
+ */
+export async function hasOverlappingLiveIntent(
+  w: { igUserId: string; keywordId: string; windowStartedAt: Date; windowExpiresAt: Date },
+  now = new Date(),
+): Promise<boolean> {
+  const found = await prisma.journeyIntent.findFirst({
+    where: {
+      igUserId: w.igUserId,
+      keywordId: w.keywordId,
+      windowStartedAt: { lte: w.windowExpiresAt },
+      windowExpiresAt: { gte: w.windowStartedAt, gt: now },
+      completedAt: null,
+    },
+    select: { id: true },
+  });
+  return found !== null;
+}
+
 export type WindowWrite = {
   igUserId: string;
   keywordId: string;

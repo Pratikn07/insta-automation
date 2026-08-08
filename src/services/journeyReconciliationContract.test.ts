@@ -280,3 +280,47 @@ describeWithLocalDatabase("re-running reconciliation cannot duplicate or hijack 
     expect(intents[0]!.canonicalConversationId).toBe(canonical);
   });
 });
+
+// The dry run is the review artifact. If it cannot see a decline, it disagrees with what
+// applying it would do — which is precisely the defect QA-14 exists to prevent.
+describeWithLocalDatabase("the dry run can see what it would decline", () => {
+  const WINDOW_MS = 48 * 3600_000;
+  const probe = (person: string) => ({
+    igUserId: person,
+    keywordId: fx.keywordId,
+    windowStartedAt: CREATED_AT,
+    windowExpiresAt: new Date(CREATED_AT.getTime() + WINDOW_MS),
+  });
+
+  it("sees an overlapping journey the live path still owns", async () => {
+    const person = `${fx.igUserId}-${randomUUID()}`;
+    await prisma.journeyIntent.create({
+      data: {
+        igUserId: person,
+        keywordId: fx.keywordId,
+        windowStartedAt: new Date(CREATED_AT.getTime() + 3),
+        lastTriggerAt: new Date(CREATED_AT.getTime() + 3),
+        windowExpiresAt: new Date(Date.now() + WINDOW_MS),
+        completedAt: null,
+      },
+    });
+
+    expect(await repo.hasOverlappingLiveIntent(probe(person))).toBe(true);
+  });
+
+  it("ignores a settled journey, which is merged rather than declined", async () => {
+    const person = `${fx.igUserId}-${randomUUID()}`;
+    await prisma.journeyIntent.create({
+      data: {
+        igUserId: person,
+        keywordId: fx.keywordId,
+        windowStartedAt: new Date(CREATED_AT.getTime() + 3),
+        lastTriggerAt: new Date(CREATED_AT.getTime() + 3),
+        windowExpiresAt: new Date(CREATED_AT.getTime() + WINDOW_MS),
+        completedAt: CREATED_AT,
+      },
+    });
+
+    expect(await repo.hasOverlappingLiveIntent(probe(person))).toBe(false);
+  });
+});
