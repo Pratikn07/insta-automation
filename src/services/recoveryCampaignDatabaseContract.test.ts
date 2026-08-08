@@ -91,6 +91,9 @@ function campaignData(overrides: Record<string, unknown> = {}) {
 function candidateData(campaignId: string, overrides: Record<string, unknown> = {}) {
   return {
     campaignId,
+    // Must agree with the campaign's phase and with `evidence` below: the CHECK
+    // constraint and the trigger both enforce that pairing now (QA-03).
+    campaignPhase: "unknown_read_pilot" as const,
     intentId: fixture.intentId,
     igUserId: fixture.igUserId,
     conversationId: fixture.conversationId,

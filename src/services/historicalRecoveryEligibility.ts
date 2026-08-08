@@ -1,3 +1,5 @@
+import { assignRecoveryCohort } from "./dmRecoveryPolicy.js";
+
 /**
  * Who may be contacted by a historical recovery campaign — as pure functions.
  *
@@ -208,4 +210,97 @@ export function assertNoDuplicates(included: Array<{ facts: EligibilityFacts }>)
     }
     seenPeople.set(facts.igUserId, facts.intentId);
   }
+}
+
+/** The two rollout phases, each with exactly one permitted evidence basis. */
+export type CampaignPhase = "confirmed_failure" | "unknown_read_pilot";
+
+/**
+ * The evidence a phase is allowed to contain.
+ *
+ * A campaign's phase decides its copy, its approval, its sequencing, and how its
+ * results are read. If the two cohorts mix, none of those mean what the label says:
+ * a `confirmed_failure` campaign would tell someone "I couldn't send your guide"
+ * when Meta actually accepted it, and a pilot's metrics would blend two populations.
+ *
+ * Verified in production before this existed: a campaign labelled
+ * `unknown_read_pilot` held 988 gate_sent_no_read rows AND 2 gate_exhausted rows.
+ */
+const PHASE_EVIDENCE: Record<CampaignPhase, string> = {
+  confirmed_failure: "gate_exhausted",
+  unknown_read_pilot: "gate_sent_no_read",
+};
+
+export function evidenceForPhase(phase: CampaignPhase): string {
+  return PHASE_EVIDENCE[phase];
+}
+
+/**
+ * Is this candidate's evidence permitted in this phase?
+ *
+ * Exact match rather than a subset rule: an evidence type added later must be
+ * assigned to a phase deliberately, not inherited into whichever cohort happens to
+ * be permissive.
+ */
+export function evidenceMatchesPhase(phase: CampaignPhase, evidence: string): boolean {
+  return PHASE_EVIDENCE[phase] === evidence;
+}
+
+/**
+ * Assign treatment or holdout for one person.
+ *
+ * Delegates to the prospective feature's `assignRecoveryCohort`, which already hashes
+ * (experimentVersion, igUserId) into a 0-100 bucket. Reused rather than reimplemented
+ * so both experiments partition the same way and a fix to one applies to both.
+ *
+ * Replaces `index % 100 < holdoutPercent` on an oldest-first list, which was broken
+ * two separate ways (QA-07):
+ *
+ *   N=25 at 50%  ->  25 holdout, 0 treatment.  The pilot sent to NOBODY.
+ *   N=25 at 10%  ->  10 holdout, 15 treatment. 40% withheld, not 10%.
+ *   N=990 at 50% ->  the oldest 50 of every 100 went to holdout, so the arm was
+ *                    confounded with comment age and the experiment could not
+ *                    separate "the reminder worked" from "recent requests convert".
+ *
+ * Hashing on the person means the split is stable across reruns, independent of
+ * ordering and pool size, and identical for someone re-selected into a later campaign.
+ */
+export function assignArm(
+  igUserId: string,
+  experimentVersion: string,
+  holdoutPercent: number,
+): "treatment" | "holdout" {
+  const cohort = assignRecoveryCohort(igUserId, experimentVersion, holdoutPercent);
+  // The prospective feature calls its withheld arm "control"; the candidate schema
+  // calls it "holdout". Same meaning, different vocabulary per feature.
+  return cohort === "control" ? "holdout" : "treatment";
+}
+
+/**
+ * Refuse a campaign whose realized split cannot answer the question it exists for.
+ *
+ * A hash on a small pool does not land on the nominal percentage, and at pilot sizes
+ * it can land somewhere useless. Checked at creation, when the fix is free, rather
+ * than discovered after approval.
+ */
+export function validateArmSplit(input: {
+  treatment: number;
+  holdout: number;
+  holdoutPercent: number;
+}): { ok: true } | { ok: false; reason: string } {
+  const total = input.treatment + input.holdout;
+  if (total === 0) return { ok: false, reason: "no_candidates_selected" };
+
+  // The campaign sends to nobody. This is exactly what the old modulo produced for a
+  // 25-person pilot at 50%.
+  if (input.treatment === 0) {
+    return { ok: false, reason: "no_treatment_candidates" };
+  }
+  // A holdout was asked for and none materialised, so there is nothing to compare
+  // against and the campaign cannot measure lift.
+  if (input.holdoutPercent > 0 && input.holdout === 0) {
+    return { ok: false, reason: "no_holdout_candidates" };
+  }
+
+  return { ok: true };
 }

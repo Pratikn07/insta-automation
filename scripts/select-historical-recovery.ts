@@ -2,6 +2,7 @@ import { prisma } from "../src/lib/prisma.js";
 import { selectHistoricalCandidates } from "../src/services/historicalRecoverySelector.js";
 import { env } from "../src/config/env.js";
 import { COPY_VERSION } from "../src/services/historicalRecoveryCopy.js";
+import type { CampaignPhase } from "../src/services/historicalRecoveryEligibility.js";
 
 /**
  * Preview (and optionally draft) a historical recovery campaign.
@@ -17,6 +18,26 @@ import { COPY_VERSION } from "../src/services/historicalRecoveryCopy.js";
  */
 
 const WRITE = process.argv.includes("--write");
+
+// Phase must be stated, never defaulted. The old script hardcoded
+// `unknown_read_pilot`, which meant there was no way to run a Phase 1 selection at
+// all, AND that a mixed pool inherited a label nobody chose. The design also
+// sequences these: Phase 1 is observed before a Phase 2 pilot is selectable.
+const phaseArg = process.argv.indexOf("--phase");
+const phaseRaw = phaseArg >= 0 ? process.argv[phaseArg + 1] : undefined;
+
+function requirePhase(value: string | undefined): CampaignPhase {
+  if (value === "confirmed_failure" || value === "unknown_read_pilot") return value;
+  console.error(
+    "--phase is required and decides which cohort is selected:\n" +
+      "  --phase confirmed_failure    only gate_exhausted (Meta confirmed the DM failed)\n" +
+      "  --phase unknown_read_pilot   only gate_sent_no_read (accepted, no read receipt)\n\n" +
+      "The two need different copy and cannot share a campaign.",
+  );
+  process.exit(1);
+}
+
+const PHASE = requirePhase(phaseRaw);
 const limitArg = process.argv.indexOf("--limit");
 const LIMIT = limitArg >= 0 ? Number(process.argv[limitArg + 1]) : undefined;
 
@@ -42,7 +63,7 @@ const MIN_AGE_DAYS = 7;
 async function main() {
   const now = new Date();
   const report = await selectHistoricalCandidates({
-    phase: "unknown_read_pilot",
+    phase: PHASE,
     selectionVersion: "v1-canonical-intents",
     copyVersion: COPY_VERSION,
     // Read the live flag rather than assuming: the filter must match what the
@@ -56,6 +77,7 @@ async function main() {
 
   console.log(WRITE ? "DRAFT CAMPAIGN CREATED" : "DRY RUN — nothing written");
   if (report.campaignId) console.log(`  campaign id       : ${report.campaignId}`);
+  console.log(`  phase             : ${PHASE}`);
   console.log(`  westernOnly       : ${env.DM_RECOVERY_WESTERN_ONLY}`);
   console.log(`  min comment age   : ${MIN_AGE_DAYS} days`);
   console.log(`  intents examined  : ${report.rawIntents}`);

@@ -1,104 +1,137 @@
 import { describe, it, expect } from "vitest";
 import {
   recoveryCopyFor,
-  copyPointsAtDm,
+  normalizeKeywordForCopy,
+  copyHasWorkingAction,
+  copyClaimsDeliveryFailed,
   COPY_VERSION,
+  RECOVERY_HANDLE,
 } from "./historicalRecoveryCopy.js";
 
-// This text is posted PUBLICLY on a real person's comment, weeks after they asked.
-// The wording is not decoration: it decides whether the account looks like it is
-// making amends or malfunctioning.
+// This text is posted publicly on a real person's comment, weeks after they asked.
+// Two properties matter more than the wording, and version 1 broke both.
 
-describe("recoveryCopyFor", () => {
-  // The bug this module exists to fix. The keyword's own reply is "Check your DMs!",
-  // which is right seconds after a comment and wrong 43 days later, because it points
-  // the person at the exact thing that failed.
-  it("never tells someone to check the DM that failed", () => {
-    for (const evidence of ["gate_exhausted", "gate_sent_no_read", "something_new"]) {
-      expect(copyPointsAtDm(recoveryCopyFor(evidence))).toBe(false);
+describe("the instructed action must actually work (QA-01)", () => {
+  // The defect: "Reply here and I'll send your guide right over" is a dead end.
+  // commentHandler ignores any comment containing no active keyword, so a person who
+  // follows that instruction literally receives nothing, ever. Only a DM carrying the
+  // keyword reaches messageHandler and delivers the guide.
+  it("never tells someone to reply on the comment", () => {
+    for (const evidence of ["gate_exhausted", "gate_sent_no_read", "unrecognised"]) {
+      expect(recoveryCopyFor(evidence, "SLEEP")).not.toMatch(/repl(y|ies) here/i);
     }
   });
 
-  // Two different claims. `gate_exhausted` means Meta told us delivery failed, so
-  // "couldn't reach you" is a fact we can state.
-  it("states the failure plainly when we have proof of it", () => {
-    expect(recoveryCopyFor("gate_exhausted")).toContain("couldn't reach you");
+  it("names the DM handle and the keyword, which is the path that works", () => {
+    for (const evidence of ["gate_exhausted", "gate_sent_no_read", "unrecognised"]) {
+      const copy = recoveryCopyFor(evidence, "SLEEP");
+
+      expect(copy).toContain(`DM ${RECOVERY_HANDLE}`);
+      expect(copy).toContain('"SLEEP"');
+      expect(copyHasWorkingAction(copy)).toBe(true);
+    }
   });
 
-  // `gate_sent_no_read` means Meta ACCEPTED the DM and no read receipt arrived.
-  // Absence of a receipt is not evidence of absence, so this must hedge.
-  it("hedges when all we know is that no read receipt arrived", () => {
-    const copy = recoveryCopyFor("gate_sent_no_read");
-
-    expect(copy).toContain("looks like");
-    expect(copy).not.toContain("couldn't reach you");
+  // Without the keyword the instruction is "DM us" with nothing to say, which the
+  // keyword matcher would ignore exactly like a bare reply.
+  it("refuses to render without a keyword", () => {
+    expect(() => recoveryCopyFor("gate_sent_no_read", "")).toThrow(/non-empty keyword/);
+    expect(() => recoveryCopyFor("gate_sent_no_read", "   ")).toThrow(/non-empty keyword/);
   });
 
-  it("gives the two evidence types different wording", () => {
-    expect(recoveryCopyFor("gate_exhausted")).not.toBe(recoveryCopyFor("gate_sent_no_read"));
-  });
-
-  // An unrecognised evidence type must never produce a public claim that our DM
-  // definitively failed, so the hedged copy is the fallback.
-  it("falls back to the hedged wording, not the definite one", () => {
-    expect(recoveryCopyFor("unrecognised")).toBe(recoveryCopyFor("gate_sent_no_read"));
+  it("recognises the broken wording as having no working action", () => {
+    expect(copyHasWorkingAction("Reply here and I'll send your guide right over 💛")).toBe(false);
   });
 });
 
-describe("recoveryCopyFor — house style", () => {
-  const all = ["gate_exhausted", "gate_sent_no_read"].map(recoveryCopyFor);
+describe("never claim more than the evidence shows (QA-01)", () => {
+  // gate_exhausted: Meta told us delivery failed, so this is a fact we can state.
+  it("states the failure only where Meta confirmed it", () => {
+    const copy = recoveryCopyFor("gate_exhausted", "SLEEP");
 
-  // Explicitly requested: no em dashes anywhere. The account's existing copy has
-  // none either, so this matches rather than imposes.
+    expect(copy).toContain("couldn't send your guide");
+    expect(copyClaimsDeliveryFailed(copy)).toBe(true);
+  });
+
+  // gate_sent_no_read: Meta ACCEPTED the DM and no read receipt arrived. That is not
+  // failure. Version 1 said "looks like my DM never made it to you" to 988 people,
+  // which asserts a delivery failure we cannot show.
+  it("makes no delivery-failure claim for the unknown-read cohort", () => {
+    const copy = recoveryCopyFor("gate_sent_no_read", "SLEEP");
+
+    expect(copyClaimsDeliveryFailed(copy)).toBe(false);
+    expect(copy).toContain("I sent your guide");
+  });
+
+  it("catches the version 1 wording as a false claim", () => {
+    expect(copyClaimsDeliveryFailed("So sorry, looks like my DM never made it to you!")).toBe(true);
+  });
+
+  // An unrecognised evidence type must never produce the stronger claim.
+  it("falls back to the cohort that claims less", () => {
+    expect(recoveryCopyFor("something_new", "SLEEP")).toBe(
+      recoveryCopyFor("gate_sent_no_read", "SLEEP"),
+    );
+    expect(copyClaimsDeliveryFailed(recoveryCopyFor("something_new", "SLEEP"))).toBe(false);
+  });
+
+  it("gives the two cohorts different wording", () => {
+    expect(recoveryCopyFor("gate_exhausted", "SLEEP")).not.toBe(
+      recoveryCopyFor("gate_sent_no_read", "SLEEP"),
+    );
+  });
+});
+
+describe("keyword normalisation (QA-18)", () => {
+  // The design requires the configured keyword shown in uppercase.
+  it("uppercases and trims", () => {
+    expect(normalizeKeywordForCopy("  sleep ")).toBe("SLEEP");
+    expect(normalizeKeywordForCopy("Potty")).toBe("POTTY");
+  });
+
+  it("renders the uppercase form in the copy", () => {
+    expect(recoveryCopyFor("gate_sent_no_read", "sleep")).toContain('"SLEEP"');
+  });
+
+  it("rejects an empty keyword rather than rendering empty quotes", () => {
+    expect(() => normalizeKeywordForCopy("")).toThrow();
+  });
+});
+
+describe("house style", () => {
+  const all = ["gate_exhausted", "gate_sent_no_read"].map((e) => recoveryCopyFor(e, "SLEEP"));
+
+  // Explicitly requested, and the account's existing copy has none either.
   it("uses no em or en dashes", () => {
-    for (const copy of all) {
-      expect(copy).not.toMatch(/[—–]/);
-    }
+    for (const copy of all) expect(copy).not.toMatch(/[—–]/);
   });
 
-  it("opens with the apology rather than burying it", () => {
-    for (const copy of all) {
-      expect(copy.startsWith("So sorry")).toBe(true);
-    }
+  it("keeps the account's 💛", () => {
+    for (const copy of all) expect(copy).toContain("💛");
   });
 
-  // "Reply here" works even when the person's DM settings are what blocked us. An
-  // instruction they cannot follow would be worse than saying nothing.
-  it("asks for a reply on the comment, not in the DM", () => {
-    for (const copy of all) {
-      expect(copy).toMatch(/reply here/i);
-    }
-  });
-
-  it("keeps the account's 💛 and a single exclamation", () => {
-    for (const copy of all) {
-      expect(copy).toContain("💛");
-      expect(copy.match(/!/g)).toHaveLength(1);
-    }
-  });
-
-  // Instagram truncates long comments, and a public apology that needs "more" to
-  // read the offer is worse than none.
+  // Instagram truncates long comments, and an apology that needs "more" to reach the
+  // instruction is worse than none.
   it("stays short enough to read without expanding", () => {
-    for (const copy of all) {
-      expect(copy.length).toBeLessThan(140);
-    }
+    for (const copy of all) expect(copy.length).toBeLessThan(160);
   });
 
-  it("says nothing about following the account", () => {
-    // The gate asks for a follow. This is an apology, and attaching an ask to it
-    // would make the apology look transactional.
-    for (const copy of all) {
-      expect(copy).not.toMatch(/follow/i);
-    }
+  // The gate already asks for a follow. Attaching one to an apology makes it
+  // transactional.
+  it("asks for no follow", () => {
+    for (const copy of all) expect(copy).not.toMatch(/follow/i);
+  });
+
+  it("never labels the cohort unread", () => {
+    // The design is explicit: "Historical—no confirmed read", never "Unread".
+    for (const copy of all) expect(copy).not.toMatch(/\bunread\b/i);
   });
 });
 
 describe("COPY_VERSION", () => {
-  // Two campaigns cannot be compared if their copy changed without the version
-  // moving, so this is stamped onto every campaign.
-  it("is a concrete version, not a placeholder", () => {
-    expect(COPY_VERSION).toBe("recovery-v1");
-    expect(COPY_VERSION).not.toBe("v1");
+  // Two campaigns cannot be compared if the copy changed without the version moving.
+  it("moved off the version whose action did not work", () => {
+    expect(COPY_VERSION).toBe("recovery-v2");
+    expect(COPY_VERSION).not.toBe("recovery-v1");
   });
 });

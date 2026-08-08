@@ -4,6 +4,10 @@ import {
   summarise,
   keepLatestPerPerson,
   assertNoDuplicates,
+  evidenceMatchesPhase,
+  assignArm,
+  validateArmSplit,
+  type CampaignPhase,
   type EligibilityFacts,
 } from "./historicalRecoveryEligibility.js";
 import { recoveryCopyFor } from "./historicalRecoveryCopy.js";
@@ -157,7 +161,7 @@ async function loadRows(cutoff: Date): Promise<SelectionRow[]> {
  * which the `chk_campaign_running_is_approved` constraint enforces.
  */
 export async function selectHistoricalCandidates(input: {
-  phase: "confirmed_failure" | "unknown_read_pilot";
+  phase: CampaignPhase;
   selectionVersion: string;
   copyVersion: string;
   westernOnly: boolean;
@@ -206,10 +210,19 @@ export async function selectHistoricalCandidates(input: {
   });
   const outOfWindow = decided.length - inWindow.length;
 
-  const { included, excludedByReason } = summarise(
+  const { included: allEligible, excludedByReason } = summarise(
     inWindow.map(({ facts, decision }) => ({ facts, decision })),
   );
   if (outOfWindow > 0) excludedByReason.set("outside_age_window", outOfWindow);
+
+  // Phase filter, applied BEFORE dedup, limit, and arm assignment so all three see
+  // the real cohort. A campaign's phase decides its copy and how its results are
+  // read, so a mixed pool makes the label untrue: verified in production, a campaign
+  // labelled unknown_read_pilot contained 2 gate_exhausted rows.
+  const included = allEligible.filter((entry) => evidenceMatchesPhase(input.phase, entry.evidence));
+  if (allEligible.length > included.length) {
+    excludedByReason.set("wrong_phase_for_campaign", allEligible.length - included.length);
+  }
 
   // One public comment per person. 43 people hold 101 eligible intents, so without
   // this the campaign would try to contact them repeatedly; their most recent
@@ -261,17 +274,39 @@ export async function selectHistoricalCandidates(input: {
     },
   });
 
-  // Deterministic arm assignment by position, oldest first. A hash on the person id
-  // would be preferable for a prospective experiment, but here the pool is fixed and
-  // known, so an even split across the ordered list gives balanced arms without
-  // depending on id distribution.
+  // Arms assigned by hashing (selectionVersion, igUserId), NOT by list position.
+  // Position-based assignment on an oldest-first list gave 0 treatment for a 25-person
+  // pilot at 50%, and confounded the arm with comment age at scale (QA-07).
+  const arms = new Map(
+    selected.map((entry) => [
+      entry.facts.intentId,
+      assignArm(entry.facts.igUserId, input.selectionVersion, holdoutPercent),
+    ]),
+  );
+
+  // A hash on a small pool does not land on the nominal percentage, so check the
+  // realized split before writing rather than discovering it after approval.
+  const split = validateArmSplit({
+    treatment: [...arms.values()].filter((a) => a === "treatment").length,
+    holdout: [...arms.values()].filter((a) => a === "holdout").length,
+    holdoutPercent,
+  });
+  if (!split.ok) {
+    throw new Error(
+      `historical recovery selection produced an unusable arm split: ${split.reason}`,
+    );
+  }
+
   await prisma.$transaction(
-    selected.map((entry, index) => {
+    selected.map((entry) => {
       const row = byIntent.get(entry.facts.intentId)!.row;
-      const arm = index % 100 < holdoutPercent ? "holdout" : "treatment";
+      const arm = arms.get(entry.facts.intentId)!;
       return prisma.recoveryCandidate.create({
         data: {
           campaignId: campaign.id,
+          // Denormalised so the database can enforce phase/evidence agreement rather
+          // than trusting the filter above to keep working.
+          campaignPhase: input.phase,
           intentId: row.intentId,
           igUserId: row.igUserId,
           conversationId: row.conversationId,
@@ -286,7 +321,9 @@ export async function selectHistoricalCandidates(input: {
           // your DMs!", which points a person at the exact thing that failed.
           // Chosen by evidence so we never publicly claim the DM failed when all we
           // know is that no read receipt arrived.
-          publicReplyText: recoveryCopyFor(entry.evidence),
+          // Rendered with the keyword, because the instruction IS to DM that keyword.
+          // Copy without it would tell the person to send something we never named.
+          publicReplyText: recoveryCopyFor(entry.evidence, row.keywordSnapshot),
           evidence: entry.evidence,
           audienceOrigin: row.audienceOrigin,
           audienceOriginConfidence: row.audienceOriginConfidence,

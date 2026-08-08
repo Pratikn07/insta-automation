@@ -41,6 +41,10 @@ export type HistoricalTickResult = {
   skipped?: string;
 };
 
+/** Retry policy for a transient send failure. Mirrors the prospective worker's shape. */
+const MAX_ATTEMPTS = 5;
+const RETRY_BASE_MS = 5 * 60 * 1000;
+
 function empty(skipped?: string): HistoricalTickResult {
   return { examined: 0, sent: 0, suppressed: 0, deferred: 0, failed: 0, uncertain: 0, skipped };
 }
@@ -145,7 +149,7 @@ async function runTickBody(): Promise<HistoricalTickResult> {
     });
 
     if (decision.kind === "defer") {
-      await releaseCandidateClaim(id);
+      await releaseCandidateClaim(id, claimed.claimToken);
       result.deferred++;
       // A cap or a pause applies to the whole campaign, so continuing the loop
       // would just release every remaining row one at a time.
@@ -161,7 +165,7 @@ async function runTickBody(): Promise<HistoricalTickResult> {
     }
 
     if (decision.kind === "suppress") {
-      if (await markCandidateSuppressed(id, decision.reason)) {
+      if (await markCandidateSuppressed(id, claimed.claimToken, decision.reason)) {
         result.suppressed++;
         await logEvent("historical_recovery_suppressed", {
           candidateId: id,
@@ -189,7 +193,7 @@ async function runTickBody(): Promise<HistoricalTickResult> {
       const category = classifyPublicReplyFailure(meta);
 
       if (category === "open_circuit") {
-        await markCandidateFailed(id, "auth_or_permission");
+        await markCandidateFailed(id, claimed.claimToken, "auth_or_permission");
         await openRecoveryCircuit("auth_or_permission", now);
         result.failed++;
         break; // Credentials will not fix themselves inside this batch.
@@ -197,7 +201,7 @@ async function runTickBody(): Promise<HistoricalTickResult> {
 
       if (category === "permanent") {
         const reason = meta.graphCode ? `code_${meta.graphCode}` : "permanent";
-        if (await markCandidateFailed(id, reason)) {
+        if (await markCandidateFailed(id, claimed.claimToken, reason)) {
           result.failed++;
           await logEvent("historical_recovery_send_failed", {
             candidateId: id,
@@ -213,14 +217,24 @@ async function runTickBody(): Promise<HistoricalTickResult> {
       // schedule on a candidate, so a retryable failure releases the claim and the
       // row is simply picked up on a later tick.
       if (category === "safe_retry") {
-        await releaseCandidateClaim(id);
+        // Durable backoff with jitter, and a ceiling. Releasing the claim with no
+        // record meant a rate-limited row was retried on every tick indefinitely.
+        if (claimed.attempts >= MAX_ATTEMPTS) {
+          if (await markCandidateFailed(id, claimed.claimToken, "rate_limit_exhausted")) {
+            result.failed++;
+          }
+          continue;
+        }
+        const backoffMs =
+          RETRY_BASE_MS * Math.pow(2, claimed.attempts - 1) * (0.8 + Math.random() * 0.4);
+        await releaseCandidateClaim(id, claimed.claimToken, new Date(now.getTime() + backoffMs));
         result.deferred++;
         continue;
       }
 
       // Timeout, reset, or anything unrecognised: the comment may have posted, so
       // never retried automatically.
-      if (await markCandidateUncertain(id, meta.category ?? "unknown")) {
+      if (await markCandidateUncertain(id, claimed.claimToken, meta.category ?? "unknown")) {
         result.uncertain++;
         await logEvent("historical_recovery_send_uncertain", {
           candidateId: id,
@@ -236,7 +250,7 @@ async function runTickBody(): Promise<HistoricalTickResult> {
     // cannot prove it, and chk_candidate_sent_has_reply_id would reject `sent`
     // anyway — so this is uncertain, not sent.
     if (!replyId) {
-      if (await markCandidateUncertain(id, "missing_reply_id")) {
+      if (await markCandidateUncertain(id, claimed.claimToken, "missing_reply_id")) {
         result.uncertain++;
         await logEvent("historical_recovery_send_uncertain", {
           candidateId: id,
@@ -248,7 +262,7 @@ async function runTickBody(): Promise<HistoricalTickResult> {
       continue;
     }
 
-    if (await markCandidateSent(id, { publicReplyId: replyId, sentAt: new Date() })) {
+    if (await markCandidateSent(id, claimed.claimToken, { publicReplyId: replyId, sentAt: new Date() })) {
       result.sent++;
       await logEvent("historical_recovery_sent", {
         candidateId: id,
