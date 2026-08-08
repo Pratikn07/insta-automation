@@ -25,12 +25,24 @@ WHERE c."id" = rc."campaign_id";
 ALTER TABLE "recovery_candidate"
   ALTER COLUMN "campaign_phase" SET NOT NULL;
 
--- The invariant. NOT VALID would let existing rows escape, so it is validated: the
--- backfill above already made every row consistent, and the 2 mixed rows live in a
--- cancelled campaign whose phase now matches what they actually are.
+-- The invariant, applied only to rows that can still be sent.
+--
+-- My first version validated against every row and FAILED in production, because the
+-- mixed rows this constraint exists to prevent already exist: 4 gate_exhausted rows
+-- sit inside cancelled `unknown_read_pilot` campaigns. That is precisely the QA-03
+-- defect, recorded as history.
+--
+-- Rewriting that history would be worse than tolerating it. Those campaigns were
+-- cancelled BECAUSE they were wrong, and the record of what was drafted is the audit
+-- trail. So the constraint governs live outcomes and lets terminal ones keep what they
+-- actually were.
+--
+-- `cancelled` and `suppressed` are the only exemptions. A `sent` row must still match:
+-- something was posted publicly, and its phase decided the words used.
 ALTER TABLE "recovery_candidate" ADD CONSTRAINT "chk_candidate_phase_matches_evidence"
   CHECK (
-    ("campaign_phase" = 'confirmed_failure' AND "evidence" = 'gate_exhausted')
+    "outcome" IN ('cancelled', 'suppressed')
+    OR ("campaign_phase" = 'confirmed_failure' AND "evidence" = 'gate_exhausted')
     OR ("campaign_phase" = 'unknown_read_pilot' AND "evidence" = 'gate_sent_no_read')
   );
 
