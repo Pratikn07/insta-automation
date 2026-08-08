@@ -4,22 +4,32 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const campaignFindMany = vi.fn();
 const candidateFindMany = vi.fn();
+const candidateFindUnique = vi.fn();
+const candidateUpdateMany = vi.fn();
 const candidateCount = vi.fn();
 const candidateGroupBy = vi.fn();
 const getIgUsers = vi.fn();
 const approveCampaign = vi.fn();
+const historicalCandidateDetail = vi.fn();
+const logEvent = vi.fn();
 
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
     recoveryCampaign: { findMany: campaignFindMany },
     recoveryCandidate: {
       findMany: candidateFindMany,
+      findUnique: candidateFindUnique,
+      updateMany: candidateUpdateMany,
       count: candidateCount,
       groupBy: candidateGroupBy,
     },
   },
 }));
 vi.mock("../services/igUserService.js", () => ({ getIgUsers }));
+vi.mock("../services/historicalRecoveryCandidateDetail.js", () => ({
+  historicalCandidateDetail,
+}));
+vi.mock("../services/eventLogger.js", () => ({ logEvent }));
 vi.mock("../config/env.js", () => ({
   env: { DM_RECOVERY_ENABLED: true, DM_RECOVERY_HISTORICAL_ENABLED: true },
 }));
@@ -80,10 +90,14 @@ beforeEach(() => {
   for (const fn of [
     campaignFindMany,
     candidateFindMany,
+    candidateFindUnique,
+    candidateUpdateMany,
     candidateCount,
     candidateGroupBy,
     getIgUsers,
     approveCampaign,
+    historicalCandidateDetail,
+    logEvent,
   ]) {
     fn.mockReset();
   }
@@ -92,6 +106,7 @@ beforeEach(() => {
   candidateCount.mockResolvedValue(0);
   candidateGroupBy.mockResolvedValue([]);
   getIgUsers.mockResolvedValue({});
+  historicalCandidateDetail.mockResolvedValue(null);
 });
 
 // The list and the tab badges both read from candidateViewWhere. If they could
@@ -259,5 +274,108 @@ describe("POST /campaigns/:id/approve", () => {
 
     expect(res.status).toBe(401);
     expect(approveCampaign).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /candidates/:id", () => {
+  it("returns the curated candidate detail", async () => {
+    historicalCandidateDetail.mockResolvedValue({
+      candidate: { id: CANDIDATE_ID },
+      mediaPermalink: "https://www.instagram.com/p/source/",
+    });
+
+    const res = await request(makeApp()).get(
+      `/api/historical-recovery/candidates/${CANDIDATE_ID}`,
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      candidate: { id: CANDIDATE_ID },
+      mediaPermalink: "https://www.instagram.com/p/source/",
+    });
+  });
+
+  it("returns not found for an unknown candidate", async () => {
+    const res = await request(makeApp()).get(
+      `/api/historical-recovery/candidates/${CANDIDATE_ID}`,
+    );
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "not_found" });
+  });
+});
+
+describe("POST /candidates/:id/mark-reviewed", () => {
+  it("records one review and one authenticated audit event", async () => {
+    candidateFindUnique.mockResolvedValue({ outcome: "send_uncertain", reviewedAt: null });
+    candidateUpdateMany.mockResolvedValue({ count: 1 });
+
+    await request(makeApp("reviewer@example.com"))
+      .post(`/api/historical-recovery/candidates/${CANDIDATE_ID}/mark-reviewed`)
+      .expect(204);
+
+    expect(candidateUpdateMany.mock.calls[0]![0].where).toMatchObject({
+      id: CANDIDATE_ID,
+      outcome: { in: ["send_failed", "send_uncertain"] },
+      reviewedAt: null,
+    });
+    expect(logEvent).toHaveBeenCalledWith("historical_recovery_reviewed", {
+      candidateId: CANDIDATE_ID,
+      actor: "reviewer@example.com",
+      action: "mark_reviewed",
+      previousOutcome: "send_uncertain",
+      newOutcome: "send_uncertain",
+    });
+  });
+
+  it("is idempotent after the candidate was already reviewed", async () => {
+    candidateFindUnique.mockResolvedValue({
+      outcome: "send_uncertain",
+      reviewedAt: new Date("2026-08-08T19:00:00.000Z"),
+    });
+
+    await request(makeApp())
+      .post(`/api/historical-recovery/candidates/${CANDIDATE_ID}/mark-reviewed`)
+      .expect(204);
+
+    expect(candidateUpdateMany).not.toHaveBeenCalled();
+    expect(logEvent).not.toHaveBeenCalled();
+  });
+
+  it("treats a concurrent review winner as success", async () => {
+    candidateFindUnique
+      .mockResolvedValueOnce({ outcome: "send_failed", reviewedAt: null })
+      .mockResolvedValueOnce({ reviewedAt: new Date("2026-08-08T19:00:00.000Z") });
+    candidateUpdateMany.mockResolvedValue({ count: 0 });
+
+    await request(makeApp())
+      .post(`/api/historical-recovery/candidates/${CANDIDATE_ID}/mark-reviewed`)
+      .expect(204);
+
+    expect(logEvent).not.toHaveBeenCalled();
+  });
+
+  it("rejects outcomes that do not require review", async () => {
+    candidateFindUnique.mockResolvedValue({ outcome: "sent", reviewedAt: null });
+    candidateUpdateMany.mockResolvedValue({ count: 0 });
+
+    const res = await request(makeApp())
+      .post(`/api/historical-recovery/candidates/${CANDIDATE_ID}/mark-reviewed`);
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({ error: "not_reviewable" });
+  });
+
+  it("returns not found for a missing candidate", async () => {
+    candidateFindUnique.mockResolvedValue(null);
+    await request(makeApp())
+      .post(`/api/historical-recovery/candidates/${CANDIDATE_ID}/mark-reviewed`)
+      .expect(404);
+  });
+
+  it("requires an authenticated reviewer", async () => {
+    await request(makeApp(""))
+      .post(`/api/historical-recovery/candidates/${CANDIDATE_ID}/mark-reviewed`)
+      .expect(401);
+    expect(candidateFindUnique).not.toHaveBeenCalled();
   });
 });

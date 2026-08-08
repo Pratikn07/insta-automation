@@ -3,6 +3,8 @@ import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { getIgUsers } from "../services/igUserService.js";
+import { historicalCandidateDetail } from "../services/historicalRecoveryCandidateDetail.js";
+import { logEvent } from "../services/eventLogger.js";
 import { env } from "../config/env.js";
 import {
   approveCampaign,
@@ -209,6 +211,72 @@ historicalRecoveryRouter.get("/candidates", async (req, res) => {
       createdAt: r.createdAt.toISOString(),
     })),
   });
+});
+
+historicalRecoveryRouter.get("/candidates/:id", async (req, res) => {
+  const detail = await historicalCandidateDetail(req.params.id);
+  if (!detail) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+  res.json(detail);
+});
+
+const REVIEWABLE_OUTCOMES = ["send_failed", "send_uncertain"] as const;
+
+historicalRecoveryRouter.post("/candidates/:id/mark-reviewed", async (req, res) => {
+  if (!req.adminEmail) {
+    res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+
+  const before = await prisma.recoveryCandidate.findUnique({
+    where: { id: req.params.id },
+    select: { outcome: true, reviewedAt: true },
+  });
+  if (!before) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+  if (before.reviewedAt) {
+    res.status(204).end();
+    return;
+  }
+  if (!(REVIEWABLE_OUTCOMES as readonly string[]).includes(before.outcome)) {
+    res.status(409).json({ error: "not_reviewable" });
+    return;
+  }
+
+  const result = await prisma.recoveryCandidate.updateMany({
+    where: {
+      id: req.params.id,
+      outcome: { in: [...REVIEWABLE_OUTCOMES] },
+      reviewedAt: null,
+    },
+    data: { reviewedAt: new Date() },
+  });
+
+  if (result.count === 0) {
+    const current = await prisma.recoveryCandidate.findUnique({
+      where: { id: req.params.id },
+      select: { reviewedAt: true },
+    });
+    if (current?.reviewedAt) {
+      res.status(204).end();
+      return;
+    }
+    res.status(409).json({ error: "review_conflict" });
+    return;
+  }
+
+  await logEvent("historical_recovery_reviewed", {
+    candidateId: req.params.id,
+    actor: req.adminEmail,
+    action: "mark_reviewed",
+    previousOutcome: before.outcome,
+    newOutcome: before.outcome,
+  });
+  res.status(204).end();
 });
 
 /**
