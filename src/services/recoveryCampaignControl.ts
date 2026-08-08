@@ -50,9 +50,39 @@ export async function approveCampaign(
     return { ok: false, reason: current ? `not_approvable_from_${current.state}` : "not_found" };
   }
 
+  // Settle the holdout arm terminally, at approval (QA-12).
+  //
+  // Holdout rows stayed `outcome = pending` forever, which broke two things at once.
+  // The worker excluded them by arm so they were never sent — correct — but the
+  // completion check counts pending rows, so a campaign with a holdout could never
+  // drain and would sit `running` indefinitely. And `holdout_withheld` was declared in
+  // the enum and never written, so nothing recorded that withholding was deliberate
+  // rather than an oversight.
+  //
+  // `pending` means "we intend to act on this". A holdout is a decision already made:
+  // we will not contact this person, and that is the experiment. Recording it as an
+  // outcome is what makes the arm auditable.
+  //
+  // Done at approval rather than at selection because a draft can still be re-selected
+  // or cancelled; approval is the moment the assignment becomes real.
+  const withheld = await prisma.recoveryCandidate.updateMany({
+    where: { campaignId, arm: "holdout", outcome: "pending" },
+    data: { outcome: "holdout_withheld", suppressionReason: "holdout_arm" },
+  });
+
   // Logged because this is the audit trail for a decision that results in public
   // comments on real people's posts.
-  await logEvent("historical_campaign_approved", { campaignId, approvedBy });
+  await logEvent("historical_campaign_approved", {
+    campaignId,
+    approvedBy,
+    holdoutWithheld: withheld.count,
+  });
+
+  // A campaign approved with nothing to send — every candidate in the holdout, or an
+  // empty treatment arm — is already finished. Without this it would stay `running`
+  // with no work, and the dashboard would show an active campaign that never moves.
+  await completeCampaignIfDrained(campaignId, now);
+
   return { ok: true, state: "running" };
 }
 
@@ -159,10 +189,19 @@ export async function completeCampaignIfDrained(
   campaignId: string,
   now = new Date(),
 ): Promise<boolean> {
-  const pending = await prisma.recoveryCandidate.count({
-    where: { campaignId, outcome: "pending" },
+  // Drained means no actionable TREATMENT work left (QA-12).
+  //
+  // Counting every pending row made a holdout campaign undrainable, because holdout
+  // rows were pending forever and are never meant to be sent. Approval now settles them
+  // as `holdout_withheld`, and this scopes the question to the arm that actually sends.
+  //
+  // A row awaiting a backoff (`nextAttemptAt` in the future) still counts as actionable:
+  // it will come back, and completing the campaign under it would strand a candidate the
+  // owner approved.
+  const actionable = await prisma.recoveryCandidate.count({
+    where: { campaignId, outcome: "pending", arm: "treatment" },
   });
-  if (pending > 0) return false;
+  if (actionable > 0) return false;
 
   const { count } = await prisma.recoveryCampaign.updateMany({
     where: { id: campaignId, state: { in: ["running", "paused"] } },

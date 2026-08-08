@@ -48,6 +48,8 @@ describe("approveCampaign", () => {
   // and when — chk_campaign_approval_complete requires both together.
   it("records the approver and starts the campaign running", async () => {
     campaignUpdateMany.mockResolvedValue({ count: 1 });
+    // Approval now settles the holdout arm terminally (QA-12), so this is consulted.
+    candidateUpdateMany.mockResolvedValue({ count: 0 });
 
     const result = await approveCampaign("camp-1", "pratik");
 
@@ -91,12 +93,30 @@ describe("approveCampaign", () => {
 
   it("logs the approval for the audit trail", async () => {
     campaignUpdateMany.mockResolvedValue({ count: 1 });
+    candidateUpdateMany.mockResolvedValue({ count: 4 });
 
     await approveCampaign("camp-1", "pratik");
 
+    // holdoutWithheld is part of the trail (QA-12): it records that withholding from
+    // those people was a deliberate assignment, not rows nobody got round to sending.
     expect(logEvent).toHaveBeenCalledWith("historical_campaign_approved", {
       campaignId: "camp-1",
       approvedBy: "pratik",
+      holdoutWithheld: 4,
+    });
+  });
+
+  // The arm is settled terminally at approval, so the completion check can ignore it and
+  // the worker can never claim it.
+  it("settles the holdout arm at approval", async () => {
+    campaignUpdateMany.mockResolvedValue({ count: 1 });
+    candidateUpdateMany.mockResolvedValue({ count: 2 });
+
+    await approveCampaign("camp-1", "pratik");
+
+    expect(candidateUpdateMany).toHaveBeenCalledWith({
+      where: { campaignId: "camp-1", arm: "holdout", outcome: "pending" },
+      data: { outcome: "holdout_withheld", suppressionReason: "holdout_arm" },
     });
   });
 });

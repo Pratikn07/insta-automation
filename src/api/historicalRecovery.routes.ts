@@ -56,9 +56,19 @@ export function candidateViewWhere(view: CandidateView): Prisma.RecoveryCandidat
       return { outcome: { in: ["send_uncertain", "send_failed"] } };
     case "holdout":
       return { arm: "holdout" };
-    // The outcome the campaign exists to produce: contacted, then completed.
+    // Everyone who completed the request after their candidate was settled (QA-12).
+    //
+    // Both arms, because the number is only meaningful as a comparison: treatment is
+    // "the reminder worked", holdout is "they would have come back anyway". Filtering to
+    // `sent` alone hid the baseline, so any treatment figure read as pure lift.
+    //
+    // `send_uncertain` counts as contacted: the comment may well be live, and excluding
+    // it would drop real recoveries from the numerator.
     case "recovered":
-      return { outcome: "sent", laterCompletedAt: { not: null } };
+      return {
+        laterCompletedAt: { not: null },
+        outcome: { in: ["sent", "send_uncertain", "holdout_withheld"] },
+      };
     case "all":
     default:
       return {};

@@ -25,6 +25,7 @@ import { logger } from "../lib/logger.js";
 import { parseProviderTimestamp } from "../lib/providerTime.js";
 import { logEvent, describeGraphError } from "../services/eventLogger.js";
 import { resolveUsername } from "../services/igUserService.js";
+import { attributeRecoveryOutcomeSafely } from "../services/historicalRecoveryAttribution.js";
 import { env } from "../config/env.js";
 
 // Kept only as an analytics hint now — it is NO LONGER the trigger. Any reply to
@@ -202,6 +203,20 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     eventAt: parseProviderTimestamp(entry.timestamp),
     receivedAt: new Date(),
     kind: recoveryKind,
+  });
+
+  // The same evidence, for the historical campaigns (QA-12). `laterInboundAt` had no
+  // writer, so "they came back after we reminded them" was unmeasurable.
+  //
+  // No keyword: an inbound DM does not name one — 608 of 683 measured over 60 days are a
+  // bare "DONE" — so this is person-level evidence. The keyword-exact outcome is
+  // recorded on completion instead.
+  //
+  // Non-throwing: measurement must never break message handling.
+  await attributeRecoveryOutcomeSafely({
+    igUserId: senderId,
+    at: parseProviderTimestamp(entry.timestamp),
+    kind: "inbound",
   });
 
   if (!inbound.becameLatest) {

@@ -103,6 +103,23 @@ export type CandidateView = {
  */
 export function candidateView(row: CandidateRow): CandidateView {
   if (row.arm === "holdout") {
+    // A holdout who came back WITHOUT being contacted is the baseline (QA-12).
+    //
+    // This previously reported `recovered: false` for every holdout, which made the
+    // control arm look like it never recovered and any treatment number look like pure
+    // lift. The comparison is the entire reason the arm exists, so the two cases have to
+    // be distinguishable.
+    if (row.laterCompletedAt) {
+      return {
+        label: "Recovered on their own",
+        description:
+          "Never contacted, and completed the request anyway. This is the baseline the reminder's effect is measured against.",
+        tone: "neutral",
+        recovered: true,
+        needsAttention: false,
+      };
+    }
+
     return {
       label: "Held back as control",
       description:

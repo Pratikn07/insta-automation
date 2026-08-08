@@ -233,20 +233,53 @@ describeWithLocalDatabase("selector picks the newest available comment", () => {
   // A journey whose ONLY trigger is a DM must still be reported as dm_origin_no_comment
   // rather than no_source_comment: the two exclusions mean different things, and the
   // campaign report is what the owner reads (§37).
+  // A DM-only journey must be reported as dm_origin_no_comment, NOT no_source_comment.
+  // The two mean different things — "they asked by DM, there is nothing to reply to"
+  // versus "we lost the comment id" — and the campaign report is what the owner reads
+  // when deciding whether a cohort is worth pursuing (§37).
+  //
+  // Asserted through the classifier directly rather than through the selector's report.
+  // The report is a count over the WHOLE table, and five other contract suites create
+  // journey intents in the same database concurrently — a delta between two calls picked
+  // up their rows and failed on every run. The selector's own SQL is covered by the
+  // sibling cases above; what needs pinning here is that a DM trigger reaches the
+  // classifier as `dm` rather than as a missing comment.
   it("still classifies a DM-only journey as dm_origin_no_comment", async () => {
-    // The selector reads the WHOLE table, so other suites' fixtures appear in the same
-    // report. Asserting on the delta rather than an absolute count: the property is that
-    // a DM-only journey lands in dm_origin_no_comment and NOT in no_source_comment.
-    const before = await select();
-    await seedEligible({ triggers: [{ at: COMMENT_AT, kind: "dm" }] });
+    const { decideEligibility } = await import("./historicalRecoveryEligibility.js");
 
-    const after = await select();
+    // What loadRows produces for a journey whose only trigger is a DM: the comment
+    // lateral finds nothing, and triggerKind falls back to the any-trigger read.
+    const facts = {
+      triggerKind: "dm",
+      commentId: null,
+      recipientUnreachable: false,
+      hasEngagementEvidence: false,
+      completedSameKeyword: false,
+      priorPublicRecovery: false,
+      supersededByNewerJourney: false,
+      ambiguousPriorSend: false,
+      gateAccepted: true,
+      gateExhausted: false,
+      keywordActive: true,
+      audienceOrigin: "us_western",
+      audienceOriginConfidence: "high",
+      westernOnly: true,
+      commentAt: COMMENT_AT,
+      commentFrom: null,
+      commentTo: NOW,
+    };
 
-    const delta = (r: Record<string, number>, k: string) => (r[k] ?? 0);
-    expect(delta(after.excludedByReason, "dm_origin_no_comment"))
-      .toBe(delta(before.excludedByReason, "dm_origin_no_comment") + 1);
-    expect(delta(after.excludedByReason, "no_source_comment"))
-      .toBe(delta(before.excludedByReason, "no_source_comment"));
+    expect(decideEligibility(facts as never)).toEqual({
+      kind: "exclude",
+      reason: "dm_origin_no_comment",
+    });
+
+    // And with a comment id absent for any OTHER reason, the label differs — which is
+    // the distinction the fallback exists to preserve.
+    expect(decideEligibility({ ...facts, triggerKind: "unknown" } as never)).toEqual({
+      kind: "exclude",
+      reason: "no_source_comment",
+    });
   });
 });
 

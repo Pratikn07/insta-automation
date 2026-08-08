@@ -6,6 +6,7 @@ import { replyToComment } from "../meta/replyToComment.js";
 import { fetchComment } from "../meta/fetchComment.js";
 import { classifyPublicReplyFailure, classifySourceReadFailure } from "./graphErrorClassifier.js";
 import { evaluateRecoveryHealth, openRecoveryCircuit } from "./dmRecoveryHealth.js";
+import { completeCampaignIfDrained } from "./recoveryCampaignControl.js";
 import { recheckBeforeSend, type SourceCommentState } from "./historicalRecoveryRecheck.js";
 import {
   type ClaimedCandidate,
@@ -119,6 +120,8 @@ async function runTickBody(): Promise<HistoricalTickResult> {
   const leaseMs = env.DM_RECOVERY_LEASE_MS;
   const hourAgo = new Date(now.getTime() - 60 * 60 * 1000);
   const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  /** Campaigns this tick touched, checked for completion once at the end. */
+  const touchedCampaigns = new Set<string>();
 
   for (const id of ids) {
     // listDueCandidateIds over-fetches so a suppressed row does not consume a slot;
@@ -355,6 +358,30 @@ async function runTickBody(): Promise<HistoricalTickResult> {
         campaignId: claimed.campaignId,
         publicReplyId: replyId,
       });
+    }
+
+    touchedCampaigns.add(claimed.campaignId);
+  }
+
+  // Close any campaign this tick finished (QA-12).
+  //
+  // `completeCampaignIfDrained` existed with NO production caller, so a campaign that
+  // had sent everything sat `running` forever — the dashboard showed active work that
+  // would never move, and nothing marked the campaign as having done its job.
+  //
+  // Here rather than per row: the last send of a campaign is only knowable after the
+  // loop, and a per-row check would re-count the whole campaign on every send.
+  //
+  // Non-throwing, because a tick that sent successfully must not report failure just
+  // because the bookkeeping afterwards broke.
+  for (const campaignId of touchedCampaigns) {
+    try {
+      await completeCampaignIfDrained(campaignId, now);
+    } catch (err) {
+      logger.error(
+        { errorCode: "historical_campaign_complete_failed", campaignId },
+        "Could not close a drained campaign",
+      );
     }
   }
 

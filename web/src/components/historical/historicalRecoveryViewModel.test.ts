@@ -90,6 +90,27 @@ describe("candidateView — outcomes", () => {
     expect(view.description).toMatch(/measure whether/i);
   });
 
+  // QA-12. Every holdout previously reported recovered: false, so the control arm looked
+  // like it never recovered and any treatment number read as pure lift. The baseline is
+  // the whole reason the arm exists.
+  it("counts a holdout that completed on its own as recovered", () => {
+    const view = candidateView(
+      candidate({ arm: "holdout", outcome: "holdout_withheld", laterCompletedAt: "2026-07-05T10:00:00Z" }),
+    );
+
+    expect(view.recovered).toBe(true);
+    expect(view.label).toBe("Recovered on their own");
+    // Neutral, not positive: nothing we did caused this.
+    expect(view.tone).toBe("neutral");
+  });
+
+  it("does not count an untouched holdout as recovered", () => {
+    const view = candidateView(candidate({ arm: "holdout", outcome: "holdout_withheld" }));
+
+    expect(view.recovered).toBe(false);
+    expect(view.label).toBe("Held back as control");
+  });
+
   it("flags a failed send for attention", () => {
     const view = candidateView(candidate({ outcome: "send_failed", suppressionReason: "permanent" }));
     expect(view.needsAttention).toBe(true);

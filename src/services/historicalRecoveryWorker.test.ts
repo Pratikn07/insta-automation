@@ -23,6 +23,9 @@ const campaignFindUnique = vi.fn();
 // under the shared control lock instead of merely observing counts.
 const campaignAggregate = vi.fn();
 const reserveSendCapacity = vi.fn();
+// QA-12: completeCampaignIfDrained had no production caller, so a campaign that had sent
+// everything stayed `running` forever.
+const completeCampaignIfDrained = vi.fn();
 const igUserFindUnique = vi.fn();
 const dmMessageCount = vi.fn();
 const conversationCount = vi.fn();
@@ -45,6 +48,7 @@ vi.mock("./historicalRecoveryRepository.js", () => ({
 vi.mock("../meta/replyToComment.js", () => ({ replyToComment }));
 vi.mock("../meta/fetchComment.js", () => ({ fetchComment }));
 vi.mock("./dmRecoveryHealth.js", () => ({ evaluateRecoveryHealth, openRecoveryCircuit }));
+vi.mock("./recoveryCampaignControl.js", () => ({ completeCampaignIfDrained }));
 vi.mock("./eventLogger.js", () => ({ logEvent, describeGraphError }));
 // classifySourceReadFailure is deliberately NOT mocked: QA-09's defect was
 // misclassification, so a stub here would prove nothing. Only the send-path classifier
@@ -117,7 +121,7 @@ beforeEach(() => {
     markCandidateFailed, markCandidateUncertain, countCandidatesSentSince,
     replyToComment, fetchComment, evaluateRecoveryHealth, openRecoveryCircuit,
     logEvent, describeGraphError, classifyPublicReplyFailure,
-    campaignFindUnique, campaignAggregate, reserveSendCapacity,
+    campaignFindUnique, campaignAggregate, reserveSendCapacity, completeCampaignIfDrained,
     igUserFindUnique, dmMessageCount, conversationCount, reminderCount, candidateCount,
   ]) {
     fn.mockReset();
@@ -135,6 +139,7 @@ beforeEach(() => {
   campaignAggregate.mockResolvedValue({ _min: { batchSize: null } });
   // Capacity available by default; cases that test the cap return a refusal reason.
   reserveSendCapacity.mockResolvedValue(null);
+  completeCampaignIfDrained.mockResolvedValue(false);
   igUserFindUnique.mockResolvedValue({ inferredOrigin: "us_western" });
   dmMessageCount.mockResolvedValue(0);
   conversationCount.mockResolvedValue(0);
@@ -654,5 +659,46 @@ describe("runHistoricalRecoveryTick — evidence is scoped to since-selection", 
       "token-1",
       "completed_since_selection",
     );
+  });
+});
+
+// QA-12. `completeCampaignIfDrained` existed with NO production caller, so a campaign
+// that had sent every candidate sat `running` forever: the dashboard showed active work
+// that would never move, and nothing recorded that the campaign had done its job.
+describe("runHistoricalRecoveryTick — closes a drained campaign", () => {
+  it("attempts completion for every campaign the tick touched", async () => {
+    await runHistoricalRecoveryTick();
+
+    expect(completeCampaignIfDrained).toHaveBeenCalledWith("camp-1", expect.any(Date));
+  });
+
+  // Once per campaign, not once per row: a per-row check would re-count the whole
+  // campaign on every send.
+  it("checks each campaign once even across several rows", async () => {
+    listDueCandidateIds.mockResolvedValue(["cand-1", "cand-2"]);
+
+    await runHistoricalRecoveryTick();
+
+    expect(completeCampaignIfDrained).toHaveBeenCalledTimes(1);
+  });
+
+  // Nothing claimed means nothing changed, so there is nothing to close.
+  it("does not check when no candidate was claimed", async () => {
+    claimCandidate.mockResolvedValue(null);
+
+    await runHistoricalRecoveryTick();
+
+    expect(completeCampaignIfDrained).not.toHaveBeenCalled();
+  });
+
+  // A tick that posted successfully must not report failure because the bookkeeping
+  // afterwards broke.
+  it("still reports the send when completion bookkeeping fails", async () => {
+    completeCampaignIfDrained.mockRejectedValue(new Error("db gone"));
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(result.sent).toBe(1);
+    expect(result.skipped).toBeUndefined();
   });
 });

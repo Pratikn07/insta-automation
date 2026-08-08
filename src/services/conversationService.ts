@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { suppressRecoveriesForCompletionSafely } from "./dmRecoveryService.js";
+import { attributeRecoveryOutcomeSafely } from "./historicalRecoveryAttribution.js";
 import { markIntentCompleted } from "./journeyIntentService.js";
 
 // Window during which we'll accept a DONE reply / keep a gate "open", measured
@@ -121,6 +122,23 @@ export async function markCompleted(conversationId: string) {
     igUserId: convo.igUserId,
     keywordId: convo.keywordId,
     completedAt,
+  });
+
+  // The measurement half (QA-12). If this person was in a historical campaign — sent to
+  // OR held back — this completion is the outcome that campaign exists to measure.
+  //
+  // `laterCompletedAt` had no writer at all, so the dashboard's recovered view was
+  // permanently empty and the recovery rate could not be computed. Both arms are
+  // attributed: treatment gives the lift, holdout gives the baseline it is measured
+  // against.
+  //
+  // After the commit and non-throwing, for the same reason as the suppression above:
+  // losing a data point is acceptable, rolling back a completion is not.
+  await attributeRecoveryOutcomeSafely({
+    igUserId: convo.igUserId,
+    keywordId: convo.keywordId,
+    at: completedAt,
+    kind: "completed",
   });
 
   return convo;

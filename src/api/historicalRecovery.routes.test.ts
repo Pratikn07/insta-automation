@@ -32,13 +32,25 @@ describe("candidateViewWhere", () => {
     });
   });
 
-  // The outcome the campaign exists to produce. Requires BOTH a confirmed send and a
-  // later completion — a completion without a send is not recovery, it is coincidence.
-  it("requires a send and a later completion to count as recovered", () => {
+  // The outcome the campaign exists to measure, across BOTH arms (QA-12).
+  //
+  // This previously required `outcome: "sent"`, which hid the control arm entirely: a
+  // holdout who completed on their own never appeared, so any treatment figure read as
+  // pure lift with no baseline to compare against. A settled candidate plus a later
+  // completion is the definition; which arm it was in is what makes the number mean
+  // something.
+  it("counts a later completion in either arm as recovered", () => {
     expect(candidateViewWhere("recovered")).toEqual({
-      outcome: "sent",
       laterCompletedAt: { not: null },
+      outcome: { in: ["sent", "send_uncertain", "holdout_withheld"] },
     });
+  });
+
+  // A completion always requires the candidate to have been settled first. A pending row
+  // was never acted on, so a completion against it is coincidence, not recovery.
+  it("never counts a pending candidate as recovered", () => {
+    const where = candidateViewWhere("recovered") as { outcome: { in: string[] } };
+    expect(where.outcome.in).not.toContain("pending");
   });
 
   it("filters nothing for all", () => {
