@@ -91,6 +91,20 @@ async function scheduleFollowUpAfterDelivery(input: {
 }
 
 /**
+ * Did they tag us in THEIR story?
+ *
+ * This is engagement, not a message: they never opened the thread and never
+ * typed anything. Meta still delivers it down the messages webhook, with no text
+ * and no attachments, which is precisely why it has to be recognized explicitly.
+ *
+ * A reply to OUR story (`story.reply_to`) is the opposite — their own words, a
+ * real message — and is deliberately NOT matched here.
+ */
+function isStoryMention(msg: NonNullable<MessagingEntry["message"]>): boolean {
+  return msg.story?.mention !== undefined;
+}
+
+/**
  * Classify an inbound message for the DmMessage row.
  *
  * Meta omits `text` entirely for media, so without this an image-only DM would be
@@ -100,6 +114,13 @@ function classifyInbound(msg: NonNullable<MessagingEntry["message"]>): {
   messageType: DmMessageType;
   mediaUrl: string | null;
 } {
+  // A story mention carries no text and no attachments, so it must be caught
+  // before the attachment check or it lands in the `text` bucket and reads as
+  // the person having typed nothing at us.
+  if (isStoryMention(msg)) {
+    return { messageType: "unknown", mediaUrl: msg.story?.mention?.link ?? null };
+  }
+
   const attachment = msg.attachments?.[0];
   if (!attachment) return { messageType: "text", mediaUrl: null };
 
@@ -206,6 +227,24 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     username: profile.username ?? null,
     name: profile.name ?? null,
   });
+
+  // ---- 0. Story mention → record it and stop -------------------------------
+  // Someone tagging us in their story is not them talking to us, so none of the
+  // branches below may treat it as intent. Two things went wrong in production
+  // on 2026-08-08 because it reached them:
+  //
+  //   - it satisfied the "any reply unlocks the gate" rule below and delivered a
+  //     guide the person had never replied to ask for;
+  //   - when there was no open gate it reached the drafting branch, which
+  //     answered "your message came through blank" — it wasn't blank.
+  //
+  // The thread keeps the mention and stays flagged for the owner, who can reply
+  // if they want to. That is the only correct actor here: a human.
+  if (isStoryMention(msg)) {
+    logger.info({ senderId, mid: msg.mid }, "Story mention — recorded, no automation");
+    await logEvent("story_mention_received", { senderId, mid: msg.mid });
+    return;
+  }
 
   // ---- 1. New keyword → (re)send the gate ----------------------------------
   // Checked FIRST so someone with an open "sleep" gate who DMs "potty" starts a
