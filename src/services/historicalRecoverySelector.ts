@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { prisma } from "../lib/prisma.js";
 import {
   decideEligibility,
@@ -50,6 +51,12 @@ type SelectionRow = {
 
 export type SelectionReport = {
   campaignId: string | null;
+  /**
+   * Fingerprint of the decision set (QA-14). Printed by the CLI so two runs can be
+   * compared without querying, and stored on the campaign so an approval can be tied
+   * back to the exact list that was reviewed.
+   */
+  decisionHash: string;
   sourceDataCutoff: Date;
   rawIntents: number;
   eligible: number;
@@ -284,12 +291,37 @@ export async function selectHistoricalCandidates(input: {
     return { row, facts, decision: decideEligibility(facts) };
   });
 
+  /**
+   * Why each intent did not make the cut, keyed by intent (QA-14).
+   *
+   * The pipeline drops rows in stages and only ever counted them, so the record could
+   * say "1,406 excluded" but never which person or on what grounds — and a predicate
+   * that was quietly wrong looked exactly like a small cohort.
+   *
+   * First stage to drop a row wins, matching how the report's counts already read.
+   */
+  const exclusions = new Map<string, { reason: string; igUserId: string; keywordId: string }>();
+  /** Row lookup for the later pipeline stages, which carry facts rather than rows. */
+  const byIntentRow = new Map(decided.map(({ row }) => [row.intentId, row]));
+  const dropped = (row: SelectionRow, reason: string) => {
+    if (!exclusions.has(row.intentId)) {
+      exclusions.set(row.intentId, { reason, igUserId: row.igUserId, keywordId: row.keywordId });
+    }
+  };
+  for (const { row, decision } of decided) {
+    if (decision.kind === "exclude") dropped(row, decision.reason);
+  }
+
   // Age window, applied after eligibility so the report distinguishes "not eligible"
   // from "eligible but outside the approved age range".
   const inWindow = decided.filter(({ row, decision }) => {
     if (decision.kind !== "include") return true;
-    if (input.commentFrom && row.commentAt < input.commentFrom) return false;
-    if (input.commentTo && row.commentAt > input.commentTo) return false;
+    const tooOld = input.commentFrom ? row.commentAt < input.commentFrom : false;
+    const tooNew = input.commentTo ? row.commentAt > input.commentTo : false;
+    if (tooOld || tooNew) {
+      dropped(row, "outside_age_window");
+      return false;
+    }
     return true;
   });
   const outOfWindow = decided.length - inWindow.length;
@@ -307,6 +339,12 @@ export async function selectHistoricalCandidates(input: {
   if (allEligible.length > included.length) {
     excludedByReason.set("wrong_phase_for_campaign", allEligible.length - included.length);
   }
+  const keptByPhase = new Set(included.map((e) => e.facts.intentId));
+  for (const entry of allEligible) {
+    if (!keptByPhase.has(entry.facts.intentId)) {
+      dropped(byIntentRow.get(entry.facts.intentId)!, "wrong_phase_for_campaign");
+    }
+  }
 
   // One public comment per person. 43 people hold 101 eligible intents, so without
   // this the campaign would try to contact them repeatedly; their most recent
@@ -314,6 +352,12 @@ export async function selectHistoricalCandidates(input: {
   const perPerson = keepLatestPerPerson(included);
   if (included.length > perPerson.length) {
     excludedByReason.set("older_request_same_person", included.length - perPerson.length);
+  }
+  const keptPerPerson = new Set(perPerson.map((e) => e.facts.intentId));
+  for (const entry of included) {
+    if (!keptPerPerson.has(entry.facts.intentId)) {
+      dropped(byIntentRow.get(entry.facts.intentId)!, "older_request_same_person");
+    }
   }
 
   // Last line before a public send: if the dedup above ever regresses, stop rather
@@ -324,7 +368,35 @@ export async function selectHistoricalCandidates(input: {
   const selected = typeof input.limit === "number" ? perPerson.slice(0, input.limit) : perPerson;
   if (typeof input.limit === "number" && perPerson.length > selected.length) {
     excludedByReason.set("beyond_stage_cap", perPerson.length - selected.length);
+    for (const entry of perPerson.slice(selected.length)) {
+      dropped(byIntentRow.get(entry.facts.intentId)!, "beyond_stage_cap");
+    }
   }
+
+  /**
+   * The canonical fingerprint of this decision set (QA-14).
+   *
+   * Every intent the selection saw, with what it decided and why, sorted by intent so
+   * two runs over the same data agree regardless of row order. Re-running with the same
+   * cutoff must reproduce this string; a different hash means a live predicate moved —
+   * a gate reaching `sent`, a keyword deactivated, an origin reclassified — none of
+   * which the cutoff can bound, because none of those tables keep history.
+   *
+   * Deliberately excludes the arm and the selection version. Arms are a function of
+   * (selectionVersion, igUserId), so folding them in would make every run differ by
+   * construction and the hash would answer a question nobody asked. What must be
+   * reproducible is WHO was chosen and on what grounds.
+   */
+  const decisionHash = createHash("sha256")
+    .update(
+      [
+        ...selected.map((e) => `${e.facts.intentId}:include:${e.evidence}`),
+        ...[...exclusions].map(([intentId, x]) => `${intentId}:exclude:${x.reason}`),
+      ]
+        .sort()
+        .join("\n"),
+    )
+    .digest("hex");
 
   const byEvidence: Record<string, number> = {};
   for (const entry of selected) {
@@ -333,6 +405,7 @@ export async function selectHistoricalCandidates(input: {
 
   const report: SelectionReport = {
     campaignId: null,
+    decisionHash,
     sourceDataCutoff: cutoff,
     rawIntents: rows.length,
     eligible: selected.length,
@@ -342,6 +415,18 @@ export async function selectHistoricalCandidates(input: {
   };
 
   if (!input.persist) return report;
+
+  // Nobody qualified. That is an ANSWER, not a failure, and it is the moment the
+  // exclusion breakdown matters most — so return the report rather than letting the arm
+  // validator below reject an empty pool and take the reasons down with it.
+  //
+  // The validator still guards the case it was written for (QA-07): a cohort that HAS
+  // candidates but no treatment arm is a broken experiment and must refuse. An empty
+  // cohort is a different statement, and conflating the two meant an operator asking
+  // "why is my cohort empty?" got a stack trace instead of the answer.
+  //
+  // No campaign is written, because there is nothing to review or approve.
+  if (selected.length === 0) return report;
 
   const holdoutPercent = input.holdoutPercent ?? 50;
   const campaign = await prisma.recoveryCampaign.create({
@@ -355,8 +440,47 @@ export async function selectHistoricalCandidates(input: {
       holdoutPercent,
       candidateCount: selected.length,
       excludedCount: rows.length - selected.length,
+      decisionHash,
     },
   });
+
+  // Every exclusion, with the stage that made it. Written before the candidates so a
+  // failure part-way leaves a campaign that is visibly incomplete rather than one whose
+  // inclusions look authoritative while its exclusions are missing.
+  //
+  // One statement rather than ~3,000 creates, and joined back to the rows it references
+  // so an intent or keyword that disappeared between `loadRows` and here is skipped
+  // instead of failing the whole selection. Production never deletes journey intents —
+  // no code path does — but a selection is an audit record, and losing a campaign over a
+  // note about a row that no longer exists would be the wrong trade.
+  //
+  // ON CONFLICT DO NOTHING makes a re-run against the same campaign idempotent.
+  if (exclusions.size > 0) {
+    const entries = [...exclusions];
+    await prisma.$executeRaw`
+      WITH present AS (
+        SELECT x."intent_id", x."ig_user_id", x."keyword_id", x."reason"
+        FROM UNNEST(
+          ${entries.map(([intentId]) => intentId)}::uuid[],
+          ${entries.map(([, x]) => x.igUserId)}::text[],
+          ${entries.map(([, x]) => x.keywordId)}::uuid[],
+          ${entries.map(([, x]) => x.reason)}::text[]
+        ) AS x("intent_id", "ig_user_id", "keyword_id", "reason")
+        JOIN "journey_intent" ji ON ji."id" = x."intent_id"
+        JOIN "keywords" k2 ON k2."id" = x."keyword_id"
+        -- The join alone narrows the window but cannot close it: under READ COMMITTED a
+        -- row can be deleted between the join reading it and the foreign key check
+        -- running. FOR SHARE holds those rows until this statement commits, which is the
+        -- same lock the FK check would take, taken early enough to be worth having.
+        FOR SHARE OF ji, k2
+      )
+      INSERT INTO "recovery_selection_exclusion"
+        ("campaign_id", "intent_id", "ig_user_id", "keyword_id", "reason")
+      SELECT ${campaign.id}::uuid, "intent_id", "ig_user_id", "keyword_id", "reason"
+      FROM present
+      ON CONFLICT ("campaign_id", "intent_id") DO NOTHING
+    `;
+  }
 
   // Arms assigned by hashing (selectionVersion, igUserId), NOT by list position.
   // Position-based assignment on an oldest-first list gave 0 treatment for a 25-person

@@ -78,6 +78,13 @@ async function wipe(): Promise<void> {
   await prisma.conversation.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
   await prisma.journeyIntent.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
   await prisma.igUser.deleteMany({ where: { id: { startsWith: fx.igUserId } } });
+  // Keywords outlive the per-test wipe, so a case that deactivates one to force an
+  // exclusion would silently pre-exclude every later case. Restored rather than
+  // recreated, because the fixture ids are referenced throughout.
+  await prisma.keyword.updateMany({
+    where: { id: { in: [fx.keywordId, fx.otherKeywordId] } },
+    data: { active: true },
+  });
 }
 
 beforeEach(async () => {
@@ -457,5 +464,110 @@ describeWithLocalDatabase("selector bounds completion by the cutoff", () => {
     const report = await select();
 
     expect(report.eligible).toBe(1);
+  });
+});
+
+// QA-14. Selection ran twice: once for the dry run the owner read, and again for
+// `--write`, which is what actually created the campaign. Every predicate in between is
+// live — gate_queue status, the keyword's text and active flag, inferred_origin, a
+// conversation completing — so the reviewed list and the written list could differ with
+// nothing detecting it. Exclusions survived only as counts in an in-memory report, so
+// "why was this cohort this size?" had no answer in the record at all.
+describeWithLocalDatabase("selection records the decision it made", () => {
+  /** Persist a selection and hand back the campaign row it wrote. */
+  async function selectAndPersist(version?: string) {
+    const report = await selector.selectHistoricalCandidates({
+      phase: "unknown_read_pilot",
+      selectionVersion: version ?? `sel-test-${randomUUID()}`,
+      copyVersion: "recovery-v2",
+      westernOnly: true,
+      holdoutPercent: 0,
+      persist: true,
+      now: NOW,
+    });
+    const campaign = await prisma.recoveryCampaign.findUniqueOrThrow({
+      where: { id: report.campaignId! },
+    });
+    return { report, campaign };
+  }
+
+  // The audit the review depends on: an aggregate count cannot tell you WHICH person was
+  // dropped, so a wrong predicate is invisible until someone notices the cohort is small.
+  it("records every excluded intent with its reason", async () => {
+    const eligible = await seedEligible({ triggers: [{ at: COMMENT_AT }] });
+    // A second journey that is excluded for a reason we can name: its keyword is off.
+    const excluded = await seedEligible({
+      triggers: [{ at: COMMENT_AT }],
+      keywordId: fx.otherKeywordId,
+    });
+    await prisma.keyword.update({ where: { id: fx.otherKeywordId }, data: { active: false } });
+
+    const { campaign } = await selectAndPersist();
+
+    const rows = await prisma.recoverySelectionExclusion.findMany({
+      where: { campaignId: campaign.id },
+    });
+    expect(rows.map((r) => r.intentId)).toContain(excluded.intentId);
+    expect(rows.map((r) => r.intentId)).not.toContain(eligible.intentId);
+    expect(rows.find((r) => r.intentId === excluded.intentId)!.reason).toBeTruthy();
+  });
+
+  // Reproducibility, stated as something the record can prove rather than something we
+  // assert in a comment.
+  it("hashes the same decision set identically across runs", async () => {
+    await seedEligible({ triggers: [{ at: COMMENT_AT }] });
+
+    const first = await selectAndPersist();
+    const second = await selectAndPersist();
+
+    expect(first.campaign.decisionHash).toBeTruthy();
+    expect(second.campaign.decisionHash).toBe(first.campaign.decisionHash);
+  });
+
+  // The other half: drift must be VISIBLE. A gate flipping to exhausted between the dry
+  // run and the write is exactly the case QA-14 describes, and the hash is what turns it
+  // from a silent difference into a reviewable one.
+  it("reports a different hash once a live predicate moves", async () => {
+    // Two journeys, so deactivating one keyword changes the DECISION SET without
+    // emptying the campaign — otherwise validateArmSplit rightly refuses a treatment arm
+    // of zero (QA-07) and we would be testing that guard instead of the hash.
+    await seedEligible({ triggers: [{ at: COMMENT_AT }] });
+    await seedEligible({ triggers: [{ at: COMMENT_AT }], keywordId: fx.otherKeywordId });
+    const before = await selectAndPersist();
+
+    // The keyword goes inactive after the first selection — a live predicate, not
+    // something the cutoff can bound, because keywords keep no history.
+    await prisma.keyword.update({ where: { id: fx.otherKeywordId }, data: { active: false } });
+    const after = await selectAndPersist();
+    await prisma.keyword.update({ where: { id: fx.otherKeywordId }, data: { active: true } });
+
+    expect(after.campaign.decisionHash).not.toBe(before.campaign.decisionHash);
+    // And the decision itself changed, which is what the hash is reporting.
+    expect(before.report.eligible).toBe(2);
+    expect(after.report.eligible).toBe(1);
+  });
+
+  // "Nobody qualified" and "this cohort has candidates but no treatment arm" are
+  // different problems. The second is a broken experiment and must refuse (QA-07). The
+  // first is an ordinary answer, and it is the moment the operator most needs the
+  // exclusion breakdown — throwing a stack trace there hides the only useful output.
+  it("reports why the cohort is empty rather than throwing", async () => {
+    await seedEligible({ triggers: [{ at: COMMENT_AT }], keywordId: fx.otherKeywordId });
+    await prisma.keyword.update({ where: { id: fx.otherKeywordId }, data: { active: false } });
+
+    const report = await selector.selectHistoricalCandidates({
+      phase: "unknown_read_pilot",
+      selectionVersion: `sel-test-${randomUUID()}`,
+      copyVersion: "recovery-v2",
+      westernOnly: true,
+      holdoutPercent: 0,
+      persist: true,
+      now: NOW,
+    });
+
+    expect(report.eligible).toBe(0);
+    // Nothing to approve, so nothing was created — but the reasons still came back.
+    expect(report.campaignId).toBeNull();
+    expect(Object.keys(report.excludedByReason).length).toBeGreaterThan(0);
   });
 });
