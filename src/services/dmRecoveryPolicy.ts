@@ -87,7 +87,10 @@ export type RecoveryPolicyInput = {
    * exposes no per-user country.
    */
   audienceOrigin: Origin;
-  /** Confidence of `audienceOrigin`. Only `high` may withhold a send. */
+  /**
+   * Confidence of `audienceOrigin`. Recorded for reporting only — a `south_asian`
+   * verdict withholds at EITHER confidence, so this no longer gates the decision.
+   */
   audienceOriginConfidence: "high" | "low";
   /** `DM_RECOVERY_WESTERN_ONLY`. When false the origin is ignored entirely. */
   westernOnly: boolean;

@@ -1,0 +1,211 @@
+/**
+ * Who may be contacted by a historical recovery campaign — as pure functions.
+ *
+ * Separated from the query so §34/§35 can be tested exhaustively without a
+ * database. Every rule here decides whether the account posts a PUBLIC comment
+ * naming a real person, so a wrong `include` is visible to that person's followers
+ * and cannot be recalled.
+ */
+
+/** Everything the decision needs, gathered per canonical intent. */
+export type EligibilityFacts = {
+  intentId: string;
+  igUserId: string;
+  /** The comment the reply would be posted on. Null means unusable. */
+  commentId: string | null;
+  /** `dm` journeys have no comment to reply to (§35). */
+  triggerKind: string;
+  commentAt: Date;
+  /** Meta accepted the gate DM — the Phase 2 basis. */
+  gateAccepted: boolean;
+  /** The gate demonstrably never delivered — the Phase 1 basis. */
+  gateExhausted: boolean;
+  /**
+   * The gate failed with "user cannot be found". 59 of 63 exhausted rows in this
+   * data are exactly this: deleted or blocking accounts.
+   */
+  recipientUnreachable: boolean;
+  /** An earlier public attempt whose outcome we cannot establish (§35). */
+  ambiguousPriorSend: boolean;
+  /** Any inbound reply, reaction, or read evidence at all (§35). */
+  hasEngagementEvidence: boolean;
+  /** Completed this keyword during or after the window (§34). */
+  completedSameKeyword: boolean;
+  /** A confirmed or in-flight public recovery already exists for this person. */
+  priorPublicRecovery: boolean;
+  /** A newer live journey that should own the request instead (§34). */
+  supersededByNewerJourney: boolean;
+  keywordActive: boolean;
+  audienceOrigin: string | null;
+  /** `DM_RECOVERY_WESTERN_ONLY`. When false the origin is ignored entirely. */
+  westernOnly: boolean;
+};
+
+export type EligibilityDecision =
+  | { kind: "include"; evidence: "gate_exhausted" | "gate_sent_no_read" }
+  | { kind: "exclude"; reason: string };
+
+/**
+ * Apply §34 and §35 to one intent.
+ *
+ * Order matters: the cheapest and most absolute disqualifiers come first, so the
+ * reported reason is the most informative one rather than whichever rule happened
+ * to be checked. Exclusions are returned rather than thrown — the campaign report
+ * needs to show WHY each excluded row was dropped (§37).
+ */
+export function decideEligibility(facts: EligibilityFacts): EligibilityDecision {
+  // A DM-origin journey has no comment. Nothing to reply to, so this can never be
+  // a candidate regardless of every other signal.
+  if (facts.triggerKind === "dm") {
+    return { kind: "exclude", reason: "dm_origin_no_comment" };
+  }
+  if (!facts.commentId) {
+    return { kind: "exclude", reason: "no_source_comment" };
+  }
+
+  // Publicly apologising to a deleted account is the failure mode that makes this
+  // feature look broken, and it is the single largest class in the confirmed-failure
+  // cohort. Checked before anything else that could make the row look sendable.
+  if (facts.recipientUnreachable) {
+    return { kind: "exclude", reason: "recipient_unreachable" };
+  }
+
+  // Any sign the person engaged means the premise ("you never saw this") is false.
+  if (facts.hasEngagementEvidence) {
+    return { kind: "exclude", reason: "has_engagement_evidence" };
+  }
+  if (facts.completedSameKeyword) {
+    return { kind: "exclude", reason: "already_completed_keyword" };
+  }
+
+  // Contacting someone twice publicly is the worst outcome here, so both a known
+  // prior send and an UNKNOWN one exclude. Uncertainty is not permission.
+  if (facts.priorPublicRecovery) {
+    return { kind: "exclude", reason: "prior_public_recovery" };
+  }
+  if (facts.ambiguousPriorSend) {
+    return { kind: "exclude", reason: "ambiguous_prior_send" };
+  }
+
+  if (facts.supersededByNewerJourney) {
+    return { kind: "exclude", reason: "superseded_by_newer_journey" };
+  }
+  if (!facts.keywordActive) {
+    return { kind: "exclude", reason: "keyword_inactive" };
+  }
+
+  // The Western-market rule, matching the prospective feature exactly: a
+  // `south_asian` verdict withholds at EITHER confidence. Applied here at
+  // selection, and rechecked before send because a verdict is retired when the
+  // name it came from changes.
+  if (facts.westernOnly && facts.audienceOrigin === "south_asian") {
+    return { kind: "exclude", reason: "audience_out_of_market" };
+  }
+
+  // Evidence classification. `gate_exhausted` is the stronger claim — we know the
+  // DM never arrived — so it wins when both are somehow true.
+  if (facts.gateExhausted) {
+    return { kind: "include", evidence: "gate_exhausted" };
+  }
+  if (facts.gateAccepted) {
+    return { kind: "include", evidence: "gate_sent_no_read" };
+  }
+
+  // Neither basis. §34 requires positive evidence that a gate was accepted or
+  // definitively failed; "we have no record" is not grounds to contact anybody.
+  return { kind: "exclude", reason: "no_gate_evidence" };
+}
+
+/**
+ * Split a decided pool into what a campaign may send, keeping a count per reason.
+ *
+ * `assertNoDuplicates` is deliberately a hard failure rather than a filter: the
+ * pool measured zero duplicate person-keyword candidates, and if that ever stops
+ * being true the right response is to stop and look, not to quietly drop rows.
+ */
+export function summarise(
+  decisions: Array<{ facts: EligibilityFacts; decision: EligibilityDecision }>,
+): {
+  included: Array<{ facts: EligibilityFacts; evidence: string }>;
+  excludedByReason: Map<string, number>;
+} {
+  const included: Array<{ facts: EligibilityFacts; evidence: string }> = [];
+  const excludedByReason = new Map<string, number>();
+
+  for (const { facts, decision } of decisions) {
+    if (decision.kind === "include") {
+      included.push({ facts, evidence: decision.evidence });
+    } else {
+      excludedByReason.set(decision.reason, (excludedByReason.get(decision.reason) ?? 0) + 1);
+    }
+  }
+
+  return { included, excludedByReason };
+}
+
+/**
+ * Keep one candidate per person: their MOST RECENT unanswered request.
+ *
+ * 43 of 1,487 eligible people asked more than once, holding 101 intents between
+ * them. All 43 had a gate DM that Meta accepted, yet 41 never completed a single
+ * guide — versus 46 of 1,444 single-request people. So they are not unreachable,
+ * they are the segment being failed most consistently, and dropping them would
+ * remove the strongest signal from the campaign.
+ *
+ * Most recent rather than oldest, for how the message reads: the copy says "I don't
+ * think my DM reached you", which sounds attentive on a recent comment and odd on a
+ * six-week-old one, where the notification is also likelier to be missed. Their
+ * requests span 7 days on average, so the two rules rarely differ by much.
+ *
+ * Unverified: nobody has sent one of these yet, so this is a judgement about
+ * phrasing, not a measured result. The stage-1 holdout is what will test it.
+ */
+export function keepLatestPerPerson<T extends { facts: EligibilityFacts }>(included: T[]): T[] {
+  const latestByPerson = new Map<string, T>();
+
+  for (const entry of included) {
+    const existing = latestByPerson.get(entry.facts.igUserId);
+    if (!existing || entry.facts.commentAt > existing.facts.commentAt) {
+      latestByPerson.set(entry.facts.igUserId, entry);
+    }
+  }
+
+  // Preserve the caller's ordering (oldest first) rather than Map insertion order,
+  // so a staged `limit` still takes the oldest cohort first.
+  const kept = new Set([...latestByPerson.values()].map((e) => e.facts.intentId));
+  return included.filter((entry) => kept.has(entry.facts.intentId));
+}
+
+/**
+ * Refuse to build a campaign that would contact anyone twice.
+ *
+ * The database enforces one candidate per intent and per person via unique
+ * indexes, but that would surface as a mid-insert P2002 with half a campaign
+ * written. Checking first turns it into a clean refusal with a readable message.
+ *
+ * Kept as a hard failure even though `keepLatestPerPerson` now runs first: this is
+ * the last line before a public send, and if the dedup ever regresses the right
+ * response is to stop and look rather than quietly contact someone twice.
+ */
+export function assertNoDuplicates(included: Array<{ facts: EligibilityFacts }>): void {
+  const seenPeople = new Map<string, string>();
+  const seenIntents = new Set<string>();
+
+  for (const { facts } of included) {
+    if (seenIntents.has(facts.intentId)) {
+      throw new Error(
+        `historical recovery selection produced two candidates for intent ${facts.intentId}`,
+      );
+    }
+    seenIntents.add(facts.intentId);
+
+    const priorIntent = seenPeople.get(facts.igUserId);
+    if (priorIntent) {
+      throw new Error(
+        `historical recovery selection would contact ${facts.igUserId} twice ` +
+          `(intents ${priorIntent} and ${facts.intentId}) — one public recovery per person per campaign`,
+      );
+    }
+    seenPeople.set(facts.igUserId, facts.intentId);
+  }
+}
