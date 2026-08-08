@@ -875,47 +875,47 @@ function Experiments() {
   );
 }
 
+function RecentAudienceMetric({
+  label,
+  us14,
+  us90,
+  in14,
+}: {
+  label: string;
+  us14: number | null;
+  us90: number | null;
+  in14: number | null;
+}) {
+  const delta = us14 !== null && us90 !== null ? Math.round((us14 - us90) * 10) / 10 : null;
+  const tone =
+    delta === null ? "text-muted-foreground" : delta >= 0 ? "text-emerald-400" : "text-rose-400";
+  return (
+    <div className="rounded-md border bg-background/40 p-3">
+      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="mt-1 flex items-baseline gap-2">
+        <span className="text-2xl font-semibold">{us14 ?? "—"}%</span>
+        <span className="text-[11px] text-muted-foreground">US · last 14d</span>
+      </div>
+      <div className="mt-0.5 text-[11px] text-muted-foreground">
+        vs {us90 ?? "—"}% baseline (90d)
+        {delta !== null && (
+          <span className={cn("ml-1 font-medium", tone)}>
+            {delta >= 0 ? "▲" : "▼"} {Math.abs(delta)} pts
+          </span>
+        )}
+      </div>
+      {in14 !== null && (
+        <div className="mt-0.5 text-[11px] text-muted-foreground">India last 14d: {in14}%</div>
+      )}
+    </div>
+  );
+}
+
 // The "recent reels" thermometer. Compares the latest 14-day window (what your
 // RECENT reels pulled) against the 90-day baseline. A 14d BELOW 90d means recent
 // content skewed less US than your historical norm — the signal Pratik wants.
 function RecentAudiencePanel({ points }: { points: GeoWindowPoint[] }) {
   const latest = points.length ? points[points.length - 1] : null;
-
-  const Metric = ({
-    label,
-    us14,
-    us90,
-    in14,
-  }: {
-    label: string;
-    us14: number | null;
-    us90: number | null;
-    in14: number | null;
-  }) => {
-    const delta = us14 !== null && us90 !== null ? Math.round((us14 - us90) * 10) / 10 : null;
-    const tone =
-      delta === null ? "text-muted-foreground" : delta >= 0 ? "text-emerald-400" : "text-rose-400";
-    return (
-      <div className="rounded-md border bg-background/40 p-3">
-        <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</div>
-        <div className="mt-1 flex items-baseline gap-2">
-          <span className="text-2xl font-semibold">{us14 ?? "—"}%</span>
-          <span className="text-[11px] text-muted-foreground">US · last 14d</span>
-        </div>
-        <div className="mt-0.5 text-[11px] text-muted-foreground">
-          vs {us90 ?? "—"}% baseline (90d)
-          {delta !== null && (
-            <span className={cn("ml-1 font-medium", tone)}>
-              {delta >= 0 ? "▲" : "▼"} {Math.abs(delta)} pts
-            </span>
-          )}
-        </div>
-        {in14 !== null && (
-          <div className="mt-0.5 text-[11px] text-muted-foreground">India last 14d: {in14}%</div>
-        )}
-      </div>
-    );
-  };
 
   return (
     <div className="rounded-lg border bg-card/40 p-4">
@@ -929,13 +929,13 @@ function RecentAudiencePanel({ points }: { points: GeoWindowPoint[] }) {
       ) : (
         <>
           <div className="mt-2 grid gap-2 sm:grid-cols-2">
-            <Metric
+            <RecentAudienceMetric
               label="Engaged"
               us14={latest.engagedUs14}
               us90={latest.engagedUs90}
               in14={latest.engagedIn14}
             />
-            <Metric
+            <RecentAudienceMetric
               label="Reached"
               us14={latest.reachedUs14}
               us90={latest.reachedUs90}
