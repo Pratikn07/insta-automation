@@ -1,4 +1,5 @@
 import { Router } from "express";
+import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { getIgUsers } from "../services/igUserService.js";
@@ -65,17 +66,27 @@ export const conversationsRouter = Router();
 
 const listQuerySchema = z.object({
   state: z.enum(["awaiting_done", "completed", "expired"]).optional(),
+  mode: z.enum(["canonical", "raw"]).default("canonical"),
   limit: z.coerce.number().int().min(1).max(200).default(50),
   cursor: z.string().uuid().optional(),
 });
 
+export type ConversationMode = "canonical" | "raw";
+
+export function conversationScopeWhere(mode: ConversationMode): Prisma.ConversationWhereInput {
+  return mode === "raw"
+    ? {}
+    : { OR: [{ ownedIntents: { some: {} } }, { canonicalIntentId: null }] };
+}
+
 conversationsRouter.get("/", async (req, res) => {
   const parsed = listQuerySchema.safeParse(req.query);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-  const { state, limit, cursor } = parsed.data;
+  const { state, mode, limit, cursor } = parsed.data;
+  const scope = conversationScopeWhere(mode);
 
   const rows = await prisma.conversation.findMany({
-    where: state ? { state } : undefined,
+    where: { ...scope, ...(state ? { state } : {}) },
     orderBy: { createdAt: "desc" },
     take: limit + 1,
     ...(cursor && { cursor: { id: cursor }, skip: 1 }),
@@ -86,6 +97,18 @@ conversationsRouter.get("/", async (req, res) => {
         take: 1,
         orderBy: { createdAt: "desc" },
         select: RECOVERY_SUMMARY_SELECT,
+      },
+      canonicalIntent: {
+        select: {
+          id: true,
+          canonicalConversation: { select: { id: true } },
+        },
+      },
+      ownedIntents: {
+        select: {
+          id: true,
+          _count: { select: { aliasConversations: true } },
+        },
       },
     },
   });
@@ -107,21 +130,39 @@ conversationsRouter.get("/", async (req, res) => {
 
   const trackingStart = trackingStartAt();
 
-  const withUsers = items.map(({ recoveryReminders, ...c }) => ({
-    ...c,
-    recovery: summariseRecovery(recoveryReminders[0] ?? null),
-    readTracking: readTrackingAvailability(
-      recoveryReminders[0] ?? null,
-      c.createdAt,
-      trackingStart,
-    ),
-    username: users[c.igUserId]?.username ?? null,
-    name: users[c.igUserId]?.name ?? null,
-    isFollower: users[c.igUserId]?.isFollower ?? null,
-    followerCount: users[c.igUserId]?.followerCount ?? null,
-    isVerified: users[c.igUserId]?.isVerified ?? null,
-    delivery: c.state === "awaiting_done" ? (deliveryById.get(c.id) ?? "delivered") : null,
-  }));
+  const withUsers = items.map(({ recoveryReminders, ownedIntents, canonicalIntent, ...c }) => {
+    const historyRole =
+      ownedIntents.length > 0 ? "canonical" : c.canonicalIntentId ? "alias" : "unreconciled";
+    const aliasCount = ownedIntents.reduce(
+      (total, intent) => total + intent._count.aliasConversations,
+      0,
+    );
+    const canonicalOwner =
+      historyRole === "canonical"
+        ? { id: c.id }
+        : historyRole === "alias" && canonicalIntent?.canonicalConversation
+          ? { id: canonicalIntent.canonicalConversation.id }
+          : null;
+
+    return {
+      ...c,
+      historyRole,
+      canonicalOwner,
+      aliasCount,
+      recovery: summariseRecovery(recoveryReminders[0] ?? null),
+      readTracking: readTrackingAvailability(
+        recoveryReminders[0] ?? null,
+        c.createdAt,
+        trackingStart,
+      ),
+      username: users[c.igUserId]?.username ?? null,
+      name: users[c.igUserId]?.name ?? null,
+      isFollower: users[c.igUserId]?.isFollower ?? null,
+      followerCount: users[c.igUserId]?.followerCount ?? null,
+      isVerified: users[c.igUserId]?.isVerified ?? null,
+      delivery: c.state === "awaiting_done" ? (deliveryById.get(c.id) ?? "delivered") : null,
+    };
+  });
 
   res.json({
     items: withUsers,
@@ -158,9 +199,17 @@ async function deliveryStatusFor(ids: string[]): Promise<Map<string, DeliverySta
  * the UI show "Waiting 416 · Delivered 351 · No reply 300" at a glance, and split
  * the waiting count if we ever want to. One grouped query + one gate count.
  */
-conversationsRouter.get("/counts", async (_req, res) => {
+const countsQuerySchema = z.object({
+  mode: z.enum(["canonical", "raw"]).default("canonical"),
+});
+
+conversationsRouter.get("/counts", async (req, res) => {
+  const parsed = countsQuerySchema.safeParse(req.query);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const scope = conversationScopeWhere(parsed.data.mode);
+
   const [grouped, pendingGates] = await Promise.all([
-    prisma.conversation.groupBy({ by: ["state"], _count: { _all: true } }),
+    prisma.conversation.groupBy({ where: scope, by: ["state"], _count: { _all: true } }),
     // Conversations with a still-bouncing gate. GateQueue has no Prisma relation
     // to Conversation, so we intersect in code rather than via a nested filter.
     prisma.gateQueue.findMany({
@@ -180,7 +229,7 @@ conversationsRouter.get("/counts", async (_req, res) => {
     pendingIds.length === 0
       ? 0
       : await prisma.conversation.count({
-          where: { id: { in: pendingIds }, state: "awaiting_done" },
+          where: { ...scope, id: { in: pendingIds }, state: "awaiting_done" },
         });
 
   res.json({
