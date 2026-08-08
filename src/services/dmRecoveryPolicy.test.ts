@@ -20,6 +20,13 @@ describe("DM recovery policy", () => {
       );
     });
 
+    it.each([
+      ["no_confirmed_read", "  sleep ", "DM @tinysoho “SLEEP”."],
+      ["settings_blocked", "Protein", "DM @tinysoho “PROTEIN”."],
+    ] as const)("normalizes %s copy to an uppercase keyword", (trigger, keyword, expectedTail) => {
+      expect(renderRecoveryCopy(trigger, keyword)).toContain(expectedTail);
+    });
+
     it("throws if keywordSnapshot is empty", () => {
       expect(() => renderRecoveryCopy("no_confirmed_read", "")).toThrow(
         "invalid_keyword_snapshot",
