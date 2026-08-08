@@ -936,6 +936,14 @@ model RecoveryCandidate {
   eligibleAt               DateTime                 @map("eligible_at") @db.Timestamptz(3)
   claimedAt                DateTime?                @map("claimed_at") @db.Timestamptz(3)
   claimExpiresAt           DateTime?                @map("claim_expires_at") @db.Timestamptz(3)
+  /// Present only while a worker holds this row. Every release and finalise must
+  /// present it, so a stale claimant cannot overwrite the winner's outcome.
+  claimToken               String?                  @map("claim_token") @db.Uuid
+  /// Durable attempt bookkeeping: without it a retryable failure retried every tick
+  /// forever, because releasing the claim left no record that anything had happened.
+  attempts                 Int                      @default(0)
+  lastAttemptAt            DateTime?                @map("last_attempt_at") @db.Timestamptz(3)
+  nextAttemptAt            DateTime?                @map("next_attempt_at") @db.Timestamptz(3)
   sentAt                   DateTime?                @map("sent_at") @db.Timestamptz(3)
   publicReplyId            String?                  @map("public_reply_id")
   suppressionReason        String?                  @map("suppression_reason")

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { prisma } from "../lib/prisma.js";
 
 /**
@@ -18,12 +19,20 @@ export type ClaimedCandidate = {
   id: string;
   campaignId: string;
   igUserId: string;
+  /** Needed by the final recheck to scope completion to THIS keyword (QA-11). */
+  keywordId: string;
   commentId: string;
   publicReplyText: string;
   keywordSnapshot: string;
   evidence: string;
   arm: string;
   audienceOrigin: string | null;
+  /**
+   * Proof this worker holds the row. Every release and finalise must present it, so a
+   * stale claimant cannot overwrite the winner's outcome.
+   */
+  claimToken: string;
+  attempts: number;
 };
 
 /**
@@ -43,6 +52,11 @@ export async function listDueCandidateIds(now: Date, limit: number): Promise<str
       arm: "treatment",
       eligibleAt: { lte: now },
       campaign: { state: "running" },
+      // Skip rows another worker already holds, and rows waiting out a backoff after a
+      // retryable failure. Without the backoff filter a rate-limited row was retried
+      // on every tick forever.
+      claimToken: null,
+      OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
     },
     orderBy: { commentAt: "asc" },
     // Over-fetch like the prospective path: a row suppressed during the claim must
@@ -65,27 +79,54 @@ export async function claimCandidate(
   now: Date,
   leaseUntil: Date,
 ): Promise<ClaimedCandidate | null> {
+  const token = randomUUID();
+
+  // Compare-and-set on `claimToken IS NULL`. The previous predicate matched only
+  // (id, pending, treatment) and left the row pending, so a second concurrent call
+  // matched the SAME row and overwrote the first lease — verified against real
+  // Postgres: two claims, both succeeded, both would have posted publicly.
+  //
+  // An expired lease is reclaimable: `reconcileExpiredCandidateLeases` normally moves
+  // those to send_uncertain first, but a row whose lease lapsed between that sweep and
+  // this call must not be stranded.
   const claimed = await prisma.recoveryCandidate.updateMany({
-    where: { id, outcome: "pending", arm: "treatment" },
-    data: { claimedAt: now, claimExpiresAt: leaseUntil },
+    where: {
+      id,
+      outcome: "pending",
+      arm: "treatment",
+      OR: [{ claimToken: null }, { claimExpiresAt: { lte: now } }],
+    },
+    data: {
+      claimedAt: now,
+      claimExpiresAt: leaseUntil,
+      claimToken: token,
+      attempts: { increment: 1 },
+      lastAttemptAt: now,
+    },
   });
   if (claimed.count === 0) return null;
 
-  const row = await prisma.recoveryCandidate.findUnique({
-    where: { id },
+  // Re-read filtered BY THE TOKEN. Reading by id alone could return a row a different
+  // worker claimed in between, handing this caller someone else's candidate.
+  const row = await prisma.recoveryCandidate.findFirst({
+    where: { id, claimToken: token },
     select: {
       id: true,
       campaignId: true,
       igUserId: true,
+      keywordId: true,
       commentId: true,
       publicReplyText: true,
       keywordSnapshot: true,
       evidence: true,
       arm: true,
       audienceOrigin: true,
+      attempts: true,
     },
   });
-  return row;
+  if (!row) return null;
+
+  return { ...row, claimToken: token };
 }
 
 /**
@@ -107,17 +148,34 @@ export async function reconcileExpiredCandidateLeases(now: Date): Promise<number
       suppressionReason: "stale_lease",
       claimedAt: null,
       claimExpiresAt: null,
+      // Must be cleared, or the partial unique index keeps the row claimed forever.
+      claimToken: null,
     },
   });
   return count;
 }
 
-/** Release a claim so the row can be re-evaluated on a later tick. */
-export async function releaseCandidateClaim(id: string): Promise<void> {
-  await prisma.recoveryCandidate.updateMany({
-    where: { id, outcome: "pending" },
-    data: { claimedAt: null, claimExpiresAt: null },
+/**
+ * Release a claim so the row can be re-evaluated on a later tick.
+ *
+ * `nextAttemptAt` defers a retryable failure. Without it a rate-limited row was
+ * retried on every tick forever, because releasing the claim left no trace.
+ */
+export async function releaseCandidateClaim(
+  id: string,
+  claimToken: string,
+  nextAttemptAt?: Date,
+): Promise<boolean> {
+  const { count } = await prisma.recoveryCandidate.updateMany({
+    where: { id, claimToken },
+    data: {
+      claimedAt: null,
+      claimExpiresAt: null,
+      claimToken: null,
+      ...(nextAttemptAt ? { nextAttemptAt } : {}),
+    },
   });
+  return count === 1;
 }
 
 /**
@@ -129,16 +187,19 @@ export async function releaseCandidateClaim(id: string): Promise<void> {
  */
 export async function markCandidateSent(
   id: string,
+  claimToken: string,
   input: { publicReplyId: string; sentAt: Date },
 ): Promise<boolean> {
   const { count } = await prisma.recoveryCandidate.updateMany({
-    where: { id, outcome: "pending" },
+    // Token required: a stale claimant must not be able to finalise the winner's row.
+    where: { id, outcome: "pending", claimToken },
     data: {
       outcome: "sent",
       publicReplyId: input.publicReplyId,
       sentAt: input.sentAt,
       claimedAt: null,
       claimExpiresAt: null,
+      claimToken: null,
     },
   });
   return count === 1;
@@ -151,27 +212,37 @@ export async function markCandidateSent(
  * not the kind of thing that reverses, and re-checking it every tick would be
  * pointless load.
  */
-export async function markCandidateSuppressed(id: string, reason: string): Promise<boolean> {
+export async function markCandidateSuppressed(
+  id: string,
+  claimToken: string,
+  reason: string,
+): Promise<boolean> {
   const { count } = await prisma.recoveryCandidate.updateMany({
-    where: { id, outcome: "pending" },
+    where: { id, outcome: "pending", claimToken },
     data: {
       outcome: "suppressed",
       suppressionReason: reason,
       claimedAt: null,
       claimExpiresAt: null,
+      claimToken: null,
     },
   });
   return count === 1;
 }
 
-export async function markCandidateFailed(id: string, reason: string): Promise<boolean> {
+export async function markCandidateFailed(
+  id: string,
+  claimToken: string,
+  reason: string,
+): Promise<boolean> {
   const { count } = await prisma.recoveryCandidate.updateMany({
-    where: { id, outcome: "pending" },
+    where: { id, outcome: "pending", claimToken },
     data: {
       outcome: "send_failed",
       suppressionReason: reason,
       claimedAt: null,
       claimExpiresAt: null,
+      claimToken: null,
     },
   });
   return count === 1;
@@ -182,14 +253,19 @@ export async function markCandidateFailed(id: string, reason: string): Promise<b
  *
  * `reviewedAt` stays null so the dashboard can surface it as needing attention.
  */
-export async function markCandidateUncertain(id: string, reason: string): Promise<boolean> {
+export async function markCandidateUncertain(
+  id: string,
+  claimToken: string,
+  reason: string,
+): Promise<boolean> {
   const { count } = await prisma.recoveryCandidate.updateMany({
-    where: { id, outcome: "pending" },
+    where: { id, outcome: "pending", claimToken },
     data: {
       outcome: "send_uncertain",
       suppressionReason: reason,
       claimedAt: null,
       claimExpiresAt: null,
+      claimToken: null,
     },
   });
   return count === 1;
@@ -206,6 +282,16 @@ export async function markCandidateUncertain(id: string, reason: string): Promis
  */
 export async function countCandidatesSentSince(campaignId: string, since: Date): Promise<number> {
   return prisma.recoveryCandidate.count({
-    where: { campaignId, outcome: "sent", sentAt: { gte: since } },
+    where: {
+      campaignId,
+      // `send_uncertain` counts. The comment may be live on Instagram, so excluding it
+      // let an unknown number of real public comments escape the cap (QA-08).
+      OR: [
+        { outcome: "sent", sentAt: { gte: since } },
+        { outcome: "send_uncertain", lastAttemptAt: { gte: since } },
+        // In flight right now: claimed and not yet finalised.
+        { outcome: "pending", claimToken: { not: null }, lastAttemptAt: { gte: since } },
+      ],
+    },
   });
 }

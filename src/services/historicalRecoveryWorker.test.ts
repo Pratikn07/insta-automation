@@ -81,6 +81,11 @@ const CANDIDATE = {
   id: "cand-1",
   campaignId: "camp-1",
   igUserId: "person-1",
+  keywordId: "kw-1",
+  // Every finalise and release must present this, so a stale claimant cannot
+  // overwrite the winner's outcome (QA-02).
+  claimToken: "token-1",
+  attempts: 1,
   commentId: "18111572197955347",
   publicReplyText: "I don't think my DM reached you",
   keywordSnapshot: "SLEEP",
@@ -128,7 +133,7 @@ describe("runHistoricalRecoveryTick — the send path", () => {
     const result = await runHistoricalRecoveryTick();
 
     expect(replyToComment).toHaveBeenCalledWith(CANDIDATE.commentId, CANDIDATE.publicReplyText);
-    expect(markCandidateSent).toHaveBeenCalledWith("cand-1", {
+    expect(markCandidateSent).toHaveBeenCalledWith("cand-1", "token-1", {
       publicReplyId: "17900000000000000",
       sentAt: expect.any(Date),
     });
@@ -176,7 +181,7 @@ describe("runHistoricalRecoveryTick — the stop switches", () => {
     const result = await runHistoricalRecoveryTick();
 
     expect(replyToComment).not.toHaveBeenCalled();
-    expect(releaseCandidateClaim).toHaveBeenCalledWith("cand-1");
+    expect(releaseCandidateClaim).toHaveBeenCalledWith("cand-1", "token-1");
     expect(result.skipped).toBe("campaign_not_running");
   });
 });
@@ -189,7 +194,7 @@ describe("runHistoricalRecoveryTick — pre-send recheck", () => {
     const result = await runHistoricalRecoveryTick();
 
     expect(replyToComment).not.toHaveBeenCalled();
-    expect(markCandidateSuppressed).toHaveBeenCalledWith("cand-1", "source_comment_deleted");
+    expect(markCandidateSuppressed).toHaveBeenCalledWith("cand-1", "token-1", "source_comment_deleted");
     expect(result.suppressed).toBe(1);
   });
 
@@ -201,7 +206,7 @@ describe("runHistoricalRecoveryTick — pre-send recheck", () => {
     await runHistoricalRecoveryTick();
 
     expect(replyToComment).not.toHaveBeenCalled();
-    expect(markCandidateSuppressed).toHaveBeenCalledWith("cand-1", "source_comment_hidden");
+    expect(markCandidateSuppressed).toHaveBeenCalledWith("cand-1", "token-1", "source_comment_hidden");
   });
 
   it("suppresses when the person replied after selection", async () => {
@@ -210,7 +215,7 @@ describe("runHistoricalRecoveryTick — pre-send recheck", () => {
     await runHistoricalRecoveryTick();
 
     expect(replyToComment).not.toHaveBeenCalled();
-    expect(markCandidateSuppressed).toHaveBeenCalledWith("cand-1", "replied_since_selection");
+    expect(markCandidateSuppressed).toHaveBeenCalledWith("cand-1", "token-1", "replied_since_selection");
   });
 
   it("suppresses when another recovery already reached them", async () => {
@@ -219,7 +224,7 @@ describe("runHistoricalRecoveryTick — pre-send recheck", () => {
     await runHistoricalRecoveryTick();
 
     expect(replyToComment).not.toHaveBeenCalled();
-    expect(markCandidateSuppressed).toHaveBeenCalledWith("cand-1", "contacted_since_selection");
+    expect(markCandidateSuppressed).toHaveBeenCalledWith("cand-1", "token-1", "contacted_since_selection");
   });
 
   // The verdict is read LIVE, not from the snapshot: it is retired when the name it
@@ -230,7 +235,7 @@ describe("runHistoricalRecoveryTick — pre-send recheck", () => {
     await runHistoricalRecoveryTick();
 
     expect(replyToComment).not.toHaveBeenCalled();
-    expect(markCandidateSuppressed).toHaveBeenCalledWith("cand-1", "audience_out_of_market");
+    expect(markCandidateSuppressed).toHaveBeenCalledWith("cand-1", "token-1", "audience_out_of_market");
   });
 
   it("defers rather than burning the row at the hourly cap", async () => {
@@ -239,7 +244,7 @@ describe("runHistoricalRecoveryTick — pre-send recheck", () => {
     const result = await runHistoricalRecoveryTick();
 
     expect(replyToComment).not.toHaveBeenCalled();
-    expect(releaseCandidateClaim).toHaveBeenCalledWith("cand-1");
+    expect(releaseCandidateClaim).toHaveBeenCalledWith("cand-1", "token-1");
     expect(markCandidateSuppressed).not.toHaveBeenCalled();
     expect(result.deferred).toBe(1);
   });
@@ -253,7 +258,7 @@ describe("runHistoricalRecoveryTick — failure handling", () => {
     const result = await runHistoricalRecoveryTick();
 
     expect(openRecoveryCircuit).toHaveBeenCalled();
-    expect(markCandidateFailed).toHaveBeenCalledWith("cand-1", "auth_or_permission");
+    expect(markCandidateFailed).toHaveBeenCalledWith("cand-1", "token-1", "auth_or_permission");
     expect(result.failed).toBe(1);
   });
 
@@ -264,7 +269,7 @@ describe("runHistoricalRecoveryTick — failure handling", () => {
 
     const result = await runHistoricalRecoveryTick();
 
-    expect(markCandidateFailed).toHaveBeenCalledWith("cand-1", "code_190");
+    expect(markCandidateFailed).toHaveBeenCalledWith("cand-1", "token-1", "code_190");
     expect(result.failed).toBe(1);
   });
 
@@ -276,20 +281,37 @@ describe("runHistoricalRecoveryTick — failure handling", () => {
 
     const result = await runHistoricalRecoveryTick();
 
-    expect(markCandidateUncertain).toHaveBeenCalledWith("cand-1", "unknown_error");
+    expect(markCandidateUncertain).toHaveBeenCalledWith("cand-1", "token-1", "unknown_error");
     expect(markCandidateFailed).not.toHaveBeenCalled();
     expect(result.uncertain).toBe(1);
   });
 
-  it("releases a retryable failure for a later tick", async () => {
+  // A retryable failure now carries a DURABLE backoff. Releasing with no record meant
+  // a rate-limited row was retried on every tick indefinitely (QA-10).
+  it("releases a retryable failure with a future retry time", async () => {
     replyToComment.mockRejectedValue(new Error("rate limited"));
     classifyPublicReplyFailure.mockReturnValue("safe_retry");
 
     const result = await runHistoricalRecoveryTick();
 
-    expect(releaseCandidateClaim).toHaveBeenCalledWith("cand-1");
+    expect(releaseCandidateClaim).toHaveBeenCalledWith("cand-1", "token-1", expect.any(Date));
     expect(markCandidateFailed).not.toHaveBeenCalled();
     expect(result.deferred).toBe(1);
+
+    const retryAt = releaseCandidateClaim.mock.calls[0]?.[2] as Date;
+    expect(retryAt.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  // The backoff needs a ceiling, or a permanently rate-limited row retries forever.
+  it("fails a candidate that exhausted its attempts", async () => {
+    claimCandidate.mockResolvedValue({ ...CANDIDATE, attempts: 5 });
+    replyToComment.mockRejectedValue(new Error("rate limited"));
+    classifyPublicReplyFailure.mockReturnValue("safe_retry");
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(markCandidateFailed).toHaveBeenCalledWith("cand-1", "token-1", "rate_limit_exhausted");
+    expect(result.failed).toBe(1);
   });
 
   // Meta accepted the post but returned no id, so there is no evidence it landed —
@@ -300,7 +322,7 @@ describe("runHistoricalRecoveryTick — failure handling", () => {
     const result = await runHistoricalRecoveryTick();
 
     expect(markCandidateSent).not.toHaveBeenCalled();
-    expect(markCandidateUncertain).toHaveBeenCalledWith("cand-1", "missing_reply_id");
+    expect(markCandidateUncertain).toHaveBeenCalledWith("cand-1", "token-1", "missing_reply_id");
     expect(result.uncertain).toBe(1);
   });
 
