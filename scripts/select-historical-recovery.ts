@@ -1,6 +1,7 @@
 import { prisma } from "../src/lib/prisma.js";
 import { selectHistoricalCandidates } from "../src/services/historicalRecoverySelector.js";
 import { env } from "../src/config/env.js";
+import { COPY_VERSION } from "../src/services/historicalRecoveryCopy.js";
 
 /**
  * Preview (and optionally draft) a historical recovery campaign.
@@ -43,7 +44,7 @@ async function main() {
   const report = await selectHistoricalCandidates({
     phase: "unknown_read_pilot",
     selectionVersion: "v1-canonical-intents",
-    copyVersion: "v1",
+    copyVersion: COPY_VERSION,
     // Read the live flag rather than assuming: the filter must match what the
     // prospective feature is actually doing today.
     westernOnly: env.DM_RECOVERY_WESTERN_ONLY,
