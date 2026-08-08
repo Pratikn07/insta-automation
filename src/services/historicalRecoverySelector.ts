@@ -6,6 +6,7 @@ import {
   assertNoDuplicates,
   type EligibilityFacts,
 } from "./historicalRecoveryEligibility.js";
+import { recoveryCopyFor } from "./historicalRecoveryCopy.js";
 
 /**
  * Build the candidate list for a historical recovery campaign (design §34–§37).
@@ -281,7 +282,11 @@ export async function selectHistoricalCandidates(input: {
           // Frozen: the keyword may be renamed and the copy revised, but an approved
           // campaign sends what the owner approved.
           keywordSnapshot: row.keywordSnapshot,
-          publicReplyText: row.publicReplyText,
+          // Recovery copy, NOT the keyword's publicReply. The keyword says "Check
+          // your DMs!", which points a person at the exact thing that failed.
+          // Chosen by evidence so we never publicly claim the DM failed when all we
+          // know is that no read receipt arrived.
+          publicReplyText: recoveryCopyFor(entry.evidence),
           evidence: entry.evidence,
           audienceOrigin: row.audienceOrigin,
           audienceOriginConfidence: row.audienceOriginConfidence,
