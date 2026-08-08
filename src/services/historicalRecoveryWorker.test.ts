@@ -745,4 +745,46 @@ describe("runHistoricalRecoveryTick — campaign stop conditions", () => {
     expect(result.sent).toBe(1);
     expect(result.skipped).toBeUndefined();
   });
+
+  // Every case above drives a tick where the send SUCCEEDS, and that was the whole gap:
+  // the campaign was only registered for evaluation after a successful post, so the stop
+  // conditions could not fire in the failure modes they exist for. These two assert that
+  // the health check is REACHABLE from a tick that posts nothing at all.
+  it("evaluates campaign health when every send failed", async () => {
+    replyToComment.mockRejectedValue(new Error("meta rejected"));
+    classifyPublicReplyFailure.mockReturnValue("permanent");
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(result.sent).toBe(0);
+    expect(result.failed).toBe(1);
+    expect(evaluateCampaignHealth).toHaveBeenCalledWith("camp-1", expect.any(Date));
+  });
+
+  // The condition this protects is `source_unavailable_rate`, which chooseStopReason
+  // deliberately evaluates at settled == 0 — a cohort whose comments have all been
+  // deleted sends nothing. That branch is unreachable if a send is required first.
+  it("evaluates campaign health when every candidate was suppressed", async () => {
+    fetchComment.mockResolvedValue({ id: CANDIDATE.commentId, hidden: true, timestamp: null });
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(result.sent).toBe(0);
+    expect(result.suppressed).toBe(1);
+    expect(evaluateCampaignHealth).toHaveBeenCalledWith("camp-1", expect.any(Date));
+  });
+
+  // An auto-pause must win over completion on a failing tick too. Otherwise a campaign
+  // that tripped a stop while posting nothing would be closed as `completed`, which reads
+  // as success and hides the fault.
+  it("does not complete an auto-paused campaign whose sends all failed", async () => {
+    replyToComment.mockRejectedValue(new Error("meta rejected"));
+    classifyPublicReplyFailure.mockReturnValue("permanent");
+    evaluateCampaignHealth.mockResolvedValue({ stopReason: "public_failure_rate" });
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(completeCampaignIfDrained).not.toHaveBeenCalled();
+    expect(result.skipped).toBe("campaign_auto_paused:public_failure_rate");
+  });
 });

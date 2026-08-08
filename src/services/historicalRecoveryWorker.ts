@@ -121,8 +121,22 @@ async function runTickBody(): Promise<HistoricalTickResult> {
   const leaseMs = env.DM_RECOVERY_LEASE_MS;
   const hourAgo = new Date(now.getTime() - 60 * 60 * 1000);
   const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-  /** Campaigns this tick touched, checked for completion once at the end. */
-  const touchedCampaigns = new Set<string>();
+  /**
+   * Campaigns this tick JUDGED, checked for health and completion once at the end.
+   *
+   * A campaign belongs here as soon as one of its rows reached an outcome — suppressed,
+   * failed, or dispatched — not only when a send succeeded. That distinction is the whole
+   * point: the stop conditions exist for campaigns going wrong, and a campaign going
+   * wrong is precisely one that is not sending. Registering only on success made
+   * `evaluateCampaignHealth` unreachable at a 100% failure rate, and made
+   * `source_unavailable_rate` dead code — `chooseStopReason` evaluates it at
+   * `settled == 0` on purpose, for a cohort whose comments have all been deleted, and
+   * such a campaign never posts anything at all.
+   *
+   * Deferrals are excluded: a cap, a pause, or a failed source read judges nothing about
+   * the row, so no observation the health check reads has changed.
+   */
+  const campaignsToEvaluate = new Set<string>();
 
   for (const id of ids) {
     // listDueCandidateIds over-fetches so a suppressed row does not consume a slot;
@@ -197,6 +211,7 @@ async function runTickBody(): Promise<HistoricalTickResult> {
           // records why we stopped asking rather than claiming it does not exist.
           if (await markCandidateFailed(id, claimed.claimToken, "source_read_exhausted")) {
             result.failed++;
+            campaignsToEvaluate.add(claimed.campaignId);
           }
           continue;
         }
@@ -223,6 +238,7 @@ async function runTickBody(): Promise<HistoricalTickResult> {
     if (decision.kind === "suppress") {
       if (await markCandidateSuppressed(id, claimed.claimToken, decision.reason)) {
         result.suppressed++;
+        campaignsToEvaluate.add(claimed.campaignId);
         await logEvent("historical_recovery_suppressed", {
           candidateId: id,
           campaignId: claimed.campaignId,
@@ -256,6 +272,12 @@ async function runTickBody(): Promise<HistoricalTickResult> {
       result.skipped = refused;
       break;
     }
+
+    // Past the reservation the row will reach an outcome on this tick — sent, failed, or
+    // uncertain — so the campaign is registered here rather than after a successful post.
+    // A rate-limited retry is the one exception, and including it is right too: a
+    // campaign Meta is throttling is worth a health reading.
+    campaignsToEvaluate.add(claimed.campaignId);
 
     // Only an explicit `send` reaches Meta. Written as a positive check so any
     // decision kind added later defaults to NOT posting publicly.
@@ -360,8 +382,6 @@ async function runTickBody(): Promise<HistoricalTickResult> {
         publicReplyId: replyId,
       });
     }
-
-    touchedCampaigns.add(claimed.campaignId);
   }
 
   // Close any campaign this tick finished (QA-12).
@@ -375,7 +395,7 @@ async function runTickBody(): Promise<HistoricalTickResult> {
   //
   // Non-throwing, because a tick that sent successfully must not report failure just
   // because the bookkeeping afterwards broke.
-  for (const campaignId of touchedCampaigns) {
+  for (const campaignId of campaignsToEvaluate) {
     try {
       // Stop conditions BEFORE completion (QA-13). `evaluateRecoveryHealth` reads only
       // dm_recovery_reminder, so a historical campaign could be failing on real people's
