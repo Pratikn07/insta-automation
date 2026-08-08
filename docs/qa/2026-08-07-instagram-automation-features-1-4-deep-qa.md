@@ -2,6 +2,7 @@
 
 **Audit date:** 2026-08-07  
 **Audited commit:** `e15f0d5230863b0f54462454da614d59f30df72a` (`main`)  
+**P2 remediation revalidation:** 2026-08-08 on `fix/instagram-p2-remediation` through `a28cda7`
 **Specifications:**
 
 - `docs/superpowers/specs/2026-08-07-instagram-automation-feature-requests-1-3-4-design.md`
@@ -44,9 +45,9 @@ The daily cap omission was fixed concurrently during this audit in `d18bec4`; th
 | QA-15 | 3 | P1 | Historical reconciliation uses incomplete gate evidence and is not atomic per intent window |
 | QA-16 | 3 | P1 | Trigger backfill retains only one canonical trigger and drops alias/distinct-keyword history |
 | QA-17 | 1 | P1 | Verified settings signature and verification version are not persisted or exposed |
-| QA-18 | 1, 2 | P2 | Snapshotted keywords are trimmed but not forced to the approved uppercase form |
-| QA-19 | 3, 4 | P2 | Historical/canonical dashboard and API controls are incomplete or misleading |
-| QA-20 | 1–4 | P2 | Database contracts, historical browser flows, and controlled Meta behavior are not verified in this audit environment |
+| QA-18 | 1, 2 | P2 | **Fixed 2026-08-08:** prospective and historical snapshots now use one trim/uppercase rule |
+| QA-19 | 3, 4 | P2 | **Fixed 2026-08-08:** historical and canonical/raw owner controls are implemented and browser-covered |
+| QA-20 | 1–4 | P2 | **Partially verified — external credential blocker:** the full local matrix passes; disposable-Postgres and controlled-Meta runs remain blocked |
 
 ## Detailed findings and required fixes
 
@@ -302,41 +303,81 @@ At 50%, the first 25-person pilot sends to nobody. At 10%, it withholds 40%, not
 ### QA-18 — Approved uppercase keyword rule is not enforced
 
 **Severity:** P2  
-**Evidence:** `src/services/dmRecoveryPolicy.ts:39-50` trims `keywordSnapshot` but interpolates its original case. The Feature 1 design requires the snapshotted configured keyword displayed in uppercase (`design` lines 139–145).
+**Remediation status (2026-08-08): Fixed.**
 
-**Required fix:** normalize with a documented locale-safe uppercase rule at snapshot/render time and store the exact result. Apply the same rule to the repaired historical templates.
+**Implementation:** `src/services/recoveryCopyCore.ts` now owns the shared `trim().toUpperCase()` normalization rule. `src/services/dmRecoveryPolicy.ts` and `src/services/historicalRecoveryCopy.ts` both use it before rendering and snapshotting copy, preventing prospective and historical recovery from drifting into different casing behavior.
 
-**Regression tests:** lowercase/mixed-case, whitespace, nonempty validation, and immutable copy after keyword rename.
+**Regression evidence:**
+
+- `src/services/dmRecoveryPolicy.test.ts` covers mixed/lowercase input, surrounding whitespace, and the exact uppercase snapshot.
+- `src/services/historicalRecoveryCopy.test.ts` continues to cover the phase-safe historical templates through the shared renderer.
+- Fresh root verification on 2026-08-08: **76 files passed, 10 skipped; 1,229 tests passed, 144 skipped**.
+
+The skipped tests are external database contracts, not keyword-copy tests.
 
 ### QA-19 — Dashboard/API acceptance gaps
 
 **Severity:** P2  
-**Evidence:**
+**Remediation status (2026-08-08): Fixed.**
 
-- Historical UI always selects the newest campaign (`web/src/pages/HistoricalRecovery.tsx:65-77`); prior campaigns cannot be inspected.
-- Header says everyone “never received” the guide (`lines 138-142`), which is false for unknown-read candidates.
-- Approval sends hardcoded `approvedBy: "owner"` (`lines 81-95`), and the API trusts the body instead of the authenticated `req.adminEmail` (`src/api/historicalRecovery.routes.ts:196-219`).
-- The API parses `asOf` but does not use or return it (`src/api/historicalRecovery.routes.ts:119-193`), and the client has no stable pagination flow.
-- The view model exposes `canAdvanceStage`, but the page has no stage action. There is no historical mark-reviewed action or candidate audit/detail drawer.
-- A Graph reply ID is rendered as an Instagram post shortcode (`web/src/pages/HistoricalRecovery.tsx:303-311`), producing an invalid `/p/{replyId}` link.
-- Feature 3 canonical/alias labels, canonical-only operational counts, and raw-history toggle are absent from the conversation UI/API.
+**Implementation:**
 
-**Required fix:** add campaign selection/history, phase/evidence-aware wording, authenticated approval identity, stable pagination, stage controls, mark-reviewed, candidate audit detail, a valid source-post/comment navigation strategy, and canonical/alias dashboard views. Add browser tests for all owner actions and attention states.
+- `src/api/historicalRecovery.routes.ts` now applies and returns one stable `asOf` boundary, attributes approval from authenticated `req.adminEmail`, and exposes campaign phase/audit timestamps.
+- `src/services/historicalRecoveryCandidateDetail.ts` returns a curated evidence contract: candidate/campaign facts, canonical intent owner, aliases, triggers, safe audit fields, and only a stored source permalink selected through the Reel → Feed → Keyword fallback.
+- `src/api/historicalRecovery.routes.ts` now provides candidate detail and an authenticated, idempotent `mark-reviewed` action with audit recording.
+- `web/src/pages/HistoricalRecovery.tsx`, `HistoricalStageForm.tsx`, and `HistoricalCandidateDrawer.tsx` add campaign selection, phase-safe wording, stable infinite pagination with ID deduplication, server-owned approval attribution, staging controls, real source navigation, evidence inspection, and review retirement. The fabricated reply-ID permalink is gone.
+- `src/api/conversations.routes.ts` defaults list and counts to canonical history and offers explicit `mode=raw`; every row identifies its history role, canonical owner, alias count, and reconciliation reason.
+- `web/src/pages/Conversations.tsx` exposes Canonical / Raw history modes and visible Canonical, Alias, and Unreconciled ownership labels. Mode is part of both React Query identities, so raw history cannot inherit a canonical cursor.
+
+**Regression evidence:**
+
+- `src/api/historicalRecovery.routes.test.ts`
+- `src/services/historicalRecoveryCandidateDetail.test.ts`
+- `src/api/conversations.routes.test.ts`
+- `web/src/pages/HistoricalRecovery.test.tsx`
+- `web/src/components/historical/HistoricalCandidateDrawer.test.tsx`
+- `web/src/components/historical/historicalRecoveryViewModel.test.ts`
+- `web/src/pages/Conversations.test.tsx`
+- `web/e2e/historical-recovery.spec.ts`
+
+The new real-component Playwright journeys pass on desktop and mobile and cover campaign selection, phase wording, authenticated approval after refetch, cap staging, stable `asOf` pagination, deduplication, exact stored permalink evidence, canonical owner/alias/trigger/audit facts, idempotent review UX, and canonical-to-raw conversation history.
 
 ### QA-20 — Release verification gaps
 
 **Severity:** P2  
-**Evidence from this audit:**
+**Remediation status (2026-08-08): Partially verified — external credential blocker.**
 
-- Root tests: **72 files passed, 5 skipped; 1,069 passed, 72 skipped**.
-- The five skipped suites are real-Postgres contracts gated by `MIGRATION_TEST_DATABASE_URL`: comment claims, DM recovery, journey intent, recovery campaign, and reply drafts.
-- Web tests: **25 files / 372 tests passed**.
-- Root and web production builds passed.
-- Web lint failed with 9 existing errors in `AiConnectionCard.tsx`, `AppShell.tsx`, `button.tsx`, `Insights.tsx`, and `SequenceEditor.tsx`.
-- There is no historical-recovery Playwright specification under `web/e2e`.
-- No controlled Meta settings rejection, read/reaction/postback delivery, or public historical reply was executed.
+**Fresh local verification:**
 
-**Required fix before launch:** run all database contract suites against the exact deployed PostgreSQL migration set; add multi-client race contracts for QA-02/04/08; add historical owner-flow Playwright coverage; clear the lint baseline; execute the controlled Meta verification/evidence runbook and archive its redacted evidence.
+- Root tests: **76 files passed, 10 skipped; 1,229 passed, 144 skipped** (`npm test`, exit 0).
+- Root Prisma/TypeScript production build: passed (`npm run build`, exit 0).
+- Web tests: **29 files / 392 tests passed** (`npm --prefix web test`, exit 0).
+- Web lint: passed with **zero errors and zero warnings** (`npm --prefix web run lint`, exit 0). The former nine errors were removed without rule suppression; `AppShell.test.tsx` and `SequenceEditor.test.tsx` protect the state-ownership behavior changed during cleanup.
+- Web TypeScript/Vite production build: passed (`npm --prefix web run build`, exit 0).
+- Playwright: **74 desktop/mobile journeys passed** (`npm --prefix web run test:e2e`, exit 0), including the new `web/e2e/historical-recovery.spec.ts`.
+
+**Disposable PostgreSQL blocker:** `MIGRATION_TEST_DATABASE_URL` is unset. Blocked: `MIGRATION_TEST_DATABASE_URL` is required and must point to a disposable PostgreSQL database on which migrations may be applied and test rows destroyed.
+
+When available, run:
+
+```bash
+npm test -- src/services/recoveryCampaignDatabaseContract.test.ts src/services/historicalRecoveryClaimContract.test.ts src/services/historicalRecoveryLifecycleContract.test.ts src/services/historicalRecoveryHealthContract.test.ts src/services/historicalRecoverySelectorContract.test.ts
+```
+
+Never point this variable at staging or production.
+
+**Controlled Meta blocker:** `IG_ACCESS_TOKEN` and `IG_USER_ID` are configured, but controlled test media and comment identifiers are absent. No Meta API send was attempted. Complete this controlled-account runbook before enabling the feature:
+
+1. Configure a sandbox/test Instagram professional account and a test post.
+2. Comment a mixed-case configured keyword from a controlled user.
+3. Force the verified settings-rejection path and capture the categorized provider response.
+4. Verify the snapshotted public recovery copy contains the uppercase keyword.
+5. Approve a one-person historical confirmed-failure campaign.
+6. Confirm exactly one public comment is created and its stored permalink opens the original post.
+7. Mark the candidate reviewed, replay the request, and confirm one review audit event.
+8. Remove the controlled test comment and revoke/rotate temporary credentials.
+
+QA-20 remains partial until both external runs are completed and their redacted evidence is attached. This status does not weaken the report's P0/P1 launch blockers.
 
 ## Acceptance coverage by feature
 
@@ -346,7 +387,7 @@ At 50%, the first 25-person pilot sends to nobody. At 10%, it withholds 40%, not
 |---|---|---|
 | Empty-default exact numeric allowlist; no message-text match | Pass | Config and classifier are narrow; forbidden `100:2534025` is rejected |
 | Negative error-family classification | Pass in unit tests | Rate limit precedes allowlist; auth/invalid/ambiguous families are separated |
-| Exact copy snapshot | Partial | Copy is snapshotted, but uppercase is not enforced |
+| Exact copy snapshot | Pass | Shared prospective/historical renderer trims and uppercases before snapshotting (QA-18 fixed) |
 | Idempotent source record and prospective worker uncertainty safety | Pass in local tests | Real-DB contract skipped locally |
 | Evidence/version visible to owner and signature metrics | Fail | QA-17 |
 | Controlled Meta test and first-match audit | Unverified | Feature must remain inert until completed |
@@ -371,7 +412,7 @@ At 50%, the first 25-person pilot sends to nobody. At 10%, it withholds 40%, not
 | Alias completion reconciles canonical state | Fail | `markIntentCompleted` is canonical-conversation-only |
 | Historical reconciliation dry-run/idempotency/restartability | Partial/Fail | Dry-run exists; evidence/atomic/restart behavior incomplete (QA-15) |
 | Every trigger preserved | Fail | QA-16 |
-| Canonical actionable UI and separate metrics | Fail | QA-05/19 |
+| Canonical actionable UI and separate metrics | Partial | Canonical-only list/count defaults and raw-history ownership UI now pass; broader alias action ownership remains blocked by QA-05 |
 
 ### Feature 4 — Historical recovery
 
@@ -385,7 +426,7 @@ At 50%, the first 25-person pilot sends to nobody. At 10%, it withholds 40%, not
 | Final source/evidence/cooldown recheck | Partial | Recheck exists, but QA-04/09/11 remain |
 | Batch/hour/day caps and outage recovery | Partial | Daily check now exists; QA-08/10 remain |
 | Kill switch/pause/cancel/shared auth circuit | Partial pass | Basic controls exist; historical stop conditions do not |
-| Campaign lifecycle, attribution, audit dashboard | Fail/Partial | QA-12/19 |
+| Campaign lifecycle, attribution, audit dashboard | Partial | Owner controls/evidence/audit dashboard pass (QA-19 fixed); terminal lifecycle and outcome attribution remain blocked by QA-12 |
 | Phase 1 observation before Phase 2 pilot | Not enforceable | CLI defaults directly to unknown-read and dependencies are not gated |
 
 ## Required implementation order
@@ -417,4 +458,33 @@ cd web && npm run lint
 
 node holdout reproduction
 # N=25: 10% setting produces 10/15, 50% setting produces 25/0
+```
+
+### P2 remediation revalidation — 2026-08-08
+
+```text
+DOTENV_CONFIG_PATH=<project .env> npm test
+# exit 0; 76 files passed, 10 skipped; 1,229 tests passed, 144 skipped
+
+DOTENV_CONFIG_PATH=<project .env> npm run build
+# exit 0; Prisma Client generated and TypeScript compiled
+
+npm --prefix web test
+# exit 0; 29 files / 392 tests passed
+
+npm --prefix web run lint
+# exit 0; zero errors and warnings
+
+npm --prefix web run build
+# exit 0; TypeScript and Vite production build passed
+
+E2E_PORT=5189 npm --prefix web run test:e2e
+# exit 0; 74 desktop/mobile Playwright journeys passed
+
+MIGRATION_TEST_DATABASE_URL presence check
+# unset — database-contract command blocked as documented in QA-20
+
+Controlled Meta prerequisite presence check
+# IG_ACCESS_TOKEN=set, IG_USER_ID=set, controlled media/comment identifiers=unset
+# no Meta API send attempted
 ```
