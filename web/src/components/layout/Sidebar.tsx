@@ -9,6 +9,7 @@ import {
   Activity,
   Users,
   BarChart3,
+  MailQuestion,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -19,6 +20,7 @@ const items = [
   { to: "/keywords", label: "Keywords", icon: Tag },
   { to: "/sequences", label: "Sequences", icon: Layers },
   { to: "/conversations", label: "Conversations", icon: MessageCircle },
+  { to: "/historical-recovery", label: "Recovery", icon: MailQuestion },
   { to: "/assistant", label: "Assistant", icon: Sparkles },
   { to: "/users", label: "Users", icon: Users },
   { to: "/insights", label: "Insights", icon: BarChart3 },
