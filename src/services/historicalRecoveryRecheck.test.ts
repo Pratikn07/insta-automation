@@ -1,0 +1,176 @@
+import { describe, it, expect } from "vitest";
+import { recheckBeforeSend, type RecheckFacts } from "./historicalRecoveryRecheck.js";
+
+// This function stands between a days-old snapshot and a public comment on a real
+// person's post. Every branch is tested, and the ordering is tested too: when two
+// things are wrong the reported reason has to be the informative one.
+
+function facts(overrides: Partial<RecheckFacts> = {}): RecheckFacts {
+  return {
+    commentStillExists: true,
+    commentHidden: false,
+    repliedSinceSelection: false,
+    completedSinceSelection: false,
+    contactedSinceSelection: false,
+    audienceOrigin: "us_western",
+    westernOnly: true,
+    campaignRunning: true,
+    sentThisHour: 0,
+    hourlyCap: 3,
+    ...overrides,
+  };
+}
+
+describe("recheckBeforeSend — the send case", () => {
+  it("sends when every check passes", () => {
+    expect(recheckBeforeSend(facts())).toEqual({ kind: "send" });
+  });
+});
+
+describe("recheckBeforeSend — owner control", () => {
+  // A pause is the emergency stop. It must take effect even for a row already
+  // claimed in this tick, which is why campaign state is checked first.
+  it("defers when the campaign is no longer running", () => {
+    expect(recheckBeforeSend(facts({ campaignRunning: false }))).toEqual({
+      kind: "defer",
+      reason: "campaign_not_running",
+    });
+  });
+
+  it("stops a paused campaign even when everything else is perfect", () => {
+    const decision = recheckBeforeSend(facts({ campaignRunning: false, sentThisHour: 0 }));
+    expect(decision.kind).toBe("defer");
+  });
+});
+
+describe("recheckBeforeSend — pacing", () => {
+  // A cap is a rate limit, not a judgement about this person, so the row defers and
+  // sends later rather than being burned.
+  it("defers rather than suppresses at the hourly cap", () => {
+    expect(recheckBeforeSend(facts({ sentThisHour: 3, hourlyCap: 3 }))).toEqual({
+      kind: "defer",
+      reason: "hourly_cap_reached",
+    });
+  });
+
+  it("sends with one slot left", () => {
+    expect(recheckBeforeSend(facts({ sentThisHour: 2, hourlyCap: 3 }))).toEqual({ kind: "send" });
+  });
+
+  it("treats an over-cap count as still capped", () => {
+    const decision = recheckBeforeSend(facts({ sentThisHour: 9, hourlyCap: 3 }));
+    expect(decision).toEqual({ kind: "defer", reason: "hourly_cap_reached" });
+  });
+});
+
+describe("recheckBeforeSend — the comment must be there", () => {
+  // Measured: 1 of 3 sampled 44-day-old comments had been deleted. This is not a
+  // rare edge case.
+  it("suppresses a deleted comment", () => {
+    expect(recheckBeforeSend(facts({ commentStillExists: false }))).toEqual({
+      kind: "suppress",
+      reason: "source_comment_deleted",
+    });
+  });
+
+  // Worse than a deletion: replying to a hidden comment SUCCEEDS, so it would be
+  // recorded as sent and counted in the experiment while nobody ever saw it.
+  it("suppresses a hidden comment", () => {
+    expect(recheckBeforeSend(facts({ commentHidden: true }))).toEqual({
+      kind: "suppress",
+      reason: "source_comment_hidden",
+    });
+  });
+});
+
+describe("recheckBeforeSend — the premise must still hold", () => {
+  // The copy says "I don't think my DM reached you". Each of these makes that false.
+  it("suppresses when they replied after selection", () => {
+    expect(recheckBeforeSend(facts({ repliedSinceSelection: true }))).toEqual({
+      kind: "suppress",
+      reason: "replied_since_selection",
+    });
+  });
+
+  it("suppresses when they completed the guide after selection", () => {
+    expect(recheckBeforeSend(facts({ completedSinceSelection: true }))).toEqual({
+      kind: "suppress",
+      reason: "completed_since_selection",
+    });
+  });
+
+  // Covers the prospective feature reaching them first. One public recovery per
+  // person, across both features.
+  it("suppresses when another recovery reached them after selection", () => {
+    expect(recheckBeforeSend(facts({ contactedSinceSelection: true }))).toEqual({
+      kind: "suppress",
+      reason: "contacted_since_selection",
+    });
+  });
+});
+
+describe("recheckBeforeSend — market rule on the live verdict", () => {
+  // An origin verdict is retired when the name it came from changes, so someone
+  // in-market at selection can read out-of-market now. That is exactly why §35
+  // requires the recheck rather than trusting the snapshot.
+  it("suppresses a south_asian verdict that appeared after selection", () => {
+    expect(recheckBeforeSend(facts({ audienceOrigin: "south_asian" }))).toEqual({
+      kind: "suppress",
+      reason: "audience_out_of_market",
+    });
+  });
+
+  it("ignores the origin when westernOnly is off", () => {
+    const decision = recheckBeforeSend(facts({ audienceOrigin: "south_asian", westernOnly: false }));
+    expect(decision).toEqual({ kind: "send" });
+  });
+
+  it("still sends to an unknown origin", () => {
+    expect(recheckBeforeSend(facts({ audienceOrigin: null }))).toEqual({ kind: "send" });
+  });
+});
+
+describe("recheckBeforeSend — reason precedence", () => {
+  // When several things are wrong the reported reason must be the actionable one.
+  // A paused campaign explains itself; "comment deleted" would send someone
+  // hunting for a data problem that is not there.
+  it("reports the pause ahead of a data problem", () => {
+    const decision = recheckBeforeSend(
+      facts({ campaignRunning: false, commentStillExists: false }),
+    );
+    expect(decision).toEqual({ kind: "defer", reason: "campaign_not_running" });
+  });
+
+  it("reports the missing comment ahead of the market rule", () => {
+    const decision = recheckBeforeSend(
+      facts({ commentStillExists: false, audienceOrigin: "south_asian" }),
+    );
+    expect(decision).toEqual({ kind: "suppress", reason: "source_comment_deleted" });
+  });
+
+  // A deferral is recoverable and a suppression is terminal, so when both apply the
+  // deferral must win — otherwise a temporary cap would permanently burn the row.
+  it("prefers a deferral over a suppression", () => {
+    const decision = recheckBeforeSend(
+      facts({ sentThisHour: 5, hourlyCap: 3, repliedSinceSelection: true }),
+    );
+    expect(decision.kind).toBe("defer");
+  });
+
+  it("never returns send when anything is wrong", () => {
+    const problems: Array<Partial<RecheckFacts>> = [
+      { campaignRunning: false },
+      { sentThisHour: 3 },
+      { commentStillExists: false },
+      { commentHidden: true },
+      { repliedSinceSelection: true },
+      { completedSinceSelection: true },
+      { contactedSinceSelection: true },
+      { audienceOrigin: "south_asian" },
+    ];
+
+    for (const problem of problems) {
+      expect(recheckBeforeSend(facts(problem)).kind).not.toBe("send");
+    }
+  });
+});
