@@ -53,7 +53,11 @@ vi.mock("../lib/prisma.js", () => ({
   },
 }));
 
-const flags = { DM_RECOVERY_ENABLED: true, DM_RECOVERY_WESTERN_ONLY: true };
+const flags = {
+  DM_RECOVERY_ENABLED: true,
+  DM_RECOVERY_HISTORICAL_ENABLED: true,
+  DM_RECOVERY_WESTERN_ONLY: true,
+};
 vi.mock("../config/env.js", () => ({
   env: new Proxy(
     {
@@ -63,6 +67,7 @@ vi.mock("../config/env.js", () => ({
     {
       get: (target, prop) => {
         if (prop === "DM_RECOVERY_ENABLED") return flags.DM_RECOVERY_ENABLED;
+        if (prop === "DM_RECOVERY_HISTORICAL_ENABLED") return flags.DM_RECOVERY_HISTORICAL_ENABLED;
         if (prop === "DM_RECOVERY_WESTERN_ONLY") return flags.DM_RECOVERY_WESTERN_ONLY;
         return target[prop as string];
       },
@@ -96,6 +101,7 @@ beforeEach(() => {
     fn.mockReset();
   }
   flags.DM_RECOVERY_ENABLED = true;
+  flags.DM_RECOVERY_HISTORICAL_ENABLED = true;
   flags.DM_RECOVERY_WESTERN_ONLY = true;
   describeGraphError.mockReturnValue(SAFE_UNKNOWN);
   reconcileExpiredCandidateLeases.mockResolvedValue(0);
@@ -138,6 +144,18 @@ describe("runHistoricalRecoveryTick — the stop switches", () => {
     const result = await runHistoricalRecoveryTick();
 
     expect(result.skipped).toBe("disabled");
+    expect(claimCandidate).not.toHaveBeenCalled();
+    expect(replyToComment).not.toHaveBeenCalled();
+  });
+
+  // Its own switch, separate from the master: the prospective feature can run
+  // without historical campaigns, which contact people about weeks-old requests.
+  it("sends nothing when DM_RECOVERY_HISTORICAL_ENABLED is false", async () => {
+    flags.DM_RECOVERY_HISTORICAL_ENABLED = false;
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(result.skipped).toBe("historical_disabled");
     expect(claimCandidate).not.toHaveBeenCalled();
     expect(replyToComment).not.toHaveBeenCalled();
   });

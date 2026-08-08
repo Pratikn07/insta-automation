@@ -15,6 +15,7 @@ import { runReplyDraftTick } from "./services/replyDraftWorker.js";
 import { runReplyDraftRecoveryTick } from "./services/replyDraftRecoveryWorker.js";
 import { startDmRecoveryScheduler } from "./services/dmRecoveryScheduler.js";
 import { runDmRecoveryTick } from "./services/dmRecoveryWorker.js";
+import { runHistoricalRecoveryTick } from "./services/historicalRecoveryWorker.js";
 import { runOriginEnrichmentTick } from "./services/originEnrichmentWorker.js";
 import { internalAiRouter } from "./api/internalAi.routes.js";
 import { seedTokenFromEnv } from "./meta/tokenStore.js";
@@ -172,6 +173,21 @@ startDmRecoveryScheduler({
   setInterval: globalThis.setInterval,
   clearInterval: globalThis.clearInterval,
   runTick: runDmRecoveryTick,
+});
+
+// Historical recovery (Feature 4). Reuses the same scheduler so a tick that throws
+// cannot take down the webhook server, and runs on a slower interval because these
+// sends are paced by campaign caps rather than by how fast candidates arrive.
+//
+// Requires BOTH flags plus an owner-approved `running` campaign. With no approved
+// campaign the tick finds nothing and does nothing, so starting it is not the same
+// as starting to send.
+startDmRecoveryScheduler({
+  enabled: env.DM_RECOVERY_ENABLED && env.DM_RECOVERY_HISTORICAL_ENABLED,
+  intervalMs: env.DM_RECOVERY_HISTORICAL_INTERVAL_MS,
+  setInterval: globalThis.setInterval,
+  clearInterval: globalThis.clearInterval,
+  runTick: runHistoricalRecoveryTick,
 });
 
 // Origin enrichment runs on its own switch, independent of DM_RECOVERY_ENABLED:

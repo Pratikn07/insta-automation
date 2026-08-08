@@ -114,6 +114,16 @@ export const envSchema = z.object({
 
   // --- DM Recovery Reminders ---
   DM_RECOVERY_ENABLED: booleanFlag(false),
+  /**
+   * Historical recovery (Feature 4) sending. Separate from DM_RECOVERY_ENABLED so
+   * the prospective feature can run without the historical campaigns, which contact
+   * people about requests that are weeks old.
+   *
+   * booleanFlag, never z.coerce.boolean: coerce treats the STRING "false" as true,
+   * so `DM_RECOVERY_HISTORICAL_ENABLED=false` would enable public sending.
+   */
+  DM_RECOVERY_HISTORICAL_ENABLED: booleanFlag(false),
+  DM_RECOVERY_HISTORICAL_INTERVAL_MS: z.coerce.number().int().min(10_000).default(300_000),
   DM_RECOVERY_DELAY_HOURS: z.coerce.number().int().min(1).max(168).default(10),
   DM_RECOVERY_COOLDOWN_HOURS: z.coerce.number().int().min(1).max(168).default(24),
   DM_RECOVERY_WORKER_INTERVAL_MS: z.coerce.number().int().min(10_000).default(60_000),

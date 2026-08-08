@@ -61,9 +61,12 @@ async function runTickBody(): Promise<HistoricalTickResult> {
   const now = new Date();
   const result = empty();
 
-  // The master switch, shared with the prospective feature. One flag stops all
-  // public sending, which is the rollback the plan depends on.
+  // Two switches, both required. DM_RECOVERY_ENABLED is the master stop shared with
+  // the prospective feature; DM_RECOVERY_HISTORICAL_ENABLED is specific to these
+  // sends, which contact people about requests weeks old. Either being off means
+  // nothing is posted.
   if (!env.DM_RECOVERY_ENABLED) return empty("disabled");
+  if (!env.DM_RECOVERY_HISTORICAL_ENABLED) return empty("historical_disabled");
 
   // A lease that expired means the process died mid-send. The comment may have
   // posted, so these are parked as uncertain, never retried.
