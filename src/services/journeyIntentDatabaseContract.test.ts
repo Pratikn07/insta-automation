@@ -532,6 +532,59 @@ describeWithLocalDatabase("resolveJourneyIntent", () => {
     expect(triggers).toHaveLength(5);
   });
 
+  // The deterministic form of what made the burst above fail intermittently.
+  //
+  // `receivedAt` is stamped when the handler picks the comment up
+  // (commentHandler.ts:125 — the comment webhook carries no timestamp), so two handlers
+  // can take their timestamps in one order and commit in the other. The winner's
+  // `receivedAt` becomes `window_started_at`; the loser then attaches and writes its own,
+  // EARLIER, `receivedAt` as `last_trigger_at` — violating chk_intent_trigger_after_start.
+  //
+  // 23514 is not a serialization conflict, so the retry loop does not catch it and the
+  // error leaves `resolveJourneyIntent`. That function throws by design because the
+  // caller must not send a gate DM it cannot account for — so the person who commented
+  // silently never receives their guide.
+  it("attaches a trigger that arrived before the window started", async () => {
+    const first = await resolveJourneyIntent(trigger(), makeConversation);
+    const intent = await prisma.journeyIntent.findUniqueOrThrow({ where: { id: first.intentId } });
+
+    // One millisecond of clock inversion is all it takes; the captured production-shaped
+    // failure was exactly this.
+    const earlier = new Date(intent.windowStartedAt.getTime() - 1);
+    const second = await resolveJourneyIntent(trigger({ receivedAt: earlier }), makeConversation);
+
+    expect(second.disposition).toBe("reused_active");
+    expect(second.maySendGate).toBe(false);
+
+    // The window must not move backwards either: an out-of-order trigger records the ask
+    // without shortening the journey it attached to.
+    const after = await prisma.journeyIntent.findUniqueOrThrow({ where: { id: first.intentId } });
+    expect(after.lastTriggerAt.getTime()).toBeGreaterThanOrEqual(after.windowStartedAt.getTime());
+    expect(after.windowExpiresAt.getTime()).toBeGreaterThanOrEqual(intent.windowExpiresAt.getTime());
+  });
+
+  // Guards the fix against being "simplified" to a clamp on window_started_at, which
+  // satisfies the constraint but is still wrong: with a later trigger already recorded, an
+  // out-of-order one would rewind last_trigger_at and pull the expiry in with it, cutting
+  // the journey short for everyone still inside it.
+  it("does not rewind a journey that a later trigger already extended", async () => {
+    const first = await resolveJourneyIntent(trigger(), makeConversation);
+    const started = await prisma.journeyIntent.findUniqueOrThrow({ where: { id: first.intentId } });
+
+    // A genuinely later ask extends the window.
+    const later = new Date(started.windowStartedAt.getTime() + 60_000);
+    await resolveJourneyIntent(trigger({ receivedAt: later }), makeConversation);
+    const extended = await prisma.journeyIntent.findUniqueOrThrow({ where: { id: first.intentId } });
+
+    // Now one that was picked up out of order, before the window even opened.
+    const earlier = new Date(started.windowStartedAt.getTime() - 1);
+    await resolveJourneyIntent(trigger({ receivedAt: earlier }), makeConversation);
+
+    const final = await prisma.journeyIntent.findUniqueOrThrow({ where: { id: first.intentId } });
+    expect(final.lastTriggerAt.getTime()).toBe(extended.lastTriggerAt.getTime());
+    expect(final.windowExpiresAt.getTime()).toBe(extended.windowExpiresAt.getTime());
+  });
+
   it("keeps different keywords as separate journeys", async () => {
     const otherKeywordId = randomUUID();
     await prisma.keyword.create({
