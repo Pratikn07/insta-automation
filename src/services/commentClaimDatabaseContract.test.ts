@@ -1,6 +1,4 @@
-import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import path from "node:path";
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { claimComment } from "./commentClaimService.js";
@@ -17,11 +15,9 @@ beforeAll(() => {
   expect(["127.0.0.1", "localhost", "::1"]).toContain(parsedUrl.hostname);
   expect(process.env.DATABASE_URL).toBe(databaseUrl);
 
-  execFileSync(path.resolve("node_modules/.bin/prisma"), ["migrate", "deploy"], {
-    cwd: process.cwd(),
-    env: { ...process.env, DATABASE_URL: databaseUrl },
-    stdio: "pipe",
-  });
+  // Schema is applied once by globalSetup, before any worker starts. Ten suites each
+  // running `migrate deploy` in parallel raced the advisory lock and made a different
+  // suite's catalog assertion fail on each run.
 
   prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
 });

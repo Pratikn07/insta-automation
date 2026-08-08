@@ -116,24 +116,57 @@ export async function pauseCampaign(
   return { ok: true, state: "paused" };
 }
 
-/** Resume a paused campaign. Approval is already recorded, so it is not re-asked. */
-export async function resumeCampaign(campaignId: string): Promise<CampaignTransition> {
+/**
+ * Resume a paused campaign. Approval is already recorded, so it is not re-asked.
+ *
+ * An AUTOMATIC pause latches (QA-13). A campaign stopped by a health signal — a failure
+ * rate, unexplained uncertainty, a decayed cohort, a duplicate public reply — must not be
+ * resumable by the same call that undoes an ordinary owner pause. Otherwise the stop is a
+ * suggestion: a resume click, or a script looping over paused campaigns, silently
+ * restarts sending into whatever went wrong.
+ *
+ * `acknowledgeAutoPause` is that gate. The caller must name what it is overriding, which
+ * is what makes the resume a decision with an owner rather than a default.
+ */
+export async function resumeCampaign(
+  campaignId: string,
+  options: { acknowledgeAutoPause?: string } = {},
+): Promise<CampaignTransition> {
+  const current = await prisma.recoveryCampaign.findUnique({
+    where: { id: campaignId },
+    select: { state: true, pauseReason: true },
+  });
+  if (!current) return { ok: false, reason: "not_found" };
+  if (current.state !== "paused") return { ok: false, reason: `not_resumable_from_${current.state}` };
+
+  const autoPaused = current.pauseReason?.startsWith("auto:") ?? false;
+  if (autoPaused && !options.acknowledgeAutoPause?.trim()) {
+    // Reports the reason so the caller can show the owner WHAT they are overriding.
+    return { ok: false, reason: `auto_pause_requires_review:${current.pauseReason}` };
+  }
+
   const { count } = await prisma.recoveryCampaign.updateMany({
     // `approvedAt` must already be set — a paused campaign always has it, but the
-    // condition makes the invariant explicit rather than assumed.
+    // condition makes the invariant explicit rather than assumed. Re-checking `paused`
+    // closes the gap between the read above and this write.
     where: { id: campaignId, state: "paused", approvedAt: { not: null } },
     data: { state: "running", pausedAt: null, pauseReason: null },
   });
 
   if (count === 0) {
-    const current = await prisma.recoveryCampaign.findUnique({
+    const now = await prisma.recoveryCampaign.findUnique({
       where: { id: campaignId },
       select: { state: true },
     });
-    return { ok: false, reason: current ? `not_resumable_from_${current.state}` : "not_found" };
+    return { ok: false, reason: now ? `not_resumable_from_${now.state}` : "not_found" };
   }
 
-  await logEvent("historical_campaign_resumed", { campaignId });
+  await logEvent("historical_campaign_resumed", {
+    campaignId,
+    // The audit trail for overriding an automatic stop.
+    overrodeAutoPause: autoPaused ? current.pauseReason : null,
+    acknowledgedBy: autoPaused ? (options.acknowledgeAutoPause ?? null) : null,
+  });
   return { ok: true, state: "running" };
 }
 

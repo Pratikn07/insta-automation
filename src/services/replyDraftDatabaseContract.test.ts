@@ -26,11 +26,9 @@ beforeAll(() => {
   // The opt-in contract owns only a caller-provided local disposable database.
   // Applying every checked-in migration here makes the race proof exercise the
   // deployed schema, rather than a schema synthesized from Prisma models.
-  execFileSync(path.resolve("node_modules/.bin/prisma"), ["migrate", "deploy"], {
-    cwd: process.cwd(),
-    env: { ...process.env, DATABASE_URL: databaseUrl },
-    stdio: "pipe",
-  });
+  // Schema is applied once by globalSetup, before any worker starts. Ten suites each
+  // running `migrate deploy` in parallel raced the advisory lock and made a different
+  // suite's catalog assertion fail on each run.
 });
 
 type TimestampColumn = {

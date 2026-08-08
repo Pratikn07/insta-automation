@@ -26,6 +26,8 @@ const reserveSendCapacity = vi.fn();
 // QA-12: completeCampaignIfDrained had no production caller, so a campaign that had sent
 // everything stayed `running` forever.
 const completeCampaignIfDrained = vi.fn();
+// QA-13: campaign-level stop conditions, which the shared circuit cannot express.
+const evaluateCampaignHealth = vi.fn();
 const igUserFindUnique = vi.fn();
 const dmMessageCount = vi.fn();
 const conversationCount = vi.fn();
@@ -49,6 +51,7 @@ vi.mock("../meta/replyToComment.js", () => ({ replyToComment }));
 vi.mock("../meta/fetchComment.js", () => ({ fetchComment }));
 vi.mock("./dmRecoveryHealth.js", () => ({ evaluateRecoveryHealth, openRecoveryCircuit }));
 vi.mock("./recoveryCampaignControl.js", () => ({ completeCampaignIfDrained }));
+vi.mock("./historicalRecoveryHealth.js", () => ({ evaluateCampaignHealth }));
 vi.mock("./eventLogger.js", () => ({ logEvent, describeGraphError }));
 // classifySourceReadFailure is deliberately NOT mocked: QA-09's defect was
 // misclassification, so a stub here would prove nothing. Only the send-path classifier
@@ -121,7 +124,7 @@ beforeEach(() => {
     markCandidateFailed, markCandidateUncertain, countCandidatesSentSince,
     replyToComment, fetchComment, evaluateRecoveryHealth, openRecoveryCircuit,
     logEvent, describeGraphError, classifyPublicReplyFailure,
-    campaignFindUnique, campaignAggregate, reserveSendCapacity, completeCampaignIfDrained,
+    campaignFindUnique, campaignAggregate, reserveSendCapacity, completeCampaignIfDrained, evaluateCampaignHealth,
     igUserFindUnique, dmMessageCount, conversationCount, reminderCount, candidateCount,
   ]) {
     fn.mockReset();
@@ -140,6 +143,8 @@ beforeEach(() => {
   // Capacity available by default; cases that test the cap return a refusal reason.
   reserveSendCapacity.mockResolvedValue(null);
   completeCampaignIfDrained.mockResolvedValue(false);
+  // Healthy by default, so existing cases test what they were written for.
+  evaluateCampaignHealth.mockResolvedValue({ stopReason: null });
   igUserFindUnique.mockResolvedValue({ inferredOrigin: "us_western" });
   dmMessageCount.mockResolvedValue(0);
   conversationCount.mockResolvedValue(0);
@@ -695,6 +700,45 @@ describe("runHistoricalRecoveryTick — closes a drained campaign", () => {
   // afterwards broke.
   it("still reports the send when completion bookkeeping fails", async () => {
     completeCampaignIfDrained.mockRejectedValue(new Error("db gone"));
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(result.sent).toBe(1);
+    expect(result.skipped).toBeUndefined();
+  });
+});
+
+// QA-13. `evaluateRecoveryHealth` reads only dm_recovery_reminder, so a historical
+// campaign could be failing on real people's public comments while the shared circuit
+// stayed closed because the prospective feature was healthy.
+describe("runHistoricalRecoveryTick — campaign stop conditions", () => {
+  it("evaluates campaign health after the tick", async () => {
+    await runHistoricalRecoveryTick();
+
+    expect(evaluateCampaignHealth).toHaveBeenCalledWith("camp-1", expect.any(Date));
+  });
+
+  // A campaign that has just tripped a stop must read as paused, not completed:
+  // completing it would hide the fault behind a state that looks like success.
+  it("does not complete a campaign that just auto-paused", async () => {
+    evaluateCampaignHealth.mockResolvedValue({ stopReason: "public_failure_rate" });
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(completeCampaignIfDrained).not.toHaveBeenCalled();
+    expect(result.skipped).toBe("campaign_auto_paused:public_failure_rate");
+  });
+
+  it("completes a drained campaign that is healthy", async () => {
+    await runHistoricalRecoveryTick();
+
+    expect(completeCampaignIfDrained).toHaveBeenCalledWith("camp-1", expect.any(Date));
+  });
+
+  // A tick that posted successfully must not report failure because the bookkeeping
+  // afterwards broke.
+  it("still reports the send when health evaluation fails", async () => {
+    evaluateCampaignHealth.mockRejectedValue(new Error("db gone"));
 
     const result = await runHistoricalRecoveryTick();
 

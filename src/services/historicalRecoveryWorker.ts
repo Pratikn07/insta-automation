@@ -7,6 +7,7 @@ import { fetchComment } from "../meta/fetchComment.js";
 import { classifyPublicReplyFailure, classifySourceReadFailure } from "./graphErrorClassifier.js";
 import { evaluateRecoveryHealth, openRecoveryCircuit } from "./dmRecoveryHealth.js";
 import { completeCampaignIfDrained } from "./recoveryCampaignControl.js";
+import { evaluateCampaignHealth } from "./historicalRecoveryHealth.js";
 import { recheckBeforeSend, type SourceCommentState } from "./historicalRecoveryRecheck.js";
 import {
   type ClaimedCandidate,
@@ -376,11 +377,26 @@ async function runTickBody(): Promise<HistoricalTickResult> {
   // because the bookkeeping afterwards broke.
   for (const campaignId of touchedCampaigns) {
     try {
+      // Stop conditions BEFORE completion (QA-13). `evaluateRecoveryHealth` reads only
+      // dm_recovery_reminder, so a historical campaign could be failing on real people's
+      // public comments while the shared circuit stayed closed on a healthy prospective
+      // feature. This is scoped to the campaign and pauses only that campaign — the
+      // shared circuit stays reserved for genuinely shared faults like a broken token.
+      //
+      // Ordered first because a campaign that has just tripped a stop condition should
+      // read as `paused`, not `completed`: completing it would hide the fault behind a
+      // state that looks like success.
+      const health = await evaluateCampaignHealth(campaignId, now);
+      if (health.stopReason) {
+        result.skipped = `campaign_auto_paused:${health.stopReason}`;
+        continue;
+      }
+
       await completeCampaignIfDrained(campaignId, now);
     } catch (err) {
       logger.error(
-        { errorCode: "historical_campaign_complete_failed", campaignId },
-        "Could not close a drained campaign",
+        { errorCode: "historical_campaign_bookkeeping_failed", campaignId },
+        "Could not evaluate or close a campaign after the tick",
       );
     }
   }

@@ -21,8 +21,15 @@ export const JOURNEY_WINDOW_MS = 48 * 60 * 60 * 1000;
  * of a burst conflicts with every other, so the loser of one round may lose the
  * next. Exhausting this throws, which is correct: the caller must not send a gate
  * DM without knowing whether one was already sent.
+ *
+ * Raised from 6 to 10 after the contract suite's 5-way burst exhausted the budget under
+ * load — a real database, ten other suites competing for connections, and every member of
+ * the burst serialising against the same row. Six was enough in isolation and not enough
+ * when the database was busy, which is exactly the condition production hits during a
+ * viral reel. A retry costs milliseconds; exhausting the budget costs the caller its
+ * ability to tell whether a gate DM went out.
  */
-const SERIALIZATION_RETRY_ATTEMPTS = 6;
+const SERIALIZATION_RETRY_ATTEMPTS = 10;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 

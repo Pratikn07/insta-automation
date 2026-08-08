@@ -245,8 +245,22 @@ historicalRecoveryRouter.post("/campaigns/:id/pause", async (req, res) => {
   res.json(result);
 });
 
+/**
+ * Resume a paused campaign.
+ *
+ * An automatically paused campaign requires an acknowledgement naming who is overriding
+ * the stop (QA-13). Without it the resume is refused and the 409 carries the auto-pause
+ * reason, so the caller can show the owner exactly what they would be overriding.
+ */
+const resumeBody = z.object({ acknowledgeAutoPause: z.string().min(1).max(300).optional() });
+
 historicalRecoveryRouter.post("/campaigns/:id/resume", async (req, res) => {
-  const result = await resumeCampaign(req.params.id);
+  const body = resumeBody.safeParse(req.body ?? {});
+  if (!body.success) {
+    res.status(400).json({ error: "invalid_acknowledgement" });
+    return;
+  }
+  const result = await resumeCampaign(req.params.id, body.data);
   if (!result.ok) {
     res.status(409).json({ error: result.reason });
     return;

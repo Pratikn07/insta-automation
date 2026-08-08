@@ -148,6 +148,8 @@ describe("resumeCampaign", () => {
   // Approval is already on the row, so resuming does not re-ask for it — but the
   // query still requires approvedAt, making that invariant explicit.
   it("resumes only a paused, already-approved campaign", async () => {
+    // Resume now reads the row first, to tell an automatic pause from an owner's (QA-13).
+    campaignFindUnique.mockResolvedValue({ state: "paused", pauseReason: "lunch" });
     campaignUpdateMany.mockResolvedValue({ count: 1 });
 
     const result = await resumeCampaign("camp-1");
@@ -157,6 +159,33 @@ describe("resumeCampaign", () => {
       where: { id: "camp-1", state: "paused", approvedAt: { not: null } },
       data: { state: "running", pausedAt: null, pauseReason: null },
     });
+  });
+
+  // An automatic stop that any resume could undo is a suggestion, not a stop.
+  it("refuses to resume an automatic pause without an acknowledgement", async () => {
+    campaignFindUnique.mockResolvedValue({
+      state: "paused",
+      pauseReason: "auto:public_failure_rate",
+    });
+
+    const result = await resumeCampaign("camp-1");
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.reason).toContain("auto_pause_requires_review");
+    // Nothing written: the campaign stays stopped.
+    expect(campaignUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it("resumes an automatic pause once acknowledged", async () => {
+    campaignFindUnique.mockResolvedValue({
+      state: "paused",
+      pauseReason: "auto:uncertain_rate",
+    });
+    campaignUpdateMany.mockResolvedValue({ count: 1 });
+
+    const result = await resumeCampaign("camp-1", { acknowledgeAutoPause: "reviewed" });
+
+    expect(result).toEqual({ ok: true, state: "running" });
   });
 
   it("refuses to resume a cancelled campaign", async () => {
