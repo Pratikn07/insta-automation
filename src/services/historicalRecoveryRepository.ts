@@ -198,6 +198,23 @@ export async function reconcileExpiredCandidateLeases(
  *
  * `nextAttemptAt` defers a retryable failure. Without it a rate-limited row was
  * retried on every tick forever, because releasing the claim left no trace.
+ *
+ * `dispatchStartedAt` is cleared as part of handing the row back, and it has to be.
+ * `chk_candidate_dispatch_needs_claim` requires a pending row with a dispatch stamp to
+ * hold a claim token, so dropping the token while leaving the stamp raised a check
+ * violation — the release THREW, the exception escaped to the tick's outer catch, and the
+ * whole tick aborted with the row still claimed. Lease reconciliation then read the stale
+ * stamp as "Meta may have been called" and parked the row `send_uncertain`: terminal,
+ * never retried, counted against the cap, and reported to the operator as a public
+ * comment that might exist.
+ *
+ * Clearing it is correct, not just constraint-appeasing. Release is only reachable from
+ * two places: before the reservation, where nothing was stamped and this is a no-op; and
+ * after a `safe_retry` send failure, which `classifyPublicReplyFailure` raises for rate
+ * limiting alone — Meta rejects those before creating anything, so the row provably did
+ * not post and is genuinely no longer dispatching. Every path where a comment MAY exist
+ * finalises the row instead (`markCandidateUncertain` / `markCandidateFailed`) and keeps
+ * its stamp as the audit trail.
  */
 export async function releaseCandidateClaim(
   id: string,
@@ -210,6 +227,7 @@ export async function releaseCandidateClaim(
       claimedAt: null,
       claimExpiresAt: null,
       claimToken: null,
+      dispatchStartedAt: null,
       ...(nextAttemptAt ? { nextAttemptAt } : {}),
     },
   });
