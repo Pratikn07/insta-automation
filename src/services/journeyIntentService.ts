@@ -186,9 +186,11 @@ async function resolveInTransaction(
       canonical_conversation_id: string | null;
       completed_at: Date | null;
       window_expires_at: Date;
+      /** Needed to keep the journey's stamps monotonic — see the update below. */
+      last_trigger_at: Date;
     }>
   >`
-    SELECT "id", "canonical_conversation_id", "completed_at", "window_expires_at"
+    SELECT "id", "canonical_conversation_id", "completed_at", "window_expires_at", "last_trigger_at"
     FROM "journey_intent"
     WHERE "ig_user_id" = ${input.igUserId}
       AND "keyword_id" = ${input.keywordId}::uuid
@@ -208,11 +210,38 @@ async function resolveInTransaction(
     // Only a live request extends the window. Refreshing it after completion
     // would keep a finished intent alive and suppress a genuinely new request.
     if (!live.completed_at) {
+      // The journey's stamps only ever move FORWARD.
+      //
+      // `receivedAt` is taken when the handler picks the comment up — the comment webhook
+      // carries no timestamp of its own (commentHandler.ts) — so a trigger can legitimately
+      // arrive carrying a time EARLIER than the window it is attaching to: two handlers
+      // take their stamps in one order and commit in the other, and the one that committed
+      // first defines `window_started_at`.
+      //
+      // Writing that earlier value directly violated chk_intent_trigger_after_start. A
+      // check violation is not a serialization conflict, so `isRetryableConflict` did not
+      // catch it and the error escaped `resolveJourneyIntent` — which throws by design,
+      // because a caller that cannot establish whether a gate DM went out must not send
+      // one. The person who commented then silently never received their guide.
+      //
+      // Clamped against `last_trigger_at` rather than `window_started_at`: the weaker
+      // clamp satisfies the constraint but still lets an out-of-order trigger rewind a
+      // journey a later ask had already extended, pulling the expiry back with it and
+      // cutting the window short. The expiry takes the same treatment, so a late-arriving
+      // straggler can never shorten a live journey.
+      //
+      // The ask itself is not lost: the journeyTrigger row below keeps its true
+      // `receivedAt`, so the history stays honest about when each comment actually landed.
+      const stampedAt = new Date(
+        Math.max(input.receivedAt.getTime(), live.last_trigger_at.getTime()),
+      );
       await tx.journeyIntent.update({
         where: { id: live.id },
         data: {
-          lastTriggerAt: input.receivedAt,
-          windowExpiresAt: new Date(input.receivedAt.getTime() + JOURNEY_WINDOW_MS),
+          lastTriggerAt: stampedAt,
+          windowExpiresAt: new Date(
+            Math.max(stampedAt.getTime() + JOURNEY_WINDOW_MS, live.window_expires_at.getTime()),
+          ),
         },
       });
     }

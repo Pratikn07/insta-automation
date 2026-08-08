@@ -369,6 +369,56 @@ describeWithLocalDatabase("send capacity is reserved, not merely observed", () =
     expect(await reserveFor(next, { hourly: 1, daily: 10, global: 50 })).toBe("hourly_cap_reached");
   });
 
+  // The mirror image of the test above, and the one that was missing. `safe_retry` is
+  // rate limiting ONLY — Meta rejects the request before creating anything, so the row
+  // provably did not post. Handing it back has to free the slot it reserved.
+  //
+  // Otherwise a rate-limit burst spends the cap on comments that never existed: at
+  // dailyCap 10, ten throttled attempts make every later reservation return
+  // `daily_cap_reached` for 24 hours, and the worker breaks the tick on refusal. The
+  // campaign goes silent for a day having posted nothing.
+  it("frees the reserved slot when a rate-limited row is handed back", async () => {
+    const campaignId = await freshCampaign();
+    const throttled = await makeCandidate(campaignId);
+    const next = await makeCandidate(campaignId);
+    const now = new Date();
+    const held = await repo.claimCandidate(throttled, now, new Date(now.getTime() + 60_000));
+
+    expect(await reserveFor(throttled, { hourly: 1, daily: 10, global: 50 })).toBeNull();
+
+    // Exactly what the worker's safe_retry branch does: release with a backoff, and
+    // write no outcome, because there is no outcome to write.
+    await repo.releaseCandidateClaim(throttled, held!.claimToken, new Date(now.getTime() + 5 * 60_000));
+
+    // Claimed first, because reserving stamps the dispatch and
+    // chk_candidate_dispatch_needs_claim requires a claim to stamp it under. That is the
+    // worker's order too: claim, recheck, reserve, send.
+    await repo.claimCandidate(next, now, new Date(now.getTime() + 60_000));
+    expect(await reserveFor(next, { hourly: 1, daily: 10, global: 50 })).toBeNull();
+  });
+
+  // QA-10's invariant, which the stale stamp broke: `dispatchStartedAt` set means "Meta
+  // may have been called". A row handed back after a rate limit did NOT reach Meta, so a
+  // later death while PREPARING that row must release it — not park it as
+  // `send_uncertain`, which is terminal and never retried.
+  it("does not park a re-claimed rate-limited row as uncertain", async () => {
+    const campaignId = await freshCampaign();
+    const id = await makeCandidate(campaignId);
+    const now = new Date();
+    const held = await repo.claimCandidate(id, now, new Date(now.getTime() + 60_000));
+    await reserveFor(id, { hourly: 5, daily: 50, global: 500 });
+    await repo.releaseCandidateClaim(id, held!.claimToken, now);
+
+    // Claimed again, then the worker dies before reserving. The lease is short but
+    // valid — chk_candidate_claim_ordering forbids an expiry before the claim — and the
+    // sweep runs after it lapses.
+    await repo.claimCandidate(id, now, new Date(now.getTime() + 1_000));
+    await repo.reconcileExpiredCandidateLeases(new Date(now.getTime() + 60_000));
+
+    const row = await prisma.recoveryCandidate.findUnique({ where: { id } });
+    expect(row!.outcome).toBe("pending");
+  });
+
   /**
    * How many sends the global cap currently sees.
    *
