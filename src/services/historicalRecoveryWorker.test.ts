@@ -108,7 +108,7 @@ beforeEach(() => {
   evaluateRecoveryHealth.mockResolvedValue({ circuitOpen: false });
   listDueCandidateIds.mockResolvedValue(["cand-1"]);
   claimCandidate.mockResolvedValue(CANDIDATE);
-  campaignFindUnique.mockResolvedValue({ state: "running", hourlyCap: 3 });
+  campaignFindUnique.mockResolvedValue({ state: "running", hourlyCap: 3, dailyCap: 10 });
   igUserFindUnique.mockResolvedValue({ inferredOrigin: "us_western" });
   dmMessageCount.mockResolvedValue(0);
   conversationCount.mockResolvedValue(0);
@@ -171,7 +171,7 @@ describe("runHistoricalRecoveryTick — the stop switches", () => {
   });
 
   it("stops the batch when the campaign is paused", async () => {
-    campaignFindUnique.mockResolvedValue({ state: "paused", hourlyCap: 3 });
+    campaignFindUnique.mockResolvedValue({ state: "paused", hourlyCap: 3, dailyCap: 10 });
 
     const result = await runHistoricalRecoveryTick();
 

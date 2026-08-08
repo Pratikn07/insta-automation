@@ -84,6 +84,7 @@ async function runTickBody(): Promise<HistoricalTickResult> {
   const ids = await listDueCandidateIds(now, batchSize);
   const leaseMs = env.DM_RECOVERY_LEASE_MS;
   const hourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+  const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
   for (const id of ids) {
     // listDueCandidateIds over-fetches so a suppressed row does not consume a slot;
@@ -99,7 +100,7 @@ async function runTickBody(): Promise<HistoricalTickResult> {
     const [campaign, person, recentContact, liveComment] = await Promise.all([
       prisma.recoveryCampaign.findUnique({
         where: { id: claimed.campaignId },
-        select: { state: true, hourlyCap: true },
+        select: { state: true, hourlyCap: true, dailyCap: true },
       }),
       prisma.igUser.findUnique({
         where: { id: claimed.igUserId },
@@ -123,7 +124,10 @@ async function runTickBody(): Promise<HistoricalTickResult> {
     ]);
 
     const [inboundCount, completedCount, priorRecoveryCount] = recentContact;
-    const sentThisHour = await countCandidatesSentSince(claimed.campaignId, hourAgo);
+    const [sentThisHour, sentToday] = await Promise.all([
+      countCandidatesSentSince(claimed.campaignId, hourAgo),
+      countCandidatesSentSince(claimed.campaignId, dayAgo),
+    ]);
 
     const decision = recheckBeforeSend({
       commentStillExists: liveComment !== null,
@@ -136,6 +140,8 @@ async function runTickBody(): Promise<HistoricalTickResult> {
       campaignRunning: campaign?.state === "running",
       sentThisHour,
       hourlyCap: campaign?.hourlyCap ?? 3,
+      sentToday,
+      dailyCap: campaign?.dailyCap ?? 10,
     });
 
     if (decision.kind === "defer") {
@@ -143,7 +149,11 @@ async function runTickBody(): Promise<HistoricalTickResult> {
       result.deferred++;
       // A cap or a pause applies to the whole campaign, so continuing the loop
       // would just release every remaining row one at a time.
-      if (decision.reason === "hourly_cap_reached" || decision.reason === "campaign_not_running") {
+      if (
+        decision.reason === "hourly_cap_reached" ||
+        decision.reason === "daily_cap_reached" ||
+        decision.reason === "campaign_not_running"
+      ) {
         result.skipped = decision.reason;
         break;
       }

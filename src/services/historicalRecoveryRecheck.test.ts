@@ -17,6 +17,8 @@ function facts(overrides: Partial<RecheckFacts> = {}): RecheckFacts {
     campaignRunning: true,
     sentThisHour: 0,
     hourlyCap: 3,
+    sentToday: 0,
+    dailyCap: 10,
     ...overrides,
   };
 }
@@ -60,6 +62,37 @@ describe("recheckBeforeSend — pacing", () => {
   it("treats an over-cap count as still capped", () => {
     const decision = recheckBeforeSend(facts({ sentThisHour: 9, hourlyCap: 3 }));
     expect(decision).toEqual({ kind: "defer", reason: "hourly_cap_reached" });
+  });
+});
+
+describe("recheckBeforeSend — the daily cap", () => {
+  // The bug this fixes: dailyCap was stored, validated, and displayed, but never
+  // checked. The hourly cap alone permits 24x its value per day, so a campaign
+  // configured for 10 a day was free to post 72.
+  it("defers once the daily cap is reached, even with hourly headroom", () => {
+    const decision = recheckBeforeSend(
+      facts({ sentToday: 10, dailyCap: 10, sentThisHour: 0, hourlyCap: 3 }),
+    );
+
+    expect(decision).toEqual({ kind: "defer", reason: "daily_cap_reached" });
+  });
+
+  it("sends with one slot left in the day", () => {
+    expect(recheckBeforeSend(facts({ sentToday: 9, dailyCap: 10 }))).toEqual({ kind: "send" });
+  });
+
+  // Reported ahead of the hourly cap: the daily one is the binding constraint, and
+  // naming the hourly cap would suggest waiting an hour would help when it will not.
+  it("reports the daily cap when both are exhausted", () => {
+    const decision = recheckBeforeSend(
+      facts({ sentToday: 10, dailyCap: 10, sentThisHour: 3, hourlyCap: 3 }),
+    );
+
+    expect(decision).toEqual({ kind: "defer", reason: "daily_cap_reached" });
+  });
+
+  it("treats an over-cap daily count as still capped", () => {
+    expect(recheckBeforeSend(facts({ sentToday: 99, dailyCap: 10 })).kind).toBe("defer");
   });
 });
 
@@ -161,6 +194,7 @@ describe("recheckBeforeSend — reason precedence", () => {
     const problems: Array<Partial<RecheckFacts>> = [
       { campaignRunning: false },
       { sentThisHour: 3 },
+      { sentToday: 10 },
       { commentStillExists: false },
       { commentHidden: true },
       { repliedSinceSelection: true },
