@@ -8,6 +8,7 @@ import { classifyPublicReplyFailure, classifySourceReadFailure } from "./graphEr
 import { evaluateRecoveryHealth, openRecoveryCircuit } from "./dmRecoveryHealth.js";
 import { recheckBeforeSend, type SourceCommentState } from "./historicalRecoveryRecheck.js";
 import {
+  type ClaimedCandidate,
   listDueCandidateIds,
   claimCandidate,
   reconcileExpiredCandidateLeases,
@@ -421,7 +422,7 @@ type PreDispatchFacts = {
 };
 
 async function gatherPreDispatchFacts(
-  claimed: { id: string; campaignId: string; igUserId: string; commentId: string },
+  claimed: ClaimedCandidate,
   hourAgo: Date,
   dayAgo: Date,
 ): Promise<PreDispatchFacts> {
@@ -436,17 +437,60 @@ async function gatherPreDispatchFacts(
       where: { id: claimed.igUserId },
       select: { inferredOrigin: true },
     }),
-    // Any inbound, completion, or other public recovery since selection.
+    // What has changed SINCE SELECTION, scoped to this person and this keyword (QA-11).
+    //
+    // All three of these previously asked "has this EVER happened", unscoped:
+    //
+    //   - any lifetime inbound counted as "they replied", so a DM from before the
+    //     request suppressed the candidate. Measured: 4 eligible intents.
+    //   - any completed conversation on ANY keyword counted as "they got it". Measured:
+    //     64 of 2,413 candidates would have been silently suppressed at the final gate
+    //     for completing an UNRELATED guide — the single largest defect in QA-11.
+    //   - prior public recovery read only the prospective table, so a historical
+    //     campaign's own send was invisible to the next one.
+    //
+    // The reminder says "I don't think my DM about SLEEP reached you". Someone who
+    // downloaded the POTTY guide last week has not falsified that.
     Promise.all([
       prisma.dmMessage.count({
-        where: { thread: { igUserId: claimed.igUserId }, direction: "inbound" },
+        where: {
+          thread: { igUserId: claimed.igUserId },
+          direction: "inbound",
+          createdAt: { gte: claimed.selectedAt },
+        },
       }),
       prisma.conversation.count({
-        where: { igUserId: claimed.igUserId, state: "completed" },
+        where: {
+          igUserId: claimed.igUserId,
+          keywordId: claimed.keywordId,
+          state: "completed",
+          completedAt: { gte: claimed.selectedAt },
+        },
       }),
-      prisma.dmRecoveryReminder.count({
-        where: { igUserId: claimed.igUserId, status: { in: ["sent", "sending", "send_uncertain"] } },
-      }),
+      // Both recovery systems, because either one posting publicly on this person is a
+      // reason not to post again.
+      Promise.all([
+        prisma.dmRecoveryReminder.count({
+          where: {
+            igUserId: claimed.igUserId,
+            status: { in: ["sent", "sending", "send_uncertain"] },
+            OR: [
+              { sentAt: { gte: claimed.selectedAt } },
+              { lastAttemptAt: { gte: claimed.selectedAt } },
+            ],
+          },
+        }),
+        prisma.recoveryCandidate.count({
+          where: {
+            igUserId: claimed.igUserId,
+            id: { not: claimed.id },
+            OR: [
+              { outcome: "sent", sentAt: { gte: claimed.selectedAt } },
+              { outcome: "send_uncertain", lastAttemptAt: { gte: claimed.selectedAt } },
+            ],
+          },
+        }),
+      ]).then(([prospective, historical]) => prospective + historical),
     ]),
     // The Graph read that catches a deleted or hidden comment.
     readSourceComment(claimed.commentId),

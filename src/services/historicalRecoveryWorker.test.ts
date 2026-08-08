@@ -27,6 +27,8 @@ const igUserFindUnique = vi.fn();
 const dmMessageCount = vi.fn();
 const conversationCount = vi.fn();
 const reminderCount = vi.fn();
+// QA-11: the recheck now consults BOTH recovery systems for a prior public contact.
+const candidateCount = vi.fn();
 
 vi.mock("./historicalRecoveryRepository.js", () => ({
   listDueCandidateIds,
@@ -61,6 +63,7 @@ vi.mock("../lib/prisma.js", () => ({
     dmMessage: { count: dmMessageCount },
     conversation: { count: conversationCount },
     dmRecoveryReminder: { count: reminderCount },
+    recoveryCandidate: { count: candidateCount },
   },
 }));
 
@@ -97,6 +100,8 @@ const CANDIDATE = {
   // overwrite the winner's outcome (QA-02).
   claimToken: "token-1",
   attempts: 1,
+  // The moment evidence was frozen. The recheck asks "changed SINCE this", not "ever".
+  selectedAt: new Date("2026-08-01T00:00:00Z"),
   commentId: "18111572197955347",
   publicReplyText: "I don't think my DM reached you",
   keywordSnapshot: "SLEEP",
@@ -113,7 +118,7 @@ beforeEach(() => {
     replyToComment, fetchComment, evaluateRecoveryHealth, openRecoveryCircuit,
     logEvent, describeGraphError, classifyPublicReplyFailure,
     campaignFindUnique, campaignAggregate, reserveSendCapacity,
-    igUserFindUnique, dmMessageCount, conversationCount, reminderCount,
+    igUserFindUnique, dmMessageCount, conversationCount, reminderCount, candidateCount,
   ]) {
     fn.mockReset();
   }
@@ -134,6 +139,7 @@ beforeEach(() => {
   dmMessageCount.mockResolvedValue(0);
   conversationCount.mockResolvedValue(0);
   reminderCount.mockResolvedValue(0);
+  candidateCount.mockResolvedValue(0);
   countCandidatesSentSince.mockResolvedValue(0);
   fetchComment.mockResolvedValue({ id: CANDIDATE.commentId, hidden: false, timestamp: null });
   replyToComment.mockResolvedValue({ replyId: "17900000000000000" });
@@ -568,5 +574,85 @@ describe("runHistoricalRecoveryTick — a failure before dispatch is not uncerta
 
     expect(result.uncertain).toBe(1);
     expect(markCandidateUncertain).toHaveBeenCalled();
+  });
+});
+
+// QA-11. All three "since selection" checks asked "has this EVER happened" instead,
+// and completion was not scoped to the candidate's own keyword.
+//
+// Measured against production: 64 of 2,413 candidates would have been silently
+// suppressed at the final gate for completing an UNRELATED guide, and 4 for an inbound
+// that predated the request they were being excluded from.
+describe("runHistoricalRecoveryTick — evidence is scoped to since-selection", () => {
+  /** The queries the recheck issued, so scope can be asserted rather than assumed. */
+  function whereOf(mock: typeof dmMessageCount) {
+    return mock.mock.calls.at(-1)?.[0]?.where ?? {};
+  }
+
+  it("counts only inbound messages received after selection", async () => {
+    await runHistoricalRecoveryTick();
+
+    // An unbounded count is what made a months-old DM suppress this candidate.
+    expect(whereOf(dmMessageCount).createdAt).toEqual({ gte: CANDIDATE.selectedAt });
+  });
+
+  // THE 64-candidate defect. The reminder names one guide; completing a different one
+  // does not make it untrue.
+  it("counts completions only for this keyword, after selection", async () => {
+    await runHistoricalRecoveryTick();
+
+    const where = whereOf(conversationCount);
+    expect(where.keywordId).toBe(CANDIDATE.keywordId);
+    expect(where.completedAt).toEqual({ gte: CANDIDATE.selectedAt });
+  });
+
+  it("asks BOTH recovery systems about a prior public contact", async () => {
+    await runHistoricalRecoveryTick();
+
+    expect(reminderCount).toHaveBeenCalled();
+    expect(candidateCount).toHaveBeenCalled();
+    // Never itself: a candidate's own row must not read as someone else's send.
+    expect(whereOf(candidateCount).id).toEqual({ not: CANDIDATE.id });
+  });
+
+  // A historical send by another campaign is a reason to stay silent, and before this
+  // the recheck could not see one at all.
+  it("suppresses when only the historical table shows a prior send", async () => {
+    reminderCount.mockResolvedValue(0);
+    candidateCount.mockResolvedValue(1);
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(markCandidateSuppressed).toHaveBeenCalledWith(
+      "cand-1",
+      "token-1",
+      "contacted_since_selection",
+    );
+    expect(result.suppressed).toBe(1);
+  });
+
+  // The control: evidence that DOES fall after selection must still suppress, or these
+  // scoping changes would have disabled the checks rather than corrected them.
+  it("still suppresses on a reply that landed after selection", async () => {
+    dmMessageCount.mockResolvedValue(1);
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(result.suppressed).toBe(1);
+  });
+
+  it("still suppresses on a same-keyword completion after selection", async () => {
+    conversationCount.mockResolvedValue(1);
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(markCandidateSuppressed).toHaveBeenCalledWith(
+      "cand-1",
+      "token-1",
+      "completed_since_selection",
+    );
   });
 });

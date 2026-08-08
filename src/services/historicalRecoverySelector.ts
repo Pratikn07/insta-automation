@@ -74,7 +74,17 @@ async function loadRows(cutoff: Date): Promise<SelectionRow[]> {
       c."id"           AS "conversationId",
       jt."comment_id"  AS "commentId",
       jt."media_id"    AS "mediaId",
-      COALESCE(jt."trigger_kind", 'unknown') AS "triggerKind",
+      -- Reported from ANY trigger, not from the chosen comment trigger.
+      --
+      -- The lateral join below deliberately considers comment triggers only, so a
+      -- DM-origin journey has no jt row. Reading the kind from jt alone would
+      -- relabel every DM journey as no_source_comment, collapsing two different
+      -- exclusions — "they asked by DM, there is nothing to reply to" and "we lost the
+      -- comment id" — into one and making the campaign report misleading (§37).
+      --
+      -- Measured: 480 of the alias conversations QA-16 swept were DM-sourced, so this is
+      -- the larger of the two classes by far.
+      COALESCE(jt."trigger_kind", any_t."trigger_kind", 'unknown') AS "triggerKind",
       COALESCE(jt."received_at", c."created_at") AS "commentAt",
       k."keyword"      AS "keywordSnapshot",
       k."public_reply" AS "publicReplyText",
@@ -106,22 +116,66 @@ async function loadRows(cutoff: Date): Promise<SelectionRow[]> {
                WHERE g."conversation_id" = c."id"
                  AND g."status" = 'send_uncertain') AS "ambiguousPriorSend",
 
-      -- ANY inbound message from this person is positive engagement evidence, which
-      -- falsifies the premise of the reminder ("you never saw this").
-      EXISTS (SELECT 1 FROM "dm_message" m
-               JOIN "dm_thread" t ON t."id" = m."thread_id"
-               WHERE t."ig_user_id" = ji."ig_user_id"
-                 AND m."direction" = 'inbound'
-                 AND m."created_at" <= ${cutoff}) AS "hasEngagementEvidence",
+      -- Engagement AFTER the request, not at any point in the person's history (QA-11).
+      --
+      -- This previously matched any inbound message ever sent, so someone who had DMed
+      -- months earlier about something else was treated as having engaged with THIS
+      -- request. Measured: 4 eligible intents were excluded on evidence that predated
+      -- the ask they were being excluded from.
+      --
+      -- Bounded at both ends: at or after the window opened, and at or before the
+      -- cutoff, so the answer is reproducible for a fixed selection version (QA-14).
+      --
+      -- Positive engagement of any kind counts, from both places it is recorded.
+      --
+      -- An inbound message is one form. The other is a read receipt or a reaction, which
+      -- do NOT arrive as messages: the webhook writes them onto dm_recovery_reminder as
+      -- seen_at / engaged_at. Checking messages alone missed the strongest evidence
+      -- there is — a read receipt is direct proof the gate DM was opened.
+      --
+      -- Verified against production rather than assumed: no dm_read / dm_reaction /
+      -- dm_postback event kinds exist in event_log, and 42 intents in the eligible pool
+      -- carry seen_at or engaged_at on a prospective reminder.
+      (
+        EXISTS (SELECT 1 FROM "dm_message" m
+                 JOIN "dm_thread" t ON t."id" = m."thread_id"
+                 WHERE t."ig_user_id" = ji."ig_user_id"
+                   AND m."direction" = 'inbound'
+                   AND m."created_at" >= ji."window_started_at"
+                   AND m."created_at" <= ${cutoff})
+        OR EXISTS (SELECT 1 FROM "dm_recovery_reminder" r2
+                    WHERE r2."ig_user_id" = ji."ig_user_id"
+                      AND (
+                        (r2."seen_at" IS NOT NULL
+                          AND r2."seen_at" >= ji."window_started_at"
+                          AND r2."seen_at" <= ${cutoff})
+                        OR (r2."engaged_at" IS NOT NULL
+                          AND r2."engaged_at" >= ji."window_started_at"
+                          AND r2."engaged_at" <= ${cutoff})
+                      ))
+      ) AS "hasEngagementEvidence",
 
+      -- Completion of THIS keyword, bounded by the cutoff so a rerun agrees.
       EXISTS (SELECT 1 FROM "conversations" c2
                WHERE c2."ig_user_id" = ji."ig_user_id"
                  AND c2."keyword_id" = ji."keyword_id"
-                 AND c2."state" = 'completed') AS "completedSameKeyword",
+                 AND c2."state" = 'completed'
+                 AND c2."completed_at" <= ${cutoff}) AS "completedSameKeyword",
 
-      EXISTS (SELECT 1 FROM "dm_recovery_reminder" r
-               WHERE r."ig_user_id" = ji."ig_user_id"
-                 AND r."status" IN ('sent', 'sending', 'send_uncertain')) AS "priorPublicRecovery",
+      -- BOTH recovery systems (QA-11). This read only the prospective table, so a
+      -- historical campaign's own sends were invisible to the next selection — zero
+      -- instances today only because no historical campaign has sent yet, which means
+      -- the first one would have created them.
+      (
+        EXISTS (SELECT 1 FROM "dm_recovery_reminder" r
+                 WHERE r."ig_user_id" = ji."ig_user_id"
+                   AND r."status" IN ('sent', 'sending', 'send_uncertain')
+                   AND COALESCE(r."sent_at", r."last_attempt_at") <= ${cutoff})
+        OR EXISTS (SELECT 1 FROM "recovery_candidate" rc
+                    WHERE rc."ig_user_id" = ji."ig_user_id"
+                      AND rc."outcome" IN ('sent', 'send_uncertain')
+                      AND COALESCE(rc."sent_at", rc."last_attempt_at") <= ${cutoff})
+      ) AS "priorPublicRecovery",
 
       -- A newer live journey for the same request should own it instead.
       EXISTS (SELECT 1 FROM "journey_intent" ji2
@@ -137,16 +191,46 @@ async function loadRows(cutoff: Date): Promise<SelectionRow[]> {
     JOIN "conversations" c ON c."id" = ji."canonical_conversation_id"
     JOIN "keywords" k ON k."id" = ji."keyword_id"
     LEFT JOIN "ig_users" u ON u."id" = ji."ig_user_id"
-    -- The originating trigger carries the comment to reply to. LEFT JOIN so an
-    -- intent WITHOUT one is still counted and reported as excluded, rather than
-    -- silently vanishing from the totals.
+    -- The trigger carrying the comment to reply to. LEFT JOIN so an intent WITHOUT one
+    -- is still counted and reported as excluded, rather than silently vanishing.
+    --
+    -- The NEWEST comment trigger, not the oldest (QA-11).
+    --
+    -- Replying to someone's oldest ask is worse on two counts: an older comment is more
+    -- likely to have been deleted, and the person's most recent ask is the one they
+    -- actually remember. §34 asks for the newest still-available eligible source.
+    --
+    -- Measured after QA-16 restored alias history: 15 eligible intents now carry more
+    -- than one trigger, and for all 15 the reply target changes. Before that backfill
+    -- every intent had exactly one trigger, so this ordering looked like a free choice.
+    --
+    -- Comment triggers only. A dm trigger has no comment to reply to, and preferring a
+    -- newer DM over an older comment would leave the candidate with no target at all —
+    -- turning an eligible person into a silent exclusion.
+    --
+    -- Ordering by received_at DESC then comment_id DESC is a total order: the id
+    -- tie-break keeps the
+    -- choice deterministic when two triggers share a timestamp, which reproducibility
+    -- (QA-14) depends on.
     LEFT JOIN LATERAL (
       SELECT t."comment_id", t."media_id", t."trigger_kind", t."received_at"
       FROM "journey_trigger" t
       WHERE t."intent_id" = ji."id"
-      ORDER BY t."received_at" ASC
+        AND t."trigger_kind" = 'comment'
+        AND t."comment_id" IS NOT NULL
+        AND t."received_at" <= ${cutoff}
+      ORDER BY t."received_at" DESC, t."comment_id" DESC
       LIMIT 1
     ) jt ON TRUE
+    -- Any trigger at all, purely so triggerKind can distinguish a DM-origin journey
+    -- from one whose comment id was lost. Newest first, matching the choice above.
+    LEFT JOIN LATERAL (
+      SELECT t2."trigger_kind"
+      FROM "journey_trigger" t2
+      WHERE t2."intent_id" = ji."id" AND t2."received_at" <= ${cutoff}
+      ORDER BY t2."received_at" DESC, t2."id" DESC
+      LIMIT 1
+    ) any_t ON TRUE
     WHERE ji."completed_at" IS NULL
       AND c."state" <> 'completed'
       AND ji."window_started_at" <= ${cutoff}

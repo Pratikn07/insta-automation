@@ -21,6 +21,15 @@ export type ClaimedCandidate = {
   igUserId: string;
   /** Needed by the final recheck to scope completion to THIS keyword (QA-11). */
   keywordId: string;
+  /**
+   * When this candidate was selected, i.e. the moment its evidence was frozen (QA-11).
+   *
+   * The recheck asks "has anything changed SINCE selection", and without this it asked
+   * "has anything EVER happened" — so a reply or completion that predated the request
+   * suppressed the candidate. `createdAt` is the selection moment: the selector writes
+   * the row and never updates it.
+   */
+  selectedAt: Date;
   commentId: string;
   publicReplyText: string;
   keywordSnapshot: string;
@@ -115,6 +124,7 @@ export async function claimCandidate(
       campaignId: true,
       igUserId: true,
       keywordId: true,
+      createdAt: true,
       commentId: true,
       publicReplyText: true,
       keywordSnapshot: true,
@@ -126,7 +136,8 @@ export async function claimCandidate(
   });
   if (!row) return null;
 
-  return { ...row, claimToken: token };
+  const { createdAt, ...rest } = row;
+  return { ...rest, selectedAt: createdAt, claimToken: token };
 }
 
 /**
