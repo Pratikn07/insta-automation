@@ -400,3 +400,61 @@ describe("runGateQueueTick early batch stop", () => {
     expect(logger.error).toHaveBeenCalled();
   });
 });
+
+// QA-05. After reconciliation a superseded ALIAS conversation can still read
+// awaiting_done while the request it belongs to was satisfied through a sibling
+// journey. Delivering here would gate somebody who already has the guide.
+describe("canonical intent completion", () => {
+  it("abandons a gate whose canonical intent completed elsewhere", async () => {
+    gateQueue.findMany.mockResolvedValue([row]);
+    gateQueue.updateMany.mockResolvedValue({ count: 1 });
+    conversation.findMany.mockResolvedValue([
+      {
+        ...convoObj,
+        // Its OWN state still looks sendable...
+        state: "awaiting_done",
+        // ...but the request was satisfied through a sibling journey.
+        canonicalIntent: { completedAt: new Date() },
+      },
+    ]);
+
+    await runGateQueueTick();
+
+    expect(sendTrackedPrivateReply).not.toHaveBeenCalled();
+    expect(gateQueue.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: "abandoned",
+          // Named distinctly from conversation_completed so an operator can tell the
+          // alias case from an ordinary completion.
+          lastError: "intent_completed_elsewhere",
+        }),
+      }),
+    );
+  });
+
+  it("still delivers when the intent is open", async () => {
+    gateQueue.findMany.mockResolvedValue([row]);
+    gateQueue.updateMany.mockResolvedValue({ count: 1 });
+    conversation.findMany.mockResolvedValue([
+      { ...convoObj, state: "awaiting_done", canonicalIntent: { completedAt: null } },
+    ]);
+
+    await runGateQueueTick();
+
+    expect(sendTrackedPrivateReply).toHaveBeenCalled();
+  });
+
+  // A conversation with no intent at all (pre-reconciliation history) must still work.
+  it("still delivers when there is no intent", async () => {
+    gateQueue.findMany.mockResolvedValue([row]);
+    gateQueue.updateMany.mockResolvedValue({ count: 1 });
+    conversation.findMany.mockResolvedValue([
+      { ...convoObj, state: "awaiting_done", canonicalIntent: null },
+    ]);
+
+    await runGateQueueTick();
+
+    expect(sendTrackedPrivateReply).toHaveBeenCalled();
+  });
+});

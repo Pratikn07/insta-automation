@@ -148,7 +148,10 @@ export async function runGateQueueTick(): Promise<void> {
       // Load conversations and keywords
       const convos = await prisma.conversation.findMany({
         where: { id: { in: claimedRows.map((r) => r.conversationId) } },
-        include: { keyword: true },
+        // canonicalIntent carries the authoritative completion. A gate row belonging to
+        // a reconciled ALIAS has its own state, and that state can say awaiting_done
+        // while the person already received the guide through a sibling journey (QA-05).
+        include: { keyword: true, canonicalIntent: { select: { completedAt: true } } },
       });
       const convoMap = new Map(convos.map((c) => [c.id, c]));
 
@@ -163,14 +166,22 @@ export async function runGateQueueTick(): Promise<void> {
           continue;
         }
 
-        if (convo.state === "completed") {
+        // Either this conversation completed, OR its canonical intent did. The second
+        // case is the alias problem: after reconciliation a superseded conversation can
+        // still read awaiting_done while the request it belongs to was satisfied
+        // elsewhere, and delivering here would gate someone who has the guide.
+        const intentCompleted = convo.canonicalIntent?.completedAt != null;
+        if (convo.state === "completed" || intentCompleted) {
+          const reason = intentCompleted && convo.state !== "completed"
+            ? "intent_completed_elsewhere"
+            : "conversation_completed";
           await prisma.gateQueue.update({
             where: { id: row.id },
-            data: { status: "abandoned", lastError: "conversation_completed" },
+            data: { status: "abandoned", lastError: reason },
           });
           await logEvent("gate_abandoned", {
             conversationId: row.conversationId,
-            reason: "conversation_completed",
+            reason,
             attempts: row.attempts,
           });
           continue;

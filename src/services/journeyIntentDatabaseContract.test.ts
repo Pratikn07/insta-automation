@@ -5,6 +5,7 @@ import { PrismaClient } from "@prisma/client";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   resolveJourneyIntent,
+  markIntentCompleted,
   JOURNEY_WINDOW_MS,
   type JourneyTriggerInput,
 } from "./journeyIntentService.js";
@@ -68,7 +69,9 @@ async function createIntentFixture(client: PrismaClient): Promise<IntentFixture>
 async function deleteIntentFixture(client: PrismaClient, target: IntentFixture): Promise<void> {
   await client.journeyTrigger.deleteMany({ where: { intent: { igUserId: target.igUserId } } });
   await client.journeyIntent.deleteMany({ where: { igUserId: target.igUserId } });
-  await client.conversation.deleteMany({ where: { id: target.conversationId } });
+  // By person, not by the one known id: the alias-completion tests create additional
+  // conversations for this fixture and the keyword delete below fails if any remain.
+  await client.conversation.deleteMany({ where: { igUserId: target.igUserId } });
   await client.igUser.deleteMany({ where: { id: target.igUserId } });
   await client.keyword.deleteMany({ where: { id: target.keywordId } });
   await client.resource.deleteMany({ where: { id: target.resourceId } });
@@ -565,5 +568,82 @@ describeWithLocalDatabase("resolveJourneyIntent", () => {
     await prisma.journeyIntent.deleteMany({ where: { keywordId: otherKeywordId } });
     await prisma.conversation.deleteMany({ where: { keywordId: otherKeywordId } });
     await prisma.keyword.delete({ where: { id: otherKeywordId } });
+  });
+});
+
+// QA-05. Completion through an ALIAS must close the canonical intent. This previously
+// matched only canonicalConversationId, and the gap was live in production:
+// @gore2_7793 held their DINNER guide while intent d8fbe920 still read incomplete,
+// which made them eligible for a public reminder about a guide they already had.
+describeWithLocalDatabase("markIntentCompleted through an alias", () => {
+  async function makeIntentWithAlias() {
+    const startedAt = new Date();
+    const canonical = await prisma.conversation.create({
+      data: { igUserId: fixture.igUserId, keywordId: fixture.keywordId },
+    });
+    const intent = await prisma.journeyIntent.create({
+      data: {
+        igUserId: fixture.igUserId,
+        keywordId: fixture.keywordId,
+        canonicalConversationId: canonical.id,
+        windowStartedAt: startedAt,
+        lastTriggerAt: startedAt,
+        windowExpiresAt: new Date(startedAt.getTime() + JOURNEY_WINDOW_MS),
+      },
+    });
+    const alias = await prisma.conversation.create({
+      data: {
+        igUserId: fixture.igUserId,
+        keywordId: fixture.keywordId,
+        canonicalIntentId: intent.id,
+        reconciliationReason: "superseded:not the canonical journey for this request",
+      },
+    });
+    return { intentId: intent.id, canonicalId: canonical.id, aliasId: alias.id };
+  }
+
+  it("closes the intent when an alias completes", async () => {
+    const { intentId, aliasId } = await makeIntentWithAlias();
+    const completedAt = new Date();
+
+    await prisma.$transaction((tx) => markIntentCompleted(tx, aliasId, completedAt));
+
+    const intent = await prisma.journeyIntent.findUnique({ where: { id: intentId } });
+    expect(intent?.completedAt).not.toBeNull();
+  });
+
+  it("still closes the intent when the canonical conversation completes", async () => {
+    const { intentId, canonicalId } = await makeIntentWithAlias();
+
+    await prisma.$transaction((tx) => markIntentCompleted(tx, canonicalId, new Date()));
+
+    const intent = await prisma.journeyIntent.findUnique({ where: { id: intentId } });
+    expect(intent?.completedAt).not.toBeNull();
+  });
+
+  // Idempotent: a later completion must not move the recorded time, or the first
+  // delivery's timestamp would be lost.
+  it("keeps the earliest completion time", async () => {
+    const { intentId, canonicalId, aliasId } = await makeIntentWithAlias();
+    const first = new Date("2026-08-01T00:00:00.000Z");
+
+    await prisma.$transaction((tx) => markIntentCompleted(tx, aliasId, first));
+    await prisma.$transaction((tx) => markIntentCompleted(tx, canonicalId, new Date()));
+
+    const intent = await prisma.journeyIntent.findUnique({ where: { id: intentId } });
+    expect(intent?.completedAt?.toISOString()).toBe(first.toISOString());
+  });
+
+  // A conversation belonging to no intent must not close somebody else's.
+  it("closes nothing for an unlinked conversation", async () => {
+    const { intentId } = await makeIntentWithAlias();
+    const unrelated = await prisma.conversation.create({
+      data: { igUserId: fixture.igUserId, keywordId: fixture.keywordId },
+    });
+
+    await prisma.$transaction((tx) => markIntentCompleted(tx, unrelated.id, new Date()));
+
+    const intent = await prisma.journeyIntent.findUnique({ where: { id: intentId } });
+    expect(intent?.completedAt).toBeNull();
   });
 });

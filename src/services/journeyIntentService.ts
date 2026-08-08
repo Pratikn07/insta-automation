@@ -295,8 +295,31 @@ export async function markIntentCompleted(
   conversationId: string,
   completedAt: Date,
 ): Promise<void> {
+  // Completion through an ALIAS must close the intent too (QA-05).
+  //
+  // This previously matched only `canonicalConversationId`, so a person who replied
+  // DONE on a superseded journey completed that conversation while their canonical
+  // intent stayed open. Found live in production: @gore2_7793 has their DINNER guide,
+  // yet intent d8fbe920 still reads incomplete, which makes them eligible for a public
+  // recovery reminder about a guide they already received.
+  //
+  // Two ways a conversation can close its intent:
+  //   - it IS the canonical conversation, or
+  //   - it points at the intent via canonicalIntentId (set by reconciliation, and by
+  //     the live resolver for every trigger it attaches).
+  const alias = await tx.conversation.findUnique({
+    where: { id: conversationId },
+    select: { canonicalIntentId: true },
+  });
+
   await tx.journeyIntent.updateMany({
-    where: { canonicalConversationId: conversationId, completedAt: null },
+    where: {
+      completedAt: null,
+      OR: [
+        { canonicalConversationId: conversationId },
+        ...(alias?.canonicalIntentId ? [{ id: alias.canonicalIntentId }] : []),
+      ],
+    },
     data: { completedAt },
   });
 }
