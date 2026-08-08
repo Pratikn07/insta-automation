@@ -52,8 +52,28 @@ async function loadPolicyContext(
 ): Promise<PolicyContext> {
   const convo = await tx.conversation.findUnique({
     where: { id: row.conversationId },
-    select: { state: true, completedAt: true },
+    select: { state: true, completedAt: true, igUserId: true, keywordId: true, canonicalIntentId: true },
   });
+
+  // Completion anywhere in this person's journey for this keyword, not just on the
+  // row's own conversation (QA-06).
+  //
+  // `suppressRecoveriesForCompletionSafely` swallows database errors on purpose so a
+  // completion webhook is never lost to a suppression failure. That makes the
+  // denormalised stamp a speed optimisation, NOT a safety authority: if it fails, the
+  // source conversation stays open and this final check — the last gate before a
+  // public post — saw nothing.
+  //
+  // Two authorities, in order of strength:
+  //   1. the canonical intent's completedAt (the journey's own answer, post-Feature 3)
+  //   2. any sibling conversation on the same person + keyword that completed
+  //
+  // (2) exists because intents only cover journeys reconciliation or the live resolver
+  // has reached; a pre-Feature-3 pair has siblings but no intent.
+  //
+  // Measured before the change: 0 live and 0 historical instances, i.e. the best-effort
+  // stamp has been succeeding. This closes the latent hole, it does not repair damage.
+  const journeyCompletedAt = convo ? await findJourneyCompletion(tx, row, convo) : null;
 
   const cooldownHours = env.DM_RECOVERY_COOLDOWN_HOURS ?? COOLDOWN_HOURS_FALLBACK;
   const cooldownSince = new Date(now.getTime() - cooldownHours * 60 * 60 * 1000);
@@ -154,10 +174,14 @@ async function loadPolicyContext(
 
   const origin = resolveAudienceOrigin(person);
 
+  const ownCompletedAt = convo?.state === "completed" ? (convo.completedAt ?? now) : null;
+
   return {
     now,
-    conversationCompletedAt:
-      convo?.state === "completed" ? (convo.completedAt ?? now) : null,
+    // The earliest completion we can prove, from any of the three sources. Earliest
+    // rather than latest because `decideRecovery` only asks "was it delivered before
+    // we post", and the earliest proof is the strongest answer to that.
+    conversationCompletedAt: earliest(ownCompletedAt, journeyCompletedAt),
     // Either system counts. The flag means "this person was publicly contacted
     // recently", not "this table has a row".
     hasRecentSentReminderForPerson: Boolean(recentAttempt) || Boolean(recentHistoricalAttempt),
@@ -165,6 +189,51 @@ async function loadPolicyContext(
     audienceOrigin: origin.origin,
     audienceOriginConfidence: origin.confidence,
   };
+}
+
+/**
+ * Completion proven anywhere in this person's journey for this keyword (QA-06).
+ *
+ * Returns null when nothing proves delivery. Never throws for a missing relation:
+ * an unreconciled conversation has no intent, and that is the normal case for
+ * anything predating Feature 3.
+ */
+async function findJourneyCompletion(
+  tx: Prisma.TransactionClient,
+  row: DmRecoveryReminder,
+  convo: { igUserId: string; keywordId: string; canonicalIntentId: string | null },
+): Promise<Date | null> {
+  // 1. The journey's own answer. Authoritative once Feature 3 owns the journey,
+  //    and after QA-05 it is also stamped when completion arrives via an alias.
+  const intent = convo.canonicalIntentId
+    ? await tx.journeyIntent.findUnique({
+        where: { id: convo.canonicalIntentId },
+        select: { completedAt: true },
+      })
+    : null;
+
+  // 2. A sibling conversation for the same person and keyword that completed.
+  //    Covers journeys with no intent yet, and any case where the intent stamp
+  //    itself was the write that failed.
+  const sibling = await tx.conversation.findFirst({
+    where: {
+      igUserId: convo.igUserId,
+      keywordId: convo.keywordId,
+      id: { not: row.conversationId },
+      completedAt: { not: null },
+    },
+    orderBy: { completedAt: "asc" },
+    select: { completedAt: true },
+  });
+
+  return earliest(intent?.completedAt ?? null, sibling?.completedAt ?? null);
+}
+
+/** The earlier of two optional instants, or null when both are absent. */
+function earliest(a: Date | null, b: Date | null): Date | null {
+  if (!a) return b;
+  if (!b) return a;
+  return a <= b ? a : b;
 }
 
 /** Row shape the origin resolver needs. Exported for the test's fixtures. */

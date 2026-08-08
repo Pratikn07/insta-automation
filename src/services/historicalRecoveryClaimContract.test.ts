@@ -178,6 +178,106 @@ describeWithLocalDatabase("cross-system person cooldown", () => {
   });
 });
 
+// QA-06. `suppressRecoveriesForCompletionSafely` swallows database errors on purpose so
+// a completion webhook is never lost to a suppression failure. That makes the
+// denormalised `conversation.completedAt` stamp a speed optimisation, not a safety
+// authority — if the stamp fails, the row's own conversation stays open and the final
+// gate before a public post sees no completion.
+//
+// These tests never call the suppression helper, which reproduces exactly the state a
+// swallowed failure leaves behind: the guide was delivered on a sibling journey, and the
+// recovery row's own conversation is still open.
+//
+// Measured before the fix: 0 live and 0 historical instances, so this closes a latent
+// hole rather than repairing damage.
+describeWithLocalDatabase("final send check sees journey completion", () => {
+  /**
+   * A prospective reminder whose OWN conversation is open, plus a sibling conversation
+   * for the same person and keyword.
+   *
+   * `linkIntent` decides which authority proves delivery: with it, both conversations
+   * point at a completed intent (the post-Feature-3 shape); without it, only the
+   * sibling's own `completedAt` exists (anything predating Feature 3).
+   */
+  async function authorizeWithSibling(opts: {
+    siblingCompleted: boolean;
+    linkIntent: boolean;
+  }): Promise<string> {
+    const now = new Date();
+    const igUserId = `${fx.igUserId}-qa06-${randomUUID()}`;
+    const intentId = randomUUID();
+    await prisma.igUser.create({ data: { id: igUserId } });
+    await prisma.journeyIntent.create({
+      data: {
+        id: intentId, igUserId, keywordId: fx.keywordId,
+        windowStartedAt: now, lastTriggerAt: now,
+        windowExpiresAt: new Date(now.getTime() + 1e8),
+        // Only stamped when the intent is the authority under test.
+        completedAt: opts.linkIntent && opts.siblingCompleted ? now : null,
+      },
+    });
+
+    // The guide actually arrived here.
+    await prisma.conversation.create({
+      data: {
+        igUserId, keywordId: fx.keywordId,
+        state: opts.siblingCompleted ? "completed" : "awaiting_done",
+        completedAt: opts.siblingCompleted ? now : null,
+        canonicalIntentId: opts.linkIntent ? intentId : null,
+      },
+    });
+
+    // The recovery row's own conversation: still open, which is the whole point.
+    const source = await prisma.conversation.create({
+      data: {
+        igUserId, keywordId: fx.keywordId, state: "expired",
+        canonicalIntentId: opts.linkIntent ? intentId : null,
+      },
+    });
+
+    const reminder = await prisma.dmRecoveryReminder.create({
+      data: {
+        conversationId: source.id, igUserId, keywordId: fx.keywordId,
+        keywordSnapshot: "RACE", templateVersion: "v1", publicReplyText: "test",
+        commentId: `qa06-c-${randomUUID()}`, triggerKind: "no_confirmed_read",
+        instagramGateMessageId: `mid-${randomUUID()}`, status: "sending",
+        cohort: "treatment", eligibleAt: new Date(now.getTime() - 60_000),
+        claimedAt: now, claimExpiresAt: new Date(now.getTime() + 60_000),
+        attempts: 1, lastAttemptAt: now,
+      },
+    });
+
+    const repoPro = await import("./dmRecoveryRepository.js");
+    const decision = await repoPro.authorizeClaimForSend(reminder.id, new Date());
+    return decision.kind === "suppress" ? `suppress:${decision.reason}` : decision.kind;
+  }
+
+  it("suppresses when the canonical intent is already complete", async () => {
+    expect(await authorizeWithSibling({ siblingCompleted: true, linkIntent: true })).toBe(
+      "suppress:completed",
+    );
+  });
+
+  // No intent at all: the sibling's own completion must still be found, or every
+  // pre-Feature-3 journey stays exposed.
+  it("suppresses on a sibling completion with no intent link", async () => {
+    expect(await authorizeWithSibling({ siblingCompleted: false, linkIntent: false })).not.toBe(
+      "suppress:completed",
+    );
+    expect(await authorizeWithSibling({ siblingCompleted: true, linkIntent: false })).toBe(
+      "suppress:completed",
+    );
+  });
+
+  // The control. An open sibling must NOT suppress, or this fix would disable
+  // prospective recovery for anyone who ever asked twice.
+  it("still authorizes when nothing in the journey completed", async () => {
+    expect(await authorizeWithSibling({ siblingCompleted: false, linkIntent: true })).not.toBe(
+      "suppress:completed",
+    );
+  });
+});
+
 describeWithLocalDatabase("historical candidate claim exclusivity", () => {
   // THE test QA-02 asked for. Before the fix this returned 2.
   it("gives exactly one of two concurrent workers the claim", async () => {

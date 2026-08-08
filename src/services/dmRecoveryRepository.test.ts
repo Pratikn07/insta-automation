@@ -13,12 +13,18 @@ const igUserFindUnique = vi.fn();
 // QA-04: the prospective final authorization now consults historical sends. Defaults
 // to null (nobody contacted historically) so existing cases are unaffected.
 const candidateFindFirst = vi.fn();
+// QA-06: it also reads the canonical intent and any sibling conversation, because the
+// denormalised completion stamp is best-effort and cannot be the safety authority. Both
+// default to null (nothing else in the journey completed).
+const intentFindUnique = vi.fn();
+const convoFindFirst = vi.fn();
 const logEvent = vi.fn();
 
 const txClient = {
   dmRecoveryReminder: { findMany, findUnique, findFirst, updateMany, update, count },
   dmRecoveryControl: { findUnique: controlFindUnique },
-  conversation: { findUnique: convoFindUnique },
+  conversation: { findUnique: convoFindUnique, findFirst: convoFindFirst },
+  journeyIntent: { findUnique: intentFindUnique },
   igUser: { findUnique: igUserFindUnique },
   recoveryCandidate: { findFirst: candidateFindFirst },
   $queryRaw: queryRaw,
@@ -30,7 +36,8 @@ vi.mock("../lib/prisma.js", () => ({
   prisma: {
     dmRecoveryReminder: { findMany, findUnique, findFirst, updateMany, update, count },
     dmRecoveryControl: { findUnique: controlFindUnique },
-    conversation: { findUnique: convoFindUnique },
+    conversation: { findUnique: convoFindUnique, findFirst: convoFindFirst },
+    journeyIntent: { findUnique: intentFindUnique },
     igUser: { findUnique: igUserFindUnique },
     recoveryCandidate: { findFirst: candidateFindFirst },
     $queryRaw: queryRaw,
@@ -94,13 +101,20 @@ beforeEach(() => {
   for (const fn of [
     findMany, findUnique, findFirst, updateMany, update, count,
     queryRaw, controlFindUnique, convoFindUnique, igUserFindUnique, candidateFindFirst,
+    intentFindUnique, convoFindFirst,
     logEvent, $transaction,
   ]) {
     fn.mockReset();
   }
   $transaction.mockImplementation(async (fn: Function) => fn(txClient));
   queryRaw.mockResolvedValue([]);
-  convoFindUnique.mockResolvedValue({ state: "awaiting_done", completedAt: null });
+  convoFindUnique.mockResolvedValue({
+    state: "awaiting_done", completedAt: null,
+    igUserId: "ig-1", keywordId: "kw-1", canonicalIntentId: null,
+  });
+  // Nothing else in this person's journey completed, so each case tests its own rule.
+  intentFindUnique.mockResolvedValue(null);
+  convoFindFirst.mockResolvedValue(null);
   igUserFindUnique.mockResolvedValue({ username: "emily_r", name: "Emily Robbins" });
   // No historical contact by default, so each case tests the rule it was written for.
   candidateFindFirst.mockResolvedValue(null);
@@ -266,6 +280,36 @@ describe("authorizeClaimForSend", () => {
     const decision = await authorizeClaimForSend("rec-1", NOW);
 
     expect(decision).not.toEqual({ kind: "suppress", reason: "person_cooldown" });
+  });
+
+  // QA-06. The row's own conversation stays open — exactly the state a swallowed
+  // suppression failure leaves — while the journey itself is complete. The real-Postgres
+  // proof lives in historicalRecoveryClaimContract.test.ts; these pin the two reads so a
+  // future refactor cannot quietly drop one and still pass.
+  it("suppresses when the canonical intent completed", async () => {
+    findUnique.mockResolvedValue(sendingRow());
+    convoFindUnique.mockResolvedValue({
+      state: "awaiting_done", completedAt: null,
+      igUserId: "ig-1", keywordId: "kw-1", canonicalIntentId: "intent-1",
+    });
+    intentFindUnique.mockResolvedValue({ completedAt: new Date("2026-08-06T09:30:00Z") });
+
+    await expect(authorizeClaimForSend("rec-1", NOW)).resolves.toEqual({
+      kind: "suppress",
+      reason: "completed",
+    });
+  });
+
+  // No intent link: pre-Feature-3 journeys have siblings but no intent, so the sibling's
+  // own completion has to be enough on its own.
+  it("suppresses when a sibling conversation completed", async () => {
+    findUnique.mockResolvedValue(sendingRow());
+    convoFindFirst.mockResolvedValue({ completedAt: new Date("2026-08-06T09:30:00Z") });
+
+    await expect(authorizeClaimForSend("rec-1", NOW)).resolves.toEqual({
+      kind: "suppress",
+      reason: "completed",
+    });
   });
 
   it("authorises a healthy claim and reserves the attempt", async () => {
