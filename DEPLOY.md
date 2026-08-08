@@ -53,22 +53,26 @@ railway variables \
 
 ### Deploy:
 
-Application startup and database migration are separate release steps. `npm start`
-starts only the compiled API; it never changes the database. On a brand-new
-database with no running older application, apply the checked-in migrations once:
+`npm start` runs `prisma migrate deploy` and then the compiled API, so an ordinary
+release applies its own migrations and nothing has to be remembered:
 
 ```sh
-railway run --service api --environment production --no-local npm run migrate:deploy
 railway up
 ```
 
-For an existing production database, follow the migration-specific cutover before
-running `migrate:deploy`. A migration that is incompatible with the old process
-must not be put in Railway's Pre-Deploy Command because pre-deploy runs before the
-new application is active.
+`npm run migrate:deploy` exists for the exception: a migration that the RUNNING
+code cannot survive. Adding a constraint the old workers violate is the example —
+see the Pacific cutover below. Apply those by hand, in the documented order, and
+never as a Railway Pre-Deploy Command, because pre-deploy runs before the new
+application is active.
 
-First build: ~2 min. `prisma generate` runs in `postinstall`; `npm start` starts
-`dist/src/server.js` after the build.
+That exception is worth stating plainly, because it has already cost us once. The
+Pacific migration was applied on 2026-08-06 while its application code stayed
+unmerged, so production ran the old UTC-day collector against a Pacific-keyed
+table and every snapshot written between 00:00 and 07:00 UTC was rejected for two
+days. A hand-applied migration is only half a release; land the code with it.
+
+First build: ~2 min. `prisma generate` runs in `postinstall`.
 
 ### Get the public URL:
 
