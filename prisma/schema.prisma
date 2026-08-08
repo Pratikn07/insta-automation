@@ -32,6 +32,7 @@ model Keyword {
   recoveryReminders  DmRecoveryReminder[]
   journeyIntents     JourneyIntent[]
   recoveryCandidates RecoveryCandidate[]
+  selectionExclusions RecoverySelectionExclusion[]
 
   @@unique([keyword, mediaId])
   // The cold-DM fallback ranks post-scoped candidates for one word by post date.
@@ -794,6 +795,7 @@ model JourneyIntent {
   aliasConversations    Conversation[]      @relation("ConversationCanonicalIntent")
   triggers              JourneyTrigger[]
   recoveryCandidates    RecoveryCandidate[]
+  selectionExclusions   RecoverySelectionExclusion[]
 
   /// Exactly one intent owns a person-keyword window. Two simultaneous first
   /// comments race here: one insert wins, the loser reads the winner and attaches.
@@ -892,6 +894,10 @@ model RecoveryCampaign {
   dailyCap         Int                   @default(10) @map("daily_cap")
   candidateCount   Int                   @default(0) @map("candidate_count")
   excludedCount    Int                   @default(0) @map("excluded_count")
+  /// Canonical hash of every decision this selection made (QA-14). Two selections over
+  /// the same cutoff and filters must agree; a different hash means the data moved.
+  /// Null on campaigns created before the decision set was recorded.
+  decisionHash     String?               @map("decision_hash")
   approvedBy       String?               @map("approved_by")
   approvedAt       DateTime?             @map("approved_at") @db.Timestamptz(3)
   startedAt        DateTime?             @map("started_at") @db.Timestamptz(3)
@@ -902,9 +908,38 @@ model RecoveryCampaign {
   updatedAt        DateTime              @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   candidates RecoveryCandidate[]
+  exclusions RecoverySelectionExclusion[]
 
   @@index([state])
   @@map("recovery_campaign")
+}
+
+/// One intent the selection considered and did not include, with the reason it was
+/// dropped (QA-14).
+///
+/// Exclusions previously survived only as counts in an in-memory report, so "why was
+/// this cohort only 1,007 people?" could not be answered from the record — before or
+/// after approval. Kept out of RecoveryCandidate on purpose: every worker query and cap
+/// count on that table assumes a row is someone we intend to contact.
+model RecoverySelectionExclusion {
+  id         String   @id @default(uuid()) @db.Uuid
+  campaignId String   @map("campaign_id") @db.Uuid
+  intentId   String   @map("intent_id") @db.Uuid
+  igUserId   String   @map("ig_user_id")
+  keywordId  String   @map("keyword_id") @db.Uuid
+  reason     String
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  // All three cascade: an exclusion describes a decision about these rows, it does not
+  // lay claim to them the way a candidate does. Nothing should stay undeletable to
+  // preserve a note about why it was passed over.
+  campaign RecoveryCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  intent   JourneyIntent    @relation(fields: [intentId], references: [id], onDelete: Cascade)
+  keyword  Keyword          @relation(fields: [keywordId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, intentId])
+  @@index([campaignId, reason])
+  @@map("recovery_selection_exclusion")
 }
 
 /// One person a campaign may contact, frozen at selection time.
