@@ -20,6 +20,13 @@ export type FinalRecoveryCheck =
   /** Hand the row back to `waiting` without judging the person. */
   | { kind: "release"; reason: string };
 
+/**
+ * Historical recovery's own person cooldown, in days (design §39: one historical
+ * recovery per person per 30 days). Longer than the prospective 24-hour rule because
+ * these reach back weeks, so the stricter window governs when both apply.
+ */
+const HISTORICAL_COOLDOWN_DAYS = 30;
+
 const COOLDOWN_HOURS_FALLBACK = 24;
 
 type PolicyContext = {
@@ -65,6 +72,39 @@ async function loadPolicyContext(
           lastAttemptAt: { gt: cooldownSince },
           status: { in: ["sending", "send_uncertain"] },
         },
+      ],
+    },
+    select: { id: true },
+  });
+
+  // The same cooldown, applied across the OTHER recovery system (QA-04).
+  //
+  // This path previously read only its own table, so it could not see that a
+  // historical campaign had already posted publicly on the same person's comment.
+  // Measured at the time: 23 people had a waiting prospective reminder AND sat in the
+  // historical eligible pool, so the two systems could each post days apart while each
+  // saw no contact in the table it knew about.
+  //
+  // The historical rule is 30 days rather than 24 hours, and the stricter window wins:
+  // a historical reminder inside 30 days blocks a prospective one, which is the more
+  // conservative of the two.
+  //
+  // `send_uncertain` counts, for the same reason it does above — we cannot prove that
+  // attempt did not reach the person.
+  const historicalCooldownSince = new Date(
+    now.getTime() - HISTORICAL_COOLDOWN_DAYS * 24 * 60 * 60 * 1000,
+  );
+  const recentHistoricalAttempt = await tx.recoveryCandidate.findFirst({
+    where: {
+      igUserId: row.igUserId,
+      OR: [
+        { outcome: "sent", sentAt: { gt: historicalCooldownSince } },
+        {
+          outcome: "send_uncertain",
+          lastAttemptAt: { gt: historicalCooldownSince },
+        },
+        // Claimed and in flight right now: it may post within seconds.
+        { outcome: "pending", claimToken: { not: null } },
       ],
     },
     select: { id: true },
@@ -118,7 +158,9 @@ async function loadPolicyContext(
     now,
     conversationCompletedAt:
       convo?.state === "completed" ? (convo.completedAt ?? now) : null,
-    hasRecentSentReminderForPerson: Boolean(recentAttempt),
+    // Either system counts. The flag means "this person was publicly contacted
+    // recently", not "this table has a row".
+    hasRecentSentReminderForPerson: Boolean(recentAttempt) || Boolean(recentHistoricalAttempt),
     hasNewerEligibleCandidate: Boolean(newerCandidate),
     audienceOrigin: origin.origin,
     audienceOriginConfidence: origin.confidence,

@@ -10,6 +10,9 @@ const queryRaw = vi.fn();
 const controlFindUnique = vi.fn();
 const convoFindUnique = vi.fn();
 const igUserFindUnique = vi.fn();
+// QA-04: the prospective final authorization now consults historical sends. Defaults
+// to null (nobody contacted historically) so existing cases are unaffected.
+const candidateFindFirst = vi.fn();
 const logEvent = vi.fn();
 
 const txClient = {
@@ -17,6 +20,7 @@ const txClient = {
   dmRecoveryControl: { findUnique: controlFindUnique },
   conversation: { findUnique: convoFindUnique },
   igUser: { findUnique: igUserFindUnique },
+  recoveryCandidate: { findFirst: candidateFindFirst },
   $queryRaw: queryRaw,
 };
 
@@ -28,6 +32,7 @@ vi.mock("../lib/prisma.js", () => ({
     dmRecoveryControl: { findUnique: controlFindUnique },
     conversation: { findUnique: convoFindUnique },
     igUser: { findUnique: igUserFindUnique },
+    recoveryCandidate: { findFirst: candidateFindFirst },
     $queryRaw: queryRaw,
     $transaction,
   },
@@ -88,7 +93,8 @@ function routeFindFirst(opts: { cooldown?: unknown; newer?: unknown } = {}) {
 beforeEach(() => {
   for (const fn of [
     findMany, findUnique, findFirst, updateMany, update, count,
-    queryRaw, controlFindUnique, convoFindUnique, igUserFindUnique, logEvent, $transaction,
+    queryRaw, controlFindUnique, convoFindUnique, igUserFindUnique, candidateFindFirst,
+    logEvent, $transaction,
   ]) {
     fn.mockReset();
   }
@@ -96,6 +102,8 @@ beforeEach(() => {
   queryRaw.mockResolvedValue([]);
   convoFindUnique.mockResolvedValue({ state: "awaiting_done", completedAt: null });
   igUserFindUnique.mockResolvedValue({ username: "emily_r", name: "Emily Robbins" });
+  // No historical contact by default, so each case tests the rule it was written for.
+  candidateFindFirst.mockResolvedValue(null);
   controlFindUnique.mockResolvedValue({ circuitOpen: false });
   count.mockResolvedValue(0);
   updateMany.mockResolvedValue({ count: 1 });
@@ -224,6 +232,41 @@ describe("authorizeClaimForSend", () => {
   function sendingRow(overrides: Record<string, unknown> = {}) {
     return candidate({ status: "sending", ...overrides });
   }
+
+  // QA-04. The real cross-system behaviour is proven against Postgres in
+  // historicalRecoveryClaimContract; these pin the wiring so a refactor cannot quietly
+  // drop the historical read from the policy context.
+  it("suppresses when a historical campaign already contacted this person", async () => {
+    findUnique.mockResolvedValue(sendingRow());
+    // No prospective contact...
+    findFirst.mockResolvedValue(null);
+    // ...but a historical one, which this path could not see at all before the fix.
+    candidateFindFirst.mockResolvedValue({ id: "hist-1" });
+
+    await expect(authorizeClaimForSend("rec-1", NOW)).resolves.toEqual({
+      kind: "suppress",
+      reason: "person_cooldown",
+    });
+  });
+
+  it("consults the historical table at all", async () => {
+    findUnique.mockResolvedValue(sendingRow());
+    findFirst.mockResolvedValue(null);
+
+    await authorizeClaimForSend("rec-1", NOW);
+
+    expect(candidateFindFirst).toHaveBeenCalled();
+  });
+
+  it("does not suppress when historical never contacted them", async () => {
+    findUnique.mockResolvedValue(sendingRow());
+    findFirst.mockResolvedValue(null);
+    candidateFindFirst.mockResolvedValue(null);
+
+    const decision = await authorizeClaimForSend("rec-1", NOW);
+
+    expect(decision).not.toEqual({ kind: "suppress", reason: "person_cooldown" });
+  });
 
   it("authorises a healthy claim and reserves the attempt", async () => {
     findUnique.mockResolvedValue(sendingRow());

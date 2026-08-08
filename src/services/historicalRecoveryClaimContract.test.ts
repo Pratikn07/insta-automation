@@ -89,11 +89,93 @@ afterAll(async () => {
   if (!prisma) return;
   await prisma.recoveryCandidate.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
   await prisma.recoveryCampaign.deleteMany({ where: { id: fx.campaignId } });
+  await prisma.dmRecoveryReminder.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
   await prisma.journeyIntent.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
+  await prisma.conversation.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
   await prisma.igUser.deleteMany({ where: { id: { startsWith: fx.igUserId } } });
   await prisma.keyword.deleteMany({ where: { id: fx.keywordId } });
   await prisma.resource.deleteMany({ where: { id: fx.resourceId } });
   await prisma.$disconnect();
+});
+
+// QA-04. The prospective path read only its own table, so it could not see that a
+// historical campaign had already posted publicly on the same person. Measured at the
+// time: 23 people had a waiting prospective reminder AND sat in the historical eligible
+// pool, so both systems could post days apart, each seeing no contact in the table it
+// knew about. Protection was one-way — historical checked prospective, never the
+// reverse.
+describeWithLocalDatabase("cross-system person cooldown", () => {
+  /**
+   * Drive the REAL prospective authorization, not a re-implementation of its query.
+   * `authorizeClaimForSend` is the single point that decides whether a public comment
+   * is posted, so a test that rebuilt the WHERE clause would pass even if the worker
+   * never consulted it.
+   */
+  async function authorizeProspectiveFor(igUserId: string): Promise<string> {
+    const now = new Date();
+    const convo = await prisma.conversation.create({
+      data: { igUserId, keywordId: fx.keywordId, state: "expired" },
+    });
+    const reminder = await prisma.dmRecoveryReminder.create({
+      data: {
+        conversationId: convo.id,
+        igUserId,
+        keywordId: fx.keywordId,
+        keywordSnapshot: "RACE",
+        templateVersion: "v1",
+        publicReplyText: "test",
+        commentId: `pro-c-${randomUUID()}`,
+        triggerKind: "no_confirmed_read",
+        instagramGateMessageId: `mid-${randomUUID()}`,
+        status: "sending",
+        cohort: "treatment",
+        eligibleAt: new Date(now.getTime() - 60_000),
+        claimedAt: now,
+        claimExpiresAt: new Date(now.getTime() + 60_000),
+        attempts: 1,
+        lastAttemptAt: now,
+      },
+    });
+
+    const repoPro = await import("./dmRecoveryRepository.js");
+    const decision = await repoPro.authorizeClaimForSend(reminder.id, new Date());
+    return decision.kind === "suppress" ? `suppress:${decision.reason}` : decision.kind;
+  }
+
+  it("suppresses a prospective reminder when historical already posted", async () => {
+    const id = await makeCandidate();
+    const now = new Date();
+    const held = await repo.claimCandidate(id, now, new Date(now.getTime() + 60_000));
+    await repo.markCandidateSent(id, held!.claimToken, {
+      publicReplyId: `179${randomUUID().slice(0, 8)}`,
+      sentAt: now,
+    });
+    const row = await prisma.recoveryCandidate.findUnique({ where: { id } });
+
+    // Before this fix the prospective path never read recovery_candidate, so this
+    // returned a send decision and posted a second public comment.
+    expect(await authorizeProspectiveFor(row!.igUserId)).toBe("suppress:person_cooldown");
+  });
+
+  // An in-flight claim may post within seconds, so it blocks too.
+  it("suppresses while a historical claim is in flight", async () => {
+    const id = await makeCandidate();
+    const now = new Date();
+    const held = await repo.claimCandidate(id, now, new Date(now.getTime() + 60_000));
+    expect(held).not.toBeNull();
+    const row = await prisma.recoveryCandidate.findUnique({ where: { id } });
+
+    expect(await authorizeProspectiveFor(row!.igUserId)).toBe("suppress:person_cooldown");
+  });
+
+  // Someone with no historical contact must still be reachable, or this fix would
+  // silently disable the prospective feature entirely.
+  it("still authorizes someone historical never contacted", async () => {
+    const untouched = `${fx.igUserId}-clean-${randomUUID()}`;
+    await prisma.igUser.create({ data: { id: untouched } });
+
+    expect(await authorizeProspectiveFor(untouched)).not.toBe("suppress:person_cooldown");
+  });
 });
 
 describeWithLocalDatabase("historical candidate claim exclusivity", () => {
