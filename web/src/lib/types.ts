@@ -77,6 +77,12 @@ export interface FollowFields {
 // them. null for non-awaiting states. Server-derived in the list endpoint.
 export type DeliveryStatus = "delivered" | "retrying";
 
+export type ConversationHistoryRole = "canonical" | "alias" | "unreconciled";
+
+export interface ConversationCanonicalOwner {
+  id: string;
+}
+
 export interface Conversation extends FollowFields {
   recovery?: ConversationRecoverySummary | null;
   readTracking?: ReadTrackingAvailability;
@@ -90,6 +96,10 @@ export interface Conversation extends FollowFields {
   keyword: { id: string; keyword: string };
   username?: string | null;
   name?: string | null;
+  historyRole: ConversationHistoryRole;
+  canonicalOwner: ConversationCanonicalOwner | null;
+  aliasCount: number;
+  reconciliationReason: string | null;
 }
 
 export interface ConversationCounts {

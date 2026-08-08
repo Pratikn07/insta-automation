@@ -20,6 +20,7 @@ import { api } from "@/lib/api";
 import type {
   Conversation,
   ConversationCounts,
+  ConversationHistoryRole,
   ConversationState,
   DmThreadRow,
   AiCapabilities,
@@ -39,6 +40,7 @@ import { cn, displayUser, formatAbsolute } from "@/lib/utils";
 import { prettyKind } from "@/lib/eventLog";
 
 type StateFilter = ConversationState | "all";
+type HistoryMode = "canonical" | "raw";
 
 // Two lenses on the same page. The DM views show the REAL message thread with its
 // approval surface; the journey views are the existing keyword→gate→guide funnel,
@@ -88,6 +90,7 @@ function rowBadge(c: Conversation): { label: string; tone: string; Icon: typeof 
 export function Conversations() {
   const [lens, setLens] = useState<Lens>("needs_reply");
   const [filter, setFilter] = useState<StateFilter>("all");
+  const [historyMode, setHistoryMode] = useState<HistoryMode>("canonical");
   const [selected, setSelected] = useState<Conversation | null>(null);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [lineageUser, setLineageUser] = useState<string | null>(null);
@@ -107,9 +110,10 @@ export function Conversations() {
   });
 
   const conversationsQ = useInfiniteQuery({
-    queryKey: ["conversations", filter],
+    queryKey: ["conversations", historyMode, filter],
     queryFn: ({ pageParam }) => {
       const params = new URLSearchParams();
+      params.set("mode", historyMode);
       if (filter !== "all") params.set("state", filter);
       if (pageParam) params.set("cursor", pageParam);
       return api<Paginated<Conversation>>(`/conversations?${params.toString()}`);
@@ -124,8 +128,8 @@ export function Conversations() {
 
   // Tab counts so the page reads like a dashboard ("Waiting 416 · Delivered 351").
   const countsQ = useQuery<ConversationCounts>({
-    queryKey: ["conversation-counts"],
-    queryFn: () => api<ConversationCounts>("/conversations/counts"),
+    queryKey: ["conversation-counts", historyMode],
+    queryFn: () => api<ConversationCounts>(`/conversations/counts?mode=${historyMode}`),
   });
   const counts = countsQ.data;
 
@@ -150,6 +154,32 @@ export function Conversations() {
           Every comment that triggered a keyword. Click a row to see the full event log.
         </p>
       </div>
+
+      {lens === "journeys" && (
+        <div className="flex items-center gap-2" aria-label="Journey history mode">
+          <span className="text-xs text-muted-foreground">History</span>
+          {(
+            [
+              { value: "canonical", label: "Canonical" },
+              { value: "raw", label: "Raw history" },
+            ] as const
+          ).map((mode) => (
+            <button
+              key={mode.value}
+              type="button"
+              onClick={() => setHistoryMode(mode.value)}
+              className={cn(
+                "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                historyMode === mode.value
+                  ? "border-foreground/40 bg-accent/40 text-foreground"
+                  : "text-muted-foreground hover:bg-accent/20",
+              )}
+            >
+              {mode.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Primary lens: real DMs first, since those are the ones a person is
           waiting on. The journey filters stay exactly as they were, under their
@@ -359,6 +389,7 @@ function ConversationRow({ c, onClick }: { c: Conversation; onClick: () => void 
             {markers.note && (
               <p className="mt-0.5 text-[11px] text-muted-foreground/80">{markers.note}</p>
             )}
+            <ConversationHistoryLabel c={c} />
           </div>
           {markers.recovery && (
             <span
@@ -384,6 +415,28 @@ function ConversationRow({ c, onClick }: { c: Conversation; onClick: () => void 
         </button>
       </CardContent>
     </Card>
+  );
+}
+
+const historyRoleLabel: Record<ConversationHistoryRole, string> = {
+  canonical: "Canonical",
+  alias: "Alias",
+  unreconciled: "Unreconciled",
+};
+
+function ConversationHistoryLabel({ c }: { c: Conversation }) {
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+      <span className="rounded-full bg-muted/50 px-2 py-0.5 font-medium">
+        {historyRoleLabel[c.historyRole]}
+        {c.historyRole === "canonical" && c.aliasCount > 0
+          ? ` · ${c.aliasCount} ${c.aliasCount === 1 ? "alias" : "aliases"}`
+          : ""}
+      </span>
+      {c.historyRole === "alias" && c.canonicalOwner && (
+        <span>Canonical owner {c.canonicalOwner.id}</span>
+      )}
+    </div>
   );
 }
 

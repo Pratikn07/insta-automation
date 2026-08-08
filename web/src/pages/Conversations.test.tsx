@@ -129,4 +129,79 @@ describe("Conversations recovery lens", () => {
       ).toBe(true),
     );
   });
+
+  it("uses canonical journey history by default", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole("button", { name: /Waiting/ }));
+
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith(
+        expect.stringMatching(/^\/conversations\?mode=canonical(?:&|$)/),
+      ),
+    );
+    expect(api).toHaveBeenCalledWith("/conversations/counts?mode=canonical");
+    expect(screen.getByRole("button", { name: "Canonical" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Raw history" })).toBeInTheDocument();
+  });
+
+  it("switches to raw history without carrying the canonical cursor and labels aliases", async () => {
+    api.mockImplementation((path: string) => {
+      if (path === "/conversations/counts?mode=canonical" || path === "/conversations/counts?mode=raw") {
+        return Promise.resolve({
+          awaiting_done: 1,
+          completed: 0,
+          expired: 0,
+          retrying: 0,
+          waitingOnReply: 1,
+        });
+      }
+      if (path.startsWith("/conversations?mode=canonical")) {
+        return Promise.resolve({ items: [], nextCursor: "canonical-next" });
+      }
+      if (path.startsWith("/conversations?mode=raw")) {
+        return Promise.resolve({
+          items: [
+            {
+              id: "alias-1",
+              igUserId: "ig-1",
+              keywordId: "keyword-1",
+              state: "awaiting_done",
+              delivery: "delivered",
+              createdAt: "2026-08-08T20:00:00.000Z",
+              completedAt: null,
+              keyword: { id: "keyword-1", keyword: "SLEEP" },
+              username: "sarah",
+              name: "Sarah",
+              historyRole: "alias",
+              canonicalOwner: { id: "canonical-1" },
+              aliasCount: 0,
+              reconciliationReason: "duplicate_inside_window",
+            },
+          ],
+          nextCursor: null,
+        });
+      }
+      return Promise.resolve(String(path).startsWith("/keywords") ? [] : { items: [], nextCursor: null });
+    });
+
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(screen.getByRole("button", { name: /Waiting/ }));
+    await screen.findByRole("button", { name: "Raw history" });
+
+    await user.click(screen.getByRole("button", { name: "Raw history" }));
+
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith(
+        expect.stringMatching(/^\/conversations\?mode=raw(?:&|$)/),
+      ),
+    );
+    expect(api).toHaveBeenCalledWith("/conversations/counts?mode=raw");
+    const rawPaths = api.mock.calls.map((call) => String(call[0])).filter((path) => path.includes("mode=raw"));
+    expect(rawPaths.some((path) => path.includes("cursor=canonical-next"))).toBe(false);
+    expect(await screen.findByText("Alias")).toBeInTheDocument();
+    expect(screen.getByText("Canonical owner canonical-1")).toBeInTheDocument();
+  });
 });
