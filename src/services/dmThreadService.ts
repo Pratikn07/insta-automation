@@ -62,6 +62,19 @@ export async function recordInboundMessage(
     try {
       return await prisma.$transaction(
         async (tx) => {
+          // Share the final historical-dispatch control lock. If this inbound commits
+          // first, its health-capture inbox row is visible to startHistoricalDispatch
+          // and blocks Meta. If dispatch start commits first, that attempt is explicitly
+          // in flight and this inbound is classified against `dispatch_started` truth.
+          await tx.dmRecoveryControl.upsert({
+            where: { id: 1 },
+            create: { id: 1 },
+            update: {},
+          });
+          await tx.$queryRaw`
+            SELECT "id" FROM "dm_recovery_control" WHERE "id" = 1 FOR UPDATE
+          `;
+
           const existing = await tx.dmMessage.findUnique({
             where: { instagramMessageId: input.instagramMessageId },
             select: { id: true, threadId: true },

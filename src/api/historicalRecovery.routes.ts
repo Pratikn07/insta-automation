@@ -11,6 +11,8 @@ import {
   cancelCampaign,
   advanceCampaignStage,
 } from "../services/recoveryCampaignControl.js";
+import { recordCampaignHealthObservation } from "../services/campaignHealthObservation.js";
+import { logEvent } from "../services/eventLogger.js";
 
 /**
  * Read models and owner actions for historical recovery campaigns.
@@ -36,6 +38,40 @@ export const CANDIDATE_VIEWS = [
 ] as const;
 
 export type CandidateView = (typeof CANDIDATE_VIEWS)[number];
+
+type HistoricalAttributionObservationInput = {
+  arm: "treatment" | "holdout";
+  dispatchStartedAt: Date | null;
+  sentAt: Date | null;
+  lastAttemptAt: Date | null;
+  campaignStartedAt: Date | null;
+  laterInboundAt: Date | null;
+  laterCompletedAt: Date | null;
+};
+
+/** Fixed experiment observations, independent of when the API happens to be read. */
+export function buildHistoricalAttributionObservation(
+  input: HistoricalAttributionObservationInput,
+): {
+  anchorAt: Date | null;
+  inboundWithin24Hours: boolean;
+  completedWithin48Hours: boolean;
+} {
+  const anchorAt = input.arm === "treatment"
+    ? input.dispatchStartedAt ?? input.sentAt ?? input.lastAttemptAt
+    : input.campaignStartedAt;
+  const within = (observedAt: Date | null, hours: number): boolean => Boolean(
+    anchorAt
+      && observedAt
+      && observedAt.getTime() >= anchorAt.getTime()
+      && observedAt.getTime() <= anchorAt.getTime() + hours * 3600_000,
+  );
+  return {
+    anchorAt,
+    inboundWithin24Hours: within(input.laterInboundAt, 24),
+    completedWithin48Hours: within(input.laterCompletedAt, 48),
+  };
+}
 
 /**
  * One definition of what each view means, shared by the list and the counts so a
@@ -75,25 +111,98 @@ export function candidateViewWhere(view: CandidateView): Prisma.RecoveryCandidat
   }
 }
 
+/**
+ * IDs that qualify for the fixed 48-hour recovered observation.
+ *
+ * The writer already enforces each campaign's configured upper bound. Rechecking the
+ * fixed reporting bound here also protects the operator view from legacy or manually
+ * imported timestamps that predate that invariant.
+ */
+async function listBoundedRecoveredCandidateIds(campaignId?: string): Promise<string[]> {
+  const requestedCampaignId = campaignId ?? null;
+  const rows = await prisma.$queryRaw<Array<{ id: string }>>`
+    SELECT candidate."id"
+    FROM "recovery_candidate" candidate
+    JOIN "recovery_campaign" campaign ON campaign."id" = candidate."campaign_id"
+    WHERE (${requestedCampaignId}::uuid IS NULL OR candidate."campaign_id" = ${requestedCampaignId}::uuid)
+      AND candidate."later_completed_at" IS NOT NULL
+      AND candidate."outcome" IN ('sent', 'send_uncertain', 'holdout_withheld')
+      AND candidate."later_completed_at" >= CASE
+        WHEN candidate."arm" = 'treatment' THEN
+          COALESCE(
+            candidate."dispatch_started_at",
+            candidate."sent_at",
+            candidate."last_attempt_at"
+          )
+        ELSE campaign."started_at"
+      END
+      AND candidate."later_completed_at" <= CASE
+        WHEN candidate."arm" = 'treatment' THEN
+          COALESCE(
+            candidate."dispatch_started_at",
+            candidate."sent_at",
+            candidate."last_attempt_at"
+          )
+        ELSE campaign."started_at"
+      END + INTERVAL '48 hours'
+  `;
+  return rows.map((row) => row.id);
+}
+
 /** Campaign list with per-campaign progress, newest first. */
 historicalRecoveryRouter.get("/campaigns", async (_req, res) => {
   const campaigns = await prisma.recoveryCampaign.findMany({
     orderBy: { createdAt: "desc" },
     take: 50,
   });
+  const campaignIds = campaigns.map((campaign) => campaign.id);
 
   // One grouped query rather than one per campaign: at 985 candidates a per-row
   // loop would issue a query per outcome per campaign.
-  const grouped = await prisma.recoveryCandidate.groupBy({
-    by: ["campaignId", "outcome", "arm"],
-    _count: { _all: true },
-  });
+  const [grouped, attributionRows] = await Promise.all([
+    prisma.recoveryCandidate.groupBy({
+      by: ["campaignId", "outcome", "arm"],
+      where: { campaignId: { in: campaignIds } },
+      _count: { _all: true },
+    }),
+    prisma.recoveryCandidate.findMany({
+      where: { campaignId: { in: campaignIds } },
+      select: {
+        campaignId: true,
+        arm: true,
+        dispatchStartedAt: true,
+        sentAt: true,
+        lastAttemptAt: true,
+        laterInboundAt: true,
+        laterCompletedAt: true,
+        campaign: { select: { startedAt: true } },
+      },
+    }),
+  ]);
 
   const progress = new Map<string, Record<string, number>>();
   for (const row of grouped) {
     const bucket = progress.get(row.campaignId) ?? {};
     bucket[row.outcome] = (bucket[row.outcome] ?? 0) + row._count._all;
     if (row.arm === "holdout") bucket.holdout = (bucket.holdout ?? 0) + row._count._all;
+    progress.set(row.campaignId, bucket);
+  }
+  for (const row of attributionRows) {
+    const observation = buildHistoricalAttributionObservation({
+      ...row,
+      campaignStartedAt: row.campaign.startedAt,
+    });
+    const bucket = progress.get(row.campaignId) ?? {};
+    if (observation.inboundWithin24Hours) {
+      bucket.inbound24h = (bucket.inbound24h ?? 0) + 1;
+      const key = row.arm === "treatment" ? "treatmentInbound24h" : "holdoutInbound24h";
+      bucket[key] = (bucket[key] ?? 0) + 1;
+    }
+    if (observation.completedWithin48Hours) {
+      bucket.completed48h = (bucket.completed48h ?? 0) + 1;
+      const key = row.arm === "treatment" ? "treatmentCompleted48h" : "holdoutCompleted48h";
+      bucket[key] = (bucket[key] ?? 0) + 1;
+    }
     progress.set(row.campaignId, bucket);
   }
 
@@ -106,9 +215,16 @@ historicalRecoveryRouter.get("/campaigns", async (_req, res) => {
       phase: c.phase,
       state: c.state,
       selectionVersion: c.selectionVersion,
+      selectionFingerprint: c.selectionFingerprint,
+      decisionHash: c.decisionHash,
       copyVersion: c.copyVersion,
+      eligibilityPolicyVersion: c.eligibilityPolicyVersion,
       sourceDataCutoff: c.sourceDataCutoff.toISOString(),
+      selectionLimit: c.selectionLimit,
+      westernOnly: c.westernOnly,
       holdoutPercent: c.holdoutPercent,
+      inboundWindowHours: c.inboundWindowHours,
+      completionWindowHours: c.completionWindowHours,
       batchSize: c.batchSize,
       hourlyCap: c.hourlyCap,
       dailyCap: c.dailyCap,
@@ -146,13 +262,31 @@ historicalRecoveryRouter.get("/candidates", async (req, res) => {
   const { campaignId, view, limit, cursor } = parsed.data;
 
   const base: Prisma.RecoveryCandidateWhereInput = campaignId ? { campaignId } : {};
-  const where: Prisma.RecoveryCandidateWhereInput = { ...base, ...candidateViewWhere(view) };
+  const boundedRecoveredIds = await listBoundedRecoveredCandidateIds(campaignId);
+  const where: Prisma.RecoveryCandidateWhereInput = {
+    ...base,
+    ...candidateViewWhere(view),
+    ...(view === "recovered" ? { id: { in: boundedRecoveredIds } } : {}),
+  };
 
   const rows = await prisma.recoveryCandidate.findMany({
     where,
     orderBy: [{ commentAt: "asc" }, { id: "asc" }],
     take: limit + 1,
     ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+    include: {
+      campaign: { select: { startedAt: true } },
+      sources: {
+        orderBy: { position: "asc" },
+        select: {
+          position: true,
+          commentId: true,
+          mediaId: true,
+          receivedAt: true,
+          choiceReason: true,
+        },
+      },
+    },
   });
 
   const hasMore = rows.length > limit;
@@ -168,6 +302,10 @@ historicalRecoveryRouter.get("/candidates", async (req, res) => {
   const counts: Record<string, number> = {};
   await Promise.all(
     CANDIDATE_VIEWS.map(async (v) => {
+      if (v === "recovered") {
+        counts[v] = boundedRecoveredIds.length;
+        return;
+      }
       counts[v] = await prisma.recoveryCandidate.count({
         where: { ...base, ...candidateViewWhere(v) },
       });
@@ -177,29 +315,45 @@ historicalRecoveryRouter.get("/candidates", async (req, res) => {
   res.json({
     counts,
     nextCursor: hasMore ? page[page.length - 1]?.id ?? null : null,
-    candidates: page.map((r) => ({
-      id: r.id,
-      campaignId: r.campaignId,
-      igUserId: r.igUserId,
-      username: usersById[r.igUserId]?.username ?? null,
-      keywordSnapshot: r.keywordSnapshot,
-      commentId: r.commentId,
-      mediaId: r.mediaId,
-      commentAt: r.commentAt.toISOString(),
-      publicReplyText: r.publicReplyText,
-      evidence: r.evidence,
-      arm: r.arm,
-      outcome: r.outcome,
-      // The snapshot, not the live verdict: this is what the filter believed when
-      // the campaign was approved, which is what an audit needs.
-      audienceOrigin: r.audienceOrigin,
-      audienceOriginConfidence: r.audienceOriginConfidence,
-      sentAt: r.sentAt?.toISOString() ?? null,
-      publicReplyId: r.publicReplyId,
-      suppressionReason: r.suppressionReason,
-      laterInboundAt: r.laterInboundAt?.toISOString() ?? null,
-      laterCompletedAt: r.laterCompletedAt?.toISOString() ?? null,
-    })),
+    candidates: page.map((r) => {
+      const observation = buildHistoricalAttributionObservation({
+        ...r,
+        campaignStartedAt: r.campaign.startedAt,
+      });
+      return {
+        id: r.id,
+        campaignId: r.campaignId,
+        igUserId: r.igUserId,
+        username: usersById[r.igUserId]?.username ?? null,
+        keywordSnapshot: r.keywordSnapshot,
+        commentId: r.commentId,
+        mediaId: r.mediaId,
+        commentAt: r.commentAt.toISOString(),
+        publicReplyText: r.publicReplyText,
+        evidence: r.evidence,
+        selectionPosition: r.selectionPosition,
+        sourceChoiceReason: r.sourceChoiceReason,
+        dispatchCommentId: r.dispatchCommentId,
+        approvedSources: r.sources.map((source) => ({
+          ...source,
+          receivedAt: source.receivedAt.toISOString(),
+        })),
+        arm: r.arm,
+        outcome: r.outcome,
+        // The snapshot, not the live verdict: this is what the filter believed when
+        // the campaign was approved, which is what an audit needs.
+        audienceOrigin: r.audienceOrigin,
+        audienceOriginConfidence: r.audienceOriginConfidence,
+        sentAt: r.sentAt?.toISOString() ?? null,
+        publicReplyId: r.publicReplyId,
+        suppressionReason: r.suppressionReason,
+        laterInboundAt: r.laterInboundAt?.toISOString() ?? null,
+        laterCompletedAt: r.laterCompletedAt?.toISOString() ?? null,
+        attributionAnchorAt: observation.anchorAt?.toISOString() ?? null,
+        inboundWithin24Hours: observation.inboundWithin24Hours,
+        completedWithin48Hours: observation.completedWithin48Hours,
+      };
+    }),
   });
 });
 
@@ -305,5 +459,44 @@ historicalRecoveryRouter.post("/campaigns/:id/stage", async (req, res) => {
     res.status(409).json({ error: result.reason });
     return;
   }
+  res.json(result);
+});
+
+const manualHealthObservationBody = z.object({
+  kind: z.enum(["complaint", "block", "classifier_anomaly"]),
+  sourceKey: z.string().trim().min(1).max(200),
+  observedAt: z.string().datetime(),
+  safeDetail: z.string().trim().min(1).max(200).optional(),
+});
+
+/** Ingest externally verified, bounded safety evidence. */
+historicalRecoveryRouter.post("/campaigns/:id/health-observations", async (req, res) => {
+  if (!req.adminEmail) {
+    res.status(401).json({ error: "owner_auth_required" });
+    return;
+  }
+  const campaignId = z.string().uuid().safeParse(req.params.id);
+  const body = manualHealthObservationBody.safeParse(req.body);
+  if (!campaignId.success || !body.success) {
+    res.status(400).json({ error: "invalid_health_observation" });
+    return;
+  }
+
+  const input = {
+    campaignId: campaignId.data,
+    kind: body.data.kind,
+    sourceKey: body.data.sourceKey,
+    observedAt: new Date(body.data.observedAt),
+    safeDetail: body.data.safeDetail,
+  };
+  const result = await recordCampaignHealthObservation(input);
+  await logEvent("historical_campaign_health_observation_ingested", {
+    campaignId: input.campaignId,
+    kind: input.kind,
+    sourceKey: input.sourceKey,
+    safeDetail: input.safeDetail,
+    actor: req.adminEmail,
+    created: result.created,
+  });
   res.json(result);
 });

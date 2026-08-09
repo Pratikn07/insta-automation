@@ -19,6 +19,7 @@ const describeWithLocalDatabase = databaseUrl ? describe.sequential : describe.s
 
 let prisma: PrismaClient;
 let repo: typeof import("./journeyReconciliationRepository.js");
+let resolveJourneyIntent: typeof import("./journeyIntentService.js").resolveJourneyIntent;
 
 type Fixture = { resourceId: string; keywordId: string; igUserId: string };
 let fx: Fixture;
@@ -30,6 +31,7 @@ beforeAll(async () => {
   expect(process.env.DATABASE_URL).toBe(databaseUrl);
   prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
   repo = await import("./journeyReconciliationRepository.js");
+  ({ resolveJourneyIntent } = await import("./journeyIntentService.js"));
 
   fx = {
     resourceId: randomUUID(),
@@ -49,6 +51,15 @@ beforeAll(async () => {
 });
 
 async function wipe(): Promise<void> {
+  await prisma.publicRecoveryDispatch.deleteMany({
+    where: { igUserId: { startsWith: fx.igUserId } },
+  });
+  await prisma.recoveryCandidate.deleteMany({
+    where: { igUserId: { startsWith: fx.igUserId } },
+  });
+  await prisma.recoveryCampaign.deleteMany({
+    where: { selectionVersion: { startsWith: fx.igUserId } },
+  });
   await prisma.gateQueue.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
   await prisma.journeyTrigger.deleteMany({
     where: { intent: { igUserId: { startsWith: fx.igUserId } } },
@@ -73,7 +84,7 @@ afterAll(async () => {
 
 /** One conversation for this fixture's person and keyword. */
 async function seedConversation(opts: {
-  gate?: "event" | "queue" | "none";
+  gate?: "event" | "queue" | "recovery" | "none";
   createdAt?: Date;
   person?: string;
 }): Promise<string> {
@@ -109,6 +120,27 @@ async function seedConversation(opts: {
       },
     });
   }
+  if (opts.gate === "recovery") {
+    // Authoritative accepted receipt remains even when the best-effort dm_sent
+    // event write failed.
+    await prisma.dmRecoveryReminder.create({
+      data: {
+        conversationId: convo.id,
+        igUserId,
+        keywordId: fx.keywordId,
+        keywordSnapshot: "RECON",
+        templateVersion: "contract-v1",
+        publicReplyText: "contract",
+        commentId: `recon-recovery-${randomUUID()}`,
+        instagramGateMessageId: `mid-${randomUUID()}`,
+        triggerKind: "no_confirmed_read",
+        status: "waiting",
+        cohort: "treatment",
+        acceptedAt: CREATED_AT,
+        eligibleAt: new Date(CREATED_AT.getTime() + 24 * 3600_000),
+      },
+    });
+  }
 
   return convo.id;
 }
@@ -128,6 +160,14 @@ describeWithLocalDatabase("reconciliation sees every accepted gate", () => {
   // The retry path still counts, unchanged.
   it("still counts a gate accepted after a retry", async () => {
     const id = await seedConversation({ gate: "queue" });
+
+    const rows = await repo.loadReconciliationRows();
+
+    expect(rows.find((r) => r.id === id)?.hasSentGate).toBe(true);
+  });
+
+  it("counts an authoritative accepted recovery receipt when event logging failed", async () => {
+    const id = await seedConversation({ gate: "recovery" });
 
     const rows = await repo.loadReconciliationRows();
 
@@ -182,6 +222,32 @@ describeWithLocalDatabase("a reconciled window is written atomically", () => {
     const person = `${fx.igUserId}-${randomUUID()}`;
     const canonical = await seedConversation({ gate: "event", person });
     const alias = await seedConversation({ gate: "none", person });
+    const aliasGate = await prisma.gateQueue.create({
+      data: {
+        igUserId: person,
+        conversationId: alias,
+        commentId: `alias-gate-${randomUUID()}`,
+        gateMessage: "follow, then reply DONE",
+        commentAt: CREATED_AT,
+        nextAttemptAt: CREATED_AT,
+        status: "pending",
+      },
+    });
+    const aliasRecovery = await prisma.dmRecoveryReminder.create({
+      data: {
+        conversationId: alias,
+        igUserId: person,
+        keywordId: fx.keywordId,
+        keywordSnapshot: "RECON",
+        templateVersion: "contract-v1",
+        publicReplyText: "contract",
+        commentId: `alias-recovery-${randomUUID()}`,
+        triggerKind: "no_confirmed_read",
+        status: "waiting",
+        cohort: "treatment",
+        eligibleAt: CREATED_AT,
+      },
+    });
 
     const { intentId } = await repo.applyReconciledWindow({
       igUserId: person,
@@ -198,6 +264,233 @@ describeWithLocalDatabase("a reconciled window is written atomically", () => {
     const rows = await prisma.conversation.findMany({ where: { igUserId: person } });
     expect(rows.every((r) => r.canonicalIntentId === intentId)).toBe(true);
     expect(rows.find((r) => r.id === alias)!.reconciliationReason).toBe("superseded:no_delivery");
+    expect(await prisma.gateQueue.findUnique({ where: { id: aliasGate.id } })).toMatchObject({
+      status: "abandoned",
+      lastError: "reconciled_alias",
+    });
+    expect(
+      await prisma.dmRecoveryReminder.findUnique({ where: { id: aliasRecovery.id } }),
+    ).toMatchObject({ status: "suppressed", suppressionReason: "reconciled_alias" });
+  });
+
+  it("skips the whole window while an alias owns active network work", async () => {
+    const person = `${fx.igUserId}-${randomUUID()}`;
+    const canonical = await seedConversation({ gate: "event", person });
+    const alias = await seedConversation({ gate: "none", person });
+    await prisma.gateQueue.create({
+      data: {
+        igUserId: person,
+        conversationId: alias,
+        commentId: `active-alias-gate-${randomUUID()}`,
+        gateMessage: "follow, then reply DONE",
+        commentAt: CREATED_AT,
+        nextAttemptAt: CREATED_AT,
+        status: "sending",
+        claimedAt: new Date(),
+        claimExpiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+
+    const result = await repo.applyReconciledWindow({
+      igUserId: person,
+      keywordId: fx.keywordId,
+      canonicalId: canonical,
+      windowStartedAt: CREATED_AT,
+      lastTriggerAt: CREATED_AT,
+      windowExpiresAt: new Date(CREATED_AT.getTime() + 48 * 3600_000),
+      completedAt: null,
+      choice: "confirmed_gate",
+      aliases: [{ id: alias, state: "superseded", reason: "no_delivery" }],
+    });
+
+    expect(result.outcome).toBe("skipped_active_work");
+    expect(await prisma.journeyIntent.count({ where: { igUserId: person } })).toBe(0);
+    expect((await prisma.conversation.findUnique({ where: { id: alias } }))?.canonicalIntentId)
+      .toBeNull();
+  });
+
+  it("skips a claimed historical alias before its network-start stamp", async () => {
+    const person = `${fx.igUserId}-${randomUUID()}`;
+    const canonical = await seedConversation({ gate: "event", person });
+    const alias = await seedConversation({ gate: "none", person });
+    const intent = await prisma.journeyIntent.create({
+      data: {
+        igUserId: person,
+        keywordId: fx.keywordId,
+        canonicalConversationId: canonical,
+        windowStartedAt: CREATED_AT,
+        lastTriggerAt: CREATED_AT,
+        windowExpiresAt: new Date(CREATED_AT.getTime() + 48 * 3600_000),
+      },
+    });
+    const campaign = await prisma.recoveryCampaign.create({
+      data: {
+        phase: "unknown_read_pilot",
+        state: "running",
+        selectionVersion: `${fx.igUserId}-${randomUUID()}`,
+        sourceDataCutoff: CREATED_AT,
+        copyVersion: "contract-v1",
+        westernOnly: false,
+        approvedBy: "contract@example.com",
+        approvedAt: CREATED_AT,
+      },
+    });
+    await prisma.recoveryCandidate.create({
+      data: {
+        campaignId: campaign.id,
+        campaignPhase: "unknown_read_pilot",
+        intentId: intent.id,
+        igUserId: person,
+        conversationId: alias,
+        keywordId: fx.keywordId,
+        commentId: `claimed-alias-${randomUUID()}`,
+        commentAt: CREATED_AT,
+        keywordSnapshot: "RECON",
+        publicReplyText: "contract",
+        evidence: "gate_sent_no_read",
+        arm: "treatment",
+        eligibleAt: CREATED_AT,
+        claimedAt: new Date(),
+        claimExpiresAt: new Date(Date.now() + 60_000),
+        claimToken: randomUUID(),
+      },
+    });
+
+    const result = await repo.applyReconciledWindow({
+      igUserId: person,
+      keywordId: fx.keywordId,
+      canonicalId: canonical,
+      windowStartedAt: CREATED_AT,
+      lastTriggerAt: CREATED_AT,
+      windowExpiresAt: new Date(CREATED_AT.getTime() + 48 * 3600_000),
+      completedAt: null,
+      choice: "confirmed_gate",
+      aliases: [{ id: alias, state: "superseded", reason: "no_delivery" }],
+    });
+
+    expect(result).toEqual({ outcome: "skipped_active_work", intentId: intent.id });
+    expect(await prisma.recoveryCandidate.count({ where: { conversationId: alias } })).toBe(1);
+    expect((await prisma.conversation.findUnique({ where: { id: alias } }))?.canonicalIntentId)
+      .toBeNull();
+  });
+
+  it("serializes a live resolver behind reconciliation for the same person and keyword", async () => {
+    const person = `${fx.igUserId}-${randomUUID()}`;
+    const now = new Date();
+    const canonical = await seedConversation({ gate: "event", person, createdAt: now });
+    let announceLocked!: () => void;
+    let releaseLock!: () => void;
+    const locked = new Promise<void>((resolve) => { announceLocked = resolve; });
+    const hold = new Promise<void>((resolve) => { releaseLock = resolve; });
+
+    const applying = repo.applyReconciledWindow(
+      {
+        igUserId: person,
+        keywordId: fx.keywordId,
+        canonicalId: canonical,
+        windowStartedAt: now,
+        lastTriggerAt: now,
+        windowExpiresAt: new Date(now.getTime() + 48 * 3600_000),
+        completedAt: null,
+        choice: "confirmed_gate",
+        aliases: [],
+      },
+      now,
+      {
+        afterIdentityLock: async () => {
+          announceLocked();
+          await hold;
+        },
+      },
+    );
+    await locked;
+
+    let liveSettled = false;
+    const live = resolveJourneyIntent(
+      {
+        igUserId: person,
+        keywordId: fx.keywordId,
+        commentId: `recon-live-${randomUUID()}`,
+        receivedAt: new Date(now.getTime() + 1000),
+        triggerKind: "comment",
+      },
+      (tx) => tx.conversation.create({
+        data: { igUserId: person, keywordId: fx.keywordId },
+        select: { id: true },
+      }),
+    ).finally(() => { liveSettled = true; });
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(liveSettled).toBe(false);
+    releaseLock();
+
+    expect((await applying).outcome).toBe("written");
+    expect((await live).disposition).toBe("reused_active");
+    expect(await prisma.journeyIntent.count({ where: { igUserId: person } })).toBe(1);
+  });
+
+  it("terminalizes pending alias work before a waiting worker can claim it", async () => {
+    const person = `${fx.igUserId}-${randomUUID()}`;
+    const canonical = await seedConversation({ gate: "event", person });
+    const alias = await seedConversation({ gate: "none", person });
+    const gate = await prisma.gateQueue.create({
+      data: {
+        igUserId: person,
+        conversationId: alias,
+        commentId: `recon-pending-${randomUUID()}`,
+        gateMessage: "contract",
+        commentAt: CREATED_AT,
+        nextAttemptAt: CREATED_AT,
+        status: "pending",
+      },
+    });
+    let announceLocked!: () => void;
+    let releaseRows!: () => void;
+    const locked = new Promise<void>((resolve) => { announceLocked = resolve; });
+    const hold = new Promise<void>((resolve) => { releaseRows = resolve; });
+
+    const applying = repo.applyReconciledWindow(
+      {
+        igUserId: person,
+        keywordId: fx.keywordId,
+        canonicalId: canonical,
+        windowStartedAt: CREATED_AT,
+        lastTriggerAt: CREATED_AT,
+        windowExpiresAt: new Date(CREATED_AT.getTime() + 48 * 3600_000),
+        completedAt: null,
+        choice: "confirmed_gate",
+        aliases: [{ id: alias, state: "superseded", reason: "no_delivery" }],
+      },
+      new Date(),
+      {
+        afterWorkRowsLocked: async () => {
+          announceLocked();
+          await hold;
+        },
+      },
+    );
+    await locked;
+
+    let claimSettled = false;
+    const claim = prisma.gateQueue.updateMany({
+      where: { id: gate.id, status: "pending" },
+      data: {
+        status: "sending",
+        claimedAt: new Date(),
+        claimExpiresAt: new Date(Date.now() + 60_000),
+      },
+    }).finally(() => { claimSettled = true; });
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(claimSettled).toBe(false);
+    releaseRows();
+
+    expect((await applying).outcome).toBe("written");
+    expect((await claim).count).toBe(0);
+    expect(await prisma.gateQueue.findUniqueOrThrow({ where: { id: gate.id } })).toMatchObject({
+      status: "abandoned",
+      lastError: "reconciled_alias",
+    });
   });
 });
 

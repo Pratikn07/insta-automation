@@ -470,6 +470,10 @@ function installFetchStub(): void {
       });
     }
 
+    if (path === "/recovery-reminders/settings-verifications" && method === "GET") {
+      return json({ records: [] });
+    }
+
     if (path.startsWith("/recovery-reminders/") && method === "GET") {
       const id = path.split("/")[2]!;
       const row = currentRecoveryRows().find((r) => r.id === id) ?? currentRecoveryRows()[0]!;

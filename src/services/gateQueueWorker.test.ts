@@ -16,6 +16,19 @@ const flags = { experiment: false };
 const scheduleAcceptedGateRecovery = vi.fn();
 const scheduleSettingsBlockedRecovery = vi.fn();
 const scheduleTrackingUnavailableRecovery = vi.fn();
+const resolveActiveSettingsBlockedVerification = vi.fn();
+
+const VERIFIED_SETTINGS_EVIDENCE = {
+  verificationId: "10000000-0000-4000-8000-000000000017",
+  verificationVersion: "settings-proof-2026-08-08-v1",
+  graphCode: 10,
+  graphSubcode: 12345,
+  classifiedAt: new Date("2026-08-08T12:00:00Z"),
+  verifiedAt: new Date("2026-08-08T10:00:00Z"),
+  validUntil: new Date("2026-09-08T10:00:00Z"),
+  evidenceReference: "meta-sandbox/settings-proof-2026-08-08-v1",
+  evidenceSha256: "a".repeat(64),
+};
 
 vi.mock("../lib/prisma.js", () => ({ prisma: { gateQueue, conversation } }));
 vi.mock("./dmDeliveryService.js", () => ({ sendTrackedPrivateReply, sendTrackedText }));
@@ -44,6 +57,11 @@ vi.mock("./dmRecoveryService.js", () => ({
   scheduleAcceptedGateRecovery,
   scheduleSettingsBlockedRecovery,
   scheduleTrackingUnavailableRecovery,
+}));
+vi.mock("./settingsBlockedVerificationService.js", () => ({
+  resolveActiveSettingsBlockedVerification,
+  settingsBlockedVerificationRejectionReason: (error: { reason?: string }) =>
+    error?.reason ?? "verification_missing",
 }));
 
 const { runGateQueueTick } = await import("./gateQueueWorker.js");
@@ -114,6 +132,7 @@ beforeEach(() => {
     scheduleAcceptedGateRecovery,
     scheduleSettingsBlockedRecovery,
     scheduleTrackingUnavailableRecovery,
+    resolveActiveSettingsBlockedVerification,
     ...Object.values(logger),
   ]) {
     fn.mockReset();
@@ -131,6 +150,7 @@ beforeEach(() => {
   scheduleAcceptedGateRecovery.mockResolvedValue({ id: "rec-1", status: "waiting" });
   scheduleSettingsBlockedRecovery.mockResolvedValue({ id: "rec-2", status: "waiting" });
   scheduleTrackingUnavailableRecovery.mockResolvedValue({ id: "rec-3", status: "tracking_unavailable" });
+  resolveActiveSettingsBlockedVerification.mockResolvedValue(VERIFIED_SETTINGS_EVIDENCE);
 });
 
 describe("runGateQueueTick Graph failure privacy", () => {
@@ -271,6 +291,31 @@ describe("runGateQueueTick Recovery Scheduling (Task 7)", () => {
         conversationId: "conversation-1",
         commentId: "comment-1",
         mediaId: "media-1",
+        verification: VERIFIED_SETTINGS_EVIDENCE,
+      }),
+    );
+  });
+
+  it("abandons the rejected gate but creates no public fallback without active evidence", async () => {
+    gateQueue.findMany.mockResolvedValue([row]);
+    sendTrackedPrivateReply.mockRejectedValue(graphFailure(10, 12345));
+    resolveActiveSettingsBlockedVerification.mockRejectedValue(
+      Object.assign(new Error("stale"), { reason: "verification_stale" }),
+    );
+
+    await runGateQueueTick();
+
+    expect(gateQueue.update).toHaveBeenCalledWith({
+      where: { id: "gate-1" },
+      data: { status: "abandoned", attempts: 1, lastError: "settings_blocked" },
+    });
+    expect(scheduleSettingsBlockedRecovery).not.toHaveBeenCalled();
+    expect(logEvent).toHaveBeenCalledWith(
+      "dm_recovery_verification_rejected",
+      expect.objectContaining({
+        conversationId: "conversation-1",
+        commentId: "comment-1",
+        reason: "verification_stale",
       }),
     );
   });
@@ -433,12 +478,47 @@ describe("canonical intent completion", () => {
     );
   });
 
-  it("still delivers when the intent is open", async () => {
+  it("abandons an alias gate even when the intent is open", async () => {
     gateQueue.findMany.mockResolvedValue([row]);
     gateQueue.updateMany.mockResolvedValue({ count: 1 });
     conversation.findMany.mockResolvedValue([
-      { ...convoObj, state: "awaiting_done", canonicalIntent: { completedAt: null } },
+      {
+        ...convoObj,
+        state: "awaiting_done",
+        canonicalIntentId: "intent-1",
+        canonicalIntent: {
+          completedAt: null,
+          canonicalConversationId: "canonical-conversation",
+        },
+      },
     ]);
+
+    await runGateQueueTick();
+
+    expect(sendTrackedPrivateReply).not.toHaveBeenCalled();
+    expect(gateQueue.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "abandoned", lastError: "reconciled_alias" }),
+      }),
+    );
+  });
+
+  it("still delivers for the canonical owner while the intent is open", async () => {
+    conversation.findMany.mockResolvedValue([
+      {
+        ...convoObj,
+        canonicalIntentId: "intent-1",
+        canonicalIntent: {
+          completedAt: null,
+          canonicalConversationId: convoObj.id,
+        },
+      },
+    ]);
+    sendTrackedPrivateReply.mockResolvedValue({
+      instagramMessageId: "mid-1",
+      dmMessageId: "dm-1",
+      acceptedAt: new Date(),
+    });
 
     await runGateQueueTick();
 

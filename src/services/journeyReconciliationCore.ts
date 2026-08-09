@@ -42,7 +42,10 @@ export type ReconciledWindow = {
  *
  * Input must be sorted oldest-first; the caller does that in SQL.
  */
-export function partitionIntoWindows<T extends { createdAt: Date }>(sorted: T[]): T[][] {
+export function partitionIntoWindows<T extends { id: string; createdAt: Date }>(input: T[]): T[][] {
+  const sorted = [...input].sort(
+    (a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id),
+  );
   const windows: T[][] = [];
   let current: T[] = [];
 
@@ -82,7 +85,9 @@ export function partitionIntoWindows<T extends { createdAt: Date }>(sorted: T[])
 export function reconcileWindow(window: ReconcileCandidate[]): ReconciledWindow {
   if (window.length === 0) throw new Error("reconcileWindow: empty window");
 
-  const sorted = [...window].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  const sorted = [...window].sort(
+    (a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id),
+  );
 
   const canonical =
     sorted.find((row) => row.completed) ??

@@ -12,6 +12,10 @@ import {
   renderRecoveryCopy,
   RECOVERY_TEMPLATE_VERSION,
 } from "./dmRecoveryPolicy.js";
+import {
+  lockAndValidateSettingsBlockedVerificationEvidence,
+  type SettingsBlockedVerificationEvidence,
+} from "./settingsBlockedVerificationService.js";
 
 // ── Input types ──────────────────────────────────────────────────────────
 
@@ -34,7 +38,7 @@ export type SettingsBlockedRecoveryInput = {
   keywordSnapshot: string;
   commentId: string;
   mediaId: string | null;
-  rejectedAt: Date;
+  verification: SettingsBlockedVerificationEvidence;
 };
 
 export type TrackingUnavailableRecoveryInput = {
@@ -248,6 +252,9 @@ export async function scheduleSettingsBlockedRecovery(
   input: SettingsBlockedRecoveryInput,
 ): Promise<{ id: string; status: DmRecoveryStatus }> {
   const commentId = requireCommentOrigin(input.commentId);
+
+  // An exact webhook/retry replay must preserve the evidence captured on the
+  // original row even if the registry version was retired afterwards.
   const publicReplyText = renderRecoveryCopy("settings_blocked", input.keywordSnapshot);
 
   const createData = {
@@ -265,23 +272,40 @@ export async function scheduleSettingsBlockedRecovery(
     status: "waiting" as const,
     cohort: "not_applicable" as const,
     acceptedAt: null,
-    eligibleAt: input.rejectedAt,
+    eligibleAt: input.verification.classifiedAt,
     lastErrorCategory: null,
+    settingsEvidenceLegacy: false,
+    settingsVerificationId: input.verification.verificationId,
+    settingsVerificationVersion: input.verification.verificationVersion,
+    settingsGraphCode: input.verification.graphCode,
+    settingsGraphSubcode: input.verification.graphSubcode,
+    settingsClassifiedAt: input.verification.classifiedAt,
+    settingsEvidenceReference: input.verification.evidenceReference,
+    settingsEvidenceSha256: input.verification.evidenceSha256,
   };
 
-  const row = await prisma.dmRecoveryReminder.upsert({
-    where: { commentId },
-    create: createData,
-    update: {},
+  const row = await prisma.$transaction(async (tx) => {
+    const existing = await tx.dmRecoveryReminder.findUnique({
+      where: { commentId },
+      select: { id: true, status: true },
+    });
+    if (existing) return existing;
+
+    await lockAndValidateSettingsBlockedVerificationEvidence(tx, input.verification);
+    return tx.dmRecoveryReminder.upsert({
+      where: { commentId },
+      create: createData,
+      update: {},
+    });
   });
 
   logger.info(
     {
       eventCode: "dm_recovery_created",
       id: row.id,
-      triggerKind: row.triggerKind,
+      triggerKind: "settings_blocked",
       status: row.status,
-      cohort: row.cohort,
+      cohort: "not_applicable",
     },
     "Recovery reminder created (settings blocked)",
   );

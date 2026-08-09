@@ -114,6 +114,13 @@ describe("recheckBeforeSend — the comment must be there", () => {
     });
   });
 
+  it("suppresses only after the complete approved source set is exhausted", () => {
+    expect(recheckBeforeSend(facts({ sourceComment: "source_set_exhausted" }))).toEqual({
+      kind: "suppress",
+      reason: "source_set_exhausted",
+    });
+  });
+
   // QA-09. THE distinction that was missing: a read we could not complete must never
   // read as "the comment is gone". The worker caught every failure and reported
   // not-there, so one timeout permanently suppressed a candidate whose comment was

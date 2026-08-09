@@ -6,22 +6,35 @@ import { replyToComment } from "../meta/replyToComment.js";
 import { fetchComment } from "../meta/fetchComment.js";
 import { classifyPublicReplyFailure, classifySourceReadFailure } from "./graphErrorClassifier.js";
 import { evaluateRecoveryHealth, openRecoveryCircuit } from "./dmRecoveryHealth.js";
-import { completeCampaignIfDrained } from "./recoveryCampaignControl.js";
+import {
+  completeCampaignIfDrained,
+  reconcileDrainedCampaigns,
+} from "./recoveryCampaignControl.js";
 import { evaluateCampaignHealth } from "./historicalRecoveryHealth.js";
+import { reconcilePendingInboundCampaignHealthSignals } from "./campaignHealthObservation.js";
+import { reconcileHistoricalRecoveryAttributionSafely } from "./historicalRecoveryAttribution.js";
 import { recheckBeforeSend, type SourceCommentState } from "./historicalRecoveryRecheck.js";
+import { resolveApprovedHistoricalSource } from "./historicalRecoverySourceChoice.js";
 import {
   type ClaimedCandidate,
   listDueCandidateIds,
   claimCandidate,
   reconcileExpiredCandidateLeases,
   releaseCandidateClaim,
-  markCandidateSent,
   markCandidateSuppressed,
   markCandidateFailed,
-  markCandidateUncertain,
   countCandidatesSentSince,
-  reserveSendCapacity,
+  reserveHistoricalDispatch,
+  startHistoricalDispatch,
+  releaseHistoricalReservation,
+  finalizeHistoricalDispatch,
 } from "./historicalRecoveryRepository.js";
+import {
+  acquireHistoricalTick,
+  finishHistoricalTick,
+  openCampaignBatch,
+  type HistoricalTickLease,
+} from "./historicalRecoveryTickRepository.js";
 
 /**
  * Send historical recovery reminders for approved, running campaigns.
@@ -79,7 +92,6 @@ export async function runHistoricalRecoveryTick(): Promise<HistoricalTickResult>
 
 async function runTickBody(): Promise<HistoricalTickResult> {
   const now = new Date();
-  const result = empty();
 
   // Two switches, both required. DM_RECOVERY_ENABLED is the master stop shared with
   // the prospective feature; DM_RECOVERY_HISTORICAL_ENABLED is specific to these
@@ -87,6 +99,34 @@ async function runTickBody(): Promise<HistoricalTickResult> {
   // nothing is posted.
   if (!env.DM_RECOVERY_ENABLED) return empty("disabled");
   if (!env.DM_RECOVERY_HISTORICAL_ENABLED) return empty("historical_disabled");
+
+  const tick = await acquireHistoricalTick(
+    now,
+    new Date(now.getTime() + env.DM_RECOVERY_LEASE_MS),
+  );
+  if (!tick) return empty("tick_already_running");
+
+  try {
+    return await runLeasedTickBody(now, tick);
+  } finally {
+    try {
+      await finishHistoricalTick(tick.token, new Date());
+    } catch {
+      // Lease expiry is the crash fallback. Keep the result truthful when sends already
+      // completed, while making the failed cleanup visible without logging DB detail.
+      logger.error(
+        { errorCode: "historical_tick_finish_failed" },
+        "Historical recovery tick lease could not be cleared",
+      );
+    }
+  }
+}
+
+async function runLeasedTickBody(
+  now: Date,
+  tick: HistoricalTickLease,
+): Promise<HistoricalTickResult> {
+  const result = empty();
 
   // A lease that expired means the process died holding a claim. Rows where dispatch had
   // started are parked as uncertain, never retried — the comment may exist. Rows that
@@ -100,24 +140,68 @@ async function runTickBody(): Promise<HistoricalTickResult> {
     });
   }
 
+  // Live attribution can race finalization or fail after the source event commits.
+  // Replaying durable DM/conversation evidence on every leased tick closes both gaps.
+  await reconcileHistoricalRecoveryAttributionSafely();
+
+  // Independent of rows touched by this process. A previous worker may have committed
+  // the final outcome and exited before campaign completion bookkeeping.
+  await reconcileDrainedCampaigns(now);
+
+  // The webhook endpoint acknowledges before handler work, so a transient health-write
+  // failure cannot rely on Meta replay. New inbound rows are a durable safety inbox.
+  // Drain it before any batch opens and fail closed while a row failed or more remain.
+  const inboundHealth = await reconcilePendingInboundCampaignHealthSignals(now);
+  if (inboundHealth.failed > 0) return empty("campaign_health_capture_failed");
+  if (inboundHealth.remaining) return empty("campaign_health_capture_pending");
+
   // Same circuit as the prospective path: an auth failure or a webhook gap should
   // stop BOTH kinds of send, since they share credentials and evidence.
   const health = await evaluateRecoveryHealth(now);
   if (health.circuitOpen) return empty("circuit_open");
 
-  // The campaign's staged batch size governs this tick, capped by the env value as an
-  // emergency global maximum (QA-08).
-  //
-  // The worker previously used only DM_RECOVERY_BATCH_SIZE, so advancing batch_size in
-  // the dashboard or the API changed a stored number and nothing else — the staged
-  // rollout the plan depends on had no effect at all. Verified in production: two
-  // campaigns carried batch_size 1 and 5 while the worker sent 5 regardless.
-  //
-  // The smallest batch size among running campaigns wins, because a tick can span
-  // campaigns and the conservative one must not be overrun by a larger sibling.
-  const campaignBatch = await smallestRunningBatchSize();
-  const batchSize = Math.min(campaignBatch ?? env.DM_RECOVERY_BATCH_SIZE, env.DM_RECOVERY_BATCH_SIZE);
-  const ids = await listDueCandidateIds(now, batchSize);
+  const stoppedCampaigns = new Set<string>();
+
+  // Each running campaign gets its own durable batch row. A small pilot no longer
+  // throttles an unrelated campaign, and the allowance is enforced again under the
+  // final dispatch-start locks rather than trusted to this in-memory loop.
+  const runningCampaigns = await prisma.recoveryCampaign.findMany({
+    where: { state: "running" },
+    select: { id: true },
+    orderBy: { id: "asc" },
+  });
+  const work: Array<{
+    id: string;
+    campaignId: string;
+    batchRunId: string;
+    allowance: number;
+  }> = [];
+  for (const campaign of runningCampaigns) {
+    try {
+      const campaignHealth = await evaluateCampaignHealth(campaign.id, new Date());
+      if (campaignHealth.stopReason) {
+        stoppedCampaigns.add(campaign.id);
+        result.skipped = `campaign_auto_paused:${campaignHealth.stopReason}`;
+        continue;
+      }
+    } catch {
+      // Unknown health is not permission to post. Stop this campaign before even
+      // opening a batch; other campaigns get their own independent check.
+      stoppedCampaigns.add(campaign.id);
+      result.skipped = "campaign_health_check_failed";
+      logger.error(
+        { errorCode: "historical_campaign_health_check_failed", campaignId: campaign.id },
+        "Could not evaluate campaign health before dispatch",
+      );
+      continue;
+    }
+    const batch = await openCampaignBatch(tick, campaign.id, now);
+    if (!batch) continue;
+    const ids = await listDueCandidateIds(now, batch.allowance, campaign.id);
+    for (const id of ids) {
+      work.push({ id, campaignId: campaign.id, batchRunId: batch.id, allowance: batch.allowance });
+    }
+  }
   const leaseMs = env.DM_RECOVERY_LEASE_MS;
   const hourAgo = new Date(now.getTime() - 60 * 60 * 1000);
   const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
@@ -137,14 +221,40 @@ async function runTickBody(): Promise<HistoricalTickResult> {
    * the row, so no observation the health check reads has changed.
    */
   const campaignsToEvaluate = new Set<string>();
+  const campaignDispatchStarts = new Map<string, number>();
 
-  for (const id of ids) {
+  const observeTerminalOutcome = async (campaignId: string): Promise<void> => {
+    campaignsToEvaluate.add(campaignId);
+    try {
+      const health = await evaluateCampaignHealth(campaignId, new Date());
+      if (health.stopReason) {
+        stoppedCampaigns.add(campaignId);
+        result.skipped = `campaign_auto_paused:${health.stopReason}`;
+      }
+    } catch {
+      stoppedCampaigns.add(campaignId);
+      result.skipped = "campaign_health_check_failed";
+      logger.error(
+        { errorCode: "historical_campaign_health_check_failed", campaignId },
+        "Could not evaluate campaign health after a terminal outcome",
+      );
+    }
+  };
+
+  for (const item of work) {
+    const { id } = item;
+    if (stoppedCampaigns.has(item.campaignId)) continue;
     // listDueCandidateIds over-fetches so a suppressed row does not consume a slot;
-    // the cap has to be applied here or that headroom becomes extra public comments.
-    if (result.sent >= batchSize) break;
+    // dispatch starts, not successful replies, consume the durable allowance.
+    if ((campaignDispatchStarts.get(item.campaignId) ?? 0) >= item.allowance) continue;
     result.examined++;
 
-    const claimed = await claimCandidate(id, now, new Date(now.getTime() + leaseMs));
+    const claimAt = new Date();
+    const claimed = await claimCandidate(
+      id,
+      claimAt,
+      new Date(claimAt.getTime() + leaseMs),
+    );
     if (!claimed) continue;
 
     // Everything between the claim and the dispatch happens here, and a failure inside
@@ -190,7 +300,9 @@ async function runTickBody(): Promise<HistoricalTickResult> {
       completedSinceSelection: facts.completedCount > 0,
       contactedSinceSelection: facts.priorRecoveryCount > 0,
       audienceOrigin: facts.audienceOrigin,
-      westernOnly: env.DM_RECOVERY_WESTERN_ONLY,
+      // Never relax the policy the owner approved. A stricter current emergency
+      // setting applies immediately; a legacy/null snapshot is withheld at final start.
+      westernOnly: facts.approvedWesternOnly === true || env.DM_RECOVERY_WESTERN_ONLY,
       campaignRunning: facts.campaignState === "running",
       sentThisHour: facts.sentThisHour,
       hourlyCap: facts.hourlyCap,
@@ -211,7 +323,7 @@ async function runTickBody(): Promise<HistoricalTickResult> {
           // records why we stopped asking rather than claiming it does not exist.
           if (await markCandidateFailed(id, claimed.claimToken, "source_read_exhausted")) {
             result.failed++;
-            campaignsToEvaluate.add(claimed.campaignId);
+            await observeTerminalOutcome(claimed.campaignId);
           }
           continue;
         }
@@ -230,7 +342,7 @@ async function runTickBody(): Promise<HistoricalTickResult> {
         decision.reason === "campaign_not_running"
       ) {
         result.skipped = decision.reason;
-        break;
+        stoppedCampaigns.add(item.campaignId);
       }
       continue;
     }
@@ -238,13 +350,13 @@ async function runTickBody(): Promise<HistoricalTickResult> {
     if (decision.kind === "suppress") {
       if (await markCandidateSuppressed(id, claimed.claimToken, decision.reason)) {
         result.suppressed++;
-        campaignsToEvaluate.add(claimed.campaignId);
         await logEvent("historical_recovery_suppressed", {
           candidateId: id,
           campaignId: claimed.campaignId,
           igUserId: claimed.igUserId,
           reason: decision.reason,
         });
+        await observeTerminalOutcome(claimed.campaignId);
       }
       continue;
     }
@@ -256,35 +368,109 @@ async function runTickBody(): Promise<HistoricalTickResult> {
     // same `dm_recovery_control` lock the prospective path takes and stamps the row
     // in-flight inside it, so the slot is genuinely consumed before Meta is called and
     // the two systems serialise against each other rather than just counting each other.
-    const refused = await reserveSendCapacity({
+    const reservationAt = new Date();
+    const reservation = await reserveHistoricalDispatch({
       candidateId: id,
-      campaignId: claimed.campaignId,
-      now,
+      claimToken: claimed.claimToken,
+      now: reservationAt,
       hourlyCap: facts.hourlyCap,
       dailyCap: facts.dailyCap,
       globalHourlyCap: env.DM_RECOVERY_HOURLY_CAP,
+      globalDailyCap: env.DM_RECOVERY_GLOBAL_DAILY_CAP,
+      prospectiveCooldownHours: env.DM_RECOVERY_COOLDOWN_HOURS ?? 24,
     });
-    if (refused) {
+    if (reservation.kind === "blocked") {
+      if (
+        reservation.reason === "person_cooldown" ||
+        reservation.reason === "reconciled_alias"
+      ) {
+        if (await markCandidateSuppressed(id, claimed.claimToken, reservation.reason)) {
+          result.suppressed++;
+          await observeTerminalOutcome(claimed.campaignId);
+        }
+        continue;
+      }
       await releaseCandidateClaim(id, claimed.claimToken);
       result.deferred++;
-      // A cap applies to every remaining row, so continuing would release them all
-      // one at a time for nothing.
-      result.skipped = refused;
-      break;
+      if (
+        reservation.reason === "hourly_cap_reached" ||
+        reservation.reason === "daily_cap_reached"
+      ) {
+        result.skipped = reservation.reason;
+        stoppedCampaigns.add(item.campaignId);
+        continue;
+      }
+      if (
+        reservation.reason === "global_hourly_cap_reached" ||
+        reservation.reason === "global_daily_cap_reached" ||
+        reservation.reason === "circuit_open"
+      ) {
+        result.skipped = reservation.reason;
+        break;
+      }
+      continue;
     }
 
-    // Past the reservation the row will reach an outcome on this tick — sent, failed, or
-    // uncertain — so the campaign is registered here rather than after a successful post.
-    // A rate-limited retry is the one exception, and including it is right too: a
-    // campaign Meta is throttling is worth a health reading.
-    campaignsToEvaluate.add(claimed.campaignId);
+    const dispatchStart = await startHistoricalDispatch({
+      candidateId: id,
+      claimToken: claimed.claimToken,
+      batchRunId: item.batchRunId,
+      dispatchId: reservation.dispatchId,
+      reservationToken: reservation.reservationToken,
+      commentId: facts.sourceCommentId!,
+      currentWesternOnly: env.DM_RECOVERY_WESTERN_ONLY,
+      now: new Date(),
+    });
+    if (dispatchStart.kind === "suppressed") {
+      result.suppressed++;
+      await logEvent("historical_recovery_suppressed", {
+        candidateId: id,
+        campaignId: claimed.campaignId,
+        igUserId: claimed.igUserId,
+        reason: dispatchStart.reason,
+        boundary: "final_locked_authorization",
+      });
+      await observeTerminalOutcome(claimed.campaignId);
+      continue;
+    }
+    if (dispatchStart.kind === "blocked") {
+      await releaseHistoricalReservation({
+        candidateId: id,
+        claimToken: claimed.claimToken,
+        dispatchId: reservation.dispatchId,
+        reservationToken: reservation.reservationToken,
+        at: new Date(),
+        reason: `dispatch_start_rejected:${dispatchStart.reason}`,
+      });
+      result.deferred++;
+      if (
+        dispatchStart.reason === "circuit_open" ||
+        dispatchStart.reason === "campaign_health_capture_pending" ||
+        dispatchStart.reason === "batch_not_active" ||
+        dispatchStart.reason === "campaign_policy_incomplete"
+      ) {
+        result.skipped = dispatchStart.reason;
+        break;
+      }
+      if (
+        dispatchStart.reason === "campaign_not_running" ||
+        dispatchStart.reason === "campaign_batch_exhausted"
+      ) {
+        stoppedCampaigns.add(item.campaignId);
+      }
+      continue;
+    }
+    campaignDispatchStarts.set(
+      item.campaignId,
+      (campaignDispatchStarts.get(item.campaignId) ?? 0) + 1,
+    );
 
     // Only an explicit `send` reaches Meta. Written as a positive check so any
     // decision kind added later defaults to NOT posting publicly.
     let replyId: string | null = null;
     let sendError: unknown = null;
     try {
-      const reply = await replyToComment(claimed.commentId, claimed.publicReplyText);
+      const reply = await replyToComment(facts.sourceCommentId!, claimed.publicReplyText);
       replyId = reply.replyId;
     } catch (error) {
       sendError = error;
@@ -295,7 +481,14 @@ async function runTickBody(): Promise<HistoricalTickResult> {
       const category = classifyPublicReplyFailure(meta);
 
       if (category === "open_circuit") {
-        await markCandidateFailed(id, claimed.claimToken, "auth_or_permission");
+        const finalized = await finalizeHistoricalDispatch({
+          candidateId: id,
+          claimToken: claimed.claimToken,
+          dispatchId: reservation.dispatchId,
+          reservationToken: reservation.reservationToken,
+          outcome: { kind: "failed", at: new Date(), reason: "auth_or_permission" },
+        });
+        if (finalized) await observeTerminalOutcome(claimed.campaignId);
         await openRecoveryCircuit("auth_or_permission", now);
         result.failed++;
         break; // Credentials will not fix themselves inside this batch.
@@ -303,7 +496,13 @@ async function runTickBody(): Promise<HistoricalTickResult> {
 
       if (category === "permanent") {
         const reason = meta.graphCode ? `code_${meta.graphCode}` : "permanent";
-        if (await markCandidateFailed(id, claimed.claimToken, reason)) {
+        if (await finalizeHistoricalDispatch({
+          candidateId: id,
+          claimToken: claimed.claimToken,
+          dispatchId: reservation.dispatchId,
+          reservationToken: reservation.reservationToken,
+          outcome: { kind: "failed", at: new Date(), reason },
+        })) {
           result.failed++;
           await logEvent("historical_recovery_send_failed", {
             candidateId: id,
@@ -311,6 +510,7 @@ async function runTickBody(): Promise<HistoricalTickResult> {
             igUserId: claimed.igUserId,
             category: reason,
           });
+          await observeTerminalOutcome(claimed.campaignId);
         }
         continue;
       }
@@ -322,19 +522,43 @@ async function runTickBody(): Promise<HistoricalTickResult> {
         // Durable backoff with jitter, and a ceiling. Releasing the claim with no
         // record meant a rate-limited row was retried on every tick indefinitely.
         if (claimed.attempts >= MAX_ATTEMPTS) {
-          if (await markCandidateFailed(id, claimed.claimToken, "rate_limit_exhausted")) {
+          if (await finalizeHistoricalDispatch({
+            candidateId: id,
+            claimToken: claimed.claimToken,
+            dispatchId: reservation.dispatchId,
+            reservationToken: reservation.reservationToken,
+            outcome: { kind: "failed", at: new Date(), reason: "rate_limit_exhausted" },
+          })) {
             result.failed++;
+            await observeTerminalOutcome(claimed.campaignId);
           }
           continue;
         }
-        await releaseCandidateClaim(id, claimed.claimToken, nextAttempt(claimed.attempts, now));
+        await finalizeHistoricalDispatch({
+          candidateId: id,
+          claimToken: claimed.claimToken,
+          dispatchId: reservation.dispatchId,
+          reservationToken: reservation.reservationToken,
+          outcome: {
+            kind: "released",
+            at: new Date(),
+            reason: "rate_limit",
+            nextAttemptAt: nextAttempt(claimed.attempts, now),
+          },
+        });
         result.deferred++;
         continue;
       }
 
       // Timeout, reset, or anything unrecognised: the comment may have posted, so
       // never retried automatically.
-      if (await markCandidateUncertain(id, claimed.claimToken, meta.category ?? "unknown")) {
+      if (await finalizeHistoricalDispatch({
+        candidateId: id,
+        claimToken: claimed.claimToken,
+        dispatchId: reservation.dispatchId,
+        reservationToken: reservation.reservationToken,
+        outcome: { kind: "uncertain", reason: meta.category ?? "unknown" },
+      })) {
         result.uncertain++;
         await logEvent("historical_recovery_send_uncertain", {
           candidateId: id,
@@ -342,6 +566,7 @@ async function runTickBody(): Promise<HistoricalTickResult> {
           igUserId: claimed.igUserId,
           category: meta.category ?? "unknown",
         });
+        await observeTerminalOutcome(claimed.campaignId);
       }
       continue;
     }
@@ -350,7 +575,13 @@ async function runTickBody(): Promise<HistoricalTickResult> {
     // cannot prove it, and chk_candidate_sent_has_reply_id would reject `sent`
     // anyway — so this is uncertain, not sent.
     if (!replyId) {
-      if (await markCandidateUncertain(id, claimed.claimToken, "missing_reply_id")) {
+      if (await finalizeHistoricalDispatch({
+        candidateId: id,
+        claimToken: claimed.claimToken,
+        dispatchId: reservation.dispatchId,
+        reservationToken: reservation.reservationToken,
+        outcome: { kind: "uncertain", reason: "missing_reply_id" },
+      })) {
         result.uncertain++;
         await logEvent("historical_recovery_send_uncertain", {
           candidateId: id,
@@ -358,11 +589,18 @@ async function runTickBody(): Promise<HistoricalTickResult> {
           igUserId: claimed.igUserId,
           category: "missing_reply_id",
         });
+        await observeTerminalOutcome(claimed.campaignId);
       }
       continue;
     }
 
-    if (await markCandidateSent(id, claimed.claimToken, { publicReplyId: replyId, sentAt: new Date() })) {
+    if (await finalizeHistoricalDispatch({
+      candidateId: id,
+      claimToken: claimed.claimToken,
+      dispatchId: reservation.dispatchId,
+      reservationToken: reservation.reservationToken,
+      outcome: { kind: "sent", at: new Date(), providerReplyId: replyId },
+    })) {
       result.sent++;
       await logEvent("historical_recovery_sent", {
         candidateId: id,
@@ -373,6 +611,7 @@ async function runTickBody(): Promise<HistoricalTickResult> {
         evidence: claimed.evidence,
         arm: claimed.arm,
       });
+      await observeTerminalOutcome(claimed.campaignId);
     } else {
       // The row moved underneath us after a successful post. Recorded rather than
       // silently dropped: the comment IS live on Instagram.
@@ -383,6 +622,10 @@ async function runTickBody(): Promise<HistoricalTickResult> {
       });
     }
   }
+
+  // Pick up events that landed after dispatch-start but before this tick finalized the
+  // candidate. A failure is logged and retried by the next tick's replay above.
+  await reconcileHistoricalRecoveryAttributionSafely();
 
   // Close any campaign this tick finished (QA-12).
   //
@@ -397,21 +640,7 @@ async function runTickBody(): Promise<HistoricalTickResult> {
   // because the bookkeeping afterwards broke.
   for (const campaignId of campaignsToEvaluate) {
     try {
-      // Stop conditions BEFORE completion (QA-13). `evaluateRecoveryHealth` reads only
-      // dm_recovery_reminder, so a historical campaign could be failing on real people's
-      // public comments while the shared circuit stayed closed on a healthy prospective
-      // feature. This is scoped to the campaign and pauses only that campaign — the
-      // shared circuit stays reserved for genuinely shared faults like a broken token.
-      //
-      // Ordered first because a campaign that has just tripped a stop condition should
-      // read as `paused`, not `completed`: completing it would hide the fault behind a
-      // state that looks like success.
-      const health = await evaluateCampaignHealth(campaignId, now);
-      if (health.stopReason) {
-        result.skipped = `campaign_auto_paused:${health.stopReason}`;
-        continue;
-      }
-
+      if (stoppedCampaigns.has(campaignId)) continue;
       await completeCampaignIfDrained(campaignId, now);
     } catch (err) {
       logger.error(
@@ -420,6 +649,8 @@ async function runTickBody(): Promise<HistoricalTickResult> {
       );
     }
   }
+
+  await reconcileDrainedCampaigns(now);
 
   return result;
 }
@@ -476,12 +707,14 @@ type PreDispatchFacts = {
   hourlyCap: number;
   dailyCap: number;
   audienceOrigin: string | null;
+  approvedWesternOnly: boolean | null;
   inboundCount: number;
   completedCount: number;
   priorRecoveryCount: number;
   sentThisHour: number;
   sentToday: number;
   sourceComment: SourceCommentState;
+  sourceCommentId: string | null;
 };
 
 async function gatherPreDispatchFacts(
@@ -491,10 +724,10 @@ async function gatherPreDispatchFacts(
 ): Promise<PreDispatchFacts> {
   // All of these could have changed since selection, which is the whole reason §34
   // requires a recheck rather than trusting the snapshot.
-  const [campaign, person, recentContact, sourceComment, capacity] = await Promise.all([
+  const [campaign, person, recentContact, sourceResolution, capacity] = await Promise.all([
     prisma.recoveryCampaign.findUnique({
       where: { id: claimed.campaignId },
-      select: { state: true, hourlyCap: true, dailyCap: true },
+      select: { state: true, hourlyCap: true, dailyCap: true, westernOnly: true },
     }),
     prisma.igUser.findUnique({
       where: { id: claimed.igUserId },
@@ -530,33 +763,19 @@ async function gatherPreDispatchFacts(
           completedAt: { gte: claimed.selectedAt },
         },
       }),
-      // Both recovery systems, because either one posting publicly on this person is a
-      // reason not to post again.
-      Promise.all([
-        prisma.dmRecoveryReminder.count({
-          where: {
-            igUserId: claimed.igUserId,
-            status: { in: ["sent", "sending", "send_uncertain"] },
-            OR: [
-              { sentAt: { gte: claimed.selectedAt } },
-              { lastAttemptAt: { gte: claimed.selectedAt } },
-            ],
-          },
-        }),
-        prisma.recoveryCandidate.count({
-          where: {
-            igUserId: claimed.igUserId,
-            id: { not: claimed.id },
-            OR: [
-              { outcome: "sent", sentAt: { gte: claimed.selectedAt } },
-              { outcome: "send_uncertain", lastAttemptAt: { gte: claimed.selectedAt } },
-            ],
-          },
-        }),
-      ]).then(([prospective, historical]) => prospective + historical),
+      // The shared ledger is the only cooldown authority. It contains both recovery
+      // systems, so this advisory recheck cannot drift from the locked reservation.
+      prisma.publicRecoveryDispatch.count({
+        where: {
+          igUserId: claimed.igUserId,
+          state: { in: ["sent", "uncertain"] },
+          dispatchStartedAt: { gte: claimed.selectedAt },
+        },
+      }),
     ]),
-    // The Graph read that catches a deleted or hidden comment.
-    readSourceComment(claimed.commentId),
+    // Resolve only within the immutable source set the owner reviewed. Definitive
+    // absence may advance; auth/transient/unknown reads never redirect a public reply.
+    resolveApprovedHistoricalSource(claimed.sources, readSourceComment),
     Promise.all([
       countCandidatesSentSince(claimed.campaignId, hourAgo),
       countCandidatesSentSince(claimed.campaignId, dayAgo),
@@ -565,6 +784,9 @@ async function gatherPreDispatchFacts(
 
   const [inboundCount, completedCount, priorRecoveryCount] = recentContact;
   const [sentThisHour, sentToday] = capacity;
+  const sourceComment: SourceCommentState = sourceResolution.kind === "selected"
+    ? "visible"
+    : sourceResolution.reason;
 
   return {
     campaignState: campaign?.state ?? null,
@@ -574,26 +796,13 @@ async function gatherPreDispatchFacts(
     hourlyCap: campaign?.hourlyCap ?? 3,
     dailyCap: campaign?.dailyCap ?? 10,
     audienceOrigin: person?.inferredOrigin ?? null,
+    approvedWesternOnly: campaign?.westernOnly ?? null,
     inboundCount,
     completedCount,
     priorRecoveryCount,
     sentThisHour,
     sentToday,
     sourceComment,
+    sourceCommentId: sourceResolution.kind === "selected" ? sourceResolution.commentId : null,
   };
-}
-
-/**
- * The smallest batch size among running campaigns, or null when none are running.
- *
- * Smallest rather than per-campaign because one tick can touch rows from several
- * campaigns, and a campaign still at stage 0 (batch 1) must not have its pacing
- * overridden by a sibling at stage 3.
- */
-async function smallestRunningBatchSize(): Promise<number | null> {
-  const row = await prisma.recoveryCampaign.aggregate({
-    where: { state: "running" },
-    _min: { batchSize: true },
-  });
-  return row._min.batchSize ?? null;
 }

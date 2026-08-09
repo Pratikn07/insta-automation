@@ -129,4 +129,60 @@ describe("Conversations recovery lens", () => {
       ).toBe(true),
     );
   });
+
+  it("keeps canonical and raw history in independent requests and labels aliases", async () => {
+    api.mockImplementation((path: string) => {
+      if (path.startsWith("/conversations/counts")) {
+        return Promise.resolve({
+          awaiting_done: 0,
+          completed: 1,
+          expired: 0,
+          retrying: 0,
+          waitingOnReply: 0,
+        });
+      }
+      if (path.startsWith("/conversations?") && path.includes("mode=raw")) {
+        return Promise.resolve({
+          items: [
+            {
+              id: "alias-1",
+              igUserId: "person-1",
+              keywordId: "keyword-1",
+              state: "completed",
+              delivery: null,
+              createdAt: "2026-08-08T20:00:00.000Z",
+              completedAt: "2026-08-08T21:00:00.000Z",
+              keyword: { id: "keyword-1", keyword: "SLEEP" },
+              historyRole: "alias",
+              canonicalOwner: { id: "canonical-1" },
+              aliasCount: 0,
+            },
+          ],
+          nextCursor: null,
+        });
+      }
+      return Promise.resolve({ items: [], nextCursor: null });
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole("button", { name: /Waiting/ }));
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith(expect.stringContaining("mode=canonical")),
+    );
+    expect(screen.getByRole("button", { name: "Canonical" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Raw history" }));
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith(expect.stringContaining("mode=raw")),
+    );
+    expect(await screen.findByText(/Alias history · canonical owner canonical-1/))
+      .toBeInTheDocument();
+
+    const paths = api.mock.calls.map(([path]) => String(path));
+    expect(paths.some((path) => path.includes("/conversations?") && path.includes("mode=canonical")))
+      .toBe(true);
+    expect(paths.some((path) => path.includes("/conversations?") && path.includes("mode=raw")))
+      .toBe(true);
+  });
 });

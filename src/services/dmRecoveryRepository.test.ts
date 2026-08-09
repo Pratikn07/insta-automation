@@ -10,9 +10,10 @@ const queryRaw = vi.fn();
 const controlFindUnique = vi.fn();
 const convoFindUnique = vi.fn();
 const igUserFindUnique = vi.fn();
-// QA-04: the prospective final authorization now consults historical sends. Defaults
-// to null (nobody contacted historically) so existing cases are unaffected.
-const candidateFindFirst = vi.fn();
+const dispatchFindFirst = vi.fn();
+const dispatchFindUnique = vi.fn();
+const dispatchCreate = vi.fn();
+const dispatchCount = vi.fn();
 // QA-06: it also reads the canonical intent and any sibling conversation, because the
 // denormalised completion stamp is best-effort and cannot be the safety authority. Both
 // default to null (nothing else in the journey completed).
@@ -26,7 +27,12 @@ const txClient = {
   conversation: { findUnique: convoFindUnique, findFirst: convoFindFirst },
   journeyIntent: { findUnique: intentFindUnique },
   igUser: { findUnique: igUserFindUnique },
-  recoveryCandidate: { findFirst: candidateFindFirst },
+  publicRecoveryDispatch: {
+    findFirst: dispatchFindFirst,
+    findUnique: dispatchFindUnique,
+    create: dispatchCreate,
+    count: dispatchCount,
+  },
   $queryRaw: queryRaw,
 };
 
@@ -39,7 +45,12 @@ vi.mock("../lib/prisma.js", () => ({
     conversation: { findUnique: convoFindUnique, findFirst: convoFindFirst },
     journeyIntent: { findUnique: intentFindUnique },
     igUser: { findUnique: igUserFindUnique },
-    recoveryCandidate: { findFirst: candidateFindFirst },
+    publicRecoveryDispatch: {
+      findFirst: dispatchFindFirst,
+      findUnique: dispatchFindUnique,
+      create: dispatchCreate,
+      count: dispatchCount,
+    },
     $queryRaw: queryRaw,
     $transaction,
   },
@@ -50,14 +61,18 @@ vi.mock("../lib/logger.js", () => ({
   logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 vi.mock("../config/env.js", () => ({
-  env: { DM_RECOVERY_LEASE_MS: 900_000, DM_RECOVERY_HOURLY_CAP: 30, DM_RECOVERY_WESTERN_ONLY: false },
+  env: {
+    DM_RECOVERY_LEASE_MS: 900_000,
+    DM_RECOVERY_HOURLY_CAP: 30,
+    DM_RECOVERY_GLOBAL_DAILY_CAP: 100,
+    DM_RECOVERY_WESTERN_ONLY: false,
+  },
 }));
 
 const {
   listDueRecoveryIds,
   claimRecovery,
   authorizeClaimForSend,
-  markRecoverySent,
   releaseOrSuppressClaim,
   resolveAudienceOrigin,
 } = await import("./dmRecoveryRepository.js");
@@ -80,6 +95,7 @@ function candidate(overrides: Record<string, unknown> = {}) {
     nextAttemptAt: null,
     acceptedAt: new Date("2026-08-05T23:00:00Z"),
     attempts: 0,
+    claimToken: "token-1",
     claimExpiresAt: LEASE,
     seenAt: null,
     engagedAt: null,
@@ -91,16 +107,20 @@ function candidate(overrides: Record<string, unknown> = {}) {
 }
 
 /** findFirst serves two different lookups; route by the shape of the where. */
-function routeFindFirst(opts: { cooldown?: unknown; newer?: unknown } = {}) {
-  findFirst.mockImplementation(async (args: any) =>
-    args?.where?.status === "waiting" ? (opts.newer ?? null) : (opts.cooldown ?? null),
-  );
+function routeFindFirst(opts: { newer?: unknown } = {}) {
+  findFirst.mockImplementation(async (args: any) => {
+    if (args?.where?.claimToken) {
+      return candidate({ status: "sending", claimToken: args.where.claimToken });
+    }
+    return args?.where?.status === "waiting" ? (opts.newer ?? null) : null;
+  });
 }
 
 beforeEach(() => {
   for (const fn of [
     findMany, findUnique, findFirst, updateMany, update, count,
-    queryRaw, controlFindUnique, convoFindUnique, igUserFindUnique, candidateFindFirst,
+    queryRaw, controlFindUnique, convoFindUnique, igUserFindUnique,
+    dispatchFindFirst, dispatchFindUnique, dispatchCreate, dispatchCount,
     intentFindUnique, convoFindFirst,
     logEvent, $transaction,
   ]) {
@@ -116,8 +136,10 @@ beforeEach(() => {
   intentFindUnique.mockResolvedValue(null);
   convoFindFirst.mockResolvedValue(null);
   igUserFindUnique.mockResolvedValue({ username: "emily_r", name: "Emily Robbins" });
-  // No historical contact by default, so each case tests the rule it was written for.
-  candidateFindFirst.mockResolvedValue(null);
+  dispatchFindFirst.mockResolvedValue(null);
+  dispatchFindUnique.mockResolvedValue(null);
+  dispatchCount.mockResolvedValue(0);
+  dispatchCreate.mockResolvedValue({ id: "dispatch-1" });
   controlFindUnique.mockResolvedValue({ circuitOpen: false });
   count.mockResolvedValue(0);
   updateMany.mockResolvedValue({ count: 1 });
@@ -147,12 +169,14 @@ describe("listDueRecoveryIds", () => {
     findUnique.mockResolvedValue(candidate());
     await claimRecovery("rec-1", NOW, LEASE);
 
-    const cooldownCall = findFirst.mock.calls.find(
-      ([args]) => args?.where?.status !== "waiting",
+    const cooldownCall = dispatchFindFirst.mock.calls.find(
+      ([args]) => Array.isArray(args?.where?.OR),
     );
-    const [sentClause] = cooldownCall![0].where.OR;
-    expect(sentClause.sentAt).toHaveProperty("gt");
-    expect(sentClause.sentAt).not.toHaveProperty("gte");
+    const prospectiveClause = cooldownCall![0].where.OR.find(
+      (clause: any) => clause.sourceKind === "prospective",
+    );
+    expect(prospectiveClause.dispatchStartedAt).toHaveProperty("gt");
+    expect(prospectiveClause.dispatchStartedAt).not.toHaveProperty("gte");
   });
 });
 
@@ -166,10 +190,16 @@ describe("claimRecovery", () => {
       where: {
         id: "rec-1",
         status: "waiting",
+        claimToken: null,
         eligibleAt: { lte: NOW },
         OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: NOW } }],
       },
-      data: { status: "sending", claimedAt: NOW, claimExpiresAt: LEASE },
+      data: {
+        status: "sending",
+        claimedAt: NOW,
+        claimExpiresAt: LEASE,
+        claimToken: expect.any(String),
+      },
     });
   });
 
@@ -212,7 +242,7 @@ describe("claimRecovery", () => {
 
   it("suppresses when the person already had a reminder inside the cooldown", async () => {
     findUnique.mockResolvedValue(candidate());
-    routeFindFirst({ cooldown: { id: "other" } });
+    dispatchFindFirst.mockResolvedValue({ id: "other" });
 
     await expect(claimRecovery("rec-1", NOW, LEASE)).resolves.toBeNull();
     expect(update).toHaveBeenCalledWith({
@@ -255,9 +285,9 @@ describe("authorizeClaimForSend", () => {
     // No prospective contact...
     findFirst.mockResolvedValue(null);
     // ...but a historical one, which this path could not see at all before the fix.
-    candidateFindFirst.mockResolvedValue({ id: "hist-1" });
+    dispatchFindFirst.mockResolvedValue({ id: "hist-1" });
 
-    await expect(authorizeClaimForSend("rec-1", NOW)).resolves.toEqual({
+    await expect(authorizeClaimForSend("rec-1", "token-1", NOW)).resolves.toEqual({
       kind: "suppress",
       reason: "person_cooldown",
     });
@@ -267,17 +297,17 @@ describe("authorizeClaimForSend", () => {
     findUnique.mockResolvedValue(sendingRow());
     findFirst.mockResolvedValue(null);
 
-    await authorizeClaimForSend("rec-1", NOW);
+    await authorizeClaimForSend("rec-1", "token-1", NOW);
 
-    expect(candidateFindFirst).toHaveBeenCalled();
+    expect(dispatchFindFirst).toHaveBeenCalled();
   });
 
   it("does not suppress when historical never contacted them", async () => {
     findUnique.mockResolvedValue(sendingRow());
     findFirst.mockResolvedValue(null);
-    candidateFindFirst.mockResolvedValue(null);
+    dispatchFindFirst.mockResolvedValue(null);
 
-    const decision = await authorizeClaimForSend("rec-1", NOW);
+    const decision = await authorizeClaimForSend("rec-1", "token-1", NOW);
 
     expect(decision).not.toEqual({ kind: "suppress", reason: "person_cooldown" });
   });
@@ -294,9 +324,31 @@ describe("authorizeClaimForSend", () => {
     });
     intentFindUnique.mockResolvedValue({ completedAt: new Date("2026-08-06T09:30:00Z") });
 
-    await expect(authorizeClaimForSend("rec-1", NOW)).resolves.toEqual({
+    await expect(authorizeClaimForSend("rec-1", "token-1", NOW)).resolves.toEqual({
       kind: "suppress",
       reason: "completed",
+    });
+  });
+
+  it("suppresses an alias even while its canonical intent is open", async () => {
+    findUnique.mockResolvedValue(sendingRow());
+    convoFindUnique.mockResolvedValue({
+      id: "convo-1",
+      state: "awaiting_done",
+      completedAt: null,
+      igUserId: "ig-1",
+      keywordId: "kw-1",
+      canonicalIntentId: "intent-1",
+      canonicalIntent: {
+        id: "intent-1",
+        canonicalConversationId: "canonical-1",
+        completedAt: null,
+      },
+    });
+
+    await expect(authorizeClaimForSend("rec-1", "token-1", NOW)).resolves.toEqual({
+      kind: "suppress",
+      reason: "reconciled_alias",
     });
   });
 
@@ -306,7 +358,7 @@ describe("authorizeClaimForSend", () => {
     findUnique.mockResolvedValue(sendingRow());
     convoFindFirst.mockResolvedValue({ completedAt: new Date("2026-08-06T09:30:00Z") });
 
-    await expect(authorizeClaimForSend("rec-1", NOW)).resolves.toEqual({
+    await expect(authorizeClaimForSend("rec-1", "token-1", NOW)).resolves.toEqual({
       kind: "suppress",
       reason: "completed",
     });
@@ -315,11 +367,13 @@ describe("authorizeClaimForSend", () => {
   it("authorises a healthy claim and reserves the attempt", async () => {
     findUnique.mockResolvedValue(sendingRow());
 
-    await expect(authorizeClaimForSend("rec-1", NOW)).resolves.toEqual({
+    await expect(authorizeClaimForSend("rec-1", "token-1", NOW)).resolves.toMatchObject({
       kind: "send_no_confirmed_read_reminder",
+      dispatchId: expect.any(String),
+      reservationToken: expect.any(String),
     });
-    expect(update).toHaveBeenCalledWith({
-      where: { id: "rec-1" },
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { id: "rec-1", status: "sending", claimToken: "token-1" },
       data: { lastAttemptAt: NOW, attempts: 1 },
     });
   });
@@ -329,7 +383,7 @@ describe("authorizeClaimForSend", () => {
   it("locks the control row before reading circuit state or capacity", async () => {
     findUnique.mockResolvedValue(sendingRow());
 
-    await authorizeClaimForSend("rec-1", NOW);
+    await authorizeClaimForSend("rec-1", "token-1", NOW);
 
     const locked = queryRaw.mock.calls.some(([strings]) =>
       String(Array.isArray(strings) ? strings.join("?") : strings)
@@ -341,14 +395,24 @@ describe("authorizeClaimForSend", () => {
 
   it.each([
     ["an open circuit", () => controlFindUnique.mockResolvedValue({ circuitOpen: true }), "circuit_open"],
-    ["a full hourly cap", () => count.mockResolvedValue(30), "hourly_cap"],
+    ["a full hourly cap", () => dispatchCount.mockResolvedValue(30), "hourly_cap"],
   ])("pauses for %s without suppressing the person", async (_l, arrange, reason) => {
     findUnique.mockResolvedValue(sendingRow());
     arrange();
 
-    await expect(authorizeClaimForSend("rec-1", NOW)).resolves.toEqual({
+    await expect(authorizeClaimForSend("rec-1", "token-1", NOW)).resolves.toEqual({
       kind: "pause",
       reason,
+    });
+  });
+
+  it("pauses when the shared rolling-day capacity is full", async () => {
+    findUnique.mockResolvedValue(sendingRow());
+    dispatchCount.mockResolvedValueOnce(0).mockResolvedValueOnce(100);
+
+    await expect(authorizeClaimForSend("rec-1", "token-1", NOW)).resolves.toEqual({
+      kind: "pause",
+      reason: "daily_cap",
     });
   });
 
@@ -357,7 +421,7 @@ describe("authorizeClaimForSend", () => {
       sendingRow({ claimExpiresAt: new Date("2026-08-06T09:00:00Z") }),
     );
 
-    const decision = await authorizeClaimForSend("rec-1", NOW);
+    const decision = await authorizeClaimForSend("rec-1", "token-1", NOW);
     expect(decision.kind).toBe("release");
   });
 
@@ -392,7 +456,7 @@ describe("authorizeClaimForSend", () => {
       "a reminder inside the person cooldown",
       () => {
         findUnique.mockResolvedValue(sendingRow());
-        routeFindFirst({ cooldown: { id: "other" } });
+        dispatchFindFirst.mockResolvedValue({ id: "other" });
       },
       "person_cooldown",
     ],
@@ -407,7 +471,7 @@ describe("authorizeClaimForSend", () => {
   ])("suppresses before sending for %s", async (_l, arrange, reason) => {
     arrange();
 
-    await expect(authorizeClaimForSend("rec-1", NOW)).resolves.toEqual({
+    await expect(authorizeClaimForSend("rec-1", "token-1", NOW)).resolves.toEqual({
       kind: "suppress",
       reason,
     });
@@ -420,7 +484,7 @@ describe("authorizeClaimForSend", () => {
       findUnique.mockResolvedValue(sendingRow());
       igUserFindUnique.mockResolvedValue({ username: "priya_s", name: "Priya Sharma" });
 
-      const decision = await authorizeClaimForSend("rec-1", NOW);
+      const decision = await authorizeClaimForSend("rec-1", "token-1", NOW);
 
       expect(igUserFindUnique).toHaveBeenCalledWith({
         where: { id: "ig-1" },
@@ -434,14 +498,14 @@ describe("authorizeClaimForSend", () => {
       });
       // The flag is off in the env mock, so the send still goes through — this
       // asserts the lookup, not the suppression.
-      expect(decision).toEqual({ kind: "send_no_confirmed_read_reminder" });
+      expect(decision).toMatchObject({ kind: "send_no_confirmed_read_reminder" });
     });
 
     it("does not blow up when the person was never resolved", async () => {
       findUnique.mockResolvedValue(sendingRow());
       igUserFindUnique.mockResolvedValue(null);
 
-      await expect(authorizeClaimForSend("rec-1", NOW)).resolves.toEqual({
+      await expect(authorizeClaimForSend("rec-1", "token-1", NOW)).resolves.toMatchObject({
         kind: "send_no_confirmed_read_reminder",
       });
     });
@@ -532,33 +596,6 @@ describe("resolveAudienceOrigin", () => {
 });
 
 describe("finalizers", () => {
-  it("markRecoverySent records a confirmed reply", async () => {
-    const sentAt = new Date();
-    await expect(markRecoverySent("rec-1", { replyId: "rep-1", sentAt })).resolves.toBe(true);
-    expect(updateMany).toHaveBeenCalledWith({
-      where: { id: "rec-1", status: "sending" },
-      data: {
-        status: "sent",
-        publicReplyId: "rep-1",
-        sentAt,
-        claimedAt: null,
-        claimExpiresAt: null,
-      },
-    });
-  });
-
-  // Without an id from Meta the send is unconfirmed; recording it as `sent`
-  // would both claim delivery we cannot prove and start the person's cooldown.
-  it.each([["an empty id", ""], ["whitespace", "   "]])(
-    "markRecoverySent refuses %s",
-    async (_l, replyId) => {
-      await expect(
-        markRecoverySent("rec-1", { replyId, sentAt: new Date() }),
-      ).resolves.toBe(false);
-      expect(updateMany).not.toHaveBeenCalled();
-    },
-  );
-
   // Every non-send outcome must move the row out of `sending`. A row left
   // claimed is reconciled to send_uncertain when its lease expires, which sends
   // a healthy hold to manual review for no reason.

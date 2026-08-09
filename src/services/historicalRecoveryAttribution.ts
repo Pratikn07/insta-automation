@@ -1,4 +1,3 @@
-import type { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
 import { logEvent } from "./eventLogger.js";
@@ -34,9 +33,9 @@ import { completeCampaignIfDrained } from "./recoveryCampaignControl.js";
  * is the leading indicator ("they came back to us"); `laterCompletedAt` is the outcome
  * ("they got the guide"), and only the second is keyword-exact.
  *
- * Timestamps are earliest-wins and never overwritten. The question is "did they come
- * back after we contacted them", so the FIRST return is the answer; a later one tells us
- * nothing new, and letting it overwrite would inflate the measured delay.
+ * Timestamps are earliest-wins by event time, including reverse and concurrent webhook
+ * delivery. The question is "did they come back after we contacted them", so the FIRST
+ * chronological return is the answer; a later one tells us nothing new.
  *
  * Non-throwing. This is measurement, and losing a data point must never roll back the
  * completion or the inbound message that triggered it — the same reasoning as
@@ -59,65 +58,130 @@ export type AttributionInput = {
   kind: AttributionKind;
 };
 
+type AttributedRow = {
+  campaignId: string;
+  arm: "treatment" | "holdout";
+};
+
+export type AttributionReconciliationResult = {
+  inbound: number;
+  completed: number;
+};
+
 /**
- * Candidates this event can be attributed to.
+ * Treatment starts at the final pre-network dispatch stamp. `sent_at` and
+ * `last_attempt_at` are compatibility fallbacks for legacy settled rows created before
+ * that stamp existed. Holdout starts at approval (`campaign.started_at`).
  *
- * Only rows that were SETTLED before the event: a `sent` treatment row, or a
- * `holdout_withheld` control row. A pending row has not been acted on yet, so a return
- * cannot be a response to it.
- *
- * `send_uncertain` counts as settled for treatment, because the comment may well have
- * posted — excluding it would drop real recoveries from the numerator.
+ * These are two deliberately static statements rather than interpolating a column
+ * name. Besides keeping the SQL parameterized, each statement makes its campaign-owned
+ * window explicit. The changed-value predicate makes the returned rows exactly the
+ * rows whose earliest timestamp moved.
  */
-function attributableWhere(input: AttributionInput): Prisma.RecoveryCandidateWhereInput {
-  return {
-    igUserId: input.igUserId,
-    // Only when the event knows which guide it is about. See the note above.
-    ...(input.keywordId ? { keywordId: input.keywordId } : {}),
-    OR: [
-      // Treatment: publicly contacted at or before the event.
-      {
-        outcome: { in: ["sent", "send_uncertain"] },
-        arm: "treatment",
-        OR: [{ sentAt: { lte: input.at } }, { lastAttemptAt: { lte: input.at } }],
-      },
-      // Holdout: deliberately not contacted. The withholding decision is made at
-      // approval, so the campaign's start is the reference point.
-      {
-        outcome: "holdout_withheld",
-        arm: "holdout",
-        campaign: { startedAt: { lte: input.at } },
-      },
-    ],
-  };
+async function attributeInbound(input: AttributionInput): Promise<AttributedRow[]> {
+  return prisma.$queryRaw<AttributedRow[]>`
+    WITH eligible AS (
+      SELECT
+        rc."id",
+        rc."campaign_id",
+        CASE
+          WHEN rc."arm" = 'treatment' THEN
+            COALESCE(rc."dispatch_started_at", rc."sent_at", rc."last_attempt_at")
+          ELSE campaign."started_at"
+        END AS anchor_at,
+        campaign."inbound_window_hours" AS window_hours
+      FROM "recovery_candidate" rc
+      JOIN "recovery_campaign" campaign ON campaign."id" = rc."campaign_id"
+      WHERE rc."ig_user_id" = ${input.igUserId}
+        AND (
+          (
+            rc."arm" = 'treatment'
+            AND rc."outcome" IN ('sent', 'send_uncertain')
+          )
+          OR (
+            rc."arm" = 'holdout'
+            AND rc."outcome" = 'holdout_withheld'
+          )
+        )
+    )
+    UPDATE "recovery_candidate" rc
+    SET
+      "later_inbound_at" = LEAST(
+        COALESCE(rc."later_inbound_at", ${input.at}),
+        ${input.at}
+      ),
+      "updated_at" = CURRENT_TIMESTAMP
+    FROM eligible
+    WHERE rc."id" = eligible."id"
+      AND eligible.anchor_at IS NOT NULL
+      AND ${input.at} >= eligible.anchor_at
+      AND ${input.at} <= eligible.anchor_at
+        + make_interval(hours => eligible.window_hours)
+      AND (rc."later_inbound_at" IS NULL OR ${input.at} < rc."later_inbound_at")
+    RETURNING rc."campaign_id" AS "campaignId", rc."arm"::text AS "arm"
+  `;
+}
+
+async function attributeCompletion(input: AttributionInput & { keywordId: string }): Promise<AttributedRow[]> {
+  return prisma.$queryRaw<AttributedRow[]>`
+    WITH eligible AS (
+      SELECT
+        rc."id",
+        rc."campaign_id",
+        CASE
+          WHEN rc."arm" = 'treatment' THEN
+            COALESCE(rc."dispatch_started_at", rc."sent_at", rc."last_attempt_at")
+          ELSE campaign."started_at"
+        END AS anchor_at,
+        campaign."completion_window_hours" AS window_hours
+      FROM "recovery_candidate" rc
+      JOIN "recovery_campaign" campaign ON campaign."id" = rc."campaign_id"
+      WHERE rc."ig_user_id" = ${input.igUserId}
+        AND rc."keyword_id" = ${input.keywordId}::uuid
+        AND (
+          (
+            rc."arm" = 'treatment'
+            AND rc."outcome" IN ('sent', 'send_uncertain')
+          )
+          OR (
+            rc."arm" = 'holdout'
+            AND rc."outcome" = 'holdout_withheld'
+          )
+        )
+    )
+    UPDATE "recovery_candidate" rc
+    SET
+      "later_completed_at" = LEAST(
+        COALESCE(rc."later_completed_at", ${input.at}),
+        ${input.at}
+      ),
+      "updated_at" = CURRENT_TIMESTAMP
+    FROM eligible
+    WHERE rc."id" = eligible."id"
+      AND eligible.anchor_at IS NOT NULL
+      AND ${input.at} >= eligible.anchor_at
+      AND ${input.at} <= eligible.anchor_at
+        + make_interval(hours => eligible.window_hours)
+      AND (rc."later_completed_at" IS NULL OR ${input.at} < rc."later_completed_at")
+    RETURNING rc."campaign_id" AS "campaignId", rc."arm"::text AS "arm"
+  `;
 }
 
 /**
  * Attribute one return event, then close any campaign it finishes.
  *
- * Idempotent: replaying the same event is a no-op, because each write is conditional on
- * the column still being null. A webhook redelivery therefore cannot move a timestamp.
+ * Idempotent and order-independent: a replay is a no-op, an earlier event can move the
+ * timestamp backward, and a later event can never move it forward.
  */
 export async function attributeRecoveryOutcome(input: AttributionInput): Promise<number> {
-  const column = input.kind === "inbound" ? "laterInboundAt" : "laterCompletedAt";
+  // A completion identifies one guide. Missing identity must not silently broaden it
+  // into person-level attribution; inbound is the intentionally person-level signal.
+  if (input.kind === "completed" && !input.keywordId) return 0;
 
-  const candidates = await prisma.recoveryCandidate.findMany({
-    where: {
-      ...attributableWhere(input),
-      // Earliest-wins: only rows that have not recorded this yet.
-      [column]: null,
-    },
-    select: { id: true, campaignId: true, arm: true },
-  });
-
-  if (candidates.length === 0) return 0;
-
-  // Conditional on still being null, so two concurrent webhooks cannot both write and
-  // the earlier one wins regardless of arrival order.
-  const { count } = await prisma.recoveryCandidate.updateMany({
-    where: { id: { in: candidates.map((c) => c.id) }, [column]: null },
-    data: { [column]: input.at },
-  });
+  const candidates = input.kind === "inbound"
+    ? await attributeInbound(input)
+    : await attributeCompletion(input as AttributionInput & { keywordId: string });
+  const count = candidates.length;
 
   if (count > 0) {
     await logEvent("historical_recovery_attributed", {
@@ -126,13 +190,13 @@ export async function attributeRecoveryOutcome(input: AttributionInput): Promise
       keywordId: input.keywordId ?? null,
       candidates: count,
       // Split in the log so the lift can be read without re-querying.
-      treatment: candidates.filter((c) => c.arm === "treatment").length,
-      holdout: candidates.filter((c) => c.arm === "holdout").length,
+      treatment: candidates.filter((candidate) => candidate.arm === "treatment").length,
+      holdout: candidates.filter((candidate) => candidate.arm === "holdout").length,
     });
   }
 
   // A completion can be the last thing a campaign was waiting on.
-  for (const campaignId of new Set(candidates.map((c) => c.campaignId))) {
+  for (const campaignId of new Set(candidates.map((candidate) => candidate.campaignId))) {
     await completeCampaignIfDrained(campaignId, input.at);
   }
 
@@ -158,5 +222,151 @@ export async function attributeRecoveryOutcomeSafely(input: AttributionInput): P
       },
       "Could not attribute a historical recovery outcome",
     );
+  }
+}
+
+/**
+ * Rebuild attribution from the durable source-of-truth rows.
+ *
+ * Live webhooks are only a low-latency hint: an inbound or completion can commit after
+ * dispatch starts but before its candidate is finalized, or its attribution write can
+ * fail after the source event commits. In both cases the event must not disappear just
+ * because the live hook is processed once. These static bulk statements replay the
+ * persisted DM/conversation evidence after finalization and remain idempotent.
+ */
+export async function reconcileHistoricalRecoveryAttribution(): Promise<AttributionReconciliationResult> {
+  const inbound = await prisma.$queryRaw<AttributedRow[]>`
+    WITH eligible AS (
+      SELECT
+        rc."id",
+        rc."campaign_id",
+        rc."arm",
+        rc."ig_user_id",
+        CASE
+          WHEN rc."arm" = 'treatment' THEN
+            COALESCE(rc."dispatch_started_at", rc."sent_at", rc."last_attempt_at")
+          ELSE campaign."started_at"
+        END AS anchor_at,
+        campaign."inbound_window_hours" AS window_hours
+      FROM "recovery_candidate" rc
+      JOIN "recovery_campaign" campaign ON campaign."id" = rc."campaign_id"
+      WHERE (
+        (rc."arm" = 'treatment' AND rc."outcome" IN ('sent', 'send_uncertain'))
+        OR (rc."arm" = 'holdout' AND rc."outcome" = 'holdout_withheld')
+      )
+    ), evidence AS (
+      SELECT
+        eligible."id",
+        eligible."campaign_id",
+        eligible."arm",
+        MIN(message."instagram_timestamp") AS event_at
+      FROM eligible
+      JOIN "dm_thread" thread ON thread."ig_user_id" = eligible."ig_user_id"
+      JOIN "dm_message" message ON message."thread_id" = thread."id"
+      WHERE message."direction" = 'inbound'
+        AND eligible.anchor_at IS NOT NULL
+        AND message."instagram_timestamp" >= eligible.anchor_at
+        AND message."instagram_timestamp" <= eligible.anchor_at
+          + make_interval(hours => eligible.window_hours)
+      GROUP BY eligible."id", eligible."campaign_id", eligible."arm"
+    )
+    UPDATE "recovery_candidate" candidate
+    SET
+      "later_inbound_at" = LEAST(
+        COALESCE(candidate."later_inbound_at", evidence.event_at),
+        evidence.event_at
+      ),
+      "updated_at" = CURRENT_TIMESTAMP
+    FROM evidence
+    WHERE candidate."id" = evidence."id"
+      AND (
+        candidate."later_inbound_at" IS NULL
+        OR evidence.event_at < candidate."later_inbound_at"
+      )
+    RETURNING
+      candidate."campaign_id" AS "campaignId",
+      candidate."arm"::text AS "arm"
+  `;
+
+  const completed = await prisma.$queryRaw<AttributedRow[]>`
+    WITH eligible AS (
+      SELECT
+        rc."id",
+        rc."campaign_id",
+        rc."arm",
+        rc."ig_user_id",
+        rc."keyword_id",
+        CASE
+          WHEN rc."arm" = 'treatment' THEN
+            COALESCE(rc."dispatch_started_at", rc."sent_at", rc."last_attempt_at")
+          ELSE campaign."started_at"
+        END AS anchor_at,
+        campaign."completion_window_hours" AS window_hours
+      FROM "recovery_candidate" rc
+      JOIN "recovery_campaign" campaign ON campaign."id" = rc."campaign_id"
+      WHERE (
+        (rc."arm" = 'treatment' AND rc."outcome" IN ('sent', 'send_uncertain'))
+        OR (rc."arm" = 'holdout' AND rc."outcome" = 'holdout_withheld')
+      )
+    ), evidence AS (
+      SELECT
+        eligible."id",
+        eligible."campaign_id",
+        eligible."arm",
+        MIN(conversation."completed_at") AS event_at
+      FROM eligible
+      JOIN "conversations" conversation
+        ON conversation."ig_user_id" = eligible."ig_user_id"
+        AND conversation."keyword_id" = eligible."keyword_id"
+      WHERE conversation."state" = 'completed'
+        AND conversation."completed_at" IS NOT NULL
+        AND eligible.anchor_at IS NOT NULL
+        AND conversation."completed_at" >= eligible.anchor_at
+        AND conversation."completed_at" <= eligible.anchor_at
+          + make_interval(hours => eligible.window_hours)
+      GROUP BY eligible."id", eligible."campaign_id", eligible."arm"
+    )
+    UPDATE "recovery_candidate" candidate
+    SET
+      "later_completed_at" = LEAST(
+        COALESCE(candidate."later_completed_at", evidence.event_at),
+        evidence.event_at
+      ),
+      "updated_at" = CURRENT_TIMESTAMP
+    FROM evidence
+    WHERE candidate."id" = evidence."id"
+      AND (
+        candidate."later_completed_at" IS NULL
+        OR evidence.event_at < candidate."later_completed_at"
+      )
+    RETURNING
+      candidate."campaign_id" AS "campaignId",
+      candidate."arm"::text AS "arm"
+  `;
+
+  const changed = [...inbound, ...completed];
+  if (changed.length > 0) {
+    await logEvent("historical_recovery_attribution_reconciled", {
+      inbound: inbound.length,
+      completed: completed.length,
+    });
+    for (const campaignId of new Set(changed.map((candidate) => candidate.campaignId))) {
+      await completeCampaignIfDrained(campaignId, new Date());
+    }
+  }
+
+  return { inbound: inbound.length, completed: completed.length };
+}
+
+/** Retry on the next worker tick without putting message delivery or sends at risk. */
+export async function reconcileHistoricalRecoveryAttributionSafely(): Promise<AttributionReconciliationResult> {
+  try {
+    return await reconcileHistoricalRecoveryAttribution();
+  } catch {
+    logger.error(
+      { errorCode: "historical_recovery_attribution_reconciliation_failed" },
+      "Could not reconcile durable historical recovery attribution",
+    );
+    return { inbound: 0, completed: 0 };
   }
 }

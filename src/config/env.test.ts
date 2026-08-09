@@ -21,6 +21,7 @@ describe("env configuration schema for DM recovery", () => {
       DM_RECOVERY_WORKER_INTERVAL_MS: 60000,
       DM_RECOVERY_BATCH_SIZE: 5,
       DM_RECOVERY_HOURLY_CAP: 30,
+      DM_RECOVERY_GLOBAL_DAILY_CAP: 100,
       DM_RECOVERY_LEASE_MS: 900000,
       DM_RECOVERY_MAX_ATTEMPTS: 3,
       DM_RECOVERY_RETRY_BASE_MS: 300000,
@@ -34,6 +35,24 @@ describe("env configuration schema for DM recovery", () => {
       DM_RECOVERY_DB_FAILURE_THRESHOLD: 3,
       DM_RECOVERY_MIN_ACCEPTED_HEALTH_SAMPLE: 20,
     });
+  });
+
+  it("accepts a positive global daily public-recovery cap", () => {
+    const parsed = envSchema.parse({
+      ...baseEnv,
+      DM_RECOVERY_GLOBAL_DAILY_CAP: "250",
+    });
+
+    expect(parsed.DM_RECOVERY_GLOBAL_DAILY_CAP).toBe(250);
+  });
+
+  it("rejects a zero global daily public-recovery cap", () => {
+    expect(
+      envSchema.safeParse({
+        ...baseEnv,
+        DM_RECOVERY_GLOBAL_DAILY_CAP: "0",
+      }).success,
+    ).toBe(false);
   });
 
   it("rejects when only one of experiment start or end is provided", () => {

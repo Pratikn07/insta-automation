@@ -29,7 +29,11 @@ describe("partitionIntoWindows", () => {
   });
 
   it("keeps journeys inside 48 hours in one window", () => {
-    const rows = [{ createdAt: at(0) }, { createdAt: at(6) }, { createdAt: at(47) }];
+    const rows = [
+      { id: "a", createdAt: at(0) },
+      { id: "b", createdAt: at(6) },
+      { id: "c", createdAt: at(47) },
+    ];
     expect(partitionIntoWindows(rows)).toHaveLength(1);
   });
 
@@ -37,26 +41,40 @@ describe("partitionIntoWindows", () => {
   // window opens. Reconciled history and future behaviour must agree, or a
   // reconciled row would behave differently from a fresh one.
   it("splits at exactly 48 hours", () => {
-    const windows = partitionIntoWindows([{ createdAt: at(0) }, { createdAt: at(48) }]);
+    const windows = partitionIntoWindows([
+      { id: "a", createdAt: at(0) },
+      { id: "b", createdAt: at(48) },
+    ]);
     expect(windows).toHaveLength(2);
   });
 
   it("keeps 47h59m together", () => {
-    const rows = [{ createdAt: at(0) }, { createdAt: new Date(at(48).getTime() - 60_000) }];
+    const rows = [
+      { id: "a", createdAt: at(0) },
+      { id: "b", createdAt: new Date(at(48).getTime() - 60_000) },
+    ];
     expect(partitionIntoWindows(rows)).toHaveLength(1);
   });
 
   // Measured gap-to-gap, not from the window's start. Someone asking daily would
   // otherwise collapse into one endless intent that never expires.
   it("chains a rolling series into one window rather than splitting on total span", () => {
-    const rows = [{ createdAt: at(0) }, { createdAt: at(40) }, { createdAt: at(80) }];
+    const rows = [
+      { id: "a", createdAt: at(0) },
+      { id: "b", createdAt: at(40) },
+      { id: "c", createdAt: at(80) },
+    ];
     const windows = partitionIntoWindows(rows);
     expect(windows).toHaveLength(1);
     expect(windows[0]).toHaveLength(3);
   });
 
   it("opens a fresh window after a long silence", () => {
-    const rows = [{ createdAt: at(0) }, { createdAt: at(10) }, { createdAt: at(200) }];
+    const rows = [
+      { id: "a", createdAt: at(0) },
+      { id: "b", createdAt: at(10) },
+      { id: "c", createdAt: at(200) },
+    ];
     const windows = partitionIntoWindows(rows);
     expect(windows).toHaveLength(2);
     expect(windows[0]).toHaveLength(2);
@@ -103,6 +121,16 @@ describe("reconcileWindow precedence", () => {
 
     expect(result.canonicalId).toBe("earliest");
     expect(describeCanonicalChoice(window)).toBe("earliest");
+  });
+
+  it("uses the stable conversation id when timestamps and evidence are equal", () => {
+    const rows = [
+      candidate({ id: "z-owner", createdAt: at(0) }),
+      candidate({ id: "a-owner", createdAt: at(0) }),
+    ];
+
+    expect(reconcileWindow(rows).canonicalId).toBe("a-owner");
+    expect(reconcileWindow([...rows].reverse()).canonicalId).toBe("a-owner");
   });
 
   it("outranks a confirmed gate with a completion", () => {

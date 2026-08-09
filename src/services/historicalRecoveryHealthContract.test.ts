@@ -53,7 +53,15 @@ beforeAll(async () => {
 });
 
 async function wipe(): Promise<void> {
-  await prisma.recoveryCandidate.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
+  await prisma.publicRecoveryDispatch.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
+  await prisma.recoveryCampaignBatchRun.deleteMany({
+    where: { campaign: { selectionVersion: { startsWith: "hlth-" } } },
+  });
+  await prisma.recoveryCampaignHealthObservation.deleteMany({
+    where: { campaign: { selectionVersion: { startsWith: "hlth-" } } },
+  });
+  // Delete the parent so PostgreSQL cascades through sealed manifest rows. Direct
+  // candidate deletion is intentionally rejected once a campaign is approved.
   await prisma.recoveryCampaign.deleteMany({ where: { selectionVersion: { startsWith: "hlth-" } } });
   await prisma.journeyIntent.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
   await prisma.igUser.deleteMany({ where: { id: { startsWith: fx.igUserId } } });
@@ -80,6 +88,9 @@ async function runningCampaign(): Promise<string> {
       selectionVersion: `hlth-${randomUUID()}`,
       sourceDataCutoff: T0,
       copyVersion: "recovery-v2",
+      decisionHash: "a".repeat(64),
+      eligibilityPolicyVersion: "health-contract-v1",
+      westernOnly: false,
       state: "running",
       approvedBy: "owner",
       approvedAt: T0,
@@ -89,14 +100,23 @@ async function runningCampaign(): Promise<string> {
   return row.id;
 }
 
+async function sealCampaignForResume(campaignId: string): Promise<void> {
+  await prisma.recoveryCampaign.update({
+    where: { id: campaignId },
+    data: { selectionFingerprint: `hlth-fingerprint-${randomUUID()}` },
+  });
+}
+
 /** `count` candidates in the given terminal state. */
 async function candidates(
   campaignId: string,
   count: number,
   spec: { outcome: "sent" | "send_failed" | "send_uncertain" | "suppressed"; suppressionReason?: string },
-): Promise<void> {
+): Promise<string[]> {
+  const people: string[] = [];
   for (let i = 0; i < count; i++) {
     const igUserId = `${fx.igUserId}-${randomUUID()}`;
+    people.push(igUserId);
     await prisma.igUser.create({ data: { id: igUserId } });
     const intent = await prisma.journeyIntent.create({
       data: {
@@ -134,6 +154,7 @@ async function candidates(
       },
     });
   }
+  return people;
 }
 
 async function campaignRow(id: string) {
@@ -181,6 +202,75 @@ describeWithLocalDatabase("campaign health reads recovery_candidate", () => {
 });
 
 describeWithLocalDatabase("a tripped stop condition pauses only that campaign", () => {
+  it.each([
+    "complaint",
+    "opt_out",
+    "block",
+    "negative_reply",
+    "classifier_anomaly",
+  ] as const)("pauses immediately for a durable %s observation", async (kind) => {
+    const campaignId = await runningCampaign();
+    await prisma.recoveryCampaignHealthObservation.create({
+      data: {
+        campaignId,
+        kind,
+        sourceKey: `${kind}:${randomUUID()}`,
+        observedAt: T0,
+      },
+    });
+
+    const reading = await health.evaluateCampaignHealth(campaignId, T0);
+
+    expect(reading.stopReason).toBe(kind);
+    expect(await campaignRow(campaignId)).toEqual({ state: "paused", pauseReason: `auto:${kind}` });
+  });
+
+  it("detects duplicate terminal contact from the shared dispatch ledger", async () => {
+    const campaignId = await runningCampaign();
+    const [igUserId] = await candidates(campaignId, 1, { outcome: "sent" });
+    const dispatchStartedAt = new Date(T0.getTime() + 1_000);
+    await prisma.publicRecoveryDispatch.createMany({
+      data: [
+        {
+          reservationToken: randomUUID(),
+          igUserId: igUserId!,
+          sourceKind: "historical" as const,
+          sourceId: randomUUID(),
+          attemptNumber: 1,
+          campaignId,
+          state: "sent" as const,
+          reservedAt: T0,
+          leaseExpiresAt: new Date(T0.getTime() + 60_000),
+          dispatchStartedAt,
+          sentAt: dispatchStartedAt,
+          providerReplyId: `provider-${randomUUID()}`,
+        },
+        {
+          reservationToken: randomUUID(),
+          igUserId: igUserId!,
+          sourceKind: "historical" as const,
+          sourceId: randomUUID(),
+          attemptNumber: 1,
+          campaignId,
+          state: "uncertain" as const,
+          reservedAt: T0,
+          leaseExpiresAt: new Date(T0.getTime() + 60_000),
+          dispatchStartedAt,
+          terminalReason: "contract",
+        },
+      ],
+    });
+
+    const reading = await health.evaluateCampaignHealth(campaignId, T0);
+
+    expect(reading.duplicatePeople).toBe(1);
+    expect(reading.stopReason).toBe("duplicate_public_reply");
+    expect(await campaignRow(campaignId)).toEqual({
+      state: "paused",
+      pauseReason: "auto:duplicate_public_reply",
+    });
+  });
+
   it("pauses the failing campaign", async () => {
     const campaignId = await runningCampaign();
     await candidates(campaignId, 5, { outcome: "sent" });
@@ -258,6 +348,7 @@ describeWithLocalDatabase("an automatic pause latches", () => {
     const campaignId = await runningCampaign();
     await candidates(campaignId, 5, { outcome: "sent" });
     await candidates(campaignId, 5, { outcome: "send_failed" });
+    await sealCampaignForResume(campaignId);
     await health.evaluateCampaignHealth(campaignId, T0);
     return campaignId;
   }
@@ -301,6 +392,7 @@ describeWithLocalDatabase("an automatic pause latches", () => {
   // click. Latching everything would make the distinction useless.
   it("still resumes an ordinary owner pause without ceremony", async () => {
     const campaignId = await runningCampaign();
+    await sealCampaignForResume(campaignId);
     await control.pauseCampaign(campaignId, "lunch", T0);
 
     const result = await control.resumeCampaign(campaignId);

@@ -4,6 +4,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // ORDER of calls inside a single transaction (which is where the supersede-then-
 // insert invariant lives).
 const tx = {
+  dmRecoveryControl: { upsert: vi.fn() },
+  $queryRaw: vi.fn(),
   dmMessage: { findUnique: vi.fn(), create: vi.fn() },
   dmThread: { upsert: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
   replyDraft: { updateMany: vi.fn() },
@@ -46,8 +48,12 @@ const INBOUND = {
 
 beforeEach(() => {
   for (const model of Object.values(tx)) {
-    for (const fn of Object.values(model)) fn.mockReset();
+    for (const fn of Object.values(model)) {
+      if (typeof fn === "function" && "mockReset" in fn) fn.mockReset();
+    }
   }
+  tx.$queryRaw.mockReset().mockResolvedValue([{ id: 1 }]);
+  tx.dmRecoveryControl.upsert.mockResolvedValue({ id: 1 });
   $transaction.mockClear();
   for (const fn of Object.values(logger)) fn.mockReset();
   tx.dmThread.upsert.mockResolvedValue({ id: "thread-1", latestInboundMessageId: null });
@@ -58,6 +64,28 @@ beforeEach(() => {
 });
 
 describe("recordInboundMessage", () => {
+  it("takes the shared control lock before checking or inserting an inbound", async () => {
+    tx.dmMessage.findUnique.mockResolvedValue(null);
+    const order: string[] = [];
+    tx.$queryRaw.mockImplementation(async () => {
+      order.push("control_lock");
+      return [{ id: 1 }];
+    });
+    tx.dmMessage.findUnique.mockImplementation(async () => {
+      order.push("message_lookup");
+      return null;
+    });
+
+    await recordInboundMessage(INBOUND);
+
+    expect(tx.dmRecoveryControl.upsert).toHaveBeenCalledWith({
+      where: { id: 1 },
+      create: { id: 1 },
+      update: {},
+    });
+    expect(order.slice(0, 2)).toEqual(["control_lock", "message_lookup"]);
+  });
+
   it("returns duplicate without inserting when the Instagram mid is already stored", async () => {
     tx.dmMessage.findUnique.mockResolvedValue({ id: "message-1", threadId: "thread-1" });
 
