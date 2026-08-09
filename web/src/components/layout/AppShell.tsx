@@ -1,8 +1,9 @@
 import { Outlet, useLocation } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
+import { mobileNavigationOpen } from "./mobileNavigationState";
 
 const titles: Record<string, string> = {
   "/": "Home",
@@ -20,11 +21,8 @@ function titleFor(pathname: string) {
 
 export function AppShell() {
   const loc = useLocation();
-  const [mobileOpen, setMobileOpen] = useState(false);
-
-  useEffect(() => {
-    setMobileOpen(false);
-  }, [loc.pathname]);
+  const [mobileOpenedForPath, setMobileOpenedForPath] = useState<string | null>(null);
+  const mobileOpen = mobileNavigationOpen(mobileOpenedForPath, loc.pathname);
 
   return (
     <div className="flex h-full">
@@ -42,7 +40,7 @@ export function AppShell() {
               exit={{ opacity: 0 }}
               transition={{ duration: 0.18 }}
               className="fixed inset-0 z-40 bg-black/60 md:hidden"
-              onClick={() => setMobileOpen(false)}
+              onClick={() => setMobileOpenedForPath(null)}
             />
             <motion.div
               key="drawer"
@@ -52,7 +50,7 @@ export function AppShell() {
               transition={{ type: "tween", duration: 0.22, ease: "easeOut" }}
               className="fixed inset-y-0 left-0 z-50 md:hidden"
             >
-              <Sidebar onNavigate={() => setMobileOpen(false)} />
+              <Sidebar onNavigate={() => setMobileOpenedForPath(null)} />
             </motion.div>
           </>
         )}
@@ -61,7 +59,7 @@ export function AppShell() {
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar
           title={titleFor(loc.pathname)}
-          onMenuClick={() => setMobileOpen(true)}
+          onMenuClick={() => setMobileOpenedForPath(loc.pathname)}
         />
         <main className="flex-1 overflow-y-auto">
           <AnimatePresence mode="wait">
