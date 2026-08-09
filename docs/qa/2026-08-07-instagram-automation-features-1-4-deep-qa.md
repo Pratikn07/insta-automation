@@ -9,13 +9,57 @@
 
 **Method:** requirements-to-code trace, static control-flow review, focused logic reproductions, unit/integration suite, TypeScript builds, and frontend lint. No production data was changed and no Meta API send was attempted.
 
+## P0 remediation verification — 2026-08-08
+
+**Code-level verdict:** all five P0 findings are closed on branch
+`fix/remaining-p0-safety`. QA-01 and QA-03 landed earlier; this branch closes the three
+remaining items, QA-02, QA-04, and QA-05. The verified implementation revision is
+`1653208` plus its ancestors through `16b5128`.
+
+This is not a production-launch verdict. This work did not deploy, apply a production
+migration, run reconciliation with `--write`, change a production flag, approve a live
+campaign, or call Meta. Keep `DM_RECOVERY_HISTORICAL_ENABLED=false` until the separate
+production preflight and rollout authorization are complete.
+
+| P0 | Code status | Verification evidence |
+|---|---|---|
+| QA-01 | Closed | `2b04537` requires executable `DM @tinysoho "{KEYWORD}"` copy and uncertainty-safe wording; copy tests pass in the full suite. |
+| QA-02 | Closed | Historical claims require an unexpired UUID claim token; source attempts are fenced through reserve/start/finalize. Real PostgreSQL races prove one winner for two and five workers, and stale claim/reservation tokens cannot start or finalize. |
+| QA-03 | Closed | `197beb1` separates phase selection and `20260808060000_enforce_candidate_phase` enforces phase/evidence compatibility in PostgreSQL. Selector and migration contracts pass. |
+| QA-04 | Closed | `public_recovery_dispatch` is the single prospective/historical cooldown and capacity authority. Real PostgreSQL tests cover prospective-vs-historical, historical-vs-historical, both global-cap directions, different keywords, released/uncertain capacity, and exact 24-hour/30-day boundaries. |
+| QA-05 | Closed | One canonical resolver now controls gate, DONE, completion, both recovery paths, reconciliation, API counts/listing, and the web view. Alias work is terminalized or reconciliation declines active network work; canonical/raw history modes are explicit and independently queried. |
+
+Fresh verification against a new disposable PostgreSQL 17 database:
+
+- Backend: **90 files / 1,385 tests passed; 0 skipped** with
+  `MIGRATION_TEST_DATABASE_URL` set.
+- Migration fixture: valid sent, uncertain, retryable, active, cancelled, and
+  reconciled-alias source rows backfilled correctly; conflicting active-person rows
+  failed and rolled back atomically.
+- Backend build: Prisma generation and TypeScript passed.
+- Frontend: **25 files / 376 tests passed**; TypeScript/Vite production build passed.
+- ESLint on every touched frontend file passed. Repository-wide lint still has the same
+  nine pre-existing errors in five unrelated files listed under QA-20.
+- Diff audit found no credential values, new unsafe raw-SQL APIs, lock-order reversal,
+  source-only send finalizer, copied canonical predicate, or path to Meta without a
+  successful token-bearing dispatch-start transition.
+
 ## Executive verdict
 
-**Do not enable historical recovery (Feature 4).** The current implementation can mix the two rollout phases, assign a small pilot entirely to holdout, allow two workers to claim and post the same candidate, and publish copy whose requested action is not connected to any recovery flow. Feature 3 is also not complete: reconciled aliases remain actionable in gate, completion, recovery, and dashboard code.
+**Do not enable historical recovery (Feature 4) in production yet.** The five P0 code
+defects from the original audit are now closed, but production still requires the
+read-only collision/backfill preflight, migration compatibility review, controlled Meta
+verification, and separate rollout authorization. Remaining non-P0 findings and launch
+evidence in this report are not waived by the P0 remediation.
 
-Feature 1 and the prospective Feature 2 have substantially better safety machinery and broad unit coverage, but they still have cross-feature/canonical-state gaps. Feature 1 must remain inert until a controlled Meta settings-rejection signature is verified and its evidence/version is carried into the recovery audit record.
+Feature 1 must remain inert until a controlled Meta settings-rejection signature is
+verified and its evidence/version is carried into the recovery audit record. Feature 2,
+Feature 3, and Feature 4 now share code-level dispatch and canonical-ownership safety,
+but no statement here substitutes for live Meta or production rollout evidence.
 
-The daily cap omission was fixed concurrently during this audit in `d18bec4`; this report was revalidated after that change and does **not** list “daily cap is absent” as an open defect. The remaining cap problem is transactional/global reservation and failure to use the campaign batch size.
+The detailed evidence below preserves the original 2026-08-07 failure descriptions so
+the regressions remain auditable. The dated resolution blocks and status table above are
+the current P0 verdict.
 
 ### Severity
 
@@ -27,12 +71,12 @@ The daily cap omission was fixed concurrently during this audit in `d18bec4`; th
 
 | ID | Feature(s) | Severity | Finding |
 |---|---|---:|---|
-| QA-01 | 4 | P0 | Historical public copy is not the approved copy and its “reply here” action has no recovery path |
-| QA-02 | 4 | P0 | Candidate claims are not exclusive; overlapping workers can post the same public reply twice |
-| QA-03 | 4 | P0 | Campaign phase is stored but ignored during selection, so confirmed and unknown-read cohorts mix |
-| QA-04 | 1, 2, 4 | P0 | Person cooldown and capacity are not shared across prospective and historical recovery |
-| QA-05 | 3 | P0 | Reconciled aliases remain actionable and can still own gate retry, DONE completion, recovery, and dashboard rows |
-| QA-06 | 2, 3 | P1 | Feature 2's final send check can miss a same-keyword completion on a sibling/canonical journey |
+| QA-01 | 4 | P0 | **Closed at code level (`2b04537`)** — historical copy uses a working keyword-DM action and evidence-safe wording |
+| QA-02 | 4 | P0 | **Closed at code level (`937c903`, `1653208`)** — token-fenced claims plus one authoritative dispatch ledger prevent duplicate authorization |
+| QA-03 | 4 | P0 | **Closed at code level (`197beb1`)** — selection and database constraints keep phases disjoint |
+| QA-04 | 1, 2, 4 | P0 | **Closed at code level (`fb7e5b2`, `937c903`, `1653208`)** — cooldown and capacity are shared through the dispatch ledger |
+| QA-05 | 3 | P0 | **Closed at code level (`eaf2c1a`, `5e2c6a6`, `c3cae3a`)** — only canonical owners remain operational |
+| QA-06 | 2, 3 | P1 | **Closed at code level (`5e2c6a6`)** — final authorization reads canonical intent and sibling completion authority |
 | QA-07 | 4 | P1 | Position-based arm assignment breaks the small randomized pilot |
 | QA-08 | 4 | P1 | Campaign batch size is ignored and cap accounting has no transactional reservation |
 | QA-09 | 4 | P1 | Source lookup errors are converted into confirmed deletion suppressions |
@@ -72,6 +116,10 @@ The daily cap omission was fixed concurrently during this audit in `d18bec4`; th
 
 **Regression tests:** exact-copy snapshot for both phases, lowercase input normalized to uppercase, no free-form input, and an end-to-end test proving the instructed action starts the correct keyword flow.
 
+**2026-08-08 resolution:** Closed at code level. `historicalRecoveryCopy.ts` requires a
+non-empty normalized keyword, renders the working keyword-DM action, and reserves failure
+language for confirmed failure evidence. The focused copy cases and full backend suite pass.
+
 ### QA-02 — Historical candidate claims are not exclusive
 
 **Severity:** P0  
@@ -87,6 +135,12 @@ The daily cap omission was fixed concurrently during this audit in `d18bec4`; th
 4. Count `sending` and `send_uncertain` as contact/cap reservations.
 
 **Regression tests:** a real-Postgres race with two clients must return exactly one claim and invoke the send stub once; a stale claimant must be unable to finalize or release the winner's lease.
+
+**2026-08-08 resolution:** Closed at code level. A candidate can be claimed only while
+`claim_token IS NULL`; lease reconciliation alone retires expired ownership. A separate
+reservation token fences the shared ledger at dispatch start and finalization. PostgreSQL
+contracts prove one winner under two- and five-way contention and reject stale tokens at
+every network boundary.
 
 ### QA-03 — Phase is ignored and cohorts mix
 
@@ -104,6 +158,10 @@ Make `--phase` explicit in the CLI, reject absent/invalid phase, show excluded-o
 
 **Regression tests:** mixed fixture produces disjoint campaigns; Phase 1 never contains accepted/no-read evidence; Phase 2 never contains exhausted evidence.
 
+**2026-08-08 resolution:** Closed at code level. Selection filters by phase before the
+snapshot is written, and a database check plus phase-sync trigger rejects incompatible
+campaign/candidate evidence. The phase selector and database contracts pass.
+
 ### QA-04 — Public-recovery cooldown is not shared
 
 **Severity:** P0  
@@ -118,6 +176,12 @@ Make `--phase` explicit in the CLI, reject absent/invalid phase, show excluded-o
 **Required fix:** create one authoritative public-recovery dispatch/contact ledger (or consolidate candidates) keyed by person, with transactionally reserved attempts. Both workers must consult it under the same person/control lock. Apply the prospective 24-hour and historical 30-day rules explicitly, with the stricter applicable result winning. Include in-flight and uncertain attempts.
 
 **Regression tests:** prospective-vs-historical and historical-vs-historical concurrent races; different keyword IDs still share person cooldown; exactly-at-boundary behavior.
+
+**2026-08-08 resolution:** Closed at code level. Both features reserve from
+`public_recovery_dispatch` under the same control/person/source lock order. Its partial
+unique index permits only one active reservation per person, while all capacity and
+cooldown queries read the ledger. PostgreSQL contracts pass for every race, symmetry,
+release, uncertainty, keyword, and boundary case named above.
 
 ### QA-05 — Reconciled aliases remain actionable
 
@@ -141,6 +205,12 @@ Make `--phase` explicit in the CLI, reject absent/invalid phase, show excluded-o
 
 **Regression tests:** CF-04 through CF-09, especially “alias completes” and “pending alias gate after reconciliation.”
 
+**2026-08-08 resolution:** Closed at code level. The central resolver makes unreconciled
+and canonical conversations operational and aliases historical-only. Gate, DONE,
+completion, prospective/historical recovery, reconciliation, API, and web paths use that
+authority. Real-PostgreSQL reconciliation contracts also prove claimed/sending alias work
+is never repointed underneath an active worker.
+
 ### QA-06 — Feature 2 final send check can miss sibling completion
 
 **Severity:** P1  
@@ -151,6 +221,11 @@ Make `--phase` explicit in the CLI, reject absent/invalid phase, show excluded-o
 **Required fix:** make the final transaction query the canonical intent's `completedAt` (preferred) or any current same-person/keyword completion. Best-effort denormalized stamping may remain for UI speed, but it cannot be the safety authority.
 
 **Regression test:** force completion suppression to fail, complete a sibling journey, then prove `authorizeClaimForSend` suppresses the original recovery.
+
+**2026-08-08 resolution:** Closed at code level as part of canonical ownership. The final
+prospective policy context resolves the source conversation, reads authoritative intent
+completion, and retains the unreconciled same-person/keyword fallback. The canonical and
+legacy sibling-completion contract cases pass against PostgreSQL.
 
 ### QA-07 — Holdout assignment breaks the small pilot
 
@@ -336,6 +411,14 @@ At 50%, the first 25-person pilot sends to nobody. At 10%, it withholds 40%, not
 - There is no historical-recovery Playwright specification under `web/e2e`.
 - No controlled Meta settings rejection, read/reaction/postback delivery, or public historical reply was executed.
 
+**2026-08-08 rerun:** the database-contract portion of this finding is now closed. A fresh
+PostgreSQL 17 database ran all 90 backend files and 1,385 tests with zero skips, including
+the new migration/backfill, dispatch-race, lease, capacity/cooldown, and canonical-flow
+contracts. Backend and frontend builds pass; all 376 frontend tests pass; touched-file
+lint passes. QA-20 remains open for the unrelated repository-wide lint baseline,
+historical owner-flow browser coverage, controlled Meta verification, and production
+rollout evidence.
+
 **Required fix before launch:** run all database contract suites against the exact deployed PostgreSQL migration set; add multi-client race contracts for QA-02/04/08; add historical owner-flow Playwright coverage; clear the lint baseline; execute the controlled Meta verification/evidence runbook and archive its redacted evidence.
 
 ## Acceptance coverage by feature
@@ -358,31 +441,31 @@ At 50%, the first 25-person pilot sends to nobody. At 10%, it withholds 40%, not
 | Exact gate message correlation and positive-signal suppression | Pass in local tests | Read/reaction/postback/inbound paths exist |
 | Durable leases, final authorization, retries, uncertain outcomes | Pass in local tests | This path has stronger state/cap machinery than Feature 4 |
 | Deterministic treatment/control and dashboard states | Pass in local tests | Separate settings rows are excluded from experiment metrics |
-| Same-keyword/canonical completion authority | Fail | QA-06 |
-| Shared person cooldown/cap with Feature 4 | Fail | QA-04 |
+| Same-keyword/canonical completion authority | Pass at code level | Canonical intent and sibling completion are rechecked before reservation |
+| Shared person cooldown/cap with Feature 4 | Pass at code level | QA-04 closed by the shared dispatch ledger |
 | Production Meta/webhook observation period | Unverified | Required before Feature 4 |
 
 ### Feature 3 — Journey canonicalization
 
 | Acceptance area | Status | Notes |
 |---|---|---|
-| Live same-person/keyword 48-hour reuse and replay handling | Pass in unit tests | Serializable real-DB suite skipped locally |
-| Exactly one canonical owner for gate/completion/recovery | Fail | QA-05/06 |
-| Alias completion reconciles canonical state | Fail | `markIntentCompleted` is canonical-conversation-only |
+| Live same-person/keyword 48-hour reuse and replay handling | Pass | Serializable real-PostgreSQL contracts ran in the 2026-08-08 fresh-database suite |
+| Exactly one canonical owner for gate/completion/recovery | Pass at code level | QA-05 closed by the central resolver and operational predicate |
+| Alias completion reconciles canonical state | Pass at code level | Alias history is preserved while the canonical owner/intent complete atomically |
 | Historical reconciliation dry-run/idempotency/restartability | Partial/Fail | Dry-run exists; evidence/atomic/restart behavior incomplete (QA-15) |
 | Every trigger preserved | Fail | QA-16 |
-| Canonical actionable UI and separate metrics | Fail | QA-05/19 |
+| Canonical actionable UI and separate metrics | Partial | Canonical/raw conversation modes are complete; broader QA-19 historical controls remain |
 
 ### Feature 4 — Historical recovery
 
 | Acceptance area | Status | Notes |
 |---|---|---|
 | Canonical unique-person snapshot | Partial | Per-campaign uniqueness exists, but source/evidence/cutoff correctness fails |
-| Confirmed vs unknown-read phases separate | Fail | QA-03 |
-| Approved uncertainty-aware copy | Fail | QA-01 |
+| Confirmed vs unknown-read phases separate | Pass at code level | QA-03 selector and database constraints pass |
+| Approved uncertainty-aware copy | Pass at code level | QA-01 working action and negative wording tests pass |
 | Stable randomized pilot/holdout | Fail | QA-07 |
-| Exclusive claims and no duplicate public sends | Fail | QA-02/04 |
-| Final source/evidence/cooldown recheck | Partial | Recheck exists, but QA-04/09/11 remain |
+| Exclusive claims and no duplicate public sends | Pass at code level | QA-02/04 real-PostgreSQL concurrency contracts pass |
+| Final source/evidence/cooldown recheck | Partial | QA-04 is closed; QA-09/11 remain separate findings |
 | Batch/hour/day caps and outage recovery | Partial | Daily check now exists; QA-08/10 remain |
 | Kill switch/pause/cancel/shared auth circuit | Partial pass | Basic controls exist; historical stop conditions do not |
 | Campaign lifecycle, attribution, audit dashboard | Fail/Partial | QA-12/19 |
@@ -391,7 +474,7 @@ At 50%, the first 25-person pilot sends to nobody. At 10%, it withholds 40%, not
 ## Required implementation order
 
 1. **Keep `DM_RECOVERY_HISTORICAL_ENABLED=false`.** Do not create/approve a production historical campaign from the current selector.
-2. Fix P0 dispatch integrity: QA-01 through QA-05.
+2. P0 code remediation is complete for QA-01 through QA-05. Before production, run the read-only collision/backfill preflight and review migration compatibility.
 3. Fix authoritative final policy and pacing: QA-06 through QA-11, with real-Postgres concurrency tests.
 4. Wire lifecycle, measurement, stop conditions, and reproducible manifests: QA-12 through QA-16.
 5. Finish Feature 1 audit evidence and operational UI: QA-17 through QA-19.
@@ -417,4 +500,23 @@ cd web && npm run lint
 
 node holdout reproduction
 # N=25: 10% setting produces 10/15, 50% setting produces 25/0
+
+# 2026-08-08 P0 remediation rerun on a fresh disposable PG17 database
+MIGRATION_TEST_DATABASE_URL=<local-pg17-url> DATABASE_URL=<same-local-pg17-url> npm test
+# 90 passed files; 1,385 passed tests; 0 skipped
+
+npm run build
+# passed (Prisma generate + TypeScript)
+
+cd web && npm test
+# 25 passed files; 376 passed tests
+
+cd web && npm run build
+# passed (2,312 modules; 356.02 kB JS / 104.03 kB gzip)
+
+cd web && npx eslint src/pages/Conversations.tsx src/pages/Conversations.test.tsx src/lib/types.ts
+# passed
+
+cd web && npm run lint
+# unchanged repository baseline: 9 errors in 5 unrelated files
 ```
