@@ -65,6 +65,12 @@ resourcesRouter.patch("/:id", async (req, res) => {
 
 resourcesRouter.delete("/:id", async (req, res) => {
   const id = req.params.id;
+  const deliveryHistoryCount = await prisma.guideDelivery.count({
+    where: { resourceId: id },
+  });
+  if (deliveryHistoryCount > 0) {
+    return res.status(409).json({ error: "resource_has_delivery_history" });
+  }
   const keywordIds = (
     await prisma.keyword.findMany({ where: { resourceId: id }, select: { id: true } })
   ).map((k) => k.id);
