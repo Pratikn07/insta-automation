@@ -28,10 +28,16 @@ export function ConfirmDialog({
   React.useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCancel();
+      if (e.key !== "Escape") return;
+      // A confirmation can be nested inside a Drawer. Handle Escape while the
+      // event is still descending through the document so it cannot also reach
+      // the Drawer's window-level bubble listener and close both layers.
+      e.preventDefault();
+      e.stopPropagation();
+      onCancel();
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
   }, [open, onCancel]);
 
   return (
