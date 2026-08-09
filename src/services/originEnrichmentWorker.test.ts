@@ -33,7 +33,7 @@ vi.mock("./originClassifier.js", async (importOriginal) => {
 const { runOriginEnrichmentTick, _resetOriginSpendState } = await import(
   "./originEnrichmentWorker.js"
 );
-const { ORIGIN_PROMPT_VERSION } = await import("./originClassifier.js");
+const { CURRENT_ORIGIN_METHOD } = await import("./historicalRecoveryOriginPolicy.js");
 
 beforeEach(() => {
   // Spend that left no row behind is tracked in module state; without this a
@@ -99,7 +99,7 @@ describe("runOriginEnrichmentTick", () => {
       expect.objectContaining({
         inferredOrigin: "south_asian",
         originConfidence: "high",
-        originMethod: ORIGIN_PROMPT_VERSION,
+        originMethod: CURRENT_ORIGIN_METHOD,
         originEvidence: "Indian given name Priya",
         originCheckedAt: expect.any(Date),
       }),
@@ -119,7 +119,12 @@ describe("runOriginEnrichmentTick", () => {
     expect(res.skippedNoSignal).toBe(1);
     expect(writtenIds()).toEqual(["u1"]);
     expect(writtenData()).toEqual(
-      expect.objectContaining({ inferredOrigin: "unknown", originConfidence: "low" }),
+      expect.objectContaining({
+        inferredOrigin: "unknown",
+        originConfidence: "low",
+        originMethod: CURRENT_ORIGIN_METHOD,
+        originCheckedAt: expect.any(Date),
+      }),
     );
   });
 
@@ -169,6 +174,7 @@ describe("runOriginEnrichmentTick", () => {
       expect.objectContaining({
         inferredOrigin: "unknown",
         originConfidence: "low",
+        originMethod: CURRENT_ORIGIN_METHOD,
         originCheckedAt: expect.any(Date),
       }),
     );
@@ -251,7 +257,13 @@ describe("runOriginEnrichmentTick", () => {
 
     expect(findMany).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        where: { originCheckedAt: null },
+        where: {
+          OR: [
+            { originCheckedAt: null },
+            { originMethod: null },
+            { originMethod: { not: CURRENT_ORIGIN_METHOD } },
+          ],
+        },
         orderBy: { createdAt: "desc" },
         take: 25,
       }),

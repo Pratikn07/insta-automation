@@ -2,11 +2,11 @@ import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
 import { env } from "../config/env.js";
 import { geminiEnabled } from "../meta/geminiClient.js";
+import { CURRENT_ORIGIN_METHOD } from "./historicalRecoveryOriginPolicy.js";
 import { logEvent } from "./eventLogger.js";
 import {
   classifyOrigins,
   estimateOriginCostUsd,
-  ORIGIN_PROMPT_VERSION,
   MAX_ORIGIN_BATCH,
   type OriginCandidate,
 } from "./originClassifier.js";
@@ -72,7 +72,7 @@ async function spentTodayUsd(): Promise<number> {
   // read `.length` grew with a day's throughput — every tick paid to ship a
   // whole day of ids across the wire to discard them.
   const classifiedToday = await prisma.igUser.count({
-    where: { originCheckedAt: { gte: startOfTodayUtc() }, originMethod: ORIGIN_PROMPT_VERSION },
+    where: { originCheckedAt: { gte: startOfTodayUtc() }, originMethod: CURRENT_ORIGIN_METHOD },
   });
   // Cost is per BATCH, not per row, and is not stored per user (a cost column on
   // ig_users would be storing an accounting fact on a person). Reconstruct it
@@ -96,7 +96,7 @@ function hasSignal(u: { username: string | null; name: string | null }): boolean
 }
 
 /**
- * Classify a paced batch of not-yet-checked users.
+ * Classify a paced batch of users with no current-method origin result.
  *
  * Non-throwing, mirroring runGeminiQueueTick: this is an enrichment pass, and a
  * failure must never take down the caller. An unclassified user is not a broken
@@ -129,7 +129,13 @@ async function tickBody(): Promise<OriginEnrichmentResult> {
   // Newest first. New arrivals are the ones with a reminder already ticking
   // toward its ten-hour send; an old unclassified row has no deadline.
   const due = await prisma.igUser.findMany({
-    where: { originCheckedAt: null },
+    where: {
+      OR: [
+        { originCheckedAt: null },
+        { originMethod: null },
+        { originMethod: { not: CURRENT_ORIGIN_METHOD } },
+      ],
+    },
     select: { id: true, username: true, name: true },
     orderBy: { createdAt: "desc" },
     take: batchSize,
@@ -158,7 +164,7 @@ async function tickBody(): Promise<OriginEnrichmentResult> {
       data: {
         inferredOrigin: "unknown",
         originConfidence: "low",
-        originMethod: ORIGIN_PROMPT_VERSION,
+        originMethod: CURRENT_ORIGIN_METHOD,
         originEvidence: "no name or username to classify",
         originCheckedAt: now,
       },
@@ -198,7 +204,7 @@ async function tickBody(): Promise<OriginEnrichmentResult> {
         data: {
           inferredOrigin: v.origin,
           originConfidence: v.confidence,
-          originMethod: ORIGIN_PROMPT_VERSION,
+          originMethod: CURRENT_ORIGIN_METHOD,
           originEvidence: v.evidence,
           originCheckedAt: now,
         },
@@ -220,7 +226,7 @@ async function tickBody(): Promise<OriginEnrichmentResult> {
       data: {
         inferredOrigin: "unknown",
         originConfidence: "low",
-        originMethod: ORIGIN_PROMPT_VERSION,
+        originMethod: CURRENT_ORIGIN_METHOD,
         originEvidence: "model returned no verdict for this account",
         originCheckedAt: now,
       },
@@ -233,7 +239,7 @@ async function tickBody(): Promise<OriginEnrichmentResult> {
     classified: result.classified,
     skippedNoSignal: result.skippedNoSignal,
     costUsd: Number(result.costUsd.toFixed(6)),
-    promptVersion: ORIGIN_PROMPT_VERSION,
+    promptVersion: CURRENT_ORIGIN_METHOD,
   });
 
   return result;
