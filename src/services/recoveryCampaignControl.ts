@@ -288,10 +288,25 @@ export async function resumeCampaign(
 ): Promise<CampaignTransition> {
   const current = await prisma.recoveryCampaign.findUnique({
     where: { id: campaignId },
-    select: { state: true, pauseReason: true },
+    select: {
+      state: true,
+      pauseReason: true,
+      selectionFingerprint: true,
+      decisionHash: true,
+      eligibilityPolicyVersion: true,
+      westernOnly: true,
+    },
   });
   if (!current) return { ok: false, reason: "not_found" };
   if (current.state !== "paused") return { ok: false, reason: `not_resumable_from_${current.state}` };
+  if (
+    !current.selectionFingerprint?.trim()
+    || !current.decisionHash?.trim()
+    || !current.eligibilityPolicyVersion?.trim()
+    || current.westernOnly === null
+  ) {
+    return { ok: false, reason: "snapshot_incomplete" };
+  }
 
   const autoPaused = current.pauseReason?.startsWith("auto:") ?? false;
   if (autoPaused && !options.acknowledgeAutoPause?.trim()) {
@@ -303,7 +318,15 @@ export async function resumeCampaign(
     // `approvedAt` must already be set — a paused campaign always has it, but the
     // condition makes the invariant explicit rather than assumed. Re-checking `paused`
     // closes the gap between the read above and this write.
-    where: { id: campaignId, state: "paused", approvedAt: { not: null } },
+    where: {
+      id: campaignId,
+      state: "paused",
+      approvedAt: { not: null },
+      selectionFingerprint: { not: null },
+      decisionHash: { not: null },
+      eligibilityPolicyVersion: { not: null },
+      westernOnly: { not: null },
+    },
     data: { state: "running", pausedAt: null, pauseReason: null },
   });
 

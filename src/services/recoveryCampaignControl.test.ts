@@ -220,28 +220,41 @@ describe("pauseCampaign", () => {
 });
 
 describe("resumeCampaign", () => {
+  const reviewedPause = (pauseReason: string) => ({
+    state: "paused",
+    pauseReason,
+    selectionFingerprint: "fingerprint",
+    decisionHash: "decision",
+    eligibilityPolicyVersion: "eligibility-v2",
+    westernOnly: true,
+  });
   // Approval is already on the row, so resuming does not re-ask for it — but the
   // query still requires approvedAt, making that invariant explicit.
   it("resumes only a paused, already-approved campaign", async () => {
     // Resume now reads the row first, to tell an automatic pause from an owner's (QA-13).
-    campaignFindUnique.mockResolvedValue({ state: "paused", pauseReason: "lunch" });
+    campaignFindUnique.mockResolvedValue(reviewedPause("lunch"));
     campaignUpdateMany.mockResolvedValue({ count: 1 });
 
     const result = await resumeCampaign("camp-1");
 
     expect(result).toEqual({ ok: true, state: "running" });
     expect(campaignUpdateMany).toHaveBeenCalledWith({
-      where: { id: "camp-1", state: "paused", approvedAt: { not: null } },
+      where: {
+        id: "camp-1",
+        state: "paused",
+        approvedAt: { not: null },
+        selectionFingerprint: { not: null },
+        decisionHash: { not: null },
+        eligibilityPolicyVersion: { not: null },
+        westernOnly: { not: null },
+      },
       data: { state: "running", pausedAt: null, pauseReason: null },
     });
   });
 
   // An automatic stop that any resume could undo is a suggestion, not a stop.
   it("refuses to resume an automatic pause without an acknowledgement", async () => {
-    campaignFindUnique.mockResolvedValue({
-      state: "paused",
-      pauseReason: "auto:public_failure_rate",
-    });
+    campaignFindUnique.mockResolvedValue(reviewedPause("auto:public_failure_rate"));
 
     const result = await resumeCampaign("camp-1");
 
@@ -252,10 +265,7 @@ describe("resumeCampaign", () => {
   });
 
   it("resumes an automatic pause once acknowledged", async () => {
-    campaignFindUnique.mockResolvedValue({
-      state: "paused",
-      pauseReason: "auto:uncertain_rate",
-    });
+    campaignFindUnique.mockResolvedValue(reviewedPause("auto:uncertain_rate"));
     campaignUpdateMany.mockResolvedValue({ count: 1 });
 
     const result = await resumeCampaign("camp-1", { acknowledgeAutoPause: "reviewed" });
@@ -271,6 +281,23 @@ describe("resumeCampaign", () => {
       ok: false,
       reason: "not_resumable_from_cancelled",
     });
+  });
+
+  it("refuses to resume a migrated legacy campaign without a reviewed manifest", async () => {
+    campaignFindUnique.mockResolvedValue({
+      state: "paused",
+      pauseReason: "migration:legacy_unverified_snapshot",
+      selectionFingerprint: null,
+      decisionHash: null,
+      eligibilityPolicyVersion: null,
+      westernOnly: null,
+    });
+
+    await expect(resumeCampaign("camp-1")).resolves.toEqual({
+      ok: false,
+      reason: "snapshot_incomplete",
+    });
+    expect(campaignUpdateMany).not.toHaveBeenCalled();
   });
 });
 
