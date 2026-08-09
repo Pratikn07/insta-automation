@@ -2,7 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -184,5 +184,150 @@ describe("Conversations recovery lens", () => {
       .toBe(true);
     expect(paths.some((path) => path.includes("/conversations?") && path.includes("mode=raw")))
       .toBe(true);
+  });
+});
+
+describe("Conversations guide delivery review", () => {
+  it("keeps an amber review badge beside draft status and renders every review above the draft", async () => {
+    const draft = {
+      id: "draft-1",
+      kind: "reply",
+      status: "pending_approval",
+      revision: 1,
+      suggestedText: "Here is a reply suggestion.",
+      workingText: "Here is a reply suggestion.",
+      approvedText: null,
+      rationale: "Answers the newest message.",
+      confidence: "high",
+      warnings: [],
+      errorCode: null,
+      errorMessage: null,
+      retryAt: null,
+      inboundMessageId: "message-inbound",
+      sourceConversationId: null,
+      eligibleAt: "2026-08-09T10:00:00.000Z",
+      expiresAt: null,
+      promptVersion: 2,
+      promptPolicyCurrent: true,
+      sourceGuide: null,
+      approvedBy: null,
+      approvedAt: null,
+      sentAt: null,
+      createdAt: "2026-08-09T10:00:00.000Z",
+    } as const;
+    const reviews = [
+      {
+        id: "delivery-one",
+        status: "needs_review",
+        confirmedUnits: 0,
+        totalUnits: 1,
+        sendWindowExpiresAt: "2026-08-09T12:00:00.000Z",
+        sendWindowOpen: true,
+        failureCode: "guide_unit_uncertain",
+        units: [{ id: "unit-one", position: 0, kind: "text", status: "uncertain" }],
+      },
+      {
+        id: "delivery-two",
+        status: "needs_review",
+        confirmedUnits: 1,
+        totalUnits: 2,
+        sendWindowExpiresAt: "2026-08-09T12:00:00.000Z",
+        sendWindowOpen: true,
+        failureCode: "guide_unit_uncertain",
+        units: [
+          { id: "unit-two-sent", position: 0, kind: "image", status: "sent" },
+          { id: "unit-two", position: 1, kind: "file", status: "uncertain" },
+        ],
+      },
+    ] as const;
+
+    api.mockImplementation((path: string) => {
+      if (path === "/dm-threads?scope=needs_reply") {
+        return Promise.resolve({
+          items: [{
+            id: "thread-review",
+            igUserId: "ig-review",
+            username: "geri",
+            name: "Geri",
+            needsReply: true,
+            latestInboundMessageId: "message-inbound",
+            lastMessageAt: "2026-08-09T10:00:00.000Z",
+            lastInboundAt: "2026-08-09T10:00:00.000Z",
+            lastOutboundAt: null,
+            latestMessage: {
+              direction: "inbound",
+              text: "Can you help?",
+              type: "text",
+              source: "instagram",
+              instagramTimestamp: "2026-08-09T10:00:00.000Z",
+            },
+            draft,
+            deliveryReviewCount: 2,
+          }],
+          nextCursor: null,
+        });
+      }
+      if (path === "/dm-threads/thread-review") {
+        return Promise.resolve({
+          id: "thread-review",
+          igUserId: "ig-review",
+          username: "geri",
+          name: "Geri",
+          needsReply: true,
+          latestInboundMessageId: "message-inbound",
+          lastMessageAt: "2026-08-09T10:00:00.000Z",
+          messages: [{
+            id: "message-inbound",
+            direction: "inbound",
+            text: "Can you help?",
+            type: "text",
+            source: "instagram",
+            mediaUrl: null,
+            instagramTimestamp: "2026-08-09T10:00:00.000Z",
+          }],
+          draft,
+          deliveryReviews: reviews,
+        });
+      }
+      if (path === "/ai/capabilities") {
+        return Promise.resolve({ draftingEnabled: true, followUpsEnabled: true, sendEnabled: true });
+      }
+      if (path.startsWith("/conversations/counts")) {
+        return Promise.resolve({
+          awaiting_done: 0,
+          completed: 0,
+          expired: 0,
+          retrying: 0,
+          waitingOnReply: 1,
+        });
+      }
+      return Promise.resolve({ items: [], nextCursor: null });
+    });
+    renderPage();
+
+    const username = await screen.findByText("@geri");
+    const row = username.closest("button");
+    expect(row).not.toBeNull();
+    expect(within(row!).getByText("Draft ready")).toBeInTheDocument();
+    expect(within(row!).getByText("Delivery needs review")).toBeInTheDocument();
+
+    await userEvent.click(row!);
+
+    const drawer = await screen.findByRole("dialog");
+    const reviewHeadings = within(drawer).getAllByRole("heading", {
+      name: "Delivery needs review",
+    });
+    expect(reviewHeadings).toHaveLength(2);
+    expect(
+      within(drawer).getByRole("button", { name: "Cancel delivery delivery-one" }),
+    ).toBeInTheDocument();
+    expect(
+      within(drawer).getByRole("button", { name: "Cancel delivery delivery-two" }),
+    ).toBeInTheDocument();
+    const draftEditor = within(drawer).getByRole("textbox", { name: "Reply draft" });
+    for (const heading of reviewHeadings) {
+      expect(heading.compareDocumentPosition(draftEditor) & Node.DOCUMENT_POSITION_FOLLOWING)
+        .toBeTruthy();
+    }
   });
 });

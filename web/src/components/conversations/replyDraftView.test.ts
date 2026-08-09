@@ -51,6 +51,7 @@ function thread(overrides: Partial<DmThreadDetail> = {}): DmThreadDetail {
     lastMessageAt: "2026-08-04T10:00:00.000Z",
     messages: [],
     draft: null,
+    deliveryReviews: [],
     ...overrides,
   };
 }
