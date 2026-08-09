@@ -119,7 +119,12 @@ async function countActiveAliasWork(
       where: {
         conversationId: { in: aliasIds },
         outcome: "pending",
-        dispatchStartedAt: { not: null },
+        // A claim is already exclusive work, even before the worker stamps
+        // dispatchStartedAt. Repointing the conversation during that interval would
+        // let a valid reservation continue against an alias that no longer owns the
+        // journey. Pre-network claims are short lived, so decline this window and let
+        // the lease reconciler release it before a later reconciliation run.
+        claimToken: { not: null },
       },
     }),
   ]);
@@ -146,7 +151,7 @@ export async function applyReconciledWindow(
   now = new Date(),
 ): Promise<{
   outcome: "written" | "skipped_live_intent" | "skipped_active_work";
-  intentId: string;
+  intentId: string | null;
 }> {
   return prisma.$transaction(async (tx) => {
     // Match an existing intent by OVERLAP, not by the exact window key (QA-15).
@@ -182,7 +187,7 @@ export async function applyReconciledWindow(
     if ((await countActiveAliasWork(tx, aliasIds)) > 0) {
       return {
         outcome: "skipped_active_work" as const,
-        intentId: overlapping?.id ?? "",
+        intentId: overlapping?.id ?? null,
       };
     }
 

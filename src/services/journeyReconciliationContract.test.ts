@@ -49,6 +49,15 @@ beforeAll(async () => {
 });
 
 async function wipe(): Promise<void> {
+  await prisma.publicRecoveryDispatch.deleteMany({
+    where: { igUserId: { startsWith: fx.igUserId } },
+  });
+  await prisma.recoveryCandidate.deleteMany({
+    where: { igUserId: { startsWith: fx.igUserId } },
+  });
+  await prisma.recoveryCampaign.deleteMany({
+    where: { selectionVersion: { startsWith: fx.igUserId } },
+  });
   await prisma.gateQueue.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
   await prisma.journeyTrigger.deleteMany({
     where: { intent: { igUserId: { startsWith: fx.igUserId } } },
@@ -265,6 +274,70 @@ describeWithLocalDatabase("a reconciled window is written atomically", () => {
 
     expect(result.outcome).toBe("skipped_active_work");
     expect(await prisma.journeyIntent.count({ where: { igUserId: person } })).toBe(0);
+    expect((await prisma.conversation.findUnique({ where: { id: alias } }))?.canonicalIntentId)
+      .toBeNull();
+  });
+
+  it("skips a claimed historical alias before its network-start stamp", async () => {
+    const person = `${fx.igUserId}-${randomUUID()}`;
+    const canonical = await seedConversation({ gate: "event", person });
+    const alias = await seedConversation({ gate: "none", person });
+    const intent = await prisma.journeyIntent.create({
+      data: {
+        igUserId: person,
+        keywordId: fx.keywordId,
+        canonicalConversationId: canonical,
+        windowStartedAt: CREATED_AT,
+        lastTriggerAt: CREATED_AT,
+        windowExpiresAt: new Date(CREATED_AT.getTime() + 48 * 3600_000),
+      },
+    });
+    const campaign = await prisma.recoveryCampaign.create({
+      data: {
+        phase: "unknown_read_pilot",
+        state: "running",
+        selectionVersion: `${fx.igUserId}-${randomUUID()}`,
+        sourceDataCutoff: CREATED_AT,
+        copyVersion: "contract-v1",
+        approvedBy: "contract@example.com",
+        approvedAt: CREATED_AT,
+      },
+    });
+    await prisma.recoveryCandidate.create({
+      data: {
+        campaignId: campaign.id,
+        campaignPhase: "unknown_read_pilot",
+        intentId: intent.id,
+        igUserId: person,
+        conversationId: alias,
+        keywordId: fx.keywordId,
+        commentId: `claimed-alias-${randomUUID()}`,
+        commentAt: CREATED_AT,
+        keywordSnapshot: "RECON",
+        publicReplyText: "contract",
+        evidence: "gate_sent_no_read",
+        arm: "treatment",
+        eligibleAt: CREATED_AT,
+        claimedAt: new Date(),
+        claimExpiresAt: new Date(Date.now() + 60_000),
+        claimToken: randomUUID(),
+      },
+    });
+
+    const result = await repo.applyReconciledWindow({
+      igUserId: person,
+      keywordId: fx.keywordId,
+      canonicalId: canonical,
+      windowStartedAt: CREATED_AT,
+      lastTriggerAt: CREATED_AT,
+      windowExpiresAt: new Date(CREATED_AT.getTime() + 48 * 3600_000),
+      completedAt: null,
+      choice: "confirmed_gate",
+      aliases: [{ id: alias, state: "superseded", reason: "no_delivery" }],
+    });
+
+    expect(result).toEqual({ outcome: "skipped_active_work", intentId: intent.id });
+    expect(await prisma.recoveryCandidate.count({ where: { conversationId: alias } })).toBe(1);
     expect((await prisma.conversation.findUnique({ where: { id: alias } }))?.canonicalIntentId)
       .toBeNull();
   });
