@@ -1,156 +1,58 @@
 import { prisma } from "../src/lib/prisma.js";
 import {
-  partitionIntoWindows,
-  reconcileWindow,
-  describeCanonicalChoice,
-  type ReconcileCandidate,
-} from "../src/services/journeyReconciliationCore.js";
-import {
-  loadReconciliationRows,
-  applyReconciledWindow,
-  hasOverlappingLiveIntent,
-  hasActiveAliasWork,
-  type ReconciliationRow as Row,
-} from "../src/services/journeyReconciliationRepository.js";
+  JourneyReconciliationRunError,
+  runJourneyReconciliation,
+} from "../src/services/journeyReconciliationRunner.js";
 
 /**
- * Group existing conversations into canonical journey intents.
+ * Build or apply a durable journey-reconciliation manifest.
  *
- *   npx tsx scripts/reconcile-journeys.ts            # dry run, writes nothing
- *   npx tsx scripts/reconcile-journeys.ts --write    # apply
+ *   npx tsx scripts/reconcile-journeys.ts
+ *   npx tsx scripts/reconcile-journeys.ts --write --approved-run=<dry-run UUID>
+ *   npx tsx scripts/reconcile-journeys.ts --resume=<run UUID> [--write]
  *
- * Dry run is the DEFAULT: this rewrites the interpretation of ~805 historical
- * conversations, and the design (§24.9) requires a reviewed report before any
- * write. Nothing is ever deleted — aliases are labelled, not removed.
- *
- * Idempotent and restartable. An intent already covering a window is updated
- * rather than duplicated, and the unique index on
- * (ig_user_id, keyword_id, window_started_at) is what makes a re-run safe.
+ * Dry run is the default and persists the exact per-window input fingerprint,
+ * proposed owner, evidence choice, and conflict. Write mode requires the UUID of
+ * a completed dry run and refuses any input drift. Each write, window result,
+ * and resume checkpoint commits in one transaction.
  */
 
-const WRITE = process.argv.includes("--write");
-
-function groupByPersonKeyword(rows: Row[]): Map<string, Row[]> {
-  const groups = new Map<string, Row[]>();
-  for (const row of rows) {
-    // Identity is the keyword ID, never the word: the same word can exist as
-    // several rows pointing at DIFFERENT guides (DINNER is three rows here), and
-    // merging those would collapse two genuine requests into one.
-    const key = `${row.igUserId}\u0000${row.keywordId}`;
-    const bucket = groups.get(key);
-    if (bucket) bucket.push(row);
-    else groups.set(key, [row]);
-  }
-  return groups;
+function valueOf(prefix: string): string | undefined {
+  return process.argv.find((arg) => arg.startsWith(prefix))?.slice(prefix.length);
 }
 
-async function main() {
-  const rows = await loadReconciliationRows();
-  const groups = groupByPersonKeyword(rows);
+const write = process.argv.includes("--write");
+const approvedManifestRunId = valueOf("--approved-run=");
+const resumeRunId = valueOf("--resume=");
 
-  let intents = 0;
-  let singletonWindows = 0;
-  let multiWindows = 0;
-  let recovered = 0;
-  let superseded = 0;
-  let skippedLive = 0;
-  let skippedActiveWork = 0;
-  const byChoice = new Map<string, number>();
+async function main(): Promise<void> {
+  const summary = await runJourneyReconciliation({
+    write,
+    approvedManifestRunId,
+    resumeRunId,
+  });
 
-  for (const group of groups.values()) {
-    for (const window of partitionIntoWindows(group)) {
-      intents++;
-      if (window.length === 1) singletonWindows++;
-      else multiWindows++;
-
-      const candidates: ReconcileCandidate[] = window.map((row) => ({
-        id: row.id,
-        createdAt: row.createdAt,
-        completed: row.state === "completed",
-        hasSentGate: row.hasSentGate,
-        completedAt: row.completedAt,
-      }));
-
-      const result = reconcileWindow(candidates);
-      const choice = describeCanonicalChoice(candidates);
-      byChoice.set(choice, (byChoice.get(choice) ?? 0) + 1);
-      for (const alias of result.aliases) {
-        if (alias.state === "recovered") recovered++;
-        else superseded++;
-      }
-
-      const first = window[0]!;
-      // Checked in BOTH modes, before the write guard, so the dry run reports the same
-      // declines an apply would make. Advisory here; applyReconciledWindow re-checks
-      // inside its transaction, because a journey can go live in between.
-      if (
-        await hasOverlappingLiveIntent({
-          igUserId: first.igUserId,
-          keywordId: first.keywordId,
-          windowStartedAt: result.windowStartedAt,
-          windowExpiresAt: result.windowExpiresAt,
-        })
-      ) {
-        skippedLive++;
-        continue;
-      }
-      if (await hasActiveAliasWork(result.aliases.map((alias) => alias.id))) {
-        skippedActiveWork++;
-        continue;
-      }
-
-      if (!WRITE) continue;
-
-      // One transaction per window (QA-15). Previously the intent upsert, the canonical
-      // update and each alias update were separate statements, so a crash part-way left
-      // a window half-repointed and a re-run read that partial state as its own input.
-      const applied = await applyReconciledWindow({
-        igUserId: first.igUserId,
-        keywordId: first.keywordId,
-        canonicalId: result.canonicalId,
-        windowStartedAt: result.windowStartedAt,
-        lastTriggerAt: result.lastTriggerAt,
-        windowExpiresAt: result.windowExpiresAt,
-        completedAt: result.completedAt,
-        choice,
-        aliases: result.aliases.map((a) => ({ id: a.id, state: a.state, reason: a.reason })),
-      });
-      // A window the live path is still driving is declined, not overwritten. Counted
-      // and printed, because a silent skip is indistinguishable from a successful write.
-      // Belt and braces: the transaction re-checked and declined after all.
-      if (applied.outcome === "skipped_live_intent") skippedLive++;
-      if (applied.outcome === "skipped_active_work") skippedActiveWork++;
-    }
+  console.log(write ? "APPLIED" : "DRY RUN — durable manifest only; no journey writes");
+  console.log(`  run id          : ${summary.runId}`);
+  console.log(`  source cutoff   : ${summary.sourceCutoff.toISOString()}`);
+  console.log(`  windows         : ${summary.windows}`);
+  for (const [result, count] of Object.entries(summary.results).sort()) {
+    console.log(`    ${result.padEnd(30)} ${count}`);
   }
-
-  console.log(WRITE ? "APPLIED" : "DRY RUN — nothing written");
-  console.log(`  conversations read      : ${rows.length}`);
-  console.log(`  person-keyword groups   : ${groups.size}`);
-  console.log(`  canonical intents       : ${intents}`);
-  console.log(`    single-journey windows: ${singletonWindows}`);
-  console.log(`    multi-journey windows : ${multiWindows}`);
-  console.log(`  aliases recovered       : ${recovered}  (a sibling delivered the guide)`);
-  console.log(`  aliases superseded      : ${superseded}  (none did)`);
-  if (skippedLive > 0) {
+  if (!write) {
     console.log(
-      `  SKIPPED (live journey)  : ${skippedLive}  — the live path owns these; not repointed`,
+      `\nAfter owner review: npx tsx scripts/reconcile-journeys.ts --write --approved-run=${summary.runId}`,
     );
   }
-  if (skippedActiveWork > 0) {
-    console.log(
-      `  SKIPPED (active work)   : ${skippedActiveWork}  — an alias is sending; not repointed`,
-    );
-  }
-  console.log("  canonical chosen by:");
-  for (const [choice, count] of [...byChoice].sort((a, b) => b[1] - a[1])) {
-    console.log(`    ${choice.padEnd(15)} ${count}`);
-  }
-  if (!WRITE) console.log("\nRe-run with --write to apply.");
 }
 
 main()
-  .catch((err) => {
-    console.error(err);
+  .catch((error) => {
+    if (error instanceof JourneyReconciliationRunError) {
+      console.error(`${error.message}${error.runId ? ` (run ${error.runId})` : ""}`);
+    } else {
+      console.error("journey_reconciliation_failed");
+    }
     process.exitCode = 1;
   })
   .finally(() => prisma.$disconnect());

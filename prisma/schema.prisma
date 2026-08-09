@@ -160,6 +160,8 @@ model EventLog {
   payload   Json
   createdAt DateTime @default(now()) @map("created_at")
 
+  journeyTriggers JourneyTrigger[] @relation("JourneyTriggerSourceLog")
+
   @@index([kind, createdAt])
   @@map("event_log")
 }
@@ -829,6 +831,15 @@ enum JourneyTriggerDisposition {
   @@map("journey_trigger_disposition")
 }
 
+enum JourneyPublicAcknowledgementState {
+  pending
+  confirmed
+  failed
+  uncertain
+
+  @@map("journey_public_acknowledgement_state")
+}
+
 /// One person-keyword request, owning a 48-hour window and the single conversation
 /// responsible for it.
 ///
@@ -862,30 +873,105 @@ model JourneyIntent {
   /// Exactly one intent owns a person-keyword window. Two simultaneous first
   /// comments race here: one insert wins, the loser reads the winner and attaches.
   @@unique([igUserId, keywordId, windowStartedAt], map: "journey_intent_person_keyword_window_key")
+  /// Lets a trigger's composite FK prove that its denormalized keyword belongs
+  /// to the same intent, rather than merely pointing at any valid keyword row.
+  @@unique([id, keywordId], map: "journey_intent_id_keyword_key")
   @@index([igUserId, keywordId, lastTriggerAt(sort: Desc)], map: "journey_intent_person_keyword_last_trigger_idx")
   @@index([reconciledState])
   @@map("journey_intent")
 }
 
-/// One originating comment. Retained for audit even when it drove no automation,
-/// so an alias journey's history is never lost.
+/// One globally unique Instagram source comment. Keyword matching is modeled by
+/// JourneyTrigger associations so one comment can legitimately request several
+/// guides without duplicating or discarding the source evidence.
+model JourneySourceEvent {
+  id              String   @id @default(uuid()) @db.Uuid
+  commentId       String   @unique(map: "journey_source_event_comment_id_key") @map("comment_id")
+  mediaId         String?  @map("media_id")
+  firstReceivedAt DateTime @map("first_received_at") @db.Timestamptz(3)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  triggers JourneyTrigger[]
+
+  @@map("journey_source_event")
+}
+
+/// One source-event-to-intent association. Retained for audit even when it drove
+/// no automation, so aliases and distinct keyword matches are never lost.
 model JourneyTrigger {
-  id             String                    @id @default(uuid()) @db.Uuid
-  intentId       String                    @map("intent_id") @db.Uuid
+  id             String   @id @default(uuid()) @db.Uuid
+  sourceEventId  String   @map("source_event_id") @db.Uuid
+  /// The best-effort legacy event-log observation used to reconstruct this
+  /// association. Null for live rows when event logging was unavailable.
+  sourceEventLogId String? @map("source_event_log_id") @db.Uuid
+  intentId       String   @map("intent_id") @db.Uuid
+  keywordId      String   @map("keyword_id") @db.Uuid
   /// Nullable: a replayed comment attaches to an intent without opening a conversation.
   conversationId String?                   @map("conversation_id") @db.Uuid
-  commentId      String                    @unique @map("comment_id")
-  mediaId        String?                   @map("media_id")
   receivedAt     DateTime                  @map("received_at") @db.Timestamptz(3)
   triggerKind    String                    @map("trigger_kind")
   disposition    JourneyTriggerDisposition
+  publicAcknowledgementState JourneyPublicAcknowledgementState @default(pending) @map("public_acknowledgement_state")
+  acknowledgementReplyId String? @map("acknowledgement_reply_id")
+  acknowledgementErrorCategory String? @map("acknowledgement_error_category")
   createdAt      DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  intent       JourneyIntent @relation(fields: [intentId], references: [id], onDelete: Cascade)
+  sourceEvent  JourneySourceEvent @relation(fields: [sourceEventId], references: [id], onDelete: Restrict)
+  sourceEventLog EventLog? @relation("JourneyTriggerSourceLog", fields: [sourceEventLogId], references: [id], onDelete: SetNull)
+  intent       JourneyIntent @relation(fields: [intentId, keywordId], references: [id, keywordId], onDelete: Cascade)
   conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
 
+  @@unique([sourceEventId, intentId], map: "journey_trigger_source_intent_key")
+  @@unique([sourceEventId, keywordId], map: "journey_trigger_source_keyword_key")
   @@index([intentId, receivedAt])
   @@map("journey_trigger")
+}
+
+model JourneyReconciliationRun {
+  id                    String   @id @default(uuid()) @db.Uuid
+  sourceCutoff          DateTime @map("source_cutoff") @db.Timestamptz(3)
+  queryVersion          String   @map("query_version")
+  mode                  String
+  status                String
+  approvedManifestRunId String?  @map("approved_manifest_run_id") @db.Uuid
+  resumePosition        Int      @default(0) @map("resume_position")
+  resumeCursor          String?  @map("resume_cursor")
+  startedAt             DateTime @default(now()) @map("started_at") @db.Timestamptz(3)
+  completedAt           DateTime? @map("completed_at") @db.Timestamptz(3)
+  lastError             String?  @map("last_error")
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt             DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  approvedManifest JourneyReconciliationRun?  @relation("ApprovedJourneyManifest", fields: [approvedManifestRunId], references: [id], onDelete: Restrict)
+  writeRuns        JourneyReconciliationRun[]  @relation("ApprovedJourneyManifest")
+  windows          JourneyReconciliationWindow[]
+
+  @@index([mode, status, createdAt])
+  @@map("journey_reconciliation_run")
+}
+
+model JourneyReconciliationWindow {
+  id                  String   @id @default(uuid()) @db.Uuid
+  runId               String   @map("run_id") @db.Uuid
+  position            Int
+  windowKey           String   @map("window_key")
+  inputFingerprint    String   @map("input_fingerprint")
+  proposedCanonicalId String   @map("proposed_canonical_id") @db.Uuid
+  evidenceChoice      String   @map("evidence_choice")
+  result              String
+  conflictReason      String?  @map("conflict_reason")
+  intentId            String?  @map("intent_id") @db.Uuid
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  run JourneyReconciliationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, position], map: "journey_reconciliation_window_run_position_key")
+  @@unique([runId, windowKey], map: "journey_reconciliation_window_run_key")
+  @@index([result, conflictReason])
+  @@map("journey_reconciliation_window")
 }
 
 /// `confirmed_failure` = the gate demonstrably never delivered. `unknown_read_pilot`

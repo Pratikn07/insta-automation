@@ -12,6 +12,7 @@ const enqueueGate = vi.fn();
 const claimComment = vi.fn();
 const openConversationIn = vi.fn();
 const resolveJourneyIntent = vi.fn();
+const recordJourneyPublicAcknowledgement = vi.fn();
 const childLogger = {
   debug: vi.fn(),
   info: vi.fn(),
@@ -30,7 +31,10 @@ vi.mock("../services/keywordService.js", () => ({
 vi.mock("../services/conversationService.js", () => ({ openConversationIn, markGated }));
 // The resolver is contract-tested against real Postgres; here the handler's own
 // contract is what it does with each disposition.
-vi.mock("../services/journeyIntentService.js", () => ({ resolveJourneyIntent }));
+vi.mock("../services/journeyIntentService.js", () => ({
+  resolveJourneyIntent,
+  recordJourneyPublicAcknowledgement,
+}));
 vi.mock("../meta/replyToComment.js", () => ({ replyToComment }));
 vi.mock("../services/dmDeliveryService.js", () => ({ sendTrackedPrivateReply }));
 vi.mock("../services/eventLogger.js", async (importOriginal) => {
@@ -99,6 +103,7 @@ beforeEach(() => {
     findKeywordForComment,
     openConversationIn,
     resolveJourneyIntent,
+    recordJourneyPublicAcknowledgement,
     markGated,
     replyToComment,
     sendTrackedPrivateReply,
@@ -140,6 +145,7 @@ beforeEach(() => {
     maySendGate: true,
   });
   replyToComment.mockResolvedValue(undefined);
+  recordJourneyPublicAcknowledgement.mockResolvedValue(undefined);
   logEvent.mockResolvedValue(undefined);
   rememberUsername.mockResolvedValue(undefined);
   enqueueGate.mockResolvedValue(undefined);
@@ -438,10 +444,33 @@ describe("duplicate journey suppression", () => {
   // unanswered reads as being ignored, even when the DM already went out.
   it("still answers the comment publicly", async () => {
     reusedJourney();
+    replyToComment.mockResolvedValue({ replyId: "public-reply-1" });
 
     await handleComment(COMMENT);
 
     expect(replyToComment).toHaveBeenCalledTimes(1);
+    expect(recordJourneyPublicAcknowledgement).toHaveBeenCalledWith({
+      commentId: COMMENT.id,
+      keywordId: "keyword-1",
+      state: "confirmed",
+      replyId: "public-reply-1",
+      errorCategory: null,
+    });
+  });
+
+  it("records a safe failed acknowledgement without losing the journey association", async () => {
+    reusedJourney();
+    replyToComment.mockRejectedValue(graphFailure(100, 2534025));
+
+    await handleComment(COMMENT);
+
+    expect(recordJourneyPublicAcknowledgement).toHaveBeenCalledWith({
+      commentId: COMMENT.id,
+      keywordId: "keyword-1",
+      state: "failed",
+      replyId: null,
+      errorCategory: "graph_response",
+    });
   });
 
   it("records why the gate was withheld", async () => {

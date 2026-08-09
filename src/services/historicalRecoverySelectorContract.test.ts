@@ -163,11 +163,15 @@ async function seedEligible(opts: {
   for (const t of opts.triggers) {
     const commentId = t.commentId ?? `sel-c-${randomUUID()}`;
     commentIds.push(commentId);
+    const sourceEvent = await prisma.journeySourceEvent.create({
+      data: { commentId, firstReceivedAt: t.at },
+    });
     await prisma.journeyTrigger.create({
       data: {
         intentId: intent.id,
+        keywordId,
         conversationId: convo.id,
-        commentId,
+        sourceEventId: sourceEvent.id,
         receivedAt: t.at,
         triggerKind: t.kind ?? "comment",
         disposition: "new_journey",

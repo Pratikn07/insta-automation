@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
+import { lockJourneyIdentity } from "./journeyIdentityLock.js";
 
 /**
  * How long one person-keyword request stays a single journey.
@@ -13,8 +14,8 @@ import { logger } from "../lib/logger.js";
 export const JOURNEY_WINDOW_MS = 48 * 60 * 60 * 1000;
 
 /**
- * Serializable conflicts are the expected case here, not the exceptional one: a
- * viral reel delivers several comments from the same person within seconds.
+ * Lock/deadlock conflicts are expected here, not exceptional: a viral reel can
+ * deliver several comments from the same person within seconds.
  *
  * Higher than the 3 used for recovery claims, because those contend over distinct
  * rows while these all contend over the SAME person-keyword window — every member
@@ -77,7 +78,7 @@ export type JourneyResolution = {
 export type JourneyTriggerInput = {
   igUserId: string;
   keywordId: string;
-  /** Meta comment id. The unique index on it is what absorbs webhook replays. */
+  /** Meta comment id. The (comment, keyword) unique index absorbs webhook replays. */
   commentId: string;
   mediaId?: string | null;
   receivedAt: Date;
@@ -88,10 +89,9 @@ export type JourneyTriggerInput = {
 /**
  * Attach a trigger to its canonical journey, creating one only when needed.
  *
- * Runs at Serializable so two simultaneous first comments cannot both conclude
- * they are first. One transaction wins the unique index on
- * (ig_user_id, keyword_id, window_started_at); the other retries, reads the
- * winner's row, and attaches to it. Exactly one caller receives `new_journey`.
+ * A transaction-scoped person-keyword advisory lock makes two simultaneous
+ * first comments line up before either reads the live window. The second reads
+ * the winner's row and attaches to it. Exactly one caller receives `new_journey`.
  *
  * `createConversation` is invoked INSIDE the transaction so a new journey and its
  * conversation commit together — a conversation without an intent would be
@@ -111,7 +111,11 @@ export async function resolveJourneyIntent(
     try {
       return await prisma.$transaction(
         async (tx) => resolveInTransaction(tx, input, createConversation),
-        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+        // The transaction-scoped advisory lock is the serialization boundary.
+        // ReadCommitted takes its overlap snapshot AFTER a waiter acquires that
+        // lock; Serializable would freeze the pre-wait snapshot and miss the
+        // reconciliation transaction that just committed.
+        { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
       );
     } catch (err: unknown) {
       const code = (err as { code?: string })?.code;
@@ -126,12 +130,15 @@ export async function resolveJourneyIntent(
         continue;
       }
 
-      // P2002 on comment_id: the same webhook was delivered twice and the other
-      // delivery committed first. That is a replay, not an error — report it as
-      // one so the caller stays silent rather than retrying a send.
+      // P2002 on (comment_id, keyword_id): the same keyword match was delivered
+      // twice and the other delivery committed first. A single comment may
+      // legitimately match a different keyword, so comment id alone is not replay
+      // identity.
       if (code === "P2002" && attempt < SERIALIZATION_RETRY_ATTEMPTS) {
-        const existing = await findExistingTrigger(input.commentId);
+        const existing = await findExistingTrigger(input.commentId, input.keywordId);
         if (existing) return existing;
+        await sleep(Math.random() * (25 * attempt));
+        continue;
       }
 
       logger.error(
@@ -152,10 +159,38 @@ async function resolveInTransaction(
   input: JourneyTriggerInput,
   createConversation: (tx: Prisma.TransactionClient) => Promise<{ id: string }>,
 ): Promise<JourneyResolution> {
+  await lockJourneyIdentity(tx, input.igUserId, input.keywordId);
+
+  // Model the globally unique Instagram comment once. A second configured
+  // keyword may legitimately associate the same source with another intent, but
+  // it must not rewrite the source's media identity.
+  let sourceEvent = await tx.journeySourceEvent.upsert({
+    where: { commentId: input.commentId },
+    create: {
+      commentId: input.commentId,
+      mediaId: input.mediaId ?? null,
+      firstReceivedAt: input.receivedAt,
+    },
+    update: {},
+    select: { id: true, mediaId: true },
+  });
+  if (sourceEvent.mediaId && input.mediaId && sourceEvent.mediaId !== input.mediaId) {
+    throw new Error("journey_source_event_media_conflict");
+  }
+  if (!sourceEvent.mediaId && input.mediaId) {
+    sourceEvent = await tx.journeySourceEvent.update({
+      where: { id: sourceEvent.id },
+      data: { mediaId: input.mediaId },
+      select: { id: true, mediaId: true },
+    });
+  }
+
   // Replay check first. A redelivered comment must not refresh the window or
   // touch state — it already did its work on the first delivery.
   const replayed = await tx.journeyTrigger.findUnique({
-    where: { commentId: input.commentId },
+    where: {
+      sourceEventId_keywordId: { sourceEventId: sourceEvent.id, keywordId: input.keywordId },
+    },
     select: { intentId: true, conversationId: true },
   });
   if (replayed) {
@@ -249,9 +284,9 @@ async function resolveInTransaction(
     await tx.journeyTrigger.create({
       data: {
         intentId: live.id,
+        sourceEventId: sourceEvent.id,
+        keywordId: input.keywordId,
         conversationId: live.canonical_conversation_id,
-        commentId: input.commentId,
-        mediaId: input.mediaId ?? null,
         receivedAt: input.receivedAt,
         triggerKind: input.triggerKind,
         disposition,
@@ -283,9 +318,9 @@ async function resolveInTransaction(
   await tx.journeyTrigger.create({
     data: {
       intentId: intent.id,
+      sourceEventId: sourceEvent.id,
+      keywordId: input.keywordId,
       conversationId: conversation.id,
-      commentId: input.commentId,
-      mediaId: input.mediaId ?? null,
       receivedAt: input.receivedAt,
       triggerKind: input.triggerKind,
       disposition: "new_journey",
@@ -306,9 +341,22 @@ async function resolveInTransaction(
 }
 
 /** The winning delivery's trigger, when a replay lost the insert race. */
-async function findExistingTrigger(commentId: string): Promise<JourneyResolution | null> {
-  const existing = await prisma.journeyTrigger.findUnique({
+async function findExistingTrigger(
+  commentId: string,
+  keywordId: string,
+): Promise<JourneyResolution | null> {
+  const sourceEvent = await prisma.journeySourceEvent.findUnique({
     where: { commentId },
+    select: { id: true },
+  });
+  if (!sourceEvent) return null;
+  const existing = await prisma.journeyTrigger.findUnique({
+    where: {
+      sourceEventId_keywordId: {
+        sourceEventId: sourceEvent.id,
+        keywordId,
+      },
+    },
     select: { intentId: true, conversationId: true },
   });
   if (!existing) return null;
@@ -318,6 +366,61 @@ async function findExistingTrigger(commentId: string): Promise<JourneyResolution
     conversationId: existing.conversationId,
     maySendGate: false,
   };
+}
+
+export type JourneyPublicAcknowledgement = {
+  commentId: string;
+  keywordId: string;
+  state: "confirmed" | "failed" | "uncertain";
+  replyId?: string | null;
+  errorCategory?: string | null;
+};
+
+/**
+ * Freeze the public acknowledgement result on the exact source-intent
+ * association. Exact replay is idempotent; conflicting replay fails closed so a
+ * later observation cannot silently rewrite the original audit evidence.
+ */
+export async function recordJourneyPublicAcknowledgement(
+  input: JourneyPublicAcknowledgement,
+): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    const association = await tx.journeyTrigger.findFirst({
+      where: {
+        keywordId: input.keywordId,
+        sourceEvent: { commentId: input.commentId },
+      },
+      select: {
+        id: true,
+        publicAcknowledgementState: true,
+        acknowledgementReplyId: true,
+        acknowledgementErrorCategory: true,
+      },
+    });
+    if (!association) throw new Error("journey_acknowledgement_association_missing");
+
+    const replyId = input.replyId ?? null;
+    const errorCategory = input.errorCategory ?? null;
+    if (association.publicAcknowledgementState !== "pending") {
+      if (
+        association.publicAcknowledgementState === input.state &&
+        association.acknowledgementReplyId === replyId &&
+        association.acknowledgementErrorCategory === errorCategory
+      ) {
+        return;
+      }
+      throw new Error("journey_acknowledgement_evidence_conflict");
+    }
+
+    await tx.journeyTrigger.update({
+      where: { id: association.id },
+      data: {
+        publicAcknowledgementState: input.state,
+        acknowledgementReplyId: replyId,
+        acknowledgementErrorCategory: errorCategory,
+      },
+    });
+  });
 }
 
 /**

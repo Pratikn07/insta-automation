@@ -240,26 +240,26 @@ async function loadRows(cutoff: Date): Promise<SelectionRow[]> {
     -- (QA-14) depends on.
     LEFT JOIN LATERAL (
       SELECT
-        (array_agg(t."comment_id"
-          ORDER BY t."received_at" DESC, t."comment_id" DESC))[1] AS "comment_id",
-        (array_agg(t."media_id"
-          ORDER BY t."received_at" DESC, t."comment_id" DESC))[1] AS "media_id",
+        (array_agg(se."comment_id"
+          ORDER BY t."received_at" DESC, se."comment_id" DESC))[1] AS "comment_id",
+        (array_agg(se."media_id"
+          ORDER BY t."received_at" DESC, se."comment_id" DESC))[1] AS "media_id",
         (array_agg(t."trigger_kind"
-          ORDER BY t."received_at" DESC, t."comment_id" DESC))[1] AS "trigger_kind",
+          ORDER BY t."received_at" DESC, se."comment_id" DESC))[1] AS "trigger_kind",
         (array_agg(t."received_at"
-          ORDER BY t."received_at" DESC, t."comment_id" DESC))[1] AS "received_at",
+          ORDER BY t."received_at" DESC, se."comment_id" DESC))[1] AS "received_at",
         jsonb_agg(
           jsonb_build_object(
-            'commentId', t."comment_id",
-            'mediaId', t."media_id",
+            'commentId', se."comment_id",
+            'mediaId', se."media_id",
             'receivedAt', t."received_at"
           )
-          ORDER BY t."received_at" DESC, t."comment_id" DESC
+          ORDER BY t."received_at" DESC, se."comment_id" DESC
         ) AS "sources"
       FROM "journey_trigger" t
+      JOIN "journey_source_event" se ON se."id" = t."source_event_id"
       WHERE t."intent_id" = ji."id"
         AND t."trigger_kind" = 'comment'
-        AND t."comment_id" IS NOT NULL
         AND t."received_at" <= ${cutoff}
     ) jt ON TRUE
     -- Any trigger at all, purely so triggerKind can distinguish a DM-origin journey

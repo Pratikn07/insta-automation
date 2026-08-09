@@ -1,7 +1,10 @@
 import type { CommentValue } from "../types/meta.js";
 import { extractCandidates, findKeywordForComment } from "../services/keywordService.js";
 import { openConversationIn, markGated } from "../services/conversationService.js";
-import { resolveJourneyIntent } from "../services/journeyIntentService.js";
+import {
+  recordJourneyPublicAcknowledgement,
+  resolveJourneyIntent,
+} from "../services/journeyIntentService.js";
 import { replyToComment } from "../meta/replyToComment.js";
 import { sendTrackedPrivateReply, type TrackedPrivateReplyReceipt } from "../services/dmDeliveryService.js";
 import { logger } from "../lib/logger.js";
@@ -29,6 +32,26 @@ function mediaScopeLabel(productType: string | undefined): string {
   if (productType === "REELS") return "reel";
   if (productType === "FEED") return "carousel";
   return "media";
+}
+
+async function persistPublicAcknowledgement(input: {
+  commentId: string;
+  keywordId: string;
+  state: "confirmed" | "failed" | "uncertain";
+  replyId: string | null;
+  errorCategory: string | null;
+}): Promise<void> {
+  try {
+    await recordJourneyPublicAcknowledgement(input);
+  } catch {
+    // The provider call has already happened, so never retry it merely because
+    // the local audit write failed. Surface a safe reconciliation signal.
+    await logEvent("journey_public_acknowledgement_write_failed", {
+      commentId: input.commentId,
+      keywordId: input.keywordId,
+      acknowledgementState: input.state,
+    });
+  }
 }
 
 export async function handleComment(comment: CommentValue): Promise<void> {
@@ -158,14 +181,33 @@ export async function handleComment(comment: CommentValue): Promise<void> {
   });
 
   try {
-    await replyToComment(comment.id, keyword.publicReply);
+    const acknowledgement = await replyToComment(comment.id, keyword.publicReply);
+    await persistPublicAcknowledgement({
+      commentId: comment.id,
+      keywordId: keyword.id,
+      state: "confirmed",
+      replyId: acknowledgement?.replyId ?? null,
+      errorCategory: null,
+    });
     await logEvent("public_reply_sent", { conversationId: convo.id, commentId: comment.id });
   } catch (err) {
-    log.warn(describeGraphError(err), "Public reply failed (non-fatal)");
+    const metadata = describeGraphError(err);
+    const definitelyNotDelivered =
+      metadata.category === "graph_response" ||
+      (metadata.category === "graph_transport" &&
+        ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"].includes(metadata.transportCode ?? ""));
+    await persistPublicAcknowledgement({
+      commentId: comment.id,
+      keywordId: keyword.id,
+      state: definitelyNotDelivered ? "failed" : "uncertain",
+      replyId: null,
+      errorCategory: metadata.category,
+    });
+    log.warn(metadata, "Public reply failed (non-fatal)");
     await logEvent("public_reply_failed", {
       conversationId: convo.id,
       commentId: comment.id,
-      ...describeGraphError(err),
+      ...metadata,
     });
   }
 
