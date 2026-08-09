@@ -15,6 +15,7 @@ let guideDeliveryRepository: GuideDeliveryRepository;
 let resourceId: string;
 let keywordId: string;
 let conversationId: string;
+let conversationIgUserId: string;
 
 const startedAt = new Date("2026-08-09T12:00:00.000Z");
 const sendWindowExpiresAt = new Date("2026-08-10T12:00:00.000Z");
@@ -169,6 +170,7 @@ beforeAll(async () => {
   resourceId = randomUUID();
   keywordId = randomUUID();
   conversationId = randomUUID();
+  conversationIgUserId = `guide-repository-${randomUUID()}`;
   await prisma.resource.create({ data: { id: resourceId, name: "guide repository contract" } });
   await prisma.keyword.create({
     data: {
@@ -182,7 +184,7 @@ beforeAll(async () => {
   await prisma.conversation.create({
     data: {
       id: conversationId,
-      igUserId: `guide-repository-${randomUUID()}`,
+      igUserId: conversationIgUserId,
       keywordId,
     },
   });
@@ -391,6 +393,202 @@ describeWithLocalDatabase("guide delivery repository PostgreSQL contract", () =>
 
     expect(replay.id).toBe(first.id);
     expect(replay.units.map((row) => row.textSnapshot)).toEqual(["immutable original"]);
+
+    await expect(
+      guideDeliveryRepository.findByTrigger({
+        triggerKind: first.triggerKind,
+        triggerId: first.triggerId,
+      }),
+    ).resolves.toMatchObject({ id: first.id, units: [{ textSnapshot: "immutable original" }] });
+    await expect(guideDeliveryRepository.findById(first.id)).resolves.toMatchObject({
+      id: first.id,
+      units: [{ textSnapshot: "immutable original" }],
+    });
+    await expect(guideDeliveryRepository.findRecipientIgUserId(first.id)).resolves.toBe(
+      conversationIgUserId,
+    );
+  });
+
+  it("atomically completes a nonempty all-sent delivery and emits sequence_completed once", async () => {
+    const fixture = await activeUnit("PRIVATE COMPLETION SNAPSHOT");
+    const sentAt = new Date(startedAt.getTime() + 1_000);
+    await guideDeliveryRepository.markUnitSent({
+      deliveryId: fixture.delivery.id,
+      unitId: fixture.begun.id,
+      claimToken: fixture.claimed.claimToken,
+      attempt: fixture.begun.attempts,
+      sentAt,
+      providerMessageId: "mid-completion",
+      ownerConfirmedAt: null,
+    });
+
+    await expect(
+      guideDeliveryRepository.finalizeCompleted({
+        deliveryId: fixture.delivery.id,
+        claimToken: fixture.claimed.claimToken,
+        completedAt: sentAt,
+      }),
+    ).resolves.toBe("completed");
+    await expect(
+      guideDeliveryRepository.finalizeCompleted({
+        deliveryId: fixture.delivery.id,
+        claimToken: randomUUID(),
+        completedAt: new Date(sentAt.getTime() + 1_000),
+      }),
+    ).resolves.toBe("already_completed");
+
+    const state = await storedState(fixture.delivery.id);
+    expect(state.delivery).toMatchObject({
+      status: "completed",
+      completedAt: sentAt,
+      claimToken: null,
+      claimedAt: null,
+      claimExpiresAt: null,
+    });
+    const completedEvents = state.events.filter((event) => event.kind === "sequence_completed");
+    expect(completedEvents).toHaveLength(1);
+    expect(completedEvents[0]?.payload).toMatchObject({
+      deliveryId: fixture.delivery.id,
+      conversationId,
+      resourceId,
+      triggerKind: "inbound_reply",
+      triggerId: fixture.delivery.triggerId,
+      unitCount: 1,
+      followerAtTrigger: null,
+    });
+    expect(JSON.stringify(completedEvents)).not.toContain("PRIVATE COMPLETION SNAPSHOT");
+  });
+
+  it("refuses completion for zero units, non-sent units, and stale claims without state drift", async () => {
+    const zeroClaimToken = randomUUID();
+    const zero = await prisma.guideDelivery.create({
+      data: {
+        conversationId,
+        resourceId,
+        triggerKind: "inbound_reply",
+        triggerId: randomUUID(),
+        triggeredAt: startedAt,
+        sendWindowExpiresAt,
+        status: "sending",
+        claimToken: zeroClaimToken,
+        claimedAt: startedAt,
+        claimExpiresAt: new Date(startedAt.getTime() + 60_000),
+      },
+    });
+    const zeroBefore = await storedState(zero.id);
+    await expect(
+      guideDeliveryRepository.finalizeCompleted({
+        deliveryId: zero.id,
+        claimToken: zeroClaimToken,
+        completedAt: startedAt,
+      }),
+    ).resolves.toBe("not_ready");
+    expect(await storedState(zero.id)).toEqual(zeroBefore);
+
+    const pending = await createDelivery();
+    const pendingClaim = await claim(pending.id);
+    const pendingBefore = await storedState(pending.id);
+    await expect(
+      guideDeliveryRepository.finalizeCompleted({
+        deliveryId: pending.id,
+        claimToken: pendingClaim!.claimToken,
+        completedAt: startedAt,
+      }),
+    ).resolves.toBe("not_ready");
+    expect(await storedState(pending.id)).toEqual(pendingBefore);
+
+    await expect(
+      guideDeliveryRepository.finalizeCompleted({
+        deliveryId: pending.id,
+        claimToken: randomUUID(),
+        completedAt: startedAt,
+      }),
+    ).resolves.toBe("lost_claim");
+    expect(await storedState(pending.id)).toEqual(pendingBefore);
+  });
+
+  it("fenced window closure terminalizes begun and untouched work without provider metadata", async () => {
+    const begunFixture = await activeUnit("PRIVATE WINDOW SNAPSHOT");
+    const closedAt = new Date(startedAt.getTime() + 1_000);
+    await expect(
+      guideDeliveryRepository.markWindowClosed({
+        deliveryId: begunFixture.delivery.id,
+        claimToken: begunFixture.claimed.claimToken,
+        closedAt,
+        unitId: begunFixture.begun.id,
+        attempt: begunFixture.begun.attempts,
+      }),
+    ).resolves.toBe(true);
+
+    const untouched = await createDelivery();
+    const untouchedClaim = await claim(untouched.id);
+    await expect(
+      guideDeliveryRepository.markWindowClosed({
+        deliveryId: untouched.id,
+        claimToken: untouchedClaim!.claimToken,
+        closedAt,
+      }),
+    ).resolves.toBe(true);
+
+    for (const deliveryId of [begunFixture.delivery.id, untouched.id]) {
+      const state = await storedState(deliveryId);
+      expect(state.delivery).toMatchObject({
+        status: "failed",
+        failureCode: "messaging_window_closed",
+        nextAttemptAt: null,
+        claimToken: null,
+      });
+      expect(state.events.filter((event) => event.kind === "guide_delivery_window_closed"))
+        .toHaveLength(1);
+      expect(JSON.stringify(state.events)).not.toContain("PRIVATE WINDOW SNAPSHOT");
+    }
+    expect(await prisma.guideDeliveryUnit.findUniqueOrThrow({ where: { id: begunFixture.begun.id } }))
+      .toMatchObject({ status: "failed", failureDisposition: "permanent" });
+  });
+
+  it("terminalizes an exhausted transient unit without changing its provider classification", async () => {
+    const fixture = await activeUnit("PRIVATE CAP SNAPSHOT");
+    const failedAt = new Date(startedAt.getTime() + 1_000);
+    await guideDeliveryRepository.markUnitFailed({
+      deliveryId: fixture.delivery.id,
+      unitId: fixture.begun.id,
+      claimToken: fixture.claimed.claimToken,
+      attempt: fixture.begun.attempts,
+      failedAt,
+      disposition: "transient",
+      nextAttemptAt: failedAt,
+      error: { ...permanentError, httpStatus: 503, graphCode: 2 },
+    });
+    await prisma.guideDeliveryUnit.update({
+      where: { id: fixture.begun.id },
+      data: { attempts: 3 },
+    });
+    const reclaimed = await claim(fixture.delivery.id, failedAt);
+
+    await expect(
+      guideDeliveryRepository.markAttemptsExhausted({
+        deliveryId: fixture.delivery.id,
+        claimToken: reclaimed!.claimToken,
+        exhaustedAt: new Date(failedAt.getTime() + 1_000),
+        maxAttempts: 3,
+      }),
+    ).resolves.toBe(true);
+
+    const state = await storedState(fixture.delivery.id);
+    expect(state.delivery).toMatchObject({
+      status: "failed",
+      failureCode: "guide_unit_attempts_exhausted",
+      nextAttemptAt: null,
+      claimToken: null,
+    });
+    expect(state.delivery.units[0]).toMatchObject({
+      status: "failed",
+      failureDisposition: "transient",
+      attempts: 3,
+    });
+    expect(state.events.filter((event) => event.kind === "guide_delivery_attempts_exhausted"))
+      .toHaveLength(1);
+    expect(JSON.stringify(state.events)).not.toContain("PRIVATE CAP SNAPSHOT");
   });
 
   it("keeps a preflight failure terminal and stores no guide content in its event", async () => {

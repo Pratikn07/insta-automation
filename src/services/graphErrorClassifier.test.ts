@@ -2,6 +2,7 @@ import { AxiosError, AxiosHeaders } from "axios";
 import { describe, expect, it } from "vitest";
 import { describeGraphError, type GraphErrorMetadata } from "./eventLogger.js";
 import {
+  classifyDirectMessageSendFailure,
   classifyPrivateGateFailure,
   classifyPublicReplyFailure,
   classifySourceReadFailure,
@@ -50,6 +51,39 @@ function transportError(code: string): AxiosError {
 }
 
 describe("graphErrorClassifier", () => {
+  describe("classifyDirectMessageSendFailure", () => {
+    it.each([
+      [graphMetadata({ httpStatus: 429 }), "definite_transient"],
+      [graphMetadata({ httpStatus: 400, graphCode: 4 }), "definite_transient"],
+      [graphMetadata({ httpStatus: 502 }), "definite_transient"],
+      [graphMetadata({ httpStatus: 503 }), "definite_transient"],
+      [graphMetadata({ httpStatus: 504 }), "definite_transient"],
+      [transportMetadata("ECONNREFUSED"), "definite_transient"],
+      [transportMetadata("ENOTFOUND"), "definite_transient"],
+      [transportMetadata("EAI_AGAIN"), "definite_transient"],
+      [graphMetadata({ httpStatus: 401 }), "definite_permanent"],
+      [graphMetadata({ httpStatus: 403, graphCode: 10 }), "definite_permanent"],
+      [graphMetadata({ httpStatus: 400, graphCode: 100 }), "definite_permanent"],
+      [graphMetadata({ httpStatus: 404 }), "definite_permanent"],
+      [graphMetadata({ httpStatus: 422 }), "definite_permanent"],
+      [transportMetadata("ECONNABORTED"), "uncertain"],
+      [transportMetadata("ETIMEDOUT"), "uncertain"],
+      [transportMetadata("ECONNRESET"), "uncertain"],
+      [transportMetadata("ERR_CANCELED"), "uncertain"],
+      [transportMetadata(null), "uncertain"],
+      [graphMetadata({ category: "unknown_error" }), "uncertain"],
+      [graphMetadata({ httpStatus: 500 }), "uncertain"],
+    ] as const)("classifies %#", (metadata, expected) => {
+      expect(classifyDirectMessageSendFailure(metadata)).toBe(expected);
+    });
+
+    it("keeps timeout and reset ambiguous even when a retry would be convenient", () => {
+      for (const code of ["ECONNABORTED", "ETIMEDOUT", "ECONNRESET", "ERR_CANCELED"] as const) {
+        expect(classifyDirectMessageSendFailure(transportMetadata(code))).toBe("uncertain");
+      }
+    });
+  });
+
   describe("parseGraphSignatures", () => {
     it("parses valid code:subcode strings and de-duplicates", () => {
       const parsed = parseGraphSignatures("10:12345, 200:54321, invalid, 10:12345");

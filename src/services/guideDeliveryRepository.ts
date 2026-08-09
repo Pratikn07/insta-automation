@@ -116,6 +116,38 @@ export type ReleaseGuideDeliveryClaimInput = {
   nextAttemptAt?: Date | null;
 };
 
+export type FindGuideDeliveryByTriggerInput = {
+  triggerKind: GuideDeliveryTriggerKind;
+  triggerId: string;
+};
+
+export type FinalizeGuideDeliveryInput = {
+  deliveryId: string;
+  claimToken: string;
+  completedAt: Date;
+};
+
+export type FinalizeGuideDeliveryResult =
+  | "completed"
+  | "already_completed"
+  | "not_ready"
+  | "lost_claim";
+
+export type MarkGuideDeliveryWindowClosedInput = {
+  deliveryId: string;
+  claimToken: string;
+  closedAt: Date;
+  unitId?: string;
+  attempt?: number;
+};
+
+export type MarkGuideDeliveryAttemptsExhaustedInput = {
+  deliveryId: string;
+  claimToken: string;
+  exhaustedAt: Date;
+  maxAttempts: number;
+};
+
 export type ExpiredClaimReconciliation = {
   needsReviewDeliveryIds: string[];
   releasedDeliveryIds: string[];
@@ -124,6 +156,9 @@ export type ExpiredClaimReconciliation = {
 };
 
 export interface GuideDeliveryRepository {
+  findByTrigger(input: FindGuideDeliveryByTriggerInput): Promise<PlannedDeliveryRecord | null>;
+  findById(deliveryId: string): Promise<PlannedDeliveryRecord | null>;
+  findRecipientIgUserId(deliveryId: string): Promise<string | null>;
   createOrLoadPlan(input: CreateGuideDeliveryPlanInput): Promise<PlannedDeliveryRecord>;
   claimById(input: ClaimGuideDeliveryInput): Promise<ClaimedGuideDelivery | null>;
   claimDueBatch(input: ClaimDueGuideDeliveriesInput): Promise<ClaimedGuideDelivery[]>;
@@ -131,6 +166,9 @@ export interface GuideDeliveryRepository {
   markUnitSent(input: MarkGuideUnitSentInput): Promise<boolean>;
   markUnitFailed(input: MarkGuideUnitFailedInput): Promise<boolean>;
   markUnitUncertain(input: MarkGuideUnitUncertainInput): Promise<boolean>;
+  markWindowClosed(input: MarkGuideDeliveryWindowClosedInput): Promise<boolean>;
+  markAttemptsExhausted(input: MarkGuideDeliveryAttemptsExhaustedInput): Promise<boolean>;
+  finalizeCompleted(input: FinalizeGuideDeliveryInput): Promise<FinalizeGuideDeliveryResult>;
   releaseClaim(input: ReleaseGuideDeliveryClaimInput): Promise<boolean>;
   reconcileExpiredClaims(now: Date): Promise<ExpiredClaimReconciliation>;
 }
@@ -285,6 +323,39 @@ export function createGuideDeliveryRepository(
   database: RepositoryClient = prisma,
 ): GuideDeliveryRepository {
   return {
+    async findByTrigger(input) {
+      return database.$transaction((tx) =>
+        tx.guideDelivery.findUnique({
+          where: {
+            triggerKind_triggerId: {
+              triggerKind: input.triggerKind,
+              triggerId: input.triggerId,
+            },
+          },
+          include: { units: { orderBy: { position: "asc" } } },
+        }),
+      );
+    },
+
+    async findById(deliveryId) {
+      return database.$transaction((tx) =>
+        tx.guideDelivery.findUnique({
+          where: { id: deliveryId },
+          include: { units: { orderBy: { position: "asc" } } },
+        }),
+      );
+    },
+
+    async findRecipientIgUserId(deliveryId) {
+      const delivery = await database.$transaction((tx) =>
+        tx.guideDelivery.findUnique({
+          where: { id: deliveryId },
+          select: { conversation: { select: { igUserId: true } } },
+        }),
+      );
+      return delivery?.conversation.igUserId ?? null;
+    },
+
     async createOrLoadPlan(input) {
       return database.$transaction(async (tx) => {
         const emptyPlan = input.plan.ok && input.plan.units.length === 0;
@@ -1000,6 +1071,192 @@ export function createGuideDeliveryRepository(
           },
         });
         return true;
+      });
+    },
+
+    async markWindowClosed(input) {
+      const hasUnit = input.unitId !== undefined;
+      const hasAttempt = input.attempt !== undefined;
+      if (hasUnit !== hasAttempt || (hasAttempt && (!Number.isInteger(input.attempt) || input.attempt! < 1))) {
+        throw new Error("invalid_guide_delivery_window_checkpoint");
+      }
+
+      return database.$transaction(async (tx) => {
+        const delivery = await lockDelivery(tx, input.deliveryId);
+        if (
+          !delivery ||
+          delivery.status !== "sending" ||
+          delivery.claimToken !== input.claimToken
+        ) {
+          return false;
+        }
+        const units = await lockAndLoadUnits(tx, input.deliveryId);
+        let closingUnit: GuideDeliveryUnitRecord | null = null;
+        if (hasUnit) {
+          closingUnit = units.find((candidate) => candidate.id === input.unitId) ?? null;
+          if (
+            !closingUnit ||
+            closingUnit.status !== "sending" ||
+            closingUnit.attempts !== input.attempt
+          ) {
+            return false;
+          }
+          const unitUpdate = await tx.guideDeliveryUnit.updateMany({
+            where: {
+              id: closingUnit.id,
+              deliveryId: input.deliveryId,
+              status: "sending",
+              attempts: input.attempt,
+            },
+            data: {
+              status: "failed",
+              failureDisposition: "permanent",
+              updatedAt: input.closedAt,
+            },
+          });
+          if (unitUpdate.count !== 1) return false;
+        } else if (units.some((unit) => unit.status === "sending")) {
+          return false;
+        }
+
+        const deliveryUpdate = await tx.guideDelivery.updateMany({
+          where: { id: input.deliveryId, claimToken: input.claimToken, status: "sending" },
+          data: {
+            status: "failed",
+            failureCode: "messaging_window_closed",
+            nextAttemptAt: null,
+            claimToken: null,
+            claimedAt: null,
+            claimExpiresAt: null,
+            updatedAt: input.closedAt,
+          },
+        });
+        if (deliveryUpdate.count !== 1) throw new Error("guide_delivery_claim_lost");
+        await tx.eventLog.create({
+          data: {
+            kind: "guide_delivery_window_closed",
+            payload: {
+              ...eventIdentity(delivery),
+              unitId: closingUnit?.id ?? null,
+              position: closingUnit?.position ?? null,
+              unitKind: closingUnit?.kind ?? null,
+              attempt: closingUnit?.attempts ?? null,
+              at: input.closedAt.toISOString(),
+            },
+          },
+        });
+        return true;
+      });
+    },
+
+    async markAttemptsExhausted(input) {
+      if (!Number.isInteger(input.maxAttempts) || input.maxAttempts < 1) {
+        throw new Error("invalid_guide_delivery_attempt_cap");
+      }
+      return database.$transaction(async (tx) => {
+        const delivery = await lockDelivery(tx, input.deliveryId);
+        if (
+          !delivery ||
+          delivery.status !== "sending" ||
+          delivery.claimToken !== input.claimToken
+        ) {
+          return false;
+        }
+        const units = await lockAndLoadUnits(tx, input.deliveryId);
+        const exhausted = units.find((candidate) => candidate.status !== "sent");
+        const ownerAuthorized =
+          exhausted?.ownerRetryAuthorizedAt !== null &&
+          exhausted?.ownerRetryAuthorizedAt !== undefined &&
+          exhausted.ownerRetryConsumedAt === null;
+        if (
+          !exhausted ||
+          exhausted.status !== "failed" ||
+          exhausted.failureDisposition !== "transient" ||
+          exhausted.attempts < input.maxAttempts ||
+          ownerAuthorized
+        ) {
+          return false;
+        }
+
+        const updated = await tx.guideDelivery.updateMany({
+          where: { id: input.deliveryId, claimToken: input.claimToken, status: "sending" },
+          data: {
+            status: "failed",
+            failureCode: "guide_unit_attempts_exhausted",
+            nextAttemptAt: null,
+            claimToken: null,
+            claimedAt: null,
+            claimExpiresAt: null,
+            updatedAt: input.exhaustedAt,
+          },
+        });
+        if (updated.count !== 1) return false;
+        await tx.eventLog.create({
+          data: {
+            kind: "guide_delivery_attempts_exhausted",
+            payload: {
+              ...eventIdentity(delivery),
+              unitId: exhausted.id,
+              position: exhausted.position,
+              unitKind: exhausted.kind,
+              attempts: exhausted.attempts,
+              maxAttempts: input.maxAttempts,
+              exhaustedAt: input.exhaustedAt.toISOString(),
+            },
+          },
+        });
+        return true;
+      });
+    },
+
+    async finalizeCompleted(input) {
+      return database.$transaction(async (tx) => {
+        const delivery = await lockDelivery(tx, input.deliveryId);
+        if (!delivery) return "lost_claim";
+        const units = await lockAndLoadUnits(tx, input.deliveryId);
+        if (delivery.status === "completed") return "already_completed";
+        if (delivery.status !== "sending" || delivery.claimToken !== input.claimToken) {
+          return "lost_claim";
+        }
+        if (!(units.length > 0 && units.every((unit) => unit.status === "sent"))) {
+          return "not_ready";
+        }
+
+        const updated = await tx.guideDelivery.updateMany({
+          where: { id: input.deliveryId, claimToken: input.claimToken, status: "sending" },
+          data: {
+            status: "completed",
+            failureCode: null,
+            nextAttemptAt: null,
+            claimToken: null,
+            claimedAt: null,
+            claimExpiresAt: null,
+            completedAt: input.completedAt,
+            updatedAt: input.completedAt,
+          },
+        });
+        if (updated.count !== 1) return "lost_claim";
+        const completed = await tx.guideDelivery.findUniqueOrThrow({
+          where: { id: input.deliveryId },
+        });
+        await tx.eventLog.create({
+          data: {
+            kind: "sequence_completed",
+            payload: {
+              ...eventIdentity(delivery),
+              threadId: completed.threadId,
+              unitCount: units.length,
+              followerAtTrigger: completed.followerAtTrigger,
+              // Backward-compatible analytics key. Existing stats/follow-through
+              // readers still consume this name; both values intentionally come
+              // from the one persisted trigger-time snapshot until those readers
+              // migrate to followerAtTrigger.
+              followerAtDelivery: completed.followerAtTrigger,
+              completedAt: input.completedAt.toISOString(),
+            },
+          },
+        });
+        return "completed";
       });
     },
 
