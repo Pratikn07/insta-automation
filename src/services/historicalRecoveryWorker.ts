@@ -11,6 +11,7 @@ import {
   reconcileDrainedCampaigns,
 } from "./recoveryCampaignControl.js";
 import { evaluateCampaignHealth } from "./historicalRecoveryHealth.js";
+import { reconcilePendingInboundCampaignHealthSignals } from "./campaignHealthObservation.js";
 import { recheckBeforeSend, type SourceCommentState } from "./historicalRecoveryRecheck.js";
 import {
   type ClaimedCandidate,
@@ -141,10 +142,19 @@ async function runLeasedTickBody(
   // the final outcome and exited before campaign completion bookkeeping.
   await reconcileDrainedCampaigns(now);
 
+  // The webhook endpoint acknowledges before handler work, so a transient health-write
+  // failure cannot rely on Meta replay. New inbound rows are a durable safety inbox.
+  // Drain it before any batch opens and fail closed while a row failed or more remain.
+  const inboundHealth = await reconcilePendingInboundCampaignHealthSignals(now);
+  if (inboundHealth.failed > 0) return empty("campaign_health_capture_failed");
+  if (inboundHealth.remaining) return empty("campaign_health_capture_pending");
+
   // Same circuit as the prospective path: an auth failure or a webhook gap should
   // stop BOTH kinds of send, since they share credentials and evidence.
   const health = await evaluateRecoveryHealth(now);
   if (health.circuitOpen) return empty("circuit_open");
+
+  const stoppedCampaigns = new Set<string>();
 
   // Each running campaign gets its own durable batch row. A small pilot no longer
   // throttles an unrelated campaign, and the allowance is enforced again under the
@@ -161,6 +171,24 @@ async function runLeasedTickBody(
     allowance: number;
   }> = [];
   for (const campaign of runningCampaigns) {
+    try {
+      const campaignHealth = await evaluateCampaignHealth(campaign.id, new Date());
+      if (campaignHealth.stopReason) {
+        stoppedCampaigns.add(campaign.id);
+        result.skipped = `campaign_auto_paused:${campaignHealth.stopReason}`;
+        continue;
+      }
+    } catch {
+      // Unknown health is not permission to post. Stop this campaign before even
+      // opening a batch; other campaigns get their own independent check.
+      stoppedCampaigns.add(campaign.id);
+      result.skipped = "campaign_health_check_failed";
+      logger.error(
+        { errorCode: "historical_campaign_health_check_failed", campaignId: campaign.id },
+        "Could not evaluate campaign health before dispatch",
+      );
+      continue;
+    }
     const batch = await openCampaignBatch(tick, campaign.id, now);
     if (!batch) continue;
     const ids = await listDueCandidateIds(now, batch.allowance, campaign.id);
@@ -188,7 +216,6 @@ async function runLeasedTickBody(
    */
   const campaignsToEvaluate = new Set<string>();
   const campaignDispatchStarts = new Map<string, number>();
-  const stoppedCampaigns = new Set<string>();
 
   const observeTerminalOutcome = async (campaignId: string): Promise<void> => {
     campaignsToEvaluate.add(campaignId);
@@ -199,6 +226,8 @@ async function runLeasedTickBody(
         result.skipped = `campaign_auto_paused:${health.stopReason}`;
       }
     } catch {
+      stoppedCampaigns.add(campaignId);
+      result.skipped = "campaign_health_check_failed";
       logger.error(
         { errorCode: "historical_campaign_health_check_failed", campaignId },
         "Could not evaluate campaign health after a terminal outcome",
@@ -214,7 +243,12 @@ async function runLeasedTickBody(
     if ((campaignDispatchStarts.get(item.campaignId) ?? 0) >= item.allowance) continue;
     result.examined++;
 
-    const claimed = await claimCandidate(id, now, new Date(now.getTime() + leaseMs));
+    const claimAt = new Date();
+    const claimed = await claimCandidate(
+      id,
+      claimAt,
+      new Date(claimAt.getTime() + leaseMs),
+    );
     if (!claimed) continue;
 
     // Everything between the claim and the dispatch happens here, and a failure inside
@@ -326,10 +360,11 @@ async function runLeasedTickBody(
     // same `dm_recovery_control` lock the prospective path takes and stamps the row
     // in-flight inside it, so the slot is genuinely consumed before Meta is called and
     // the two systems serialise against each other rather than just counting each other.
+    const reservationAt = new Date();
     const reservation = await reserveHistoricalDispatch({
       candidateId: id,
       claimToken: claimed.claimToken,
-      now,
+      now: reservationAt,
       hourlyCap: facts.hourlyCap,
       dailyCap: facts.dailyCap,
       globalHourlyCap: env.DM_RECOVERY_HOURLY_CAP,

@@ -26,7 +26,10 @@ import { parseProviderTimestamp } from "../lib/providerTime.js";
 import { logEvent, describeGraphError } from "../services/eventLogger.js";
 import { resolveUsername } from "../services/igUserService.js";
 import { attributeRecoveryOutcomeSafely } from "../services/historicalRecoveryAttribution.js";
-import { recordInboundCampaignHealthSignals } from "../services/campaignHealthObservation.js";
+import {
+  markInboundCampaignHealthCaptured,
+  recordInboundCampaignHealthSignals,
+} from "../services/campaignHealthObservation.js";
 import { env } from "../config/env.js";
 
 // Kept only as an analytics hint now — it is NO LONGER the trigger. Any reply to
@@ -186,14 +189,6 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     // Meta's timestamp, not ours, so a delayed webhook still orders correctly.
     instagramTimestamp: observedAt,
   });
-  if (inbound.duplicate) {
-    logger.debug(
-      { senderId, mid: msg.mid, duplicate: true },
-      "Inbound webhook ignored (duplicate)",
-    );
-    return;
-  }
-
   try {
     await recordInboundCampaignHealthSignals({
       igUserId: senderId,
@@ -201,13 +196,23 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
       text,
       observedAt,
     });
+    await markInboundCampaignHealthCaptured(inbound.messageId, new Date());
   } catch {
-    // Health capture is safety telemetry, but the inbound message is already durable.
-    // Never ask Meta to replay the whole webhook because this secondary write failed.
+    // The server acknowledges Meta before dispatching handlers, so throwing cannot ask
+    // for a replay. The inbound row remains a durable pending safety-inbox item instead;
+    // the historical worker must reconcile it successfully before opening any batch.
     logger.error(
       { errorCode: "campaign_health_inbound_capture_failed", senderId, mid: msg.mid },
       "Could not record historical campaign health evidence",
     );
+  }
+
+  if (inbound.duplicate) {
+    logger.debug(
+      { senderId, mid: msg.mid, duplicate: true },
+      "Inbound webhook ignored (duplicate)",
+    );
+    return;
   }
 
   // Record recovery inbound evidence for any newly captured inbound message (even if delayed)

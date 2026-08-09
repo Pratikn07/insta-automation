@@ -6,9 +6,11 @@ const databaseUrl = process.env.MIGRATION_TEST_DATABASE_URL;
 const describeWithDatabase = databaseUrl ? describe.sequential : describe.skip;
 
 let db: PrismaClient;
+let lockClient: PrismaClient;
 let historical: typeof import("./historicalRecoveryRepository.js");
 let campaigns: typeof import("./recoveryCampaignControl.js");
 let ticks: typeof import("./historicalRecoveryTickRepository.js");
+let observations: typeof import("./campaignHealthObservation.js");
 const prefix = `dispatch-interleaving-${randomUUID()}`;
 const resourceId = randomUUID();
 const keywordId = randomUUID();
@@ -105,9 +107,11 @@ beforeAll(async () => {
   expect(["127.0.0.1", "localhost", "::1"]).toContain(parsed.hostname);
   expect(process.env.DATABASE_URL).toBe(databaseUrl);
   db = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+  lockClient = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
   historical = await import("./historicalRecoveryRepository.js");
   campaigns = await import("./recoveryCampaignControl.js");
   ticks = await import("./historicalRecoveryTickRepository.js");
+  observations = await import("./campaignHealthObservation.js");
   await db.resource.create({ data: { id: resourceId, name: prefix } });
   await db.keyword.create({
     data: {
@@ -150,10 +154,55 @@ afterAll(async () => {
   if (!db) return;
   await db.keyword.deleteMany({ where: { id: keywordId } });
   await db.resource.deleteMany({ where: { id: resourceId } });
+  await lockClient.$disconnect();
   await db.$disconnect();
 });
 
 describeWithDatabase("historical dispatch state interleavings", () => {
+  async function within<T>(promise: Promise<T>): Promise<T> {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => reject(new Error("interleaving timed out")), 3_000);
+        }),
+      ]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+  }
+
+  async function holdControlLock(): Promise<{ release: () => void; done: Promise<void> }> {
+    let release!: () => void;
+    let acquired!: () => void;
+    const releaseSignal = new Promise<void>((resolve) => { release = resolve; });
+    const acquiredSignal = new Promise<void>((resolve) => { acquired = resolve; });
+    const done = lockClient.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "dm_recovery_control" WHERE "id" = 1 FOR UPDATE`;
+      acquired();
+      await releaseSignal;
+    });
+    await acquiredSignal;
+    return { release, done };
+  }
+
+  async function waitForBlockedControlQueries(expected: number): Promise<void> {
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      const [row] = await db.$queryRaw<Array<{ n: bigint }>>`
+        SELECT COUNT(*) AS n
+        FROM pg_stat_activity
+        WHERE datname = current_database()
+          AND wait_event_type = 'Lock'
+          AND query ILIKE '%dm_recovery_control%'
+      `;
+      if (Number(row?.n ?? 0) >= expected) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error(`expected ${expected} transaction(s) blocked on dm_recovery_control`);
+  }
+
   it("blocks dispatch start when pause commits after reservation", async () => {
     const scenario = await reserveScenario();
     await campaigns.pauseCampaign(scenario.campaignId, "owner pause", scenario.now);
@@ -210,6 +259,57 @@ describeWithDatabase("historical dispatch state interleavings", () => {
     });
   });
 
+  it("serializes a durable health stop against final dispatch authorization", async () => {
+    const scenario = await reserveScenario();
+    const held = await holdControlLock();
+    const startPromise = historical.startHistoricalDispatch(scenario);
+    await waitForBlockedControlQueries(1);
+    const observation = await observations.recordCampaignHealthObservation({
+      campaignId: scenario.campaignId,
+      kind: "opt_out",
+      sourceKey: `interleaving:${randomUUID()}`,
+      observedAt: new Date(scenario.now.getTime() + 1),
+    });
+    held.release();
+    const start = await within(startPromise);
+    await held.done;
+
+    expect(observation).toEqual({ created: true });
+    expect(
+      await db.recoveryCampaign.findUnique({
+        where: { id: scenario.campaignId },
+        select: { state: true, pauseReason: true },
+      }),
+    ).toEqual({ state: "paused", pauseReason: "auto:opt_out" });
+
+    const ledger = await db.publicRecoveryDispatch.findUnique({
+      where: { id: scenario.dispatchId },
+      select: { state: true },
+    });
+    expect(start).toEqual({ kind: "blocked", reason: "campaign_not_running" });
+    expect(ledger).toEqual({ state: "reserved" });
+  });
+
+  it("completes concurrent pause versus dispatch start without deadlock", async () => {
+    const scenario = await reserveScenario();
+    const held = await holdControlLock();
+    const startPromise = historical.startHistoricalDispatch(scenario);
+    await waitForBlockedControlQueries(1);
+    const pause = await campaigns.pauseCampaign(scenario.campaignId, "owner pause", scenario.now);
+    held.release();
+    const start = await within(startPromise);
+    await held.done;
+
+    expect(pause).toEqual({ ok: true, state: "paused" });
+    expect(start).toEqual({ kind: "blocked", reason: "campaign_not_running" });
+    expect(
+      await db.recoveryCampaign.findUnique({
+        where: { id: scenario.campaignId },
+        select: { state: true },
+      }),
+    ).toEqual({ state: "paused" });
+  });
+
   it("cancels and releases work that has not started dispatch", async () => {
     const scenario = await reserveScenario();
 
@@ -257,6 +357,45 @@ describeWithDatabase("historical dispatch state interleavings", () => {
         },
       }),
     ).resolves.toBe(true);
+    expect(
+      await db.recoveryCandidate.findUnique({
+        where: { id: scenario.candidateId },
+        select: { outcome: true },
+      }),
+    ).toEqual({ outcome: "sent" });
+    expect(
+      await db.publicRecoveryDispatch.findUnique({
+        where: { id: scenario.dispatchId },
+        select: { state: true },
+      }),
+    ).toEqual({ state: "sent" });
+  });
+
+  it("serializes cancellation versus finalization without losing Meta success", async () => {
+    const scenario = await reserveScenario();
+    await expect(historical.startHistoricalDispatch(scenario)).resolves.toEqual({ kind: "started" });
+
+    const held = await holdControlLock();
+    const cancelPromise = campaigns.cancelCampaign(
+      scenario.campaignId,
+      "owner cancelled",
+      scenario.now,
+    );
+    const finalizePromise = historical.finalizeHistoricalDispatch({
+        ...scenario,
+        outcome: {
+          kind: "sent",
+          at: new Date(scenario.now.getTime() + 1),
+          providerReplyId: `provider-${randomUUID()}`,
+        },
+      });
+    await waitForBlockedControlQueries(2);
+    held.release();
+    const [cancel, finalized] = await within(Promise.all([cancelPromise, finalizePromise]));
+    await held.done;
+
+    expect(cancel).toMatchObject({ ok: true, state: "cancelled" });
+    expect(finalized).toBe(true);
     expect(
       await db.recoveryCandidate.findUnique({
         where: { id: scenario.candidateId },

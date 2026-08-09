@@ -542,6 +542,12 @@ model DmMessage {
   instagramTimestamp DateTime        @map("instagram_timestamp")
   seenAt             DateTime?       @map("seen_at") @db.Timestamptz(3)
   deletedAt          DateTime?       @map("deleted_at") @db.Timestamptz(3)
+  // Durable safety inbox: every new inbound remains pending until campaign-health
+  // classification succeeds. Historical dispatch drains this before opening a batch.
+  campaignHealthCapturedAt      DateTime? @map("campaign_health_captured_at") @db.Timestamptz(3)
+  campaignHealthCaptureAttempts Int       @default(0) @map("campaign_health_capture_attempts")
+  campaignHealthNextAttemptAt   DateTime? @map("campaign_health_next_attempt_at") @db.Timestamptz(3)
+  campaignHealthLastError       String?   @map("campaign_health_last_error")
   createdAt          DateTime        @default(now()) @map("created_at")
 
   thread            DmThread             @relation(fields: [threadId], references: [id], onDelete: Cascade)
@@ -549,6 +555,7 @@ model DmMessage {
 
   @@index([threadId, instagramTimestamp])
   @@index([direction, instagramTimestamp])
+  @@index([direction, campaignHealthCapturedAt, campaignHealthNextAttemptAt])
   @@map("dm_message")
 }
 

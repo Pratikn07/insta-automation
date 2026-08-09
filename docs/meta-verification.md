@@ -298,7 +298,7 @@ docker run -d --name insta-pg-contract -e POSTGRES_PASSWORD=postgres -e POSTGRES
 ```
 
 ```bash
-MIGRATION_TEST_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:55432/insta_contract" DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:55432/insta_contract" npm test
+MIGRATION_TEST_DATABASE_DISPOSABLE=true MIGRATION_TEST_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:55432/insta_contract" DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:55432/insta_contract" npm test
 ```
 
 A correct run reports **0 skipped**. Any skipped count means the contracts did

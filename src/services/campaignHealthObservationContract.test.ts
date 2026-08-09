@@ -11,11 +11,38 @@ const prefix = `health-observation-${randomUUID()}`;
 const igUserId = `${prefix}-person`;
 
 async function wipe(): Promise<void> {
+  await db.dmMessage.deleteMany({ where: { thread: { igUserId } } });
+  await db.dmThread.deleteMany({ where: { igUserId } });
   await db.publicRecoveryDispatch.deleteMany({ where: { igUserId } });
   await db.recoveryCampaignHealthObservation.deleteMany({
     where: { campaign: { selectionVersion: { startsWith: prefix } } },
   });
   await db.recoveryCampaign.deleteMany({ where: { selectionVersion: { startsWith: prefix } } });
+}
+
+async function pendingInbound(text: string, mid: string, observedAt: Date): Promise<string> {
+  const thread = await db.dmThread.upsert({
+    where: { igAccountId_igUserId: { igAccountId: "contract-account", igUserId } },
+    create: {
+      igAccountId: "contract-account",
+      igUserId,
+      lastMessageAt: observedAt,
+      lastInboundAt: observedAt,
+    },
+    update: {},
+  });
+  const message = await db.dmMessage.create({
+    data: {
+      threadId: thread.id,
+      instagramMessageId: mid,
+      direction: "inbound",
+      type: "text",
+      source: "instagram_user",
+      text,
+      instagramTimestamp: observedAt,
+    },
+  });
+  return message.id;
 }
 
 async function campaign(): Promise<string> {
@@ -73,6 +100,12 @@ describeWithDatabase("campaign health observations", () => {
       created: false,
     });
     expect(await db.recoveryCampaignHealthObservation.count({ where: { campaignId } })).toBe(1);
+    expect(
+      await db.recoveryCampaign.findUnique({
+        where: { id: campaignId },
+        select: { state: true, pauseReason: true },
+      }),
+    ).toEqual({ state: "paused", pauseReason: "auto:complaint" });
   });
 
   it("never stores inbound message text as observation detail", async () => {
@@ -133,5 +166,58 @@ describeWithDatabase("campaign health observations", () => {
       observedAt: new Date("2026-08-08T20:00:00Z"),
     })).resolves.toEqual({ recorded: 0 });
     expect(await db.recoveryCampaignHealthObservation.count()).toBe(0);
+  });
+
+  it("reconciles a durable pending inbound before historical dispatch can continue", async () => {
+    const campaignId = await campaign();
+    const observedAt = new Date("2026-08-08T20:00:00Z");
+    const sentAt = new Date(observedAt.getTime() - 60 * 60_000);
+    await db.publicRecoveryDispatch.create({
+      data: {
+        reservationToken: randomUUID(),
+        igUserId,
+        sourceKind: "historical",
+        sourceId: randomUUID(),
+        attemptNumber: 1,
+        campaignId,
+        state: "sent",
+        reservedAt: sentAt,
+        leaseExpiresAt: new Date(sentAt.getTime() + 60_000),
+        dispatchStartedAt: sentAt,
+        sentAt,
+        providerReplyId: `provider-${randomUUID()}`,
+      },
+    });
+    const messageId = await pendingInbound("STOP", `mid-pending-${randomUUID()}`, observedAt);
+
+    await expect(
+      observations.reconcilePendingInboundCampaignHealthSignals(observedAt, 100),
+    ).resolves.toEqual({ processed: 1, failed: 0, remaining: false });
+
+    expect(
+      await db.dmMessage.findUnique({
+        where: { id: messageId },
+        select: { campaignHealthCapturedAt: true },
+      }),
+    ).toEqual({ campaignHealthCapturedAt: observedAt });
+    expect(
+      await db.recoveryCampaign.findUnique({
+        where: { id: campaignId },
+        select: { state: true, pauseReason: true },
+      }),
+    ).toEqual({ state: "paused", pauseReason: "auto:opt_out" });
+  });
+
+  it("reports a backoff-delayed capture as still pending", async () => {
+    const now = new Date("2026-08-08T20:00:00Z");
+    const messageId = await pendingInbound("STOP", `mid-backoff-${randomUUID()}`, now);
+    await db.dmMessage.update({
+      where: { id: messageId },
+      data: { campaignHealthNextAttemptAt: new Date(now.getTime() + 60_000) },
+    });
+
+    await expect(
+      observations.reconcilePendingInboundCampaignHealthSignals(now, 100),
+    ).resolves.toEqual({ processed: 0, failed: 0, remaining: true });
   });
 });

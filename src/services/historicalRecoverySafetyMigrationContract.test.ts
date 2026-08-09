@@ -142,6 +142,29 @@ describeWithDatabase("historical recovery safety migration", () => {
     ]);
   });
 
+  it("adds durable inbound health-capture state", async () => {
+    const columns = await prisma.$queryRaw<Array<{ column_name: string }>>`
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'dm_message'
+        AND column_name IN (
+          'campaign_health_captured_at',
+          'campaign_health_capture_attempts',
+          'campaign_health_next_attempt_at',
+          'campaign_health_last_error'
+        )
+      ORDER BY column_name
+    `;
+
+    expect(columns.map((row) => row.column_name)).toEqual([
+      "campaign_health_capture_attempts",
+      "campaign_health_captured_at",
+      "campaign_health_last_error",
+      "campaign_health_next_attempt_at",
+    ]);
+  });
+
   it("requires the control lease token and expiry together", async () => {
     await expectSqlState(
       prisma.$executeRaw`

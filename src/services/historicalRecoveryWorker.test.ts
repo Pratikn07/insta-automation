@@ -31,6 +31,7 @@ const completeCampaignIfDrained = vi.fn();
 const reconcileDrainedCampaigns = vi.fn();
 // QA-13: campaign-level stop conditions, which the shared circuit cannot express.
 const evaluateCampaignHealth = vi.fn();
+const reconcilePendingInboundCampaignHealthSignals = vi.fn();
 const igUserFindUnique = vi.fn();
 const dmMessageCount = vi.fn();
 const conversationCount = vi.fn();
@@ -63,6 +64,9 @@ vi.mock("./recoveryCampaignControl.js", () => ({
   reconcileDrainedCampaigns,
 }));
 vi.mock("./historicalRecoveryHealth.js", () => ({ evaluateCampaignHealth }));
+vi.mock("./campaignHealthObservation.js", () => ({
+  reconcilePendingInboundCampaignHealthSignals,
+}));
 vi.mock("./eventLogger.js", () => ({ logEvent, describeGraphError }));
 // classifySourceReadFailure is deliberately NOT mocked: QA-09's defect was
 // misclassification, so a stub here would prove nothing. Only the send-path classifier
@@ -139,6 +143,7 @@ beforeEach(() => {
     logEvent, describeGraphError, classifyPublicReplyFailure,
     campaignFindUnique, campaignFindMany, completeCampaignIfDrained,
     reconcileDrainedCampaigns, evaluateCampaignHealth,
+    reconcilePendingInboundCampaignHealthSignals,
     igUserFindUnique, dmMessageCount, conversationCount, dispatchCount,
     acquireHistoricalTick, openCampaignBatch, finishHistoricalTick,
   ]) {
@@ -173,6 +178,11 @@ beforeEach(() => {
   reconcileDrainedCampaigns.mockResolvedValue([]);
   // Healthy by default, so existing cases test what they were written for.
   evaluateCampaignHealth.mockResolvedValue({ stopReason: null });
+  reconcilePendingInboundCampaignHealthSignals.mockResolvedValue({
+    processed: 0,
+    failed: 0,
+    remaining: false,
+  });
   igUserFindUnique.mockResolvedValue({ inferredOrigin: "us_western" });
   dmMessageCount.mockResolvedValue(0);
   conversationCount.mockResolvedValue(0);
@@ -818,7 +828,7 @@ describe("runHistoricalRecoveryTick — closes a drained campaign", () => {
 
     await runHistoricalRecoveryTick();
 
-    expect(evaluateCampaignHealth).toHaveBeenCalledTimes(2);
+    expect(evaluateCampaignHealth).toHaveBeenCalledTimes(3);
     expect(completeCampaignIfDrained).toHaveBeenCalledTimes(1);
   });
 
@@ -847,10 +857,40 @@ describe("runHistoricalRecoveryTick — closes a drained campaign", () => {
 // campaign could be failing on real people's public comments while the shared circuit
 // stayed closed because the prospective feature was healthy.
 describe("runHistoricalRecoveryTick — campaign stop conditions", () => {
+  it("does not open a campaign batch while durable inbound health capture is pending", async () => {
+    reconcilePendingInboundCampaignHealthSignals.mockResolvedValue({
+      processed: 100,
+      failed: 0,
+      remaining: true,
+    });
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(openCampaignBatch).not.toHaveBeenCalled();
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(result.skipped).toBe("campaign_health_capture_pending");
+  });
+
+  it("fails closed when a durable inbound health capture cannot be reconciled", async () => {
+    reconcilePendingInboundCampaignHealthSignals.mockResolvedValue({
+      processed: 0,
+      failed: 1,
+      remaining: false,
+    });
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(openCampaignBatch).not.toHaveBeenCalled();
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(result.skipped).toBe("campaign_health_capture_failed");
+  });
+
   it("stops the campaign mid-batch before reserving a second candidate", async () => {
     listDueCandidateIds.mockResolvedValue(["cand-1", "cand-2"]);
     claimCandidate.mockImplementation(async (id: string) => ({ ...CANDIDATE, id }));
-    evaluateCampaignHealth.mockResolvedValue({ stopReason: "complaint" });
+    evaluateCampaignHealth
+      .mockResolvedValueOnce({ stopReason: null })
+      .mockResolvedValue({ stopReason: "complaint" });
 
     const result = await runHistoricalRecoveryTick();
 
@@ -858,6 +898,17 @@ describe("runHistoricalRecoveryTick — campaign stop conditions", () => {
     expect(reserveHistoricalDispatch).toHaveBeenCalledTimes(1);
     expect(claimCandidate).toHaveBeenCalledTimes(1);
     expect(result.skipped).toBe("campaign_auto_paused:complaint");
+  });
+
+  it("honors a durable stop observation before the first dispatch", async () => {
+    evaluateCampaignHealth.mockResolvedValue({ stopReason: "opt_out" });
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(openCampaignBatch).not.toHaveBeenCalled();
+    expect(claimCandidate).not.toHaveBeenCalled();
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(result.skipped).toBe("campaign_auto_paused:opt_out");
   });
 
   it("evaluates campaign health after the tick", async () => {
@@ -883,15 +934,30 @@ describe("runHistoricalRecoveryTick — campaign stop conditions", () => {
     expect(completeCampaignIfDrained).toHaveBeenCalledWith("camp-1", expect.any(Date));
   });
 
-  // A tick that posted successfully must not report failure because the bookkeeping
-  // afterwards broke.
-  it("still reports the send when health evaluation fails", async () => {
+  it("fails closed before dispatch when initial health evaluation fails", async () => {
     evaluateCampaignHealth.mockRejectedValue(new Error("db gone"));
 
     const result = await runHistoricalRecoveryTick();
 
+    expect(result.sent).toBe(0);
+    expect(openCampaignBatch).not.toHaveBeenCalled();
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(result.skipped).toBe("campaign_health_check_failed");
+  });
+
+  it("stops before the next candidate when post-outcome health evaluation fails", async () => {
+    listDueCandidateIds.mockResolvedValue(["cand-1", "cand-2"]);
+    claimCandidate.mockImplementation(async (id: string) => ({ ...CANDIDATE, id }));
+    evaluateCampaignHealth
+      .mockResolvedValueOnce({ stopReason: null })
+      .mockRejectedValue(new Error("db gone"));
+
+    const result = await runHistoricalRecoveryTick();
+
     expect(result.sent).toBe(1);
-    expect(result.skipped).toBeUndefined();
+    expect(replyToComment).toHaveBeenCalledTimes(1);
+    expect(claimCandidate).toHaveBeenCalledTimes(1);
+    expect(result.skipped).toBe("campaign_health_check_failed");
   });
 
   // Every case above drives a tick where the send SUCCEEDS, and that was the whole gap:
@@ -934,5 +1000,33 @@ describe("runHistoricalRecoveryTick — campaign stop conditions", () => {
 
     expect(completeCampaignIfDrained).not.toHaveBeenCalled();
     expect(result.skipped).toBe("campaign_auto_paused:public_failure_rate");
+  });
+});
+
+describe("runHistoricalRecoveryTick — rolling reservation timestamps", () => {
+  it("does not backdate a later candidate to tick start", async () => {
+    vi.useFakeTimers();
+    try {
+      const startedAt = new Date("2026-08-08T20:00:00.000Z");
+      vi.setSystemTime(startedAt);
+      listDueCandidateIds.mockResolvedValue(["cand-1", "cand-2"]);
+      claimCandidate.mockImplementation(async (id: string) => ({ ...CANDIDATE, id }));
+      replyToComment.mockImplementation(async () => {
+        if (replyToComment.mock.calls.length === 1) {
+          vi.setSystemTime(new Date(startedAt.getTime() + 5 * 60_000));
+        }
+        return { replyId: `provider-${replyToComment.mock.calls.length}` };
+      });
+
+      await runHistoricalRecoveryTick();
+
+      expect(reserveHistoricalDispatch).toHaveBeenCalledTimes(2);
+      const first = reserveHistoricalDispatch.mock.calls[0]![0].now as Date;
+      const second = reserveHistoricalDispatch.mock.calls[1]![0].now as Date;
+      expect(first.getTime()).toBe(startedAt.getTime());
+      expect(second.getTime()).toBe(startedAt.getTime() + 5 * 60_000);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

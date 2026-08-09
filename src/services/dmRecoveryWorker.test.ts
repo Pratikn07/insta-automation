@@ -199,6 +199,33 @@ describe("runDmRecoveryTick", () => {
 });
 
 describe("runDmRecoveryTick pacing and reentrancy", () => {
+  it("does not backdate later capacity reservations to tick start", async () => {
+    vi.useFakeTimers();
+    try {
+      const startedAt = new Date("2026-08-08T20:00:00.000Z");
+      vi.setSystemTime(startedAt);
+      listDueRecoveryIds.mockResolvedValue(["r1", "r2"]);
+      claimRecovery.mockImplementation(async (id: string) => claimedRow({ id }));
+      authorizeClaimForSend.mockResolvedValue(SEND_DECISION);
+      replyToComment.mockImplementation(async () => {
+        if (replyToComment.mock.calls.length === 1) {
+          vi.setSystemTime(new Date(startedAt.getTime() + 5 * 60_000));
+        }
+        return { replyId: `provider-${replyToComment.mock.calls.length}` };
+      });
+
+      await runDmRecoveryTick();
+
+      expect(authorizeClaimForSend).toHaveBeenCalledTimes(2);
+      const first = authorizeClaimForSend.mock.calls[0]![2] as Date;
+      const second = authorizeClaimForSend.mock.calls[1]![2] as Date;
+      expect(first.getTime()).toBe(startedAt.getTime());
+      expect(second.getTime()).toBe(startedAt.getTime() + 5 * 60_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("claims at most one batch from a large backlog", async () => {
     listDueRecoveryIds.mockResolvedValue(["r1", "r2", "r3", "r4", "r5"]);
     claimRecovery.mockImplementation(async (id: string) => claimedRow({ id }));

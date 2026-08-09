@@ -104,12 +104,17 @@ async function runTickBody(): Promise<DmRecoveryTickResult> {
     // configured batch of 5 would post up to 15.
     if (result.sent >= batchSize) break;
     result.examined++;
-    const leaseUntil = new Date(now.getTime() + leaseMs);
+    const claimAt = new Date();
+    const leaseUntil = new Date(claimAt.getTime() + leaseMs);
 
-    const claimed = await claimRecovery(id, now, leaseUntil);
+    const claimed = await claimRecovery(id, claimAt, leaseUntil);
     if (!claimed) continue;
 
-    const decision = await authorizeClaimForSend(id, claimed.claimToken, now);
+    // Capacity is rolling from the real reservation instant, not tick start. A batch
+    // can spend minutes in provider calls; backdating later reservations makes them
+    // expire from the 24-hour window too early.
+    const reservationAt = new Date();
+    const decision = await authorizeClaimForSend(id, claimed.claimToken, reservationAt);
 
     // Only an explicit send decision may reach Meta. Written as a positive
     // check so any decision kind added later defaults to NOT posting a public
@@ -119,7 +124,7 @@ async function runTickBody(): Promise<DmRecoveryTickResult> {
       decision.kind !== "send_no_confirmed_read_reminder" &&
       decision.kind !== "send_settings_fallback"
     ) {
-      await releaseOrSuppressClaim(id, decision, now, claimed.claimToken);
+      await releaseOrSuppressClaim(id, decision, reservationAt, claimed.claimToken);
       if (decision.kind === "pause") {
         result.skipped = decision.reason;
         break; // Stop the batch: the circuit or the hourly cap closed.

@@ -16,6 +16,9 @@
 - Every network authorization fails closed on unknown state or database failure.
 - Write each behavioral test first, run it, and observe the expected failure before changing production code.
 - Use a disposable PostgreSQL database through `MIGRATION_TEST_DATABASE_URL` for migration, lock, race, and rollback contracts.
+- Set `DATABASE_URL` to the exact same loopback URL and explicitly set
+  `MIGRATION_TEST_DATABASE_DISPOSABLE=true`; global setup rejects the target before
+  Prisma runs if any of these three safeguards is absent.
 - Do not expose tokens, raw provider responses, message/comment text, or database URLs in logs or API responses.
 
 ---
