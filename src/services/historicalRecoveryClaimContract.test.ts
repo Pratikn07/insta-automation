@@ -89,6 +89,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (!prisma) return;
+  await prisma.publicRecoveryDispatch.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
   await prisma.recoveryCandidate.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
   await prisma.recoveryCampaign.deleteMany({ where: { id: { in: [fx.campaignId, ...campaignsToClean] } } });
   await prisma.dmRecoveryReminder.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
@@ -115,6 +116,7 @@ describeWithLocalDatabase("cross-system person cooldown", () => {
    */
   async function authorizeProspectiveFor(igUserId: string): Promise<string> {
     const now = new Date();
+    const claimToken = randomUUID();
     const convo = await prisma.conversation.create({
       data: { igUserId, keywordId: fx.keywordId, state: "expired" },
     });
@@ -134,13 +136,14 @@ describeWithLocalDatabase("cross-system person cooldown", () => {
         eligibleAt: new Date(now.getTime() - 60_000),
         claimedAt: now,
         claimExpiresAt: new Date(now.getTime() + 60_000),
+        claimToken,
         attempts: 1,
         lastAttemptAt: now,
       },
     });
 
     const repoPro = await import("./dmRecoveryRepository.js");
-    const decision = await repoPro.authorizeClaimForSend(reminder.id, new Date());
+    const decision = await repoPro.authorizeClaimForSend(reminder.id, claimToken, new Date());
     return decision.kind === "suppress" ? `suppress:${decision.reason}` : decision.kind;
   }
 
@@ -148,9 +151,32 @@ describeWithLocalDatabase("cross-system person cooldown", () => {
     const id = await makeCandidate();
     const now = new Date();
     const held = await repo.claimCandidate(id, now, new Date(now.getTime() + 60_000));
-    await repo.markCandidateSent(id, held!.claimToken, {
-      publicReplyId: `179${randomUUID().slice(0, 8)}`,
-      sentAt: now,
+    const reserved = await repo.reserveHistoricalDispatch({
+      candidateId: id,
+      claimToken: held!.claimToken,
+      now,
+      hourlyCap: 100,
+      dailyCap: 100,
+      globalHourlyCap: 200,
+      prospectiveCooldownHours: 24,
+    });
+    expect(reserved.kind).toBe("reserved");
+    if (reserved.kind !== "reserved") throw new Error("expected reservation");
+    await repo.startHistoricalDispatch({
+      candidateId: id,
+      claimToken: held!.claimToken,
+      ...reserved,
+      now,
+    });
+    await repo.finalizeHistoricalDispatch({
+      candidateId: id,
+      claimToken: held!.claimToken,
+      ...reserved,
+      outcome: {
+        kind: "sent",
+        providerReplyId: `179${randomUUID().slice(0, 8)}`,
+        at: now,
+      },
     });
     const row = await prisma.recoveryCandidate.findUnique({ where: { id } });
 
@@ -165,6 +191,16 @@ describeWithLocalDatabase("cross-system person cooldown", () => {
     const now = new Date();
     const held = await repo.claimCandidate(id, now, new Date(now.getTime() + 60_000));
     expect(held).not.toBeNull();
+    const reserved = await repo.reserveHistoricalDispatch({
+      candidateId: id,
+      claimToken: held!.claimToken,
+      now,
+      hourlyCap: 100,
+      dailyCap: 100,
+      globalHourlyCap: 200,
+      prospectiveCooldownHours: 24,
+    });
+    expect(reserved.kind).toBe("reserved");
     const row = await prisma.recoveryCandidate.findUnique({ where: { id } });
 
     expect(await authorizeProspectiveFor(row!.igUserId)).toBe("suppress:person_cooldown");
@@ -206,6 +242,7 @@ describeWithLocalDatabase("final send check sees journey completion", () => {
     linkIntent: boolean;
   }): Promise<string> {
     const now = new Date();
+    const claimToken = randomUUID();
     const igUserId = `${fx.igUserId}-qa06-${randomUUID()}`;
     const intentId = randomUUID();
     await prisma.igUser.create({ data: { id: igUserId } });
@@ -245,12 +282,13 @@ describeWithLocalDatabase("final send check sees journey completion", () => {
         instagramGateMessageId: `mid-${randomUUID()}`, status: "sending",
         cohort: "treatment", eligibleAt: new Date(now.getTime() - 60_000),
         claimedAt: now, claimExpiresAt: new Date(now.getTime() + 60_000),
+        claimToken,
         attempts: 1, lastAttemptAt: now,
       },
     });
 
     const repoPro = await import("./dmRecoveryRepository.js");
-    const decision = await repoPro.authorizeClaimForSend(reminder.id, new Date());
+    const decision = await repoPro.authorizeClaimForSend(reminder.id, claimToken, new Date());
     return decision.kind === "suppress" ? `suppress:${decision.reason}` : decision.kind;
   }
 

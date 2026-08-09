@@ -216,13 +216,23 @@ describeWithLocalDatabase("dm recovery database contract", () => {
 
     await expect(
       prisma.dmRecoveryReminder.create({
-        data: reminderData({ status: "sending", claimedAt, claimExpiresAt }),
+        data: reminderData({
+          status: "sending",
+          claimedAt,
+          claimExpiresAt,
+          claimToken: randomUUID(),
+        }),
       }),
     ).resolves.toMatchObject({ status: "sending" });
 
     await expect(
       prisma.dmRecoveryReminder.create({
-        data: reminderData({ status: "sending", claimedAt, claimExpiresAt }),
+        data: reminderData({
+          status: "sending",
+          claimedAt,
+          claimExpiresAt,
+          claimToken: randomUUID(),
+        }),
       }),
     ).rejects.toMatchObject({ code: "P2002" });
   });

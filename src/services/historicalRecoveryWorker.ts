@@ -15,12 +15,12 @@ import {
   claimCandidate,
   reconcileExpiredCandidateLeases,
   releaseCandidateClaim,
-  markCandidateSent,
   markCandidateSuppressed,
   markCandidateFailed,
-  markCandidateUncertain,
   countCandidatesSentSince,
-  reserveSendCapacity,
+  reserveHistoricalDispatch,
+  startHistoricalDispatch,
+  finalizeHistoricalDispatch,
 } from "./historicalRecoveryRepository.js";
 
 /**
@@ -256,21 +256,35 @@ async function runTickBody(): Promise<HistoricalTickResult> {
     // same `dm_recovery_control` lock the prospective path takes and stamps the row
     // in-flight inside it, so the slot is genuinely consumed before Meta is called and
     // the two systems serialise against each other rather than just counting each other.
-    const refused = await reserveSendCapacity({
+    const reservation = await reserveHistoricalDispatch({
       candidateId: id,
-      campaignId: claimed.campaignId,
+      claimToken: claimed.claimToken,
       now,
       hourlyCap: facts.hourlyCap,
       dailyCap: facts.dailyCap,
       globalHourlyCap: env.DM_RECOVERY_HOURLY_CAP,
+      prospectiveCooldownHours: env.DM_RECOVERY_COOLDOWN_HOURS ?? 24,
     });
-    if (refused) {
+    if (reservation.kind === "blocked") {
+      if (reservation.reason === "person_cooldown") {
+        if (await markCandidateSuppressed(id, claimed.claimToken, reservation.reason)) {
+          result.suppressed++;
+          campaignsToEvaluate.add(claimed.campaignId);
+        }
+        continue;
+      }
       await releaseCandidateClaim(id, claimed.claimToken);
       result.deferred++;
-      // A cap applies to every remaining row, so continuing would release them all
-      // one at a time for nothing.
-      result.skipped = refused;
-      break;
+      if (
+        reservation.reason === "hourly_cap_reached" ||
+        reservation.reason === "daily_cap_reached" ||
+        reservation.reason === "global_hourly_cap_reached" ||
+        reservation.reason === "circuit_open"
+      ) {
+        result.skipped = reservation.reason;
+        break;
+      }
+      continue;
     }
 
     // Past the reservation the row will reach an outcome on this tick — sent, failed, or
@@ -278,6 +292,25 @@ async function runTickBody(): Promise<HistoricalTickResult> {
     // A rate-limited retry is the one exception, and including it is right too: a
     // campaign Meta is throttling is worth a health reading.
     campaignsToEvaluate.add(claimed.campaignId);
+
+    const dispatchStarted = await startHistoricalDispatch({
+      candidateId: id,
+      claimToken: claimed.claimToken,
+      dispatchId: reservation.dispatchId,
+      reservationToken: reservation.reservationToken,
+      now: new Date(),
+    });
+    if (!dispatchStarted) {
+      await finalizeHistoricalDispatch({
+        candidateId: id,
+        claimToken: claimed.claimToken,
+        dispatchId: reservation.dispatchId,
+        reservationToken: reservation.reservationToken,
+        outcome: { kind: "released", at: new Date(), reason: "dispatch_start_rejected" },
+      });
+      result.deferred++;
+      continue;
+    }
 
     // Only an explicit `send` reaches Meta. Written as a positive check so any
     // decision kind added later defaults to NOT posting publicly.
@@ -295,7 +328,13 @@ async function runTickBody(): Promise<HistoricalTickResult> {
       const category = classifyPublicReplyFailure(meta);
 
       if (category === "open_circuit") {
-        await markCandidateFailed(id, claimed.claimToken, "auth_or_permission");
+        await finalizeHistoricalDispatch({
+          candidateId: id,
+          claimToken: claimed.claimToken,
+          dispatchId: reservation.dispatchId,
+          reservationToken: reservation.reservationToken,
+          outcome: { kind: "failed", at: new Date(), reason: "auth_or_permission" },
+        });
         await openRecoveryCircuit("auth_or_permission", now);
         result.failed++;
         break; // Credentials will not fix themselves inside this batch.
@@ -303,7 +342,13 @@ async function runTickBody(): Promise<HistoricalTickResult> {
 
       if (category === "permanent") {
         const reason = meta.graphCode ? `code_${meta.graphCode}` : "permanent";
-        if (await markCandidateFailed(id, claimed.claimToken, reason)) {
+        if (await finalizeHistoricalDispatch({
+          candidateId: id,
+          claimToken: claimed.claimToken,
+          dispatchId: reservation.dispatchId,
+          reservationToken: reservation.reservationToken,
+          outcome: { kind: "failed", at: new Date(), reason },
+        })) {
           result.failed++;
           await logEvent("historical_recovery_send_failed", {
             candidateId: id,
@@ -322,19 +367,42 @@ async function runTickBody(): Promise<HistoricalTickResult> {
         // Durable backoff with jitter, and a ceiling. Releasing the claim with no
         // record meant a rate-limited row was retried on every tick indefinitely.
         if (claimed.attempts >= MAX_ATTEMPTS) {
-          if (await markCandidateFailed(id, claimed.claimToken, "rate_limit_exhausted")) {
+          if (await finalizeHistoricalDispatch({
+            candidateId: id,
+            claimToken: claimed.claimToken,
+            dispatchId: reservation.dispatchId,
+            reservationToken: reservation.reservationToken,
+            outcome: { kind: "failed", at: new Date(), reason: "rate_limit_exhausted" },
+          })) {
             result.failed++;
           }
           continue;
         }
-        await releaseCandidateClaim(id, claimed.claimToken, nextAttempt(claimed.attempts, now));
+        await finalizeHistoricalDispatch({
+          candidateId: id,
+          claimToken: claimed.claimToken,
+          dispatchId: reservation.dispatchId,
+          reservationToken: reservation.reservationToken,
+          outcome: {
+            kind: "released",
+            at: new Date(),
+            reason: "rate_limit",
+            nextAttemptAt: nextAttempt(claimed.attempts, now),
+          },
+        });
         result.deferred++;
         continue;
       }
 
       // Timeout, reset, or anything unrecognised: the comment may have posted, so
       // never retried automatically.
-      if (await markCandidateUncertain(id, claimed.claimToken, meta.category ?? "unknown")) {
+      if (await finalizeHistoricalDispatch({
+        candidateId: id,
+        claimToken: claimed.claimToken,
+        dispatchId: reservation.dispatchId,
+        reservationToken: reservation.reservationToken,
+        outcome: { kind: "uncertain", reason: meta.category ?? "unknown" },
+      })) {
         result.uncertain++;
         await logEvent("historical_recovery_send_uncertain", {
           candidateId: id,
@@ -350,7 +418,13 @@ async function runTickBody(): Promise<HistoricalTickResult> {
     // cannot prove it, and chk_candidate_sent_has_reply_id would reject `sent`
     // anyway — so this is uncertain, not sent.
     if (!replyId) {
-      if (await markCandidateUncertain(id, claimed.claimToken, "missing_reply_id")) {
+      if (await finalizeHistoricalDispatch({
+        candidateId: id,
+        claimToken: claimed.claimToken,
+        dispatchId: reservation.dispatchId,
+        reservationToken: reservation.reservationToken,
+        outcome: { kind: "uncertain", reason: "missing_reply_id" },
+      })) {
         result.uncertain++;
         await logEvent("historical_recovery_send_uncertain", {
           candidateId: id,
@@ -362,7 +436,13 @@ async function runTickBody(): Promise<HistoricalTickResult> {
       continue;
     }
 
-    if (await markCandidateSent(id, claimed.claimToken, { publicReplyId: replyId, sentAt: new Date() })) {
+    if (await finalizeHistoricalDispatch({
+      candidateId: id,
+      claimToken: claimed.claimToken,
+      dispatchId: reservation.dispatchId,
+      reservationToken: reservation.reservationToken,
+      outcome: { kind: "sent", at: new Date(), providerReplyId: replyId },
+    })) {
       result.sent++;
       await logEvent("historical_recovery_sent", {
         candidateId: id,

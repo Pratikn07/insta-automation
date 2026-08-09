@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { prisma } from "../lib/prisma.js";
+import {
+  finalizePublicRecoveryDispatch,
+  reservePublicRecoveryDispatch,
+  startPublicRecoveryDispatch,
+  type DispatchReservation,
+} from "./publicRecoveryDispatchRepository.js";
 
 /**
  * Claim and finalise historical recovery candidates.
@@ -95,15 +101,15 @@ export async function claimCandidate(
   // matched the SAME row and overwrote the first lease — verified against real
   // Postgres: two claims, both succeeded, both would have posted publicly.
   //
-  // An expired lease is reclaimable: `reconcileExpiredCandidateLeases` normally moves
-  // those to send_uncertain first, but a row whose lease lapsed between that sweep and
-  // this call must not be stranded.
+  // Lease reconciliation is the only code allowed to retire an expired token. Letting
+  // this update overwrite it meant the stale worker and replacement worker could both
+  // reach authorization with different tokens for the same source.
   const claimed = await prisma.recoveryCandidate.updateMany({
     where: {
       id,
       outcome: "pending",
       arm: "treatment",
-      OR: [{ claimToken: null }, { claimExpiresAt: { lte: now } }],
+      claimToken: null,
     },
     data: {
       claimedAt: now,
@@ -140,6 +146,166 @@ export async function claimCandidate(
   return { ...rest, selectedAt: createdAt, claimToken: token };
 }
 
+export type HistoricalDispatchInput = {
+  candidateId: string;
+  claimToken: string;
+  now: Date;
+  hourlyCap: number;
+  dailyCap: number;
+  globalHourlyCap: number;
+  prospectiveCooldownHours: number;
+};
+
+/** Final, token-fenced historical reservation under the shared lock order. */
+export async function reserveHistoricalDispatch(
+  input: HistoricalDispatchInput,
+): Promise<DispatchReservation> {
+  return prisma.$transaction(async (tx) => {
+    const sourceHint = await tx.recoveryCandidate.findUnique({
+      where: { id: input.candidateId },
+      select: { igUserId: true },
+    });
+    if (!sourceHint) return { kind: "blocked", reason: "stale_claim" };
+
+    await tx.$queryRaw`SELECT "id" FROM "dm_recovery_control" WHERE "id" = 1 FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "ig_users" WHERE "id" = ${sourceHint.igUserId} FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "recovery_candidate" WHERE "id" = ${input.candidateId}::uuid FOR UPDATE`;
+
+    const control = await tx.dmRecoveryControl.findUnique({ where: { id: 1 } });
+    if (control?.circuitOpen) return { kind: "blocked", reason: "circuit_open" };
+
+    const source = await tx.recoveryCandidate.findUnique({
+      where: { id: input.candidateId },
+      include: { campaign: { select: { state: true } } },
+    });
+    if (
+      !source ||
+      source.outcome !== "pending" ||
+      source.arm !== "treatment" ||
+      source.campaign.state !== "running" ||
+      source.claimToken !== input.claimToken ||
+      !source.claimExpiresAt ||
+      source.claimExpiresAt <= input.now
+    ) {
+      return { kind: "blocked", reason: "stale_claim" };
+    }
+
+    return reservePublicRecoveryDispatch(tx, {
+      sourceKind: "historical",
+      sourceId: source.id,
+      attemptNumber: source.attempts,
+      igUserId: source.igUserId,
+      campaignId: source.campaignId,
+      now: input.now,
+      leaseExpiresAt: source.claimExpiresAt,
+      prospectiveCooldownHours: input.prospectiveCooldownHours,
+      globalHourlyCap: input.globalHourlyCap,
+      campaignHourlyCap: input.hourlyCap,
+      campaignDailyCap: input.dailyCap,
+    });
+  });
+}
+
+export async function startHistoricalDispatch(input: {
+  candidateId: string;
+  claimToken: string;
+  dispatchId: string;
+  reservationToken: string;
+  now: Date;
+}): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
+    const sourceHint = await tx.recoveryCandidate.findUnique({
+      where: { id: input.candidateId },
+      select: { igUserId: true },
+    });
+    if (!sourceHint) return false;
+    await tx.$queryRaw`SELECT "id" FROM "dm_recovery_control" WHERE "id" = 1 FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "ig_users" WHERE "id" = ${sourceHint.igUserId} FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "recovery_candidate" WHERE "id" = ${input.candidateId}::uuid FOR UPDATE`;
+
+    const source = await tx.recoveryCandidate.findUnique({ where: { id: input.candidateId } });
+    if (
+      !source ||
+      source.outcome !== "pending" ||
+      source.claimToken !== input.claimToken ||
+      !source.claimExpiresAt ||
+      source.claimExpiresAt <= input.now
+    ) {
+      return false;
+    }
+    const started = await startPublicRecoveryDispatch(tx, input);
+    if (!started) return false;
+    const stamped = await tx.recoveryCandidate.updateMany({
+      where: { id: input.candidateId, outcome: "pending", claimToken: input.claimToken },
+      data: { dispatchStartedAt: input.now, lastAttemptAt: input.now },
+    });
+    return stamped.count === 1;
+  });
+}
+
+export async function finalizeHistoricalDispatch(input: {
+  candidateId: string;
+  claimToken: string;
+  dispatchId: string;
+  reservationToken: string;
+  outcome:
+    | { kind: "sent"; at: Date; providerReplyId: string }
+    | { kind: "uncertain"; reason: string }
+    | { kind: "released"; at: Date; reason: string; nextAttemptAt?: Date }
+    | { kind: "failed"; at: Date; reason: string };
+}): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
+    const sourceHint = await tx.recoveryCandidate.findUnique({
+      where: { id: input.candidateId },
+      select: { igUserId: true },
+    });
+    if (!sourceHint) return false;
+    await tx.$queryRaw`SELECT "id" FROM "dm_recovery_control" WHERE "id" = 1 FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "ig_users" WHERE "id" = ${sourceHint.igUserId} FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "recovery_candidate" WHERE "id" = ${input.candidateId}::uuid FOR UPDATE`;
+
+    const source = await tx.recoveryCandidate.findUnique({ where: { id: input.candidateId } });
+    if (!source || source.outcome !== "pending" || source.claimToken !== input.claimToken) {
+      return false;
+    }
+
+    const ledgerOutcome =
+      input.outcome.kind === "failed"
+        ? {
+            kind: "released" as const,
+            dispatchId: input.dispatchId,
+            reservationToken: input.reservationToken,
+            at: input.outcome.at,
+            reason: input.outcome.reason,
+          }
+        : { ...input.outcome, dispatchId: input.dispatchId, reservationToken: input.reservationToken };
+    if (!(await finalizePublicRecoveryDispatch(tx, ledgerOutcome))) return false;
+
+    const common = { claimedAt: null, claimExpiresAt: null, claimToken: null };
+    const result = await tx.recoveryCandidate.updateMany({
+      where: { id: input.candidateId, outcome: "pending", claimToken: input.claimToken },
+      data:
+        input.outcome.kind === "sent"
+          ? {
+              ...common,
+              outcome: "sent",
+              sentAt: input.outcome.at,
+              publicReplyId: input.outcome.providerReplyId,
+            }
+          : input.outcome.kind === "uncertain"
+            ? { ...common, outcome: "send_uncertain", suppressionReason: input.outcome.reason }
+            : input.outcome.kind === "failed"
+              ? { ...common, outcome: "send_failed", suppressionReason: input.outcome.reason }
+              : {
+                  ...common,
+                  dispatchStartedAt: null,
+                  nextAttemptAt: input.outcome.nextAttemptAt,
+                },
+    });
+    return result.count === 1;
+  });
+}
+
 /**
  * Reconcile leases that expired mid-send.
  *
@@ -160,37 +326,77 @@ export async function claimCandidate(
 export async function reconcileExpiredCandidateLeases(
   now: Date,
 ): Promise<{ uncertain: number; released: number }> {
-  const expired = {
-    outcome: "pending" as const,
-    claimedAt: { not: null },
-    claimExpiresAt: { lte: now },
-  };
-
-  const [uncertain, released] = await prisma.$transaction([
-    prisma.recoveryCandidate.updateMany({
-      where: { ...expired, dispatchStartedAt: { not: null } },
-      data: {
-        outcome: "send_uncertain",
-        suppressionReason: "stale_lease",
-        claimedAt: null,
-        claimExpiresAt: null,
-        // Must be cleared, or the partial unique index keeps the row claimed forever.
-        claimToken: null,
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "dm_recovery_control" WHERE "id" = 1 FOR UPDATE`;
+    const rows = await tx.recoveryCandidate.findMany({
+      where: {
+        outcome: "pending",
+        claimToken: { not: null },
+        claimExpiresAt: { lte: now },
       },
-    }),
-    prisma.recoveryCandidate.updateMany({
-      where: { ...expired, dispatchStartedAt: null },
-      data: {
-        claimedAt: null,
-        claimExpiresAt: null,
-        claimToken: null,
-        // Backed off so a repeatedly-dying worker does not spin on the same row.
-        nextAttemptAt: new Date(now.getTime() + 5 * 60 * 1000),
-      },
-    }),
-  ]);
+      orderBy: [{ igUserId: "asc" }, { id: "asc" }],
+    });
+    let uncertain = 0;
+    let released = 0;
 
-  return { uncertain: uncertain.count, released: released.count };
+    for (const row of rows) {
+      await tx.$queryRaw`SELECT "id" FROM "ig_users" WHERE "id" = ${row.igUserId} FOR UPDATE`;
+      await tx.$queryRaw`SELECT "id" FROM "recovery_candidate" WHERE "id" = ${row.id}::uuid FOR UPDATE`;
+      const ledger = await tx.publicRecoveryDispatch.findFirst({
+        where: {
+          sourceKind: "historical",
+          sourceId: row.id,
+          attemptNumber: row.attempts,
+          state: { in: ["reserved", "dispatch_started"] },
+        },
+      });
+      const mayHaveDispatched =
+        ledger?.state === "dispatch_started" || row.dispatchStartedAt !== null;
+
+      if (ledger) {
+        await finalizePublicRecoveryDispatch(
+          tx,
+          mayHaveDispatched
+            ? {
+                kind: "uncertain",
+                dispatchId: ledger.id,
+                reservationToken: ledger.reservationToken,
+                reason: "dispatch_lease_expired",
+              }
+            : {
+                kind: "released",
+                dispatchId: ledger.id,
+                reservationToken: ledger.reservationToken,
+                at: now,
+                reason: "dispatch_lease_expired",
+              },
+        );
+      }
+
+      const updated = await tx.recoveryCandidate.updateMany({
+        where: { id: row.id, outcome: "pending", claimToken: row.claimToken },
+        data: mayHaveDispatched
+          ? {
+              outcome: "send_uncertain",
+              suppressionReason: "dispatch_lease_expired",
+              claimedAt: null,
+              claimExpiresAt: null,
+              claimToken: null,
+            }
+          : {
+              claimedAt: null,
+              claimExpiresAt: null,
+              claimToken: null,
+              nextAttemptAt: new Date(now.getTime() + 5 * 60 * 1000),
+            },
+      });
+      if (updated.count === 1) {
+        if (mayHaveDispatched) uncertain++;
+        else released++;
+      }
+    }
+    return { uncertain, released };
+  });
 }
 
 /**
