@@ -65,6 +65,14 @@ beforeAll(async () => {
       },
     });
   }
+  await prisma.$executeRaw`
+    CREATE OR REPLACE FUNCTION "raise_p1_snapshot_contract_failure"()
+    RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      RAISE EXCEPTION 'injected snapshot contract failure';
+    END
+    $$
+  `;
 });
 
 async function wipe(): Promise<void> {
@@ -94,6 +102,10 @@ beforeEach(async () => {
 
 afterAll(async () => {
   if (!prisma) return;
+  await prisma.$executeRaw`DROP TRIGGER IF EXISTS "p1_snapshot_contract_failure" ON "recovery_selection_exclusion"`;
+  await prisma.$executeRaw`DROP TRIGGER IF EXISTS "p1_snapshot_contract_failure" ON "recovery_candidate"`;
+  await prisma.$executeRaw`DROP TRIGGER IF EXISTS "p1_snapshot_contract_failure" ON "recovery_candidate_source"`;
+  await prisma.$executeRaw`DROP FUNCTION IF EXISTS "raise_p1_snapshot_contract_failure"()`;
   await wipe();
   await prisma.keyword.deleteMany({ where: { id: { in: [fx.keywordId, fx.otherKeywordId] } } });
   await prisma.resource.deleteMany({ where: { id: fx.resourceId } });
@@ -362,6 +374,40 @@ describeWithLocalDatabase("selector scopes engagement evidence to after the requ
     expect(report.eligible).toBe(0);
     expect(report.excludedByReason.has_engagement_evidence).toBe(1);
   });
+
+  it("does not suppress this intent for reminder engagement on another keyword", async () => {
+    const { igUserId } = await seedEligible({ triggers: [{ at: COMMENT_AT }] });
+    const otherConversation = await prisma.conversation.create({
+      data: {
+        igUserId,
+        keywordId: fx.otherKeywordId,
+        state: "awaiting_done",
+        createdAt: COMMENT_AT,
+      },
+    });
+    await prisma.dmRecoveryReminder.create({
+      data: {
+        conversationId: otherConversation.id,
+        igUserId,
+        keywordId: fx.otherKeywordId,
+        keywordSnapshot: "POTTY",
+        templateVersion: "v1",
+        publicReplyText: "t",
+        commentId: `other-read-${randomUUID()}`,
+        triggerKind: "no_confirmed_read",
+        status: "cancelled",
+        cancelledAt: new Date(COMMENT_AT.getTime() + 120_000),
+        cohort: "treatment",
+        eligibleAt: COMMENT_AT,
+        seenAt: new Date(COMMENT_AT.getTime() + 60_000),
+      },
+    });
+
+    const report = await select();
+
+    expect(report.eligible).toBe(1);
+    expect(report.excludedByReason.has_engagement_evidence ?? 0).toBe(0);
+  });
 });
 
 describeWithLocalDatabase("selector sees both recovery systems", () => {
@@ -474,6 +520,40 @@ describeWithLocalDatabase("selector bounds completion by the cutoff", () => {
 // nothing detecting it. Exclusions survived only as counts in an in-memory report, so
 // "why was this cohort this size?" had no answer in the record at all.
 describeWithLocalDatabase("selection records the decision it made", () => {
+  async function injectFailureAt(
+    stage: "exclusion" | "candidate" | "source",
+  ): Promise<void> {
+    if (stage === "exclusion") {
+      await prisma.$executeRaw`
+        CREATE TRIGGER "p1_snapshot_contract_failure"
+        BEFORE INSERT ON "recovery_selection_exclusion"
+        FOR EACH ROW EXECUTE FUNCTION "raise_p1_snapshot_contract_failure"()
+      `;
+    } else if (stage === "candidate") {
+      await prisma.$executeRaw`
+        CREATE TRIGGER "p1_snapshot_contract_failure"
+        BEFORE INSERT ON "recovery_candidate"
+        FOR EACH ROW EXECUTE FUNCTION "raise_p1_snapshot_contract_failure"()
+      `;
+    } else {
+      await prisma.$executeRaw`
+        CREATE TRIGGER "p1_snapshot_contract_failure"
+        BEFORE INSERT ON "recovery_candidate_source"
+        FOR EACH ROW EXECUTE FUNCTION "raise_p1_snapshot_contract_failure"()
+      `;
+    }
+  }
+
+  async function removeFailureAt(stage: "exclusion" | "candidate" | "source"): Promise<void> {
+    if (stage === "exclusion") {
+      await prisma.$executeRaw`DROP TRIGGER IF EXISTS "p1_snapshot_contract_failure" ON "recovery_selection_exclusion"`;
+    } else if (stage === "candidate") {
+      await prisma.$executeRaw`DROP TRIGGER IF EXISTS "p1_snapshot_contract_failure" ON "recovery_candidate"`;
+    } else {
+      await prisma.$executeRaw`DROP TRIGGER IF EXISTS "p1_snapshot_contract_failure" ON "recovery_candidate_source"`;
+    }
+  }
+
   /** Persist a selection and hand back the campaign row it wrote. */
   async function selectAndPersist(version?: string) {
     const report = await selector.selectHistoricalCandidates({
@@ -514,15 +594,115 @@ describeWithLocalDatabase("selection records the decision it made", () => {
 
   // Reproducibility, stated as something the record can prove rather than something we
   // assert in a comment.
-  it("hashes the same decision set identically across runs", async () => {
+  it("hashes the same configuration and decision set identically across dry runs", async () => {
     await seedEligible({ triggers: [{ at: COMMENT_AT }] });
+    const selectionVersion = `sel-test-stable-${randomUUID()}`;
+    const run = () => selector.selectHistoricalCandidates({
+      phase: "unknown_read_pilot" as const,
+      selectionVersion,
+      copyVersion: "recovery-v2",
+      westernOnly: true,
+      holdoutPercent: 0,
+      persist: false,
+      now: NOW,
+    });
 
-    const first = await selectAndPersist();
-    const second = await selectAndPersist();
+    const first = await run();
+    const second = await run();
 
-    expect(first.campaign.decisionHash).toBeTruthy();
-    expect(second.campaign.decisionHash).toBe(first.campaign.decisionHash);
+    expect(first.decisionHash).toBeTruthy();
+    expect(second.decisionHash).toBe(first.decisionHash);
+    expect(second.selectionFingerprint).toBe(first.selectionFingerprint);
   });
+
+  it("persists the complete approved source order and normalized identity", async () => {
+    const { commentIds } = await seedEligible({
+      triggers: [
+        { at: COMMENT_AT },
+        { at: new Date(COMMENT_AT.getTime() + 3600_000) },
+      ],
+    });
+
+    const { campaign } = await selectAndPersist();
+    const candidate = await prisma.recoveryCandidate.findFirstOrThrow({
+      where: { campaignId: campaign.id },
+      include: { sources: { orderBy: { position: "asc" } } },
+    });
+
+    expect(campaign.selectionFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(campaign.eligibilityPolicyVersion).toBeTruthy();
+    expect(candidate.sourceChoiceReason).toBe("newest_eligible_comment");
+    expect(candidate.sources.map((source) => source.commentId)).toEqual([
+      commentIds[1],
+      commentIds[0],
+    ]);
+  });
+
+  it("rejects a duplicate normalized selection identity", async () => {
+    await seedEligible({ triggers: [{ at: COMMENT_AT }] });
+    const version = `sel-test-duplicate-${randomUUID()}`;
+    await selectAndPersist(version);
+
+    await expect(selectAndPersist(version)).rejects.toMatchObject({ code: "P2002" });
+  });
+
+  it("writes no campaign when the realized arm split is unusable", async () => {
+    await seedEligible({ triggers: [{ at: COMMENT_AT }] });
+    const version = `sel-test-invalid-arm-${randomUUID()}`;
+
+    await expect(
+      selector.selectHistoricalCandidates({
+        phase: "unknown_read_pilot",
+        selectionVersion: version,
+        copyVersion: "recovery-v2",
+        westernOnly: true,
+        holdoutPercent: 100,
+        persist: true,
+        now: NOW,
+      }),
+    ).rejects.toThrow("unusable arm split");
+    await expect(
+      prisma.recoveryCampaign.count({ where: { selectionVersion: version } }),
+    ).resolves.toBe(0);
+  });
+
+  for (const stage of ["exclusion", "candidate", "source"] as const) {
+    it(`rolls back the complete snapshot when the ${stage} write fails`, async () => {
+      const eligible = await seedEligible({ triggers: [{ at: COMMENT_AT }] });
+      if (stage === "exclusion") {
+        await seedEligible({
+          triggers: [{ at: COMMENT_AT }],
+          keywordId: fx.otherKeywordId,
+        });
+        await prisma.keyword.update({
+          where: { id: fx.otherKeywordId },
+          data: { active: false },
+        });
+      }
+      const version = `sel-test-rollback-${stage}-${randomUUID()}`;
+      await injectFailureAt(stage);
+      try {
+        await expect(
+          selector.selectHistoricalCandidates({
+            phase: "unknown_read_pilot",
+            selectionVersion: version,
+            copyVersion: "recovery-v2",
+            westernOnly: true,
+            holdoutPercent: 0,
+            persist: true,
+            now: NOW,
+          }),
+        ).rejects.toThrow();
+      } finally {
+        await removeFailureAt(stage);
+      }
+
+      expect(await prisma.recoveryCampaign.count({ where: { selectionVersion: version } })).toBe(0);
+      expect(
+        await prisma.recoveryCandidate.count({ where: { intentId: eligible.intentId } }),
+      ).toBe(0);
+    });
+  }
 
   // The other half: drift must be VISIBLE. A gate flipping to exhausted between the dry
   // run and the write is exactly the case QA-14 describes, and the hash is what turns it
@@ -533,18 +713,28 @@ describeWithLocalDatabase("selection records the decision it made", () => {
     // of zero (QA-07) and we would be testing that guard instead of the hash.
     await seedEligible({ triggers: [{ at: COMMENT_AT }] });
     await seedEligible({ triggers: [{ at: COMMENT_AT }], keywordId: fx.otherKeywordId });
-    const before = await selectAndPersist();
+    const selectionVersion = `sel-test-drift-${randomUUID()}`;
+    const run = () => selector.selectHistoricalCandidates({
+      phase: "unknown_read_pilot" as const,
+      selectionVersion,
+      copyVersion: "recovery-v2",
+      westernOnly: true,
+      holdoutPercent: 0,
+      persist: false,
+      now: NOW,
+    });
+    const before = await run();
 
     // The keyword goes inactive after the first selection — a live predicate, not
     // something the cutoff can bound, because keywords keep no history.
     await prisma.keyword.update({ where: { id: fx.otherKeywordId }, data: { active: false } });
-    const after = await selectAndPersist();
+    const after = await run();
     await prisma.keyword.update({ where: { id: fx.otherKeywordId }, data: { active: true } });
 
-    expect(after.campaign.decisionHash).not.toBe(before.campaign.decisionHash);
+    expect(after.decisionHash).not.toBe(before.decisionHash);
     // And the decision itself changed, which is what the hash is reporting.
-    expect(before.report.eligible).toBe(2);
-    expect(after.report.eligible).toBe(1);
+    expect(before.eligible).toBe(2);
+    expect(after.eligible).toBe(1);
   });
 
   // "Nobody qualified" and "this cohort has candidates but no treatment arm" are
