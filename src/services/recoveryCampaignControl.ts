@@ -54,6 +54,12 @@ export async function approveCampaign(
       update: {},
     });
     await tx.$queryRaw`SELECT "id" FROM "dm_recovery_control" WHERE "id" = 1 FOR UPDATE`;
+    // Lock the campaign before scanning any manifest child. Source mutation uses the
+    // same parent lock, so an insert cannot become visible after verification but before
+    // this transaction seals the reviewed campaign.
+    await tx.$queryRaw`
+      SELECT "id" FROM "recovery_campaign" WHERE "id" = ${campaignId}::uuid FOR UPDATE
+    `;
     await tx.$queryRaw`
       SELECT u."id"
       FROM "ig_users" u
@@ -84,10 +90,6 @@ export async function approveCampaign(
       ORDER BY e."intent_id"
       FOR UPDATE OF e
     `;
-    await tx.$queryRaw`
-      SELECT "id" FROM "recovery_campaign" WHERE "id" = ${campaignId}::uuid FOR UPDATE
-    `;
-
     const current = await tx.recoveryCampaign.findUnique({
       where: { id: campaignId },
       select: {

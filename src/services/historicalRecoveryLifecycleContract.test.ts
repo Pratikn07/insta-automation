@@ -23,6 +23,7 @@ const databaseUrl = process.env.MIGRATION_TEST_DATABASE_URL;
 const describeWithLocalDatabase = databaseUrl ? describe.sequential : describe.skip;
 
 let prisma: PrismaClient;
+let lockClient: PrismaClient;
 let control: typeof import("./recoveryCampaignControl.js");
 let attribution: typeof import("./historicalRecoveryAttribution.js");
 let snapshots: typeof import("./historicalRecoverySnapshot.js");
@@ -39,6 +40,7 @@ beforeAll(async () => {
   // running `migrate deploy` in parallel raced the advisory lock and made a different
   // suite's catalog assertion fail on each run.
   prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+  lockClient = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
   control = await import("./recoveryCampaignControl.js");
   attribution = await import("./historicalRecoveryAttribution.js");
   snapshots = await import("./historicalRecoverySnapshot.js");
@@ -91,6 +93,7 @@ afterAll(async () => {
   await wipe();
   await prisma.keyword.deleteMany({ where: { id: { in: [fx.keywordId, fx.otherKeywordId] } } });
   await prisma.resource.deleteMany({ where: { id: fx.resourceId } });
+  await lockClient.$disconnect();
   await prisma.$disconnect();
 });
 
@@ -255,6 +258,85 @@ async function stateOf(campaignId: string): Promise<string> {
 }
 
 describeWithLocalDatabase("holdout assignment is settled at approval", () => {
+  it("serializes an approval against a source inserted after review", async () => {
+    const campaignId = await draft();
+    const selected = await candidate(campaignId, { arm: "treatment" });
+    await sealSnapshot(campaignId);
+
+    let release!: () => void;
+    let acquired!: () => void;
+    const releaseSignal = new Promise<void>((resolve) => { release = resolve; });
+    const acquiredSignal = new Promise<void>((resolve) => { acquired = resolve; });
+    const blocker = lockClient.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "recovery_candidate" WHERE "id" = ${selected.id}::uuid FOR UPDATE`;
+      acquired();
+      await releaseSignal;
+    });
+    await acquiredSignal;
+
+    const waitForBlockedApproval = async (): Promise<void> => {
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const [row] = await prisma.$queryRaw<Array<{ n: bigint }>>`
+          SELECT COUNT(*) AS n
+          FROM pg_stat_activity
+          WHERE datname = current_database()
+            AND wait_event_type = 'Lock'
+            AND query ILIKE '%recovery_candidate%FOR UPDATE%'
+        `;
+        if (Number(row?.n ?? 0) >= 1) return;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error("approval did not block on the candidate lock");
+    };
+    const waitForBlockedSourceInsert = async (): Promise<"blocked"> => {
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const [row] = await prisma.$queryRaw<Array<{ n: bigint }>>`
+          SELECT COUNT(*) AS n
+          FROM pg_stat_activity
+          WHERE datname = current_database()
+            AND wait_event_type = 'Lock'
+            AND query ILIKE '%recovery_candidate_source%'
+        `;
+        if (Number(row?.n ?? 0) >= 1) return "blocked";
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error("source insert did not block on the campaign lock");
+    };
+
+    const approval = control.approveCampaign(campaignId, "owner", T0);
+    await waitForBlockedApproval();
+    const insertedCommentId = `life-unreviewed-${randomUUID()}`;
+    const sourceInsert = prisma.recoveryCandidateSource.create({
+      data: {
+        candidateId: selected.id,
+        position: 1,
+        commentId: insertedCommentId,
+        receivedAt: T0,
+        choiceReason: "not_reviewed",
+      },
+    });
+    const insertState = await Promise.race([
+      sourceInsert.then(() => "completed" as const, () => "rejected" as const),
+      waitForBlockedSourceInsert(),
+    ]);
+    release();
+
+    try {
+      expect(insertState).toBe("blocked");
+      await expect(approval).resolves.toEqual({ ok: true, state: "running" });
+      await expect(sourceInsert).rejects.toThrow(/reviewed source set is immutable/i);
+      expect(await prisma.recoveryCandidateSource.count({
+        where: { candidateId: selected.id },
+      })).toBe(1);
+    } finally {
+      release();
+      await blocker;
+      await Promise.allSettled([approval, sourceInsert]);
+    }
+  });
+
   it("refuses to approve an incomplete reviewed snapshot", async () => {
     const campaign = await prisma.recoveryCampaign.create({
       data: {
