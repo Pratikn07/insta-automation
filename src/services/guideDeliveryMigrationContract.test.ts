@@ -35,6 +35,17 @@ function normalizeCatalogExpression(value: string | null): string | null {
     .toLowerCase();
 }
 
+function findProtectedWorkerIndexDrift(diff: string): string[] {
+  return WORKER_INDEX_NAMES.filter((indexName) => {
+    const escapedName = indexName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const statement = new RegExp(
+      String.raw`\b(?:create\s+(?:unique\s+)?index\s+(?:if\s+not\s+exists\s+)?|drop\s+index\s+(?:if\s+exists\s+)?)(?:"${escapedName}"|${escapedName})(?=\s|\(|;|$)`,
+      "i",
+    );
+    return statement.test(diff);
+  });
+}
+
 async function loadIndexMetadata(): Promise<IndexMetadata[]> {
   return prisma.$queryRaw<IndexMetadata[]>`
     SELECT
@@ -94,6 +105,28 @@ beforeAll(() => {
 
 afterAll(async () => {
   await prisma?.$disconnect();
+});
+
+describe("guide delivery worker-index diff guard", () => {
+  it.each([
+    [
+      "ordinary create",
+      'CREATE\n  INDEX "guide_delivery_due_idx" ON "guide_delivery" ("id");',
+      "guide_delivery_due_idx",
+    ],
+    [
+      "unique create",
+      'CREATE UNIQUE\n  INDEX "guide_delivery_expired_claim_idx" ON "guide_delivery" ("id");',
+      "guide_delivery_expired_claim_idx",
+    ],
+    [
+      "drop",
+      'DROP\n  INDEX "guide_delivery_thread_review_idx";',
+      "guide_delivery_thread_review_idx",
+    ],
+  ])("detects a protected %s statement across SQL whitespace", (_label, sql, indexName) => {
+    expect(findProtectedWorkerIndexDrift(sql)).toEqual([indexName]);
+  });
 });
 
 describeWithDatabase("guide delivery ledger migration", () => {
@@ -370,9 +403,15 @@ describeWithDatabase("guide delivery ledger migration", () => {
 
   it("uses the planned UUID, snapshot, and millisecond timestamp types", async () => {
     const timestampColumns = await prisma.$queryRaw<
-      Array<{ column_name: string; datetime_precision: number | null; table_name: string }>
+      Array<{
+        column_default: string | null;
+        column_name: string;
+        datetime_precision: number | null;
+        is_nullable: string;
+        table_name: string;
+      }>
     >`
-      SELECT table_name, column_name, datetime_precision
+      SELECT table_name, column_name, datetime_precision, is_nullable, column_default
       FROM information_schema.columns
       WHERE table_schema = 'public'
         AND table_name IN ('guide_delivery', 'guide_delivery_unit')
@@ -381,88 +420,122 @@ describeWithDatabase("guide delivery ledger migration", () => {
     `;
     expect(timestampColumns).toEqual([
       {
+        column_default: null,
         column_name: "triggered_at",
         datetime_precision: 3,
+        is_nullable: "NO",
         table_name: "guide_delivery",
       },
       {
+        column_default: null,
         column_name: "send_window_expires_at",
         datetime_precision: 3,
+        is_nullable: "NO",
         table_name: "guide_delivery",
       },
       {
+        column_default: null,
         column_name: "next_attempt_at",
         datetime_precision: 3,
+        is_nullable: "YES",
         table_name: "guide_delivery",
       },
       {
+        column_default: null,
         column_name: "claimed_at",
         datetime_precision: 3,
+        is_nullable: "YES",
         table_name: "guide_delivery",
       },
       {
+        column_default: null,
         column_name: "claim_expires_at",
         datetime_precision: 3,
+        is_nullable: "YES",
         table_name: "guide_delivery",
       },
       {
+        column_default: null,
         column_name: "started_at",
         datetime_precision: 3,
+        is_nullable: "YES",
         table_name: "guide_delivery",
       },
       {
+        column_default: null,
         column_name: "completed_at",
         datetime_precision: 3,
+        is_nullable: "YES",
         table_name: "guide_delivery",
       },
       {
+        column_default: null,
         column_name: "cancelled_at",
         datetime_precision: 3,
+        is_nullable: "YES",
         table_name: "guide_delivery",
       },
       {
+        column_default: "CURRENT_TIMESTAMP",
         column_name: "created_at",
         datetime_precision: 3,
+        is_nullable: "NO",
         table_name: "guide_delivery",
       },
       {
+        column_default: "CURRENT_TIMESTAMP",
         column_name: "updated_at",
         datetime_precision: 3,
+        is_nullable: "NO",
         table_name: "guide_delivery",
       },
       {
+        column_default: null,
         column_name: "sending_at",
         datetime_precision: 3,
+        is_nullable: "YES",
         table_name: "guide_delivery_unit",
       },
       {
+        column_default: null,
         column_name: "sent_at",
         datetime_precision: 3,
+        is_nullable: "YES",
         table_name: "guide_delivery_unit",
       },
       {
+        column_default: null,
         column_name: "owner_confirmed_at",
         datetime_precision: 3,
+        is_nullable: "YES",
         table_name: "guide_delivery_unit",
       },
       {
+        column_default: null,
         column_name: "owner_retry_authorized_at",
         datetime_precision: 3,
+        is_nullable: "YES",
         table_name: "guide_delivery_unit",
       },
       {
+        column_default: null,
         column_name: "owner_retry_consumed_at",
         datetime_precision: 3,
+        is_nullable: "YES",
         table_name: "guide_delivery_unit",
       },
       {
+        column_default: "CURRENT_TIMESTAMP",
         column_name: "created_at",
         datetime_precision: 3,
+        is_nullable: "NO",
         table_name: "guide_delivery_unit",
       },
       {
+        column_default: "CURRENT_TIMESTAMP",
         column_name: "updated_at",
         datetime_precision: 3,
+        is_nullable: "NO",
         table_name: "guide_delivery_unit",
       },
     ]);
@@ -613,9 +686,6 @@ describeWithDatabase("guide delivery ledger migration", () => {
       },
     );
 
-    for (const indexName of WORKER_INDEX_NAMES) {
-      expect(diff).not.toContain(`CREATE INDEX "${indexName}"`);
-      expect(diff).not.toContain(`DROP INDEX "${indexName}"`);
-    }
+    expect(findProtectedWorkerIndexDrift(diff)).toEqual([]);
   });
 });
