@@ -112,6 +112,9 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
   const experiment = metricsQ.data?.experiment;
   const accuracy = metricsQ.data?.accuracy;
   const settingsEvidence = metricsQ.data?.settingsEvidence;
+  const settingsVerificationRecords = Array.isArray(settingsVerificationsQ.data?.records)
+    ? settingsVerificationsQ.data.records
+    : [];
   const rows: RecoveryReminderRow[] = rowsQ.data?.pages.flatMap((p) => p.rows) ?? [];
   // The active view, not the grand total: a count that never changes as tabs
   // change is not describing what is on screen.
@@ -246,11 +249,11 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
         </p>
       ) : null}
 
-      {(settingsVerificationsQ.data?.records.length ?? 0) > 0 ? (
+      {settingsVerificationRecords.length > 0 ? (
         <section className="space-y-2 rounded-lg border px-3 py-2 text-xs">
           <h3 className="font-semibold">Settings verification registry</h3>
           <ul className="space-y-1">
-            {settingsVerificationsQ.data!.records.map((record) => (
+            {settingsVerificationRecords.map((record) => (
               <li key={record.id} className="flex flex-wrap items-center gap-2">
                 <span className="font-medium">{record.version}</span>
                 <span className="text-muted-foreground">

@@ -193,6 +193,15 @@ describe("DmRecoveryList", () => {
     expect(await screen.findByText("1 current · 2 invalid settings evidence")).toBeInTheDocument();
   });
 
+  it("keeps reminders usable when the settings registry response is incomplete", async () => {
+    settingsVerifications.mockResolvedValue({});
+
+    renderList();
+
+    expect(await screen.findByText("@sarah")).toBeInTheDocument();
+    expect(screen.queryByText("Settings verification registry")).not.toBeInTheDocument();
+  });
+
   it("labels a stale settings reminder in the row", async () => {
     list.mockResolvedValue({
       rows: [
