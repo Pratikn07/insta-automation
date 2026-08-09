@@ -70,7 +70,6 @@ beforeAll(async () => {
 
 async function wipe(): Promise<void> {
   await prisma.publicRecoveryDispatch.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
-  await prisma.recoveryCandidate.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
   await prisma.recoveryCampaignBatchRun.deleteMany({
     where: { campaign: { selectionVersion: { startsWith: "life-" } } },
   });
@@ -327,7 +326,7 @@ describeWithLocalDatabase("holdout assignment is settled at approval", () => {
     try {
       expect(insertState).toBe("blocked");
       await expect(approval).resolves.toEqual({ ok: true, state: "running" });
-      await expect(sourceInsert).rejects.toThrow(/reviewed source set is immutable/i);
+      await expect(sourceInsert).rejects.toThrow(/reviewed campaign manifest is immutable/i);
       expect(await prisma.recoveryCandidateSource.count({
         where: { candidateId: selected.id },
       })).toBe(1);
@@ -336,6 +335,49 @@ describeWithLocalDatabase("holdout assignment is settled at approval", () => {
       await blocker;
       await Promise.allSettled([approval, sourceInsert]);
     }
+  });
+
+  it("rejects every approval-defining manifest mutation after the campaign is sealed", async () => {
+    const campaignId = await draft();
+    const selected = await candidate(campaignId, { arm: "treatment" });
+    await expect(approve(campaignId)).resolves.toEqual({ ok: true, state: "running" });
+
+    await expect(prisma.recoveryCampaign.update({
+      where: { id: campaignId },
+      data: { westernOnly: false },
+    })).rejects.toThrow(/reviewed campaign manifest is immutable/i);
+    await expect(prisma.recoveryCandidate.update({
+      where: { id: selected.id },
+      data: { publicReplyText: "unreviewed replacement" },
+    })).rejects.toThrow(/reviewed campaign manifest is immutable/i);
+    await expect(prisma.recoveryCandidateSource.updateMany({
+      where: { candidateId: selected.id },
+      data: { commentId: `life-unreviewed-${randomUUID()}` },
+    })).rejects.toThrow(/reviewed campaign manifest is immutable/i);
+    await expect(prisma.recoveryCandidate.delete({
+      where: { id: selected.id },
+    })).rejects.toThrow(/reviewed campaign manifest is immutable/i);
+
+    const excludedPerson = `${fx.igUserId}-${randomUUID()}`;
+    await prisma.igUser.create({ data: { id: excludedPerson } });
+    const excludedIntent = await prisma.journeyIntent.create({
+      data: {
+        igUserId: excludedPerson,
+        keywordId: fx.keywordId,
+        windowStartedAt: T0,
+        lastTriggerAt: T0,
+        windowExpiresAt: new Date(T0.getTime() + 48 * 3600_000),
+      },
+    });
+    await expect(prisma.recoverySelectionExclusion.create({
+      data: {
+        campaignId,
+        intentId: excludedIntent.id,
+        igUserId: excludedPerson,
+        keywordId: fx.keywordId,
+        reason: "unreviewed",
+      },
+    })).rejects.toThrow(/reviewed campaign manifest is immutable/i);
   });
 
   it("refuses to approve an incomplete reviewed snapshot", async () => {
