@@ -30,12 +30,13 @@ export type ClaimedCandidate = {
   /** Needed by the final recheck to scope completion to THIS keyword (QA-11). */
   keywordId: string;
   /**
-   * When this candidate was selected, i.e. the moment its evidence was frozen (QA-11).
+   * The source-data cutoff at which this candidate's evidence was frozen (QA-11).
    *
    * The recheck asks "has anything changed SINCE selection", and without this it asked
    * "has anything EVER happened" — so a reply or completion that predated the request
-   * suppressed the candidate. `createdAt` is the selection moment: the selector writes
-   * the row and never updates it.
+   * suppressed the candidate. `eligibleAt` is written from the campaign's frozen
+   * `sourceDataCutoff`; unlike `createdAt`, it also covers evidence that arrives while
+   * the selector is building and inserting the reviewed manifest.
    */
   selectedAt: Date;
   commentId: string;
@@ -138,7 +139,7 @@ export async function claimCandidate(
       campaignId: true,
       igUserId: true,
       keywordId: true,
-      createdAt: true,
+      eligibleAt: true,
       commentId: true,
       sources: {
         orderBy: { position: "asc" },
@@ -154,8 +155,8 @@ export async function claimCandidate(
   });
   if (!row) return null;
 
-  const { createdAt, ...rest } = row;
-  return { ...rest, selectedAt: createdAt, claimToken: token };
+  const { eligibleAt, ...rest } = row;
+  return { ...rest, selectedAt: eligibleAt, claimToken: token };
 }
 
 export type HistoricalDispatchInput = {
@@ -288,7 +289,7 @@ export async function startHistoricalDispatch(input: {
       where: {
         thread: { igUserId: source.igUserId },
         direction: "inbound",
-        createdAt: { gte: source.createdAt },
+        createdAt: { gte: source.eligibleAt },
       },
       select: { id: true },
     });

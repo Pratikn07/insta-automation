@@ -25,15 +25,17 @@ type ReservedScenario = {
   batchRunId: string;
   dispatchId: string;
   reservationToken: string;
+  selectedAt: Date;
   now: Date;
   lease: Date;
 };
 
-async function reserveScenario(): Promise<ReservedScenario> {
+async function reserveScenario(input: { selectionCutoff?: Date } = {}): Promise<ReservedScenario> {
   const campaignId = randomUUID();
   const igUserId = `${prefix}-${randomUUID()}`;
   const now = new Date();
   const lease = new Date(now.getTime() + 60_000);
+  const selectionCutoff = input.selectionCutoff ?? now;
   await db.igUser.create({ data: { id: igUserId } });
   const intent = await db.journeyIntent.create({
     data: {
@@ -49,7 +51,7 @@ async function reserveScenario(): Promise<ReservedScenario> {
       id: campaignId,
       phase: "unknown_read_pilot",
       selectionVersion: `${prefix}-${campaignId}`,
-      sourceDataCutoff: now,
+      sourceDataCutoff: selectionCutoff,
       copyVersion: "contract-v1",
       decisionHash: `hash-${campaignId}`,
       candidateCount: 1,
@@ -72,7 +74,7 @@ async function reserveScenario(): Promise<ReservedScenario> {
       publicReplyText: "contract",
       evidence: "gate_sent_no_read",
       arm: "treatment",
-      eligibleAt: now,
+      eligibleAt: selectionCutoff,
       sources: {
         create: {
           position: 0,
@@ -110,6 +112,7 @@ async function reserveScenario(): Promise<ReservedScenario> {
     batchRunId: batch.id,
     dispatchId: reservation.dispatchId,
     reservationToken: reservation.reservationToken,
+    selectedAt: claim.selectedAt,
     now,
     lease,
   };
@@ -364,6 +367,32 @@ describeWithDatabase("historical dispatch state interleavings", () => {
         select: { state: true },
       }),
     ).toEqual({ state: "reserved" });
+  });
+
+  it("rechecks from the frozen selection cutoff, including evidence committed before row insertion", async () => {
+    const selectionCutoff = new Date(Date.now() - 10 * 60_000);
+    const scenario = await reserveScenario({ selectionCutoff });
+    const observedAt = new Date(selectionCutoff.getTime() + 60_000);
+    const instagramMessageId = `cutoff-gap-${randomUUID()}`;
+    const inbound = await dmThreads.recordInboundMessage({
+      igAccountId: "contract-account",
+      igUserId: scenario.igUserId,
+      instagramMessageId,
+      text: "hello before candidate insert",
+      messageType: "text",
+      mediaUrl: null,
+      instagramTimestamp: observedAt,
+    });
+    await db.dmMessage.update({
+      where: { id: inbound.messageId },
+      data: { createdAt: observedAt, campaignHealthCapturedAt: scenario.now },
+    });
+
+    expect(scenario.selectedAt).toEqual(selectionCutoff);
+    await expect(historical.startHistoricalDispatch(scenario)).resolves.toEqual({
+      kind: "blocked",
+      reason: "inbound_since_selection",
+    });
   });
 
   it("serializes a durable health stop against final dispatch authorization", async () => {
