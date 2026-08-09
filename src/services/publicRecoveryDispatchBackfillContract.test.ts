@@ -19,20 +19,23 @@ const prismaBinary = path.resolve("node_modules/.bin/prisma");
 
 let admin: InstanceType<typeof pg.Client> | undefined;
 let fixtureRoot: string | undefined;
-const schemas: string[] = [];
+const fixtureDatabases: string[] = [];
 
-function schemaDatabaseUrl(schema: string): string {
+function fixtureDatabaseUrl(database: string): string {
   const parsed = new URL(databaseUrl!);
-  parsed.searchParams.set("schema", schema);
+  parsed.pathname = `/${database}`;
+  parsed.searchParams.set("schema", "public");
   return parsed.toString();
 }
 
-async function createSchema(): Promise<string> {
-  const schema = `p0_backfill_${randomUUID().replaceAll("-", "")}`;
-  if (!/^p0_backfill_[a-f0-9]{32}$/.test(schema)) throw new Error("invalid fixture schema");
-  await admin!.query(`CREATE SCHEMA "${schema}"`);
-  schemas.push(schema);
-  return schema;
+async function createFixtureDatabase(): Promise<string> {
+  const database = `insta_p0_backfill_${randomUUID().replaceAll("-", "")}`;
+  if (!/^insta_p0_backfill_[a-f0-9]{32}$/.test(database)) {
+    throw new Error("invalid fixture database");
+  }
+  await admin!.query(`CREATE DATABASE "${database}"`);
+  fixtureDatabases.push(database);
+  return database;
 }
 
 function prepareMigrationFixture(): string {
@@ -56,20 +59,19 @@ function prepareMigrationFixture(): string {
   return path.join(fixturePrisma, "schema.prisma");
 }
 
-function deploy(schemaFile: string, schema: string): void {
+function deploy(schemaFile: string, database: string): void {
   execFileSync(prismaBinary, ["migrate", "deploy", "--schema", schemaFile], {
     cwd: process.cwd(),
-    env: { ...process.env, DATABASE_URL: schemaDatabaseUrl(schema) },
+    env: { ...process.env, DATABASE_URL: fixtureDatabaseUrl(database) },
     stdio: "pipe",
   });
 }
 
-async function fixtureClient(schema: string): Promise<InstanceType<typeof pg.Client>> {
-  const parsed = new URL(databaseUrl!);
+async function fixtureClient(database: string): Promise<InstanceType<typeof pg.Client>> {
+  const parsed = new URL(fixtureDatabaseUrl(database));
   parsed.searchParams.delete("schema");
   const client = new pg.Client({ connectionString: parsed.toString() });
   await client.connect();
-  await client.query(`SET search_path TO "${schema}"`);
   return client;
 }
 
@@ -240,8 +242,8 @@ async function seedCollisionFixture(client: InstanceType<typeof pg.Client>): Pro
 
 afterAll(async () => {
   if (admin) {
-    for (const schema of schemas) {
-      await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+    for (const database of fixtureDatabases) {
+      await admin.query(`DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`);
     }
     await admin.end();
   }
@@ -258,14 +260,14 @@ describeWithDatabase("public recovery dispatch backfill", () => {
     admin = new pg.Client({ connectionString: parsed.toString() });
     await admin.connect();
 
-    const validSchema = await createSchema();
-    const collisionSchema = await createSchema();
+    const validDatabase = await createFixtureDatabase();
+    const collisionDatabase = await createFixtureDatabase();
     const schemaFile = prepareMigrationFixture();
-    deploy(schemaFile, validSchema);
-    deploy(schemaFile, collisionSchema);
+    deploy(schemaFile, validDatabase);
+    deploy(schemaFile, collisionDatabase);
 
-    const valid = await fixtureClient(validSchema);
-    const collision = await fixtureClient(collisionSchema);
+    const valid = await fixtureClient(validDatabase);
+    const collision = await fixtureClient(collisionDatabase);
     try {
       await seedProductionShapedFixture(valid);
       await seedCollisionFixture(collision);
@@ -275,7 +277,7 @@ describeWithDatabase("public recovery dispatch backfill", () => {
         path.join(fixtureRoot!, "prisma", "migrations", migrationName),
         { recursive: true },
       );
-      deploy(schemaFile, validSchema);
+      deploy(schemaFile, validDatabase);
 
       const states = await valid.query<{ state: string; count: string }>(`
         SELECT state::text, COUNT(*)::text AS count
@@ -310,7 +312,7 @@ describeWithDatabase("public recovery dispatch backfill", () => {
 
       let collisionError = "";
       try {
-        deploy(schemaFile, collisionSchema);
+        deploy(schemaFile, collisionDatabase);
       } catch (error) {
         const failure = error as { stdout?: Buffer; stderr?: Buffer; message?: string };
         collisionError = `${failure.stdout?.toString() ?? ""}${failure.stderr?.toString() ?? ""}${failure.message ?? ""}`;
@@ -324,11 +326,11 @@ describeWithDatabase("public recovery dispatch backfill", () => {
         claim_column: string | null;
       }>(`
         SELECT
-          to_regclass('${collisionSchema}.public_recovery_dispatch')::text AS ledger,
+          to_regclass('public.public_recovery_dispatch')::text AS ledger,
           (
             SELECT column_name
             FROM information_schema.columns
-            WHERE table_schema = '${collisionSchema}'
+            WHERE table_schema = 'public'
               AND table_name = 'dm_recovery_reminder'
               AND column_name = 'claim_token'
           ) AS claim_column
