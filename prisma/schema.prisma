@@ -721,13 +721,15 @@ model DmRecoveryReminder {
 }
 
 model DmRecoveryControl {
-  id          Int       @id @default(1)
-  circuitOpen Boolean   @default(false) @map("circuit_open")
-  reason      String?
-  openedAt    DateTime? @map("opened_at") @db.Timestamptz(3)
-  resetAt     DateTime? @map("reset_at") @db.Timestamptz(3)
-  resetBy     String?   @map("reset_by")
-  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  id                      Int       @id @default(1)
+  circuitOpen             Boolean   @default(false) @map("circuit_open")
+  reason                  String?
+  openedAt                DateTime? @map("opened_at") @db.Timestamptz(3)
+  resetAt                 DateTime? @map("reset_at") @db.Timestamptz(3)
+  resetBy                 String?   @map("reset_by")
+  historicalTickToken     String?   @map("historical_tick_token") @db.Uuid
+  historicalTickExpiresAt DateTime? @map("historical_tick_expires_at") @db.Timestamptz(3)
+  updatedAt               DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   @@map("dm_recovery_control")
 }
@@ -922,6 +924,24 @@ enum RecoveryCandidateOutcome {
   @@map("recovery_candidate_outcome")
 }
 
+enum RecoveryCampaignBatchStatus {
+  active
+  completed
+  expired
+
+  @@map("recovery_campaign_batch_status")
+}
+
+enum RecoveryCampaignHealthKind {
+  complaint
+  opt_out
+  block
+  negative_reply
+  classifier_anomaly
+
+  @@map("recovery_campaign_health_kind")
+}
+
 /// One owner-approved historical recovery campaign.
 ///
 /// Selection is frozen at approval rather than re-run during the send: the
@@ -963,9 +983,47 @@ model RecoveryCampaign {
   candidates               RecoveryCandidate[]
   exclusions               RecoverySelectionExclusion[]
   publicRecoveryDispatches PublicRecoveryDispatch[]
+  batchRuns                RecoveryCampaignBatchRun[]
+  healthObservations       RecoveryCampaignHealthObservation[]
 
   @@index([state])
   @@map("recovery_campaign")
+}
+
+model RecoveryCampaignBatchRun {
+  id             String                      @id @default(uuid()) @db.Uuid
+  campaignId     String                      @map("campaign_id") @db.Uuid
+  tickToken      String                      @map("tick_token") @db.Uuid
+  allowance      Int
+  consumed       Int                         @default(0)
+  status         RecoveryCampaignBatchStatus @default(active)
+  startedAt      DateTime                    @map("started_at") @db.Timestamptz(3)
+  leaseExpiresAt DateTime                    @map("lease_expires_at") @db.Timestamptz(3)
+  endedAt        DateTime?                   @map("ended_at") @db.Timestamptz(3)
+  createdAt      DateTime                    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  campaign RecoveryCampaign @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+
+  @@unique([campaignId, tickToken])
+  @@index([status, leaseExpiresAt])
+  @@map("recovery_campaign_batch_run")
+}
+
+model RecoveryCampaignHealthObservation {
+  id         String                     @id @default(uuid()) @db.Uuid
+  campaignId String                     @map("campaign_id") @db.Uuid
+  kind       RecoveryCampaignHealthKind
+  sourceKey  String                     @map("source_key")
+  observedAt DateTime                   @map("observed_at") @db.Timestamptz(3)
+  safeDetail String?                    @map("safe_detail")
+  createdAt  DateTime                   @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  campaign RecoveryCampaign @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+
+  @@unique([campaignId, sourceKey])
+  @@index([campaignId, kind, observedAt])
+  @@map("recovery_campaign_health_observation")
 }
 
 /// One intent the selection considered and did not include, with the reason it was

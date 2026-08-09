@@ -129,6 +129,7 @@ export const envSchema = z.object({
   DM_RECOVERY_WORKER_INTERVAL_MS: z.coerce.number().int().min(10_000).default(60_000),
   DM_RECOVERY_BATCH_SIZE: z.coerce.number().int().min(1).max(50).default(5),
   DM_RECOVERY_HOURLY_CAP: z.coerce.number().int().min(1).max(200).default(30),
+  DM_RECOVERY_GLOBAL_DAILY_CAP: z.coerce.number().int().min(1).default(100),
   DM_RECOVERY_LEASE_MS: z.coerce.number().int().min(60_000).default(900_000),
   DM_RECOVERY_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
   DM_RECOVERY_RETRY_BASE_MS: z.coerce.number().int().min(60_000).default(300_000),
