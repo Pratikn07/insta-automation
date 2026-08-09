@@ -62,13 +62,18 @@ export type ClaimedCandidate = {
  * `holdout` rows are excluded here rather than filtered later — they are the
  * control arm and must never be claimed at all.
  */
-export async function listDueCandidateIds(now: Date, limit: number): Promise<string[]> {
+export async function listDueCandidateIds(
+  now: Date,
+  limit: number,
+  campaignId?: string,
+): Promise<string[]> {
   const rows = await prisma.recoveryCandidate.findMany({
     where: {
       outcome: "pending",
       arm: "treatment",
       eligibleAt: { lte: now },
       campaign: { state: "running" },
+      ...(campaignId ? { campaignId } : {}),
       // Skip rows another worker already holds, and rows waiting out a backoff after a
       // retryable failure. Without the backoff filter a rate-limited row was retried
       // on every tick forever.
@@ -155,6 +160,7 @@ export type HistoricalDispatchInput = {
   hourlyCap: number;
   dailyCap: number;
   globalHourlyCap: number;
+  globalDailyCap: number;
   prospectiveCooldownHours: number;
 };
 
@@ -212,6 +218,7 @@ export async function reserveHistoricalDispatch(
       leaseExpiresAt: source.claimExpiresAt,
       prospectiveCooldownHours: input.prospectiveCooldownHours,
       globalHourlyCap: input.globalHourlyCap,
+      globalDailyCap: input.globalDailyCap,
       campaignHourlyCap: input.hourlyCap,
       campaignDailyCap: input.dailyCap,
     });
@@ -221,6 +228,7 @@ export async function reserveHistoricalDispatch(
 export async function startHistoricalDispatch(input: {
   candidateId: string;
   claimToken: string;
+  batchRunId: string;
   dispatchId: string;
   reservationToken: string;
   now: Date;
@@ -259,8 +267,50 @@ export async function startHistoricalDispatch(input: {
       return { kind: "blocked", reason: "campaign_not_running" };
     }
 
+    await tx.$queryRaw`
+      SELECT "id" FROM "recovery_campaign_batch_run" WHERE "id" = ${input.batchRunId}::uuid FOR UPDATE
+    `;
+    const batch = await tx.recoveryCampaignBatchRun.findUnique({
+      where: { id: input.batchRunId },
+      select: {
+        campaignId: true,
+        tickToken: true,
+        allowance: true,
+        consumed: true,
+        status: true,
+        leaseExpiresAt: true,
+      },
+    });
+    if (
+      !control?.historicalTickToken ||
+      !control.historicalTickExpiresAt ||
+      control.historicalTickExpiresAt <= input.now ||
+      !batch ||
+      batch.campaignId !== source.campaignId ||
+      batch.tickToken !== control.historicalTickToken ||
+      batch.status !== "active" ||
+      batch.leaseExpiresAt <= input.now
+    ) {
+      return { kind: "blocked", reason: "batch_not_active" };
+    }
+    if (batch.consumed >= batch.allowance) {
+      return { kind: "blocked", reason: "campaign_batch_exhausted" };
+    }
+
     const started = await startPublicRecoveryDispatch(tx, input);
     if (!started) return { kind: "blocked", reason: "reservation_not_active" };
+    const consumed = await tx.recoveryCampaignBatchRun.updateMany({
+      where: {
+        id: input.batchRunId,
+        status: "active",
+        consumed: { lt: batch.allowance },
+        leaseExpiresAt: { gt: input.now },
+      },
+      data: { consumed: { increment: 1 } },
+    });
+    if (consumed.count !== 1) {
+      throw new Error("historical_campaign_batch_consume_failed");
+    }
     const stamped = await tx.recoveryCandidate.updateMany({
       where: { id: input.candidateId, outcome: "pending", claimToken: input.claimToken },
       data: { dispatchStartedAt: input.now, lastAttemptAt: input.now },

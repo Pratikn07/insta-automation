@@ -8,6 +8,7 @@ const describeWithDatabase = databaseUrl ? describe.sequential : describe.skip;
 let db: PrismaClient;
 let historical: typeof import("./historicalRecoveryRepository.js");
 let prospective: typeof import("./dmRecoveryRepository.js");
+let ticks: typeof import("./historicalRecoveryTickRepository.js");
 const prefix = `dispatch-contract-${randomUUID()}`;
 let resourceId: string;
 let keywordId: string;
@@ -35,6 +36,14 @@ async function createCampaign(): Promise<string> {
     },
   });
   return id;
+}
+
+async function openBatch(campaignId: string, now: Date): Promise<string> {
+  const tick = await ticks.acquireHistoricalTick(now, new Date(now.getTime() + 5 * 60_000));
+  if (!tick) throw new Error("expected tick lease");
+  const batch = await ticks.openCampaignBatch(tick, campaignId, now);
+  if (!batch) throw new Error("expected campaign batch");
+  return batch.id;
 }
 
 async function createCandidate(igUserId: string, requestedCampaignId?: string) {
@@ -96,6 +105,7 @@ beforeAll(async () => {
   db = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
   historical = await import("./historicalRecoveryRepository.js");
   prospective = await import("./dmRecoveryRepository.js");
+  ticks = await import("./historicalRecoveryTickRepository.js");
   resourceId = randomUUID();
   keywordId = randomUUID();
   otherKeywordId = randomUUID();
@@ -116,10 +126,17 @@ afterEach(async () => {
   await db.publicRecoveryDispatch.deleteMany({ where: { igUserId: { startsWith: prefix } } });
   await db.dmRecoveryReminder.deleteMany({ where: { igUserId: { startsWith: prefix } } });
   await db.recoveryCandidate.deleteMany({ where: { igUserId: { startsWith: prefix } } });
+  await db.recoveryCampaignBatchRun.deleteMany({
+    where: { campaign: { selectionVersion: { startsWith: prefix } } },
+  });
   await db.conversation.deleteMany({ where: { igUserId: { startsWith: prefix } } });
   await db.journeyIntent.deleteMany({ where: { igUserId: { startsWith: prefix } } });
   await db.recoveryCampaign.deleteMany({ where: { selectionVersion: { startsWith: prefix } } });
   await db.igUser.deleteMany({ where: { id: { startsWith: prefix } } });
+  await db.dmRecoveryControl.updateMany({
+    where: { id: 1 },
+    data: { historicalTickToken: null, historicalTickExpiresAt: null },
+  });
 });
 
 afterAll(async () => {
@@ -171,6 +188,7 @@ describeWithDatabase("public recovery dispatch concurrency", () => {
         hourlyCap: 10,
         dailyCap: 10,
         globalHourlyCap: 10,
+        globalDailyCap: 1_000,
         prospectiveCooldownHours: 24,
       }),
       historical.reserveHistoricalDispatch({
@@ -180,6 +198,7 @@ describeWithDatabase("public recovery dispatch concurrency", () => {
         hourlyCap: 10,
         dailyCap: 10,
         globalHourlyCap: 10,
+        globalDailyCap: 1_000,
         prospectiveCooldownHours: 24,
       }),
     ]);
@@ -211,6 +230,7 @@ describeWithDatabase("public recovery dispatch concurrency", () => {
         hourlyCap: 10,
         dailyCap: 10,
         globalHourlyCap: 10,
+        globalDailyCap: 1_000,
         prospectiveCooldownHours: 24,
       })),
     );
@@ -242,6 +262,7 @@ describeWithDatabase("public recovery dispatch concurrency", () => {
         hourlyCap: 10,
         dailyCap: 10,
         globalHourlyCap: 10,
+        globalDailyCap: 1_000,
         prospectiveCooldownHours: 24,
       }),
       prospective.authorizeClaimForSend(reminder.id, reminderClaim!.claimToken, now),
@@ -271,6 +292,7 @@ describeWithDatabase("public recovery dispatch concurrency", () => {
       hourlyCap: 10,
       dailyCap: 10,
       globalHourlyCap: 10,
+      globalDailyCap: 1_000,
       prospectiveCooldownHours: 24,
     })).resolves.toEqual({ kind: "blocked", reason: "stale_claim" });
 
@@ -281,12 +303,15 @@ describeWithDatabase("public recovery dispatch concurrency", () => {
       hourlyCap: 10,
       dailyCap: 10,
       globalHourlyCap: 10,
+      globalDailyCap: 1_000,
       prospectiveCooldownHours: 24,
     });
     if (reservation.kind !== "reserved") throw new Error("expected reservation");
+    const batchRunId = await openBatch(candidate.campaignId, now);
     await expect(historical.startHistoricalDispatch({
       candidateId: candidate.id,
       claimToken: claim!.claimToken,
+      batchRunId,
       dispatchId: reservation.dispatchId,
       reservationToken: randomUUID(),
       now,
@@ -294,6 +319,7 @@ describeWithDatabase("public recovery dispatch concurrency", () => {
     await expect(historical.startHistoricalDispatch({
       candidateId: candidate.id,
       claimToken: claim!.claimToken,
+      batchRunId,
       ...reservation,
       now,
     })).resolves.toEqual({ kind: "started" });
@@ -323,6 +349,7 @@ describeWithDatabase("public recovery dispatch concurrency", () => {
         hourlyCap: 10,
         dailyCap: 10,
         globalHourlyCap: 10,
+        globalDailyCap: 1_000,
         prospectiveCooldownHours: 24,
       }),
       historical.reserveHistoricalDispatch({
@@ -332,13 +359,16 @@ describeWithDatabase("public recovery dispatch concurrency", () => {
         hourlyCap: 10,
         dailyCap: 10,
         globalHourlyCap: 10,
+        globalDailyCap: 1_000,
         prospectiveCooldownHours: 24,
       }),
     ]);
     if (reservations[1]!.kind !== "reserved") throw new Error("expected reservation");
+    const batchRunId = await openBatch(started.campaignId, claimedAt);
     await historical.startHistoricalDispatch({
       candidateId: started.id,
       claimToken: startedClaim!.claimToken,
+      batchRunId,
       ...reservations[1],
       now: claimedAt,
     });
@@ -426,8 +456,105 @@ describeWithDatabase("public recovery dispatch concurrency", () => {
       hourlyCap: 10,
       dailyCap: 10,
       globalHourlyCap: 1,
+      globalDailyCap: 1_000,
       prospectiveCooldownHours: 24,
     })).resolves.toEqual({ kind: "blocked", reason: "global_hourly_cap_reached" });
+  });
+
+  it("allows only one cross-system reservation for the final rolling-day slot", async () => {
+    const now = new Date();
+    const capacityPerson = await createPerson();
+    const campaignId = await createCampaign();
+    const capacityAt = new Date(now.getTime() - 2 * 3600_000);
+    await db.publicRecoveryDispatch.createMany({
+      data: Array.from({ length: 99 }, () => ({
+        reservationToken: randomUUID(),
+        igUserId: capacityPerson,
+        sourceKind: "historical" as const,
+        sourceId: randomUUID(),
+        attemptNumber: 1,
+        campaignId,
+        state: "sent" as const,
+        reservedAt: capacityAt,
+        leaseExpiresAt: new Date(capacityAt.getTime() + 60_000),
+        dispatchStartedAt: capacityAt,
+        sentAt: capacityAt,
+        providerReplyId: `provider-${randomUUID()}`,
+      })),
+    });
+
+    const historicalCandidate = await createCandidate(await createPerson());
+    const reminder = await createReminder(await createPerson());
+    const lease = new Date(now.getTime() + 60_000);
+    const [historicalClaim, prospectiveClaim] = await Promise.all([
+      historical.claimCandidate(historicalCandidate.id, now, lease),
+      prospective.claimRecovery(reminder.id, now, lease),
+    ]);
+    const [historicalDecision, prospectiveDecision] = await Promise.all([
+      historical.reserveHistoricalDispatch({
+        candidateId: historicalCandidate.id,
+        claimToken: historicalClaim!.claimToken,
+        now,
+        hourlyCap: 200,
+        dailyCap: 200,
+        globalHourlyCap: 200,
+        globalDailyCap: 100,
+        prospectiveCooldownHours: 24,
+      }),
+      prospective.authorizeClaimForSend(reminder.id, prospectiveClaim!.claimToken, now),
+    ]);
+
+    const prospectiveReserved =
+      prospectiveDecision.kind === "send_settings_fallback" ||
+      prospectiveDecision.kind === "send_no_confirmed_read_reminder";
+    expect(Number(historicalDecision.kind === "reserved") + Number(prospectiveReserved)).toBe(1);
+    expect(await db.publicRecoveryDispatch.count({
+      where: { state: { in: ["reserved", "dispatch_started", "sent", "uncertain"] } },
+    })).toBeGreaterThanOrEqual(100);
+    expect([
+      historicalDecision.kind === "blocked" ? historicalDecision.reason : null,
+      prospectiveDecision.kind === "pause" ? prospectiveDecision.reason : null,
+    ]).toContainEqual(expect.stringMatching(/global_daily_cap_reached|daily_cap/));
+  });
+
+  it("does not count capacity reserved at the exact rolling-day boundary", async () => {
+    const now = new Date();
+    const capacityPerson = await createPerson();
+    const campaignId = await createCampaign();
+    const boundary = new Date(now.getTime() - 24 * 3600_000);
+    await db.publicRecoveryDispatch.createMany({
+      data: Array.from({ length: 100 }, () => ({
+        reservationToken: randomUUID(),
+        igUserId: capacityPerson,
+        sourceKind: "historical" as const,
+        sourceId: randomUUID(),
+        attemptNumber: 1,
+        campaignId,
+        state: "sent" as const,
+        reservedAt: boundary,
+        leaseExpiresAt: new Date(boundary.getTime() + 60_000),
+        dispatchStartedAt: boundary,
+        sentAt: boundary,
+        providerReplyId: `provider-${randomUUID()}`,
+      })),
+    });
+    const candidate = await createCandidate(await createPerson());
+    const claim = await historical.claimCandidate(
+      candidate.id,
+      now,
+      new Date(now.getTime() + 60_000),
+    );
+
+    await expect(historical.reserveHistoricalDispatch({
+      candidateId: candidate.id,
+      claimToken: claim!.claimToken,
+      now,
+      hourlyCap: 200,
+      dailyCap: 200,
+      globalHourlyCap: 200,
+      globalDailyCap: 100,
+      prospectiveCooldownHours: 24,
+    })).resolves.toMatchObject({ kind: "reserved" });
   });
 
   it("frees released capacity but keeps uncertain capacity consumed", async () => {
@@ -449,6 +576,7 @@ describeWithDatabase("public recovery dispatch concurrency", () => {
       hourlyCap: 1,
       dailyCap: 10,
       globalHourlyCap: 10,
+      globalDailyCap: 1_000,
       prospectiveCooldownHours: 24,
     });
     if (released.kind !== "reserved") throw new Error("expected reservation");
@@ -466,13 +594,16 @@ describeWithDatabase("public recovery dispatch concurrency", () => {
       hourlyCap: 1,
       dailyCap: 10,
       globalHourlyCap: 10,
+      globalDailyCap: 1_000,
       prospectiveCooldownHours: 24,
     });
     expect(uncertain.kind).toBe("reserved");
     if (uncertain.kind !== "reserved") throw new Error("expected reservation");
+    const batchRunId = await openBatch(campaignId, now);
     await historical.startHistoricalDispatch({
       candidateId: uncertainCandidate.id,
       claimToken: uncertainClaim!.claimToken,
+      batchRunId,
       ...uncertain,
       now,
     });
@@ -490,6 +621,7 @@ describeWithDatabase("public recovery dispatch concurrency", () => {
       hourlyCap: 1,
       dailyCap: 10,
       globalHourlyCap: 10,
+      globalDailyCap: 1_000,
       prospectiveCooldownHours: 24,
     })).resolves.toEqual({ kind: "blocked", reason: "hourly_cap_reached" });
   });
@@ -556,6 +688,7 @@ describeWithDatabase("public recovery dispatch concurrency", () => {
       hourlyCap: 10,
       dailyCap: 10,
       globalHourlyCap: 10,
+      globalDailyCap: 1_000,
       prospectiveCooldownHours: 24,
     })).resolves.toMatchObject({ kind: "reserved" });
   });

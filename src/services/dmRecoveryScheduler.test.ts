@@ -97,4 +97,39 @@ describe("dmRecoveryScheduler", () => {
     stop();
     expect(clearFn).toHaveBeenCalledWith(handle);
   });
+
+  it("does not overlap ticks within one process", async () => {
+    let intervalCallback: (() => void) | undefined;
+    let resolveFirst!: () => void;
+    const firstTick = new Promise<void>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const runTick = vi
+      .fn<() => Promise<unknown>>()
+      .mockImplementationOnce(() => firstTick)
+      .mockResolvedValue({});
+
+    startDmRecoveryScheduler({
+      enabled: true,
+      intervalMs: 60_000,
+      setInterval: vi.fn((callback: () => void) => {
+        intervalCallback = callback;
+        return Symbol("timer") as never;
+      }),
+      clearInterval: vi.fn(),
+      runTick,
+    });
+
+    expect(runTick).toHaveBeenCalledOnce();
+    intervalCallback!();
+    await Promise.resolve();
+    expect(runTick).toHaveBeenCalledOnce();
+
+    resolveFirst();
+    await firstTick;
+    await Promise.resolve();
+    intervalCallback!();
+    await Promise.resolve();
+    expect(runTick).toHaveBeenCalledTimes(2);
+  });
 });

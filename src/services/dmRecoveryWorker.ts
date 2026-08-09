@@ -22,7 +22,7 @@ export type DmRecoveryTickResult = {
   deferred: number;
   failed: number;
   uncertain: number;
-  skipped?: "disabled" | "already_running" | "circuit_open" | "hourly_cap";
+  skipped?: "disabled" | "already_running" | "circuit_open" | "hourly_cap" | "daily_cap";
 };
 
 let running = false;

@@ -26,6 +26,12 @@ import {
   releaseHistoricalReservation,
   finalizeHistoricalDispatch,
 } from "./historicalRecoveryRepository.js";
+import {
+  acquireHistoricalTick,
+  finishHistoricalTick,
+  openCampaignBatch,
+  type HistoricalTickLease,
+} from "./historicalRecoveryTickRepository.js";
 
 /**
  * Send historical recovery reminders for approved, running campaigns.
@@ -83,7 +89,6 @@ export async function runHistoricalRecoveryTick(): Promise<HistoricalTickResult>
 
 async function runTickBody(): Promise<HistoricalTickResult> {
   const now = new Date();
-  const result = empty();
 
   // Two switches, both required. DM_RECOVERY_ENABLED is the master stop shared with
   // the prospective feature; DM_RECOVERY_HISTORICAL_ENABLED is specific to these
@@ -91,6 +96,34 @@ async function runTickBody(): Promise<HistoricalTickResult> {
   // nothing is posted.
   if (!env.DM_RECOVERY_ENABLED) return empty("disabled");
   if (!env.DM_RECOVERY_HISTORICAL_ENABLED) return empty("historical_disabled");
+
+  const tick = await acquireHistoricalTick(
+    now,
+    new Date(now.getTime() + env.DM_RECOVERY_LEASE_MS),
+  );
+  if (!tick) return empty("tick_already_running");
+
+  try {
+    return await runLeasedTickBody(now, tick);
+  } finally {
+    try {
+      await finishHistoricalTick(tick.token, new Date());
+    } catch {
+      // Lease expiry is the crash fallback. Keep the result truthful when sends already
+      // completed, while making the failed cleanup visible without logging DB detail.
+      logger.error(
+        { errorCode: "historical_tick_finish_failed" },
+        "Historical recovery tick lease could not be cleared",
+      );
+    }
+  }
+}
+
+async function runLeasedTickBody(
+  now: Date,
+  tick: HistoricalTickLease,
+): Promise<HistoricalTickResult> {
+  const result = empty();
 
   // A lease that expired means the process died holding a claim. Rows where dispatch had
   // started are parked as uncertain, never retried — the comment may exist. Rows that
@@ -113,19 +146,28 @@ async function runTickBody(): Promise<HistoricalTickResult> {
   const health = await evaluateRecoveryHealth(now);
   if (health.circuitOpen) return empty("circuit_open");
 
-  // The campaign's staged batch size governs this tick, capped by the env value as an
-  // emergency global maximum (QA-08).
-  //
-  // The worker previously used only DM_RECOVERY_BATCH_SIZE, so advancing batch_size in
-  // the dashboard or the API changed a stored number and nothing else — the staged
-  // rollout the plan depends on had no effect at all. Verified in production: two
-  // campaigns carried batch_size 1 and 5 while the worker sent 5 regardless.
-  //
-  // The smallest batch size among running campaigns wins, because a tick can span
-  // campaigns and the conservative one must not be overrun by a larger sibling.
-  const campaignBatch = await smallestRunningBatchSize();
-  const batchSize = Math.min(campaignBatch ?? env.DM_RECOVERY_BATCH_SIZE, env.DM_RECOVERY_BATCH_SIZE);
-  const ids = await listDueCandidateIds(now, batchSize);
+  // Each running campaign gets its own durable batch row. A small pilot no longer
+  // throttles an unrelated campaign, and the allowance is enforced again under the
+  // final dispatch-start locks rather than trusted to this in-memory loop.
+  const runningCampaigns = await prisma.recoveryCampaign.findMany({
+    where: { state: "running" },
+    select: { id: true },
+    orderBy: { id: "asc" },
+  });
+  const work: Array<{
+    id: string;
+    campaignId: string;
+    batchRunId: string;
+    allowance: number;
+  }> = [];
+  for (const campaign of runningCampaigns) {
+    const batch = await openCampaignBatch(tick, campaign.id, now);
+    if (!batch) continue;
+    const ids = await listDueCandidateIds(now, batch.allowance, campaign.id);
+    for (const id of ids) {
+      work.push({ id, campaignId: campaign.id, batchRunId: batch.id, allowance: batch.allowance });
+    }
+  }
   const leaseMs = env.DM_RECOVERY_LEASE_MS;
   const hourAgo = new Date(now.getTime() - 60 * 60 * 1000);
   const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
@@ -145,11 +187,15 @@ async function runTickBody(): Promise<HistoricalTickResult> {
    * the row, so no observation the health check reads has changed.
    */
   const campaignsToEvaluate = new Set<string>();
+  const campaignDispatchStarts = new Map<string, number>();
+  const stoppedCampaigns = new Set<string>();
 
-  for (const id of ids) {
+  for (const item of work) {
+    const { id } = item;
+    if (stoppedCampaigns.has(item.campaignId)) continue;
     // listDueCandidateIds over-fetches so a suppressed row does not consume a slot;
-    // the cap has to be applied here or that headroom becomes extra public comments.
-    if (result.sent >= batchSize) break;
+    // dispatch starts, not successful replies, consume the durable allowance.
+    if ((campaignDispatchStarts.get(item.campaignId) ?? 0) >= item.allowance) continue;
     result.examined++;
 
     const claimed = await claimCandidate(id, now, new Date(now.getTime() + leaseMs));
@@ -238,7 +284,7 @@ async function runTickBody(): Promise<HistoricalTickResult> {
         decision.reason === "campaign_not_running"
       ) {
         result.skipped = decision.reason;
-        break;
+        stoppedCampaigns.add(item.campaignId);
       }
       continue;
     }
@@ -271,6 +317,7 @@ async function runTickBody(): Promise<HistoricalTickResult> {
       hourlyCap: facts.hourlyCap,
       dailyCap: facts.dailyCap,
       globalHourlyCap: env.DM_RECOVERY_HOURLY_CAP,
+      globalDailyCap: env.DM_RECOVERY_GLOBAL_DAILY_CAP,
       prospectiveCooldownHours: env.DM_RECOVERY_COOLDOWN_HOURS ?? 24,
     });
     if (reservation.kind === "blocked") {
@@ -288,8 +335,15 @@ async function runTickBody(): Promise<HistoricalTickResult> {
       result.deferred++;
       if (
         reservation.reason === "hourly_cap_reached" ||
-        reservation.reason === "daily_cap_reached" ||
+        reservation.reason === "daily_cap_reached"
+      ) {
+        result.skipped = reservation.reason;
+        stoppedCampaigns.add(item.campaignId);
+        continue;
+      }
+      if (
         reservation.reason === "global_hourly_cap_reached" ||
+        reservation.reason === "global_daily_cap_reached" ||
         reservation.reason === "circuit_open"
       ) {
         result.skipped = reservation.reason;
@@ -307,6 +361,7 @@ async function runTickBody(): Promise<HistoricalTickResult> {
     const dispatchStart = await startHistoricalDispatch({
       candidateId: id,
       claimToken: claimed.claimToken,
+      batchRunId: item.batchRunId,
       dispatchId: reservation.dispatchId,
       reservationToken: reservation.reservationToken,
       now: new Date(),
@@ -321,12 +376,25 @@ async function runTickBody(): Promise<HistoricalTickResult> {
         reason: `dispatch_start_rejected:${dispatchStart.reason}`,
       });
       result.deferred++;
-      if (dispatchStart.reason === "circuit_open") {
-        result.skipped = "circuit_open";
+      if (
+        dispatchStart.reason === "circuit_open" ||
+        dispatchStart.reason === "batch_not_active"
+      ) {
+        result.skipped = dispatchStart.reason;
         break;
+      }
+      if (
+        dispatchStart.reason === "campaign_not_running" ||
+        dispatchStart.reason === "campaign_batch_exhausted"
+      ) {
+        stoppedCampaigns.add(item.campaignId);
       }
       continue;
     }
+    campaignDispatchStarts.set(
+      item.campaignId,
+      (campaignDispatchStarts.get(item.campaignId) ?? 0) + 1,
+    );
 
     // Only an explicit `send` reaches Meta. Written as a positive check so any
     // decision kind added later defaults to NOT posting publicly.
@@ -664,19 +732,4 @@ async function gatherPreDispatchFacts(
     sentToday,
     sourceComment,
   };
-}
-
-/**
- * The smallest batch size among running campaigns, or null when none are running.
- *
- * Smallest rather than per-campaign because one tick can touch rows from several
- * campaigns, and a campaign still at stage 0 (batch 1) must not have its pacing
- * overridden by a sibling at stage 3.
- */
-async function smallestRunningBatchSize(): Promise<number | null> {
-  const row = await prisma.recoveryCampaign.aggregate({
-    where: { state: "running" },
-    _min: { batchSize: true },
-  });
-  return row._min.batchSize ?? null;
 }

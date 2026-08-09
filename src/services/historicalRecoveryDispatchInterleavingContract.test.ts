@@ -8,6 +8,7 @@ const describeWithDatabase = databaseUrl ? describe.sequential : describe.skip;
 let db: PrismaClient;
 let historical: typeof import("./historicalRecoveryRepository.js");
 let campaigns: typeof import("./recoveryCampaignControl.js");
+let ticks: typeof import("./historicalRecoveryTickRepository.js");
 const prefix = `dispatch-interleaving-${randomUUID()}`;
 const resourceId = randomUUID();
 const keywordId = randomUUID();
@@ -16,6 +17,7 @@ type ReservedScenario = {
   campaignId: string;
   candidateId: string;
   claimToken: string;
+  batchRunId: string;
   dispatchId: string;
   reservationToken: string;
   now: Date;
@@ -77,13 +79,19 @@ async function reserveScenario(): Promise<ReservedScenario> {
     hourlyCap: 100,
     dailyCap: 100,
     globalHourlyCap: 100,
+    globalDailyCap: 100,
     prospectiveCooldownHours: 24,
   });
   if (reservation.kind !== "reserved") throw new Error(`reservation blocked: ${reservation.reason}`);
+  const tick = await ticks.acquireHistoricalTick(now, lease);
+  if (!tick) throw new Error("expected tick lease");
+  const batch = await ticks.openCampaignBatch(tick, campaignId, now);
+  if (!batch) throw new Error("expected campaign batch");
   return {
     campaignId,
     candidateId: candidate.id,
     claimToken: claim.claimToken,
+    batchRunId: batch.id,
     dispatchId: reservation.dispatchId,
     reservationToken: reservation.reservationToken,
     now,
@@ -99,6 +107,7 @@ beforeAll(async () => {
   db = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
   historical = await import("./historicalRecoveryRepository.js");
   campaigns = await import("./recoveryCampaignControl.js");
+  ticks = await import("./historicalRecoveryTickRepository.js");
   await db.resource.create({ data: { id: resourceId, name: prefix } });
   await db.keyword.create({
     data: {
@@ -127,7 +136,13 @@ afterEach(async () => {
   await db.dmRecoveryControl.upsert({
     where: { id: 1 },
     create: { id: 1 },
-    update: { circuitOpen: false, reason: null, openedAt: null },
+    update: {
+      circuitOpen: false,
+      reason: null,
+      openedAt: null,
+      historicalTickToken: null,
+      historicalTickExpiresAt: null,
+    },
   });
 });
 

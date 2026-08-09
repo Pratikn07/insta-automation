@@ -11,6 +11,7 @@ export type DispatchBlockReason =
   | "hourly_cap_reached"
   | "daily_cap_reached"
   | "global_hourly_cap_reached"
+  | "global_daily_cap_reached"
   | "source_attempt_exists"
   | "reconciled_alias";
 
@@ -28,6 +29,7 @@ export type ReserveDispatchInput = {
   leaseExpiresAt: Date;
   prospectiveCooldownHours: number;
   globalHourlyCap: number;
+  globalDailyCap: number;
   campaignHourlyCap?: number;
   campaignDailyCap?: number;
 };
@@ -87,15 +89,23 @@ export async function reservePublicRecoveryDispatch(
   if (recentContact) return { kind: "blocked", reason: "person_cooldown" };
 
   const hourAgo = new Date(input.now.getTime() - 60 * 60 * 1000);
-  const globalCount = await tx.publicRecoveryDispatch.count({
-    where: { state: { in: [...CAPACITY_STATES] }, reservedAt: { gt: hourAgo } },
-  });
-  if (globalCount >= input.globalHourlyCap) {
+  const dayAgo = new Date(input.now.getTime() - 24 * 60 * 60 * 1000);
+  const [globalHour, globalDay] = await Promise.all([
+    tx.publicRecoveryDispatch.count({
+      where: { state: { in: [...CAPACITY_STATES] }, reservedAt: { gt: hourAgo } },
+    }),
+    tx.publicRecoveryDispatch.count({
+      where: { state: { in: [...CAPACITY_STATES] }, reservedAt: { gt: dayAgo } },
+    }),
+  ]);
+  if (globalHour >= input.globalHourlyCap) {
     return { kind: "blocked", reason: "global_hourly_cap_reached" };
+  }
+  if (globalDay >= input.globalDailyCap) {
+    return { kind: "blocked", reason: "global_daily_cap_reached" };
   }
 
   if (input.campaignId) {
-    const dayAgo = new Date(input.now.getTime() - 24 * 60 * 60 * 1000);
     const [campaignHour, campaignDay] = await Promise.all([
       tx.publicRecoveryDispatch.count({
         where: {

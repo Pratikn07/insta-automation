@@ -61,7 +61,12 @@ vi.mock("../lib/logger.js", () => ({
   logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 vi.mock("../config/env.js", () => ({
-  env: { DM_RECOVERY_LEASE_MS: 900_000, DM_RECOVERY_HOURLY_CAP: 30, DM_RECOVERY_WESTERN_ONLY: false },
+  env: {
+    DM_RECOVERY_LEASE_MS: 900_000,
+    DM_RECOVERY_HOURLY_CAP: 30,
+    DM_RECOVERY_GLOBAL_DAILY_CAP: 100,
+    DM_RECOVERY_WESTERN_ONLY: false,
+  },
 }));
 
 const {
@@ -398,6 +403,16 @@ describe("authorizeClaimForSend", () => {
     await expect(authorizeClaimForSend("rec-1", "token-1", NOW)).resolves.toEqual({
       kind: "pause",
       reason,
+    });
+  });
+
+  it("pauses when the shared rolling-day capacity is full", async () => {
+    findUnique.mockResolvedValue(sendingRow());
+    dispatchCount.mockResolvedValueOnce(0).mockResolvedValueOnce(100);
+
+    await expect(authorizeClaimForSend("rec-1", "token-1", NOW)).resolves.toEqual({
+      kind: "pause",
+      reason: "daily_cap",
     });
   });
 

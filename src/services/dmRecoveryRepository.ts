@@ -30,7 +30,7 @@ type AuthorizedRecoverySend = {
 export type FinalRecoveryCheck =
   | Exclude<RecoveryDecision, SendDecision>
   | AuthorizedRecoverySend
-  | { kind: "pause"; reason: "circuit_open" | "hourly_cap" }
+  | { kind: "pause"; reason: "circuit_open" | "hourly_cap" | "daily_cap" }
   /** Hand the row back to `waiting` without judging the person. */
   | { kind: "release"; reason: string };
 
@@ -529,10 +529,14 @@ export async function authorizeClaimForSend(
         leaseExpiresAt: row.claimExpiresAt,
         prospectiveCooldownHours: env.DM_RECOVERY_COOLDOWN_HOURS ?? COOLDOWN_HOURS_FALLBACK,
         globalHourlyCap: env.DM_RECOVERY_HOURLY_CAP ?? 30,
+        globalDailyCap: env.DM_RECOVERY_GLOBAL_DAILY_CAP,
       });
       if (reservation.kind === "blocked") {
         if (reservation.reason === "global_hourly_cap_reached") {
           return { kind: "pause", reason: "hourly_cap" };
+        }
+        if (reservation.reason === "global_daily_cap_reached") {
+          return { kind: "pause", reason: "daily_cap" };
         }
         if (reservation.reason === "person_cooldown") {
           return { kind: "suppress", reason: "person_cooldown" };

@@ -16,6 +16,8 @@ const describeWithLocalDatabase = databaseUrl ? describe.sequential : describe.s
 
 let prisma: PrismaClient;
 let repo: typeof import("./historicalRecoveryRepository.js");
+let ticks: typeof import("./historicalRecoveryTickRepository.js");
+let currentTickToken: string | null = null;
 
 type Fixture = { resourceId: string; keywordId: string; igUserId: string; intentId: string; campaignId: string };
 let fx: Fixture;
@@ -76,6 +78,19 @@ async function makeCandidate(campaignId: string = fx.campaignId): Promise<string
   return row.id;
 }
 
+async function openBatch(campaignId: string, now: Date): Promise<string> {
+  if (currentTickToken) {
+    await ticks.finishHistoricalTick(currentTickToken, now);
+    currentTickToken = null;
+  }
+  const tick = await ticks.acquireHistoricalTick(now, new Date(now.getTime() + 60_000));
+  if (!tick) throw new Error("expected tick lease");
+  currentTickToken = tick.token;
+  const batch = await ticks.openCampaignBatch(tick, campaignId, now);
+  if (!batch) throw new Error("expected campaign batch");
+  return batch.id;
+}
+
 beforeAll(async () => {
   if (!databaseUrl) return;
   expect(process.env.DATABASE_URL).toBe(databaseUrl);
@@ -84,6 +99,7 @@ beforeAll(async () => {
   });
   prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
   repo = await import("./historicalRecoveryRepository.js");
+  ticks = await import("./historicalRecoveryTickRepository.js");
   fx = await seed();
 });
 
@@ -91,6 +107,9 @@ afterAll(async () => {
   if (!prisma) return;
   await prisma.publicRecoveryDispatch.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
   await prisma.recoveryCandidate.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
+  await prisma.recoveryCampaignBatchRun.deleteMany({
+    where: { campaignId: { in: [fx.campaignId, ...campaignsToClean] } },
+  });
   await prisma.recoveryCampaign.deleteMany({ where: { id: { in: [fx.campaignId, ...campaignsToClean] } } });
   await prisma.dmRecoveryReminder.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
   await prisma.journeyIntent.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
@@ -98,6 +117,10 @@ afterAll(async () => {
   await prisma.igUser.deleteMany({ where: { id: { startsWith: fx.igUserId } } });
   await prisma.keyword.deleteMany({ where: { id: fx.keywordId } });
   await prisma.resource.deleteMany({ where: { id: fx.resourceId } });
+  await prisma.dmRecoveryControl.updateMany({
+    where: { id: 1 },
+    data: { historicalTickToken: null, historicalTickExpiresAt: null },
+  });
   await prisma.$disconnect();
 });
 
@@ -158,6 +181,7 @@ describeWithLocalDatabase("cross-system person cooldown", () => {
       hourlyCap: 100,
       dailyCap: 100,
       globalHourlyCap: 200,
+      globalDailyCap: 500,
       prospectiveCooldownHours: 24,
     });
     expect(reserved.kind).toBe("reserved");
@@ -165,6 +189,7 @@ describeWithLocalDatabase("cross-system person cooldown", () => {
     await repo.startHistoricalDispatch({
       candidateId: id,
       claimToken: held!.claimToken,
+      batchRunId: await openBatch(fx.campaignId, now),
       ...reserved,
       now,
     });
@@ -198,6 +223,7 @@ describeWithLocalDatabase("cross-system person cooldown", () => {
       hourlyCap: 100,
       dailyCap: 100,
       globalHourlyCap: 200,
+      globalDailyCap: 500,
       prospectiveCooldownHours: 24,
     });
     expect(reserved.kind).toBe("reserved");
@@ -379,6 +405,7 @@ describeWithLocalDatabase("send capacity is reserved, not merely observed", () =
       hourlyCap: caps.hourly,
       dailyCap: caps.daily,
       globalHourlyCap: caps.global,
+      globalDailyCap: 500,
       prospectiveCooldownHours: 24,
     });
   }
@@ -424,6 +451,7 @@ describeWithLocalDatabase("send capacity is reserved, not merely observed", () =
     await repo.startHistoricalDispatch({
       candidateId: spent,
       claimToken: held!.claimToken,
+      batchRunId: await openBatch(campaignId, now),
       ...reservation,
       now,
     });
@@ -577,6 +605,7 @@ describeWithLocalDatabase("send capacity is reserved, not merely observed", () =
     await repo.startHistoricalDispatch({
       candidateId: spent,
       claimToken: held!.claimToken,
+      batchRunId: await openBatch(campaignId, now),
       ...reservation,
       now,
     });

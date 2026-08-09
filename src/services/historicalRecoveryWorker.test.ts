@@ -12,6 +12,9 @@ const startHistoricalDispatch = vi.fn();
 const releaseHistoricalReservation = vi.fn();
 const finalizeHistoricalDispatch = vi.fn();
 const countCandidatesSentSince = vi.fn();
+const acquireHistoricalTick = vi.fn();
+const openCampaignBatch = vi.fn();
+const finishHistoricalTick = vi.fn();
 const replyToComment = vi.fn();
 const fetchComment = vi.fn();
 const evaluateRecoveryHealth = vi.fn();
@@ -21,9 +24,7 @@ const SAFE_UNKNOWN = { category: "unknown_error", httpStatus: null, graphCode: n
 const describeGraphError = vi.fn(() => SAFE_UNKNOWN);
 const classifyPublicReplyFailure = vi.fn();
 const campaignFindUnique = vi.fn();
-// QA-08: the tick now reads the campaign's staged batch size, and reserves capacity
-// under the shared control lock instead of merely observing counts.
-const campaignAggregate = vi.fn();
+const campaignFindMany = vi.fn();
 // QA-12: completeCampaignIfDrained had no production caller, so a campaign that had sent
 // everything stayed `running` forever.
 const completeCampaignIfDrained = vi.fn();
@@ -49,6 +50,11 @@ vi.mock("./historicalRecoveryRepository.js", () => ({
   finalizeHistoricalDispatch,
   countCandidatesSentSince,
 }));
+vi.mock("./historicalRecoveryTickRepository.js", () => ({
+  acquireHistoricalTick,
+  openCampaignBatch,
+  finishHistoricalTick,
+}));
 vi.mock("../meta/replyToComment.js", () => ({ replyToComment }));
 vi.mock("../meta/fetchComment.js", () => ({ fetchComment }));
 vi.mock("./dmRecoveryHealth.js", () => ({ evaluateRecoveryHealth, openRecoveryCircuit }));
@@ -70,7 +76,7 @@ vi.mock("../lib/logger.js", () => ({
 }));
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
-    recoveryCampaign: { findUnique: campaignFindUnique, aggregate: campaignAggregate },
+    recoveryCampaign: { findUnique: campaignFindUnique, findMany: campaignFindMany },
     igUser: { findUnique: igUserFindUnique },
     dmMessage: { count: dmMessageCount },
     conversation: { count: conversationCount },
@@ -88,6 +94,7 @@ vi.mock("../config/env.js", () => ({
     {
       DM_RECOVERY_BATCH_SIZE: 2,
       DM_RECOVERY_LEASE_MS: 60_000,
+      DM_RECOVERY_GLOBAL_DAILY_CAP: 100,
     } as Record<string, unknown>,
     {
       get: (target, prop) => {
@@ -130,9 +137,10 @@ beforeEach(() => {
     countCandidatesSentSince,
     replyToComment, fetchComment, evaluateRecoveryHealth, openRecoveryCircuit,
     logEvent, describeGraphError, classifyPublicReplyFailure,
-    campaignFindUnique, campaignAggregate, completeCampaignIfDrained,
+    campaignFindUnique, campaignFindMany, completeCampaignIfDrained,
     reconcileDrainedCampaigns, evaluateCampaignHealth,
     igUserFindUnique, dmMessageCount, conversationCount, dispatchCount,
+    acquireHistoricalTick, openCampaignBatch, finishHistoricalTick,
   ]) {
     fn.mockReset();
   }
@@ -142,11 +150,16 @@ beforeEach(() => {
   describeGraphError.mockReturnValue(SAFE_UNKNOWN);
   reconcileExpiredCandidateLeases.mockResolvedValue({ uncertain: 0, released: 0 });
   evaluateRecoveryHealth.mockResolvedValue({ circuitOpen: false });
+  acquireHistoricalTick.mockResolvedValue({
+    token: "11111111-1111-4111-8111-111111111111",
+    expiresAt: new Date("2099-01-01T00:00:00Z"),
+  });
+  openCampaignBatch.mockResolvedValue({ id: "batch-1", allowance: 2 });
+  finishHistoricalTick.mockResolvedValue(true);
+  campaignFindMany.mockResolvedValue([{ id: "camp-1" }]);
   listDueCandidateIds.mockResolvedValue(["cand-1"]);
   claimCandidate.mockResolvedValue(CANDIDATE);
   campaignFindUnique.mockResolvedValue({ state: "running", hourlyCap: 3, dailyCap: 10 });
-  // No campaign-level batch override by default, so existing cases keep the env value.
-  campaignAggregate.mockResolvedValue({ _min: { batchSize: null } });
   // Capacity available by default; cases that test the cap return a refusal reason.
   reserveHistoricalDispatch.mockResolvedValue({
     kind: "reserved",
@@ -548,7 +561,7 @@ describe("runHistoricalRecoveryTick — claims and leases", () => {
 // staged rollout the plan depends on was writing a number nothing consulted.
 describe("runHistoricalRecoveryTick — campaign pacing", () => {
   it("uses the campaign's batch size instead of the env value", async () => {
-    campaignAggregate.mockResolvedValue({ _min: { batchSize: 1 } });
+    openCampaignBatch.mockResolvedValue({ id: "batch-1", allowance: 1 });
     listDueCandidateIds.mockResolvedValue(["cand-1", "cand-2"]);
 
     const result = await runHistoricalRecoveryTick();
@@ -558,14 +571,54 @@ describe("runHistoricalRecoveryTick — campaign pacing", () => {
     expect(replyToComment).toHaveBeenCalledTimes(1);
   });
 
-  // The env value stays an emergency ceiling: a campaign cannot stage its way past it.
-  it("never exceeds the env maximum even if a campaign asks for more", async () => {
-    campaignAggregate.mockResolvedValue({ _min: { batchSize: 50 } });
-    listDueCandidateIds.mockResolvedValue(["cand-1", "cand-2", "cand-3"]);
+  it("gives simultaneous campaigns independent batch allowances", async () => {
+    campaignFindMany.mockResolvedValue([{ id: "camp-1" }, { id: "camp-2" }]);
+    openCampaignBatch.mockImplementation(async (_tick, campaignId: string) => ({
+      id: `batch-${campaignId}`,
+      allowance: campaignId === "camp-1" ? 1 : 5,
+    }));
+    listDueCandidateIds.mockImplementation(async (_now, _limit, campaignId: string) =>
+      campaignId === "camp-1"
+        ? ["camp-1-cand-1"]
+        : Array.from({ length: 5 }, (_, index) => `camp-2-cand-${index + 1}`),
+    );
+    claimCandidate.mockImplementation(async (id: string) => ({
+      ...CANDIDATE,
+      id,
+      campaignId: id.startsWith("camp-1") ? "camp-1" : "camp-2",
+    }));
 
     const result = await runHistoricalRecoveryTick();
 
-    expect(result.sent).toBe(2); // DM_RECOVERY_BATCH_SIZE
+    expect(result.sent).toBe(6);
+    expect(startHistoricalDispatch.mock.calls.filter(
+      ([input]) => input.batchRunId === "batch-camp-1",
+    )).toHaveLength(1);
+    expect(startHistoricalDispatch.mock.calls.filter(
+      ([input]) => input.batchRunId === "batch-camp-2",
+    )).toHaveLength(5);
+  });
+
+  it("skips when another process owns the distributed tick lease", async () => {
+    acquireHistoricalTick.mockResolvedValue(null);
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(result.skipped).toBe("tick_already_running");
+    expect(campaignFindMany).not.toHaveBeenCalled();
+    expect(replyToComment).not.toHaveBeenCalled();
+  });
+
+  it("finishes the distributed tick even when campaign enumeration fails", async () => {
+    campaignFindMany.mockRejectedValue(new Error("db gone"));
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(result.skipped).toBe("tick_failed");
+    expect(finishHistoricalTick).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.any(Date),
+    );
   });
 
   // The reservation replaced a read-then-post pair with nothing holding the gap.
@@ -580,6 +633,19 @@ describe("runHistoricalRecoveryTick — campaign pacing", () => {
     expect(replyToComment).not.toHaveBeenCalled();
     expect(releaseCandidateClaim).toHaveBeenCalledWith("cand-1", "token-1");
     expect(result.skipped).toBe("global_hourly_cap_reached");
+    expect(result.deferred).toBe(1);
+  });
+
+  it("stops the tick when the shared rolling-day capacity is full", async () => {
+    reserveHistoricalDispatch.mockResolvedValue({
+      kind: "blocked",
+      reason: "global_daily_cap_reached",
+    });
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(result.skipped).toBe("global_daily_cap_reached");
     expect(result.deferred).toBe(1);
   });
 
