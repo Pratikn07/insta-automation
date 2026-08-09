@@ -527,28 +527,28 @@ model DmThread {
 }
 
 model DmMessage {
-  id                 String          @id @default(uuid()) @db.Uuid
-  threadId           String          @map("thread_id") @db.Uuid
+  id                            String          @id @default(uuid()) @db.Uuid
+  threadId                      String          @map("thread_id") @db.Uuid
   // Meta's `mid`. Unique, so replaying a webhook cannot double-insert — this is
   // the whole idempotency story for inbound capture. Null for a send whose
   // response carried no id.
-  instagramMessageId String?         @unique @map("instagram_message_id")
-  direction          DmDirection
-  type               DmMessageType
-  source             DmMessageSource
-  text               String?
-  mediaUrl           String?         @map("media_url")
+  instagramMessageId            String?         @unique @map("instagram_message_id")
+  direction                     DmDirection
+  type                          DmMessageType
+  source                        DmMessageSource
+  text                          String?
+  mediaUrl                      String?         @map("media_url")
   // Meta's own timestamp, not ours: ordering must survive a delayed webhook.
-  instagramTimestamp DateTime        @map("instagram_timestamp")
-  seenAt             DateTime?       @map("seen_at") @db.Timestamptz(3)
-  deletedAt          DateTime?       @map("deleted_at") @db.Timestamptz(3)
+  instagramTimestamp            DateTime        @map("instagram_timestamp")
+  seenAt                        DateTime?       @map("seen_at") @db.Timestamptz(3)
+  deletedAt                     DateTime?       @map("deleted_at") @db.Timestamptz(3)
   // Durable safety inbox: every new inbound remains pending until campaign-health
   // classification succeeds. Historical dispatch drains this before opening a batch.
-  campaignHealthCapturedAt      DateTime? @map("campaign_health_captured_at") @db.Timestamptz(3)
-  campaignHealthCaptureAttempts Int       @default(0) @map("campaign_health_capture_attempts")
-  campaignHealthNextAttemptAt   DateTime? @map("campaign_health_next_attempt_at") @db.Timestamptz(3)
-  campaignHealthLastError       String?   @map("campaign_health_last_error")
-  createdAt          DateTime        @default(now()) @map("created_at")
+  campaignHealthCapturedAt      DateTime?       @map("campaign_health_captured_at") @db.Timestamptz(3)
+  campaignHealthCaptureAttempts Int             @default(0) @map("campaign_health_capture_attempts")
+  campaignHealthNextAttemptAt   DateTime?       @map("campaign_health_next_attempt_at") @db.Timestamptz(3)
+  campaignHealthLastError       String?         @map("campaign_health_last_error")
+  createdAt                     DateTime        @default(now()) @map("created_at")
 
   thread            DmThread             @relation(fields: [threadId], references: [id], onDelete: Cascade)
   recoveryReminders DmRecoveryReminder[]
@@ -956,36 +956,43 @@ enum RecoveryCampaignHealthKind {
 /// complete), so a campaign that re-selected mid-send could contact somebody the
 /// owner never approved.
 model RecoveryCampaign {
-  id               String                @id @default(uuid()) @db.Uuid
-  phase            RecoveryCampaignPhase
-  state            RecoveryCampaignState @default(draft)
+  id                       String                @id @default(uuid()) @db.Uuid
+  phase                    RecoveryCampaignPhase
+  state                    RecoveryCampaignState @default(draft)
   /// Which selector produced this list. Editing filters creates a new version
   /// rather than mutating an approved snapshot.
-  selectionVersion String                @map("selection_version")
+  selectionVersion         String                @map("selection_version")
   /// No candidate may be drawn from data after this instant, so re-running the
   /// same version reproduces the same list.
-  sourceDataCutoff DateTime              @map("source_data_cutoff") @db.Timestamptz(3)
-  commentFrom      DateTime?             @map("comment_from") @db.Timestamptz(3)
-  commentTo        DateTime?             @map("comment_to") @db.Timestamptz(3)
-  holdoutPercent   Int                   @default(50) @map("holdout_percent")
-  copyVersion      String                @map("copy_version")
-  batchSize        Int                   @default(1) @map("batch_size")
-  hourlyCap        Int                   @default(3) @map("hourly_cap")
-  dailyCap         Int                   @default(10) @map("daily_cap")
-  candidateCount   Int                   @default(0) @map("candidate_count")
-  excludedCount    Int                   @default(0) @map("excluded_count")
+  sourceDataCutoff         DateTime              @map("source_data_cutoff") @db.Timestamptz(3)
+  commentFrom              DateTime?             @map("comment_from") @db.Timestamptz(3)
+  commentTo                DateTime?             @map("comment_to") @db.Timestamptz(3)
+  holdoutPercent           Int                   @default(50) @map("holdout_percent")
+  copyVersion              String                @map("copy_version")
+  batchSize                Int                   @default(1) @map("batch_size")
+  hourlyCap                Int                   @default(3) @map("hourly_cap")
+  dailyCap                 Int                   @default(10) @map("daily_cap")
+  candidateCount           Int                   @default(0) @map("candidate_count")
+  excludedCount            Int                   @default(0) @map("excluded_count")
+  /// Hash of the normalized selector configuration. Null only on legacy campaigns;
+  /// new approval requires it and the database rejects a duplicate selection identity.
+  selectionFingerprint     String?               @unique(map: "recovery_campaign_selection_fingerprint_key") @map("selection_fingerprint")
+  eligibilityPolicyVersion String?               @map("eligibility_policy_version")
+  westernOnly              Boolean?              @map("western_only")
+  inboundWindowHours       Int                   @default(48) @map("inbound_window_hours")
+  completionWindowHours    Int                   @default(48) @map("completion_window_hours")
   /// Canonical hash of every decision this selection made (QA-14). Two selections over
   /// the same cutoff and filters must agree; a different hash means the data moved.
   /// Null on campaigns created before the decision set was recorded.
-  decisionHash     String?               @map("decision_hash")
-  approvedBy       String?               @map("approved_by")
-  approvedAt       DateTime?             @map("approved_at") @db.Timestamptz(3)
-  startedAt        DateTime?             @map("started_at") @db.Timestamptz(3)
-  pausedAt         DateTime?             @map("paused_at") @db.Timestamptz(3)
-  pauseReason      String?               @map("pause_reason")
-  endedAt          DateTime?             @map("ended_at") @db.Timestamptz(3)
-  createdAt        DateTime              @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt        DateTime              @updatedAt @map("updated_at") @db.Timestamptz(3)
+  decisionHash             String?               @map("decision_hash")
+  approvedBy               String?               @map("approved_by")
+  approvedAt               DateTime?             @map("approved_at") @db.Timestamptz(3)
+  startedAt                DateTime?             @map("started_at") @db.Timestamptz(3)
+  pausedAt                 DateTime?             @map("paused_at") @db.Timestamptz(3)
+  pauseReason              String?               @map("pause_reason")
+  endedAt                  DateTime?             @map("ended_at") @db.Timestamptz(3)
+  createdAt                DateTime              @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                DateTime              @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   candidates               RecoveryCandidate[]
   exclusions               RecoverySelectionExclusion[]
@@ -1082,6 +1089,9 @@ model RecoveryCandidate {
   keywordSnapshot          String                   @map("keyword_snapshot")
   publicReplyText          String                   @map("public_reply_text")
   evidence                 String
+  sourceChoiceReason       String?                  @map("source_choice_reason")
+  /// Exact member of the approved ordered source set authorized at dispatch start.
+  dispatchCommentId        String?                  @map("dispatch_comment_id")
   /// What the origin filter believed at selection. ig_users is mutable, so the
   /// live value cannot reconstruct this later.
   audienceOrigin           String?                  @map("audience_origin")
@@ -1112,10 +1122,11 @@ model RecoveryCandidate {
   createdAt                DateTime                 @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt                DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  campaign     RecoveryCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  intent       JourneyIntent    @relation(fields: [intentId], references: [id], onDelete: Restrict)
-  keyword      Keyword          @relation(fields: [keywordId], references: [id], onDelete: Restrict)
-  conversation Conversation?    @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  campaign     RecoveryCampaign          @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  intent       JourneyIntent             @relation(fields: [intentId], references: [id], onDelete: Restrict)
+  keyword      Keyword                   @relation(fields: [keywordId], references: [id], onDelete: Restrict)
+  conversation Conversation?             @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  sources      RecoveryCandidateSource[]
 
   /// The anti-duplicate invariant, enforced rather than assumed: one candidate per
   /// intent, and one per person, within a campaign.
@@ -1125,4 +1136,23 @@ model RecoveryCandidate {
   @@index([igUserId, sentAt])
   @@index([dispatchStartedAt], map: "recovery_candidate_dispatch_started_idx")
   @@map("recovery_candidate")
+}
+
+/// Immutable, owner-reviewed comment sources for one candidate, newest first.
+model RecoveryCandidateSource {
+  id           String   @id @default(uuid()) @db.Uuid
+  candidateId  String   @map("candidate_id") @db.Uuid
+  position     Int
+  commentId    String   @map("comment_id")
+  mediaId      String?  @map("media_id")
+  receivedAt   DateTime @map("received_at") @db.Timestamptz(3)
+  choiceReason String   @map("choice_reason")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  candidate RecoveryCandidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+
+  @@unique([candidateId, position], map: "recovery_candidate_source_candidate_id_position_key")
+  @@unique([candidateId, commentId], map: "recovery_candidate_source_candidate_id_comment_id_key")
+  @@index([commentId])
+  @@map("recovery_candidate_source")
 }
