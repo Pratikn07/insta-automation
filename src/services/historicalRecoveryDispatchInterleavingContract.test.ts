@@ -19,6 +19,7 @@ const keywordId = randomUUID();
 type ReservedScenario = {
   campaignId: string;
   candidateId: string;
+  commentId: string;
   igUserId: string;
   claimToken: string;
   batchRunId: string;
@@ -72,7 +73,16 @@ async function reserveScenario(): Promise<ReservedScenario> {
       evidence: "gate_sent_no_read",
       arm: "treatment",
       eligibleAt: now,
+      sources: {
+        create: {
+          position: 0,
+          commentId: `${prefix}-source-${randomUUID()}`,
+          receivedAt: now,
+          choiceReason: "newest_eligible_comment",
+        },
+      },
     },
+    include: { sources: true },
   });
   const claim = await historical.claimCandidate(candidate.id, now, lease);
   if (!claim) throw new Error("expected candidate claim");
@@ -94,6 +104,7 @@ async function reserveScenario(): Promise<ReservedScenario> {
   return {
     campaignId,
     candidateId: candidate.id,
+    commentId: candidate.sources[0]!.commentId,
     igUserId,
     claimToken: claim.claimToken,
     batchRunId: batch.id,
@@ -250,6 +261,29 @@ describeWithDatabase("historical dispatch state interleavings", () => {
         select: { outcome: true, claimToken: true },
       }),
     ).toEqual({ outcome: "pending", claimToken: null });
+  });
+
+  it("authorizes only a source frozen into the owner-reviewed snapshot", async () => {
+    const scenario = await reserveScenario();
+
+    await expect(historical.startHistoricalDispatch({
+      ...scenario,
+      commentId: `${prefix}-unreviewed-${randomUUID()}`,
+    })).resolves.toEqual({ kind: "blocked", reason: "source_not_approved" });
+    expect(await db.publicRecoveryDispatch.findUnique({
+      where: { id: scenario.dispatchId },
+      select: { state: true },
+    })).toEqual({ state: "reserved" });
+    expect(await db.recoveryCandidate.findUnique({
+      where: { id: scenario.candidateId },
+      select: { dispatchCommentId: true },
+    })).toEqual({ dispatchCommentId: null });
+
+    await expect(historical.startHistoricalDispatch(scenario)).resolves.toEqual({ kind: "started" });
+    expect(await db.recoveryCandidate.findUnique({
+      where: { id: scenario.candidateId },
+      select: { dispatchCommentId: true },
+    })).toEqual({ dispatchCommentId: scenario.commentId });
   });
 
   it("blocks dispatch start when the shared circuit opens after reservation", async () => {

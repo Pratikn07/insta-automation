@@ -13,6 +13,7 @@ import {
 import { evaluateCampaignHealth } from "./historicalRecoveryHealth.js";
 import { reconcilePendingInboundCampaignHealthSignals } from "./campaignHealthObservation.js";
 import { recheckBeforeSend, type SourceCommentState } from "./historicalRecoveryRecheck.js";
+import { resolveApprovedHistoricalSource } from "./historicalRecoverySourceChoice.js";
 import {
   type ClaimedCandidate,
   listDueCandidateIds,
@@ -409,6 +410,7 @@ async function runLeasedTickBody(
       batchRunId: item.batchRunId,
       dispatchId: reservation.dispatchId,
       reservationToken: reservation.reservationToken,
+      commentId: facts.sourceCommentId!,
       now: new Date(),
     });
     if (dispatchStart.kind !== "started") {
@@ -447,7 +449,7 @@ async function runLeasedTickBody(
     let replyId: string | null = null;
     let sendError: unknown = null;
     try {
-      const reply = await replyToComment(claimed.commentId, claimed.publicReplyText);
+      const reply = await replyToComment(facts.sourceCommentId!, claimed.publicReplyText);
       replyId = reply.replyId;
     } catch (error) {
       sendError = error;
@@ -686,6 +688,7 @@ type PreDispatchFacts = {
   sentThisHour: number;
   sentToday: number;
   sourceComment: SourceCommentState;
+  sourceCommentId: string | null;
 };
 
 async function gatherPreDispatchFacts(
@@ -695,7 +698,7 @@ async function gatherPreDispatchFacts(
 ): Promise<PreDispatchFacts> {
   // All of these could have changed since selection, which is the whole reason §34
   // requires a recheck rather than trusting the snapshot.
-  const [campaign, person, recentContact, sourceComment, capacity] = await Promise.all([
+  const [campaign, person, recentContact, sourceResolution, capacity] = await Promise.all([
     prisma.recoveryCampaign.findUnique({
       where: { id: claimed.campaignId },
       select: { state: true, hourlyCap: true, dailyCap: true },
@@ -744,8 +747,9 @@ async function gatherPreDispatchFacts(
         },
       }),
     ]),
-    // The Graph read that catches a deleted or hidden comment.
-    readSourceComment(claimed.commentId),
+    // Resolve only within the immutable source set the owner reviewed. Definitive
+    // absence may advance; auth/transient/unknown reads never redirect a public reply.
+    resolveApprovedHistoricalSource(claimed.sources, readSourceComment),
     Promise.all([
       countCandidatesSentSince(claimed.campaignId, hourAgo),
       countCandidatesSentSince(claimed.campaignId, dayAgo),
@@ -754,6 +758,9 @@ async function gatherPreDispatchFacts(
 
   const [inboundCount, completedCount, priorRecoveryCount] = recentContact;
   const [sentThisHour, sentToday] = capacity;
+  const sourceComment: SourceCommentState = sourceResolution.kind === "selected"
+    ? "visible"
+    : sourceResolution.reason;
 
   return {
     campaignState: campaign?.state ?? null,
@@ -769,5 +776,6 @@ async function gatherPreDispatchFacts(
     sentThisHour,
     sentToday,
     sourceComment,
+    sourceCommentId: sourceResolution.kind === "selected" ? sourceResolution.commentId : null,
   };
 }

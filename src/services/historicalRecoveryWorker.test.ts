@@ -125,6 +125,7 @@ const CANDIDATE = {
   // The moment evidence was frozen. The recheck asks "changed SINCE this", not "ever".
   selectedAt: new Date("2026-08-01T00:00:00Z"),
   commentId: "18111572197955347",
+  sources: [{ position: 0, commentId: "18111572197955347" }],
   publicReplyText: "I don't think my DM reached you",
   keywordSnapshot: "SLEEP",
   evidence: "gate_sent_no_read",
@@ -312,14 +313,44 @@ describe("runHistoricalRecoveryTick — pre-send recheck", () => {
   }
 
   // Measured: 1 of 3 sampled 44-day-old comments was already deleted.
-  it("suppresses rather than posting when Meta says the comment is gone", async () => {
+  it("suppresses when every approved source is gone", async () => {
     failSourceRead({ graphCode: 803 });
 
     const result = await runHistoricalRecoveryTick();
 
     expect(replyToComment).not.toHaveBeenCalled();
-    expect(markCandidateSuppressed).toHaveBeenCalledWith("cand-1", "token-1", "source_comment_deleted");
+    expect(markCandidateSuppressed).toHaveBeenCalledWith("cand-1", "token-1", "source_set_exhausted");
     expect(result.suppressed).toBe(1);
+  });
+
+  it("falls back to the next approved source after a definitive missing result", async () => {
+    claimCandidate.mockResolvedValue({
+      ...CANDIDATE,
+      sources: [
+        { position: 0, commentId: CANDIDATE.commentId },
+        { position: 1, commentId: "18111572197950000" },
+      ],
+    });
+    describeGraphError.mockReturnValue({
+      ...SAFE_UNKNOWN,
+      category: "graph_response",
+      graphCode: 803,
+    });
+    fetchComment
+      .mockRejectedValueOnce(new Error("missing"))
+      .mockResolvedValueOnce({ id: "18111572197950000", hidden: false, timestamp: null });
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(startHistoricalDispatch).toHaveBeenCalledWith(expect.objectContaining({
+      commentId: "18111572197950000",
+    }));
+    expect(replyToComment).toHaveBeenCalledWith(
+      "18111572197950000",
+      CANDIDATE.publicReplyText,
+    );
+    expect(markCandidateSuppressed).not.toHaveBeenCalled();
+    expect(result.sent).toBe(1);
   });
 
   // QA-09's core case. A timeout says nothing about whether the comment exists, and
@@ -371,13 +402,13 @@ describe("runHistoricalRecoveryTick — pre-send recheck", () => {
 
   // Worse than deletion: a reply to a hidden comment SUCCEEDS, so it would count as
   // a send while nobody ever saw it.
-  it("suppresses a hidden comment", async () => {
+  it("suppresses when the approved set is exhausted by a hidden comment", async () => {
     fetchComment.mockResolvedValue({ id: CANDIDATE.commentId, hidden: true, timestamp: null });
 
     await runHistoricalRecoveryTick();
 
     expect(replyToComment).not.toHaveBeenCalled();
-    expect(markCandidateSuppressed).toHaveBeenCalledWith("cand-1", "token-1", "source_comment_hidden");
+    expect(markCandidateSuppressed).toHaveBeenCalledWith("cand-1", "token-1", "source_set_exhausted");
   });
 
   it("suppresses when the person replied after selection", async () => {

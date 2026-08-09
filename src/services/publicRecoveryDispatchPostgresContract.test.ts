@@ -58,6 +58,7 @@ async function createCandidate(igUserId: string, requestedCampaignId?: string) {
       windowExpiresAt: new Date(now.getTime() + 60_000),
     },
   });
+  const commentId = `${prefix}-comment-${randomUUID()}`;
   return db.recoveryCandidate.create({
     data: {
       campaignId,
@@ -65,13 +66,21 @@ async function createCandidate(igUserId: string, requestedCampaignId?: string) {
       intentId: intent.id,
       igUserId,
       keywordId,
-      commentId: `${prefix}-comment-${randomUUID()}`,
+      commentId,
       commentAt: now,
       keywordSnapshot: "SLEEP",
       publicReplyText: "contract",
       evidence: "gate_sent_no_read",
       arm: "treatment",
       eligibleAt: now,
+      sources: {
+        create: {
+          position: 0,
+          commentId,
+          receivedAt: now,
+          choiceReason: "newest_eligible_comment",
+        },
+      },
     },
   });
 }
@@ -310,6 +319,7 @@ describeWithDatabase("public recovery dispatch concurrency", () => {
     const batchRunId = await openBatch(candidate.campaignId, now);
     await expect(historical.startHistoricalDispatch({
       candidateId: candidate.id,
+      commentId: candidate.commentId,
       claimToken: claim!.claimToken,
       batchRunId,
       dispatchId: reservation.dispatchId,
@@ -318,6 +328,7 @@ describeWithDatabase("public recovery dispatch concurrency", () => {
     })).resolves.toEqual({ kind: "blocked", reason: "reservation_not_active" });
     await expect(historical.startHistoricalDispatch({
       candidateId: candidate.id,
+      commentId: candidate.commentId,
       claimToken: claim!.claimToken,
       batchRunId,
       ...reservation,
@@ -367,6 +378,7 @@ describeWithDatabase("public recovery dispatch concurrency", () => {
     const batchRunId = await openBatch(started.campaignId, claimedAt);
     await historical.startHistoricalDispatch({
       candidateId: started.id,
+      commentId: started.commentId,
       claimToken: startedClaim!.claimToken,
       batchRunId,
       ...reservations[1],
@@ -602,6 +614,7 @@ describeWithDatabase("public recovery dispatch concurrency", () => {
     const batchRunId = await openBatch(campaignId, now);
     await historical.startHistoricalDispatch({
       candidateId: uncertainCandidate.id,
+      commentId: uncertainCandidate.commentId,
       claimToken: uncertainClaim!.claimToken,
       batchRunId,
       ...uncertain,

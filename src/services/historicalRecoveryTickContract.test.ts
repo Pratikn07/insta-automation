@@ -66,6 +66,7 @@ async function createCandidate(campaignId: string): Promise<string> {
       windowExpiresAt: new Date(T0.getTime() + 48 * 3600_000),
     },
   });
+  const commentId = `${prefix}-comment-${randomUUID()}`;
   const row = await db.recoveryCandidate.create({
     data: {
       campaignId,
@@ -73,16 +74,33 @@ async function createCandidate(campaignId: string): Promise<string> {
       intentId: intent.id,
       igUserId,
       keywordId,
-      commentId: `${prefix}-comment-${randomUUID()}`,
+      commentId,
       commentAt: T0,
       keywordSnapshot: "SLEEP",
       publicReplyText: "contract",
       evidence: "gate_sent_no_read",
       arm: "treatment",
       eligibleAt: T0,
+      sources: {
+        create: {
+          position: 0,
+          commentId,
+          receivedAt: T0,
+          choiceReason: "newest_eligible_comment",
+        },
+      },
     },
   });
   return row.id;
+}
+
+async function approvedCommentId(candidateId: string): Promise<string> {
+  const source = await db.recoveryCandidateSource.findFirstOrThrow({
+    where: { candidateId },
+    orderBy: { position: "asc" },
+    select: { commentId: true },
+  });
+  return source.commentId;
 }
 
 beforeAll(async () => {
@@ -199,11 +217,12 @@ describeWithDatabase("distributed historical recovery pacing", () => {
     expect(reservations.every((reservation) => reservation.kind === "reserved")).toBe(true);
 
     const results = await Promise.all(
-      candidateIds.map((candidateId, index) => {
+      candidateIds.map(async (candidateId, index) => {
         const reservation = reservations[index]!;
         if (reservation.kind !== "reserved") throw new Error("expected reservation");
         return historical.startHistoricalDispatch({
           candidateId,
+          commentId: await approvedCommentId(candidateId),
           claimToken: claims[index]!.claimToken,
           batchRunId: batch!.id,
           ...reservation,

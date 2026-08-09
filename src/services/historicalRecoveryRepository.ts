@@ -39,6 +39,7 @@ export type ClaimedCandidate = {
    */
   selectedAt: Date;
   commentId: string;
+  sources: Array<{ position: number; commentId: string }>;
   publicReplyText: string;
   keywordSnapshot: string;
   evidence: string;
@@ -139,6 +140,10 @@ export async function claimCandidate(
       keywordId: true,
       createdAt: true,
       commentId: true,
+      sources: {
+        orderBy: { position: "asc" },
+        select: { position: true, commentId: true },
+      },
       publicReplyText: true,
       keywordSnapshot: true,
       evidence: true,
@@ -231,6 +236,7 @@ export async function startHistoricalDispatch(input: {
   batchRunId: string;
   dispatchId: string;
   reservationToken: string;
+  commentId: string;
   now: Date;
 }): Promise<StartHistoricalDispatchResult> {
   return prisma.$transaction(async (tx) => {
@@ -290,6 +296,19 @@ export async function startHistoricalDispatch(input: {
       return { kind: "blocked", reason: "inbound_since_selection" };
     }
 
+    const approvedSource = await tx.recoveryCandidateSource.findUnique({
+      where: {
+        candidateId_commentId: {
+          candidateId: source.id,
+          commentId: input.commentId,
+        },
+      },
+      select: { id: true },
+    });
+    if (!approvedSource) {
+      return { kind: "blocked", reason: "source_not_approved" };
+    }
+
     await tx.$queryRaw`SELECT "id" FROM "recovery_campaign" WHERE "id" = ${source.campaignId}::uuid FOR UPDATE`;
     const campaign = await tx.recoveryCampaign.findUnique({
       where: { id: source.campaignId },
@@ -345,7 +364,11 @@ export async function startHistoricalDispatch(input: {
     }
     const stamped = await tx.recoveryCandidate.updateMany({
       where: { id: input.candidateId, outcome: "pending", claimToken: input.claimToken },
-      data: { dispatchStartedAt: input.now, lastAttemptAt: input.now },
+      data: {
+        dispatchStartedAt: input.now,
+        dispatchCommentId: input.commentId,
+        lastAttemptAt: input.now,
+      },
     });
     if (stamped.count !== 1) {
       throw new Error("historical_dispatch_source_stamp_failed");
@@ -360,6 +383,7 @@ export type HistoricalDispatchStartBlockReason =
   | "circuit_open"
   | "campaign_health_capture_pending"
   | "inbound_since_selection"
+  | "source_not_approved"
   | "batch_not_active"
   | "campaign_batch_exhausted"
   | "reservation_not_active";

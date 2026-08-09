@@ -67,15 +67,33 @@ async function makeCandidate(campaignId: string = fx.campaignId): Promise<string
     },
   });
 
+  const commentId = `claim-race-c-${randomUUID()}`;
   const row = await prisma.recoveryCandidate.create({
     data: {
       campaignId, campaignPhase: "unknown_read_pilot", intentId,
-      igUserId, keywordId: fx.keywordId, commentId: `claim-race-c-${randomUUID()}`,
+      igUserId, keywordId: fx.keywordId, commentId,
       commentAt: now, keywordSnapshot: "RACE", publicReplyText: "t",
       evidence: "gate_sent_no_read", arm: "treatment", eligibleAt: now,
+      sources: {
+        create: {
+          position: 0,
+          commentId,
+          receivedAt: now,
+          choiceReason: "newest_eligible_comment",
+        },
+      },
     },
   });
   return row.id;
+}
+
+async function approvedCommentId(candidateId: string): Promise<string> {
+  const source = await prisma.recoveryCandidateSource.findFirstOrThrow({
+    where: { candidateId },
+    orderBy: { position: "asc" },
+    select: { commentId: true },
+  });
+  return source.commentId;
 }
 
 async function openBatch(campaignId: string, now: Date): Promise<string> {
@@ -188,6 +206,7 @@ describeWithLocalDatabase("cross-system person cooldown", () => {
     if (reserved.kind !== "reserved") throw new Error("expected reservation");
     await repo.startHistoricalDispatch({
       candidateId: id,
+      commentId: await approvedCommentId(id),
       claimToken: held!.claimToken,
       batchRunId: await openBatch(fx.campaignId, now),
       ...reserved,
@@ -450,6 +469,7 @@ describeWithLocalDatabase("send capacity is reserved, not merely observed", () =
     if (reservation.kind !== "reserved") throw new Error("expected reservation");
     await repo.startHistoricalDispatch({
       candidateId: spent,
+      commentId: await approvedCommentId(spent),
       claimToken: held!.claimToken,
       batchRunId: await openBatch(campaignId, now),
       ...reservation,
@@ -604,6 +624,7 @@ describeWithLocalDatabase("send capacity is reserved, not merely observed", () =
     if (reservation.kind !== "reserved") throw new Error("expected reservation");
     await repo.startHistoricalDispatch({
       candidateId: spent,
+      commentId: await approvedCommentId(spent),
       claimToken: held!.claimToken,
       batchRunId: await openBatch(campaignId, now),
       ...reservation,

@@ -26,7 +26,13 @@
  *   - `auth`      — credentials or permissions. Defer AND open the shared circuit.
  *   - `unknown`   — we could not ask. Defer. Never terminal.
  */
-export type SourceCommentState = "visible" | "hidden" | "missing" | "auth" | "unknown";
+export type SourceCommentState =
+  | "visible"
+  | "hidden"
+  | "missing"
+  | "auth"
+  | "unknown"
+  | "source_set_exhausted";
 
 export type RecheckFacts = {
   /**
@@ -96,6 +102,9 @@ export function recheckBeforeSend(facts: RecheckFacts): RecheckDecision {
   }
   if (facts.sourceComment === "hidden") {
     return { kind: "suppress", reason: "source_comment_hidden" };
+  }
+  if (facts.sourceComment === "source_set_exhausted") {
+    return { kind: "suppress", reason: "source_set_exhausted" };
   }
   if (facts.sourceComment === "auth") {
     return { kind: "defer", reason: "source_read_auth_failed" };
