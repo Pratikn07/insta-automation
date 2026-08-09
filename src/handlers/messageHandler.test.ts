@@ -10,16 +10,14 @@ const recordRecoveryInbound = vi.fn();
 const recordInboundCampaignHealthSignals = vi.fn();
 const markInboundCampaignHealthCaptured = vi.fn();
 const queueReplyDraft = vi.fn();
-const scheduleEngagementFollowUp = vi.fn();
 const findKeywordInMessage = vi.fn();
 const findActiveAwaitingDone = vi.fn();
 const findLatestIncompleteConversation = vi.fn();
 const hasCompletedKeyword = vi.fn();
 const openConversationIn = vi.fn();
 const resolveJourneyIntent = vi.fn();
-const markCompleted = vi.fn();
 const markGated = vi.fn();
-const sendSequence = vi.fn();
+const deliverGuideForTrigger = vi.fn();
 const sendTrackedText = vi.fn();
 const resolveUsername = vi.fn();
 const logEvent = vi.fn();
@@ -50,7 +48,6 @@ vi.mock("../services/campaignHealthObservation.js", () => ({
   markInboundCampaignHealthCaptured,
 }));
 vi.mock("../services/replyDraftService.js", () => ({ queueReplyDraft }));
-vi.mock("../services/engagementFollowUpService.js", () => ({ scheduleEngagementFollowUp }));
 vi.mock("../services/keywordService.js", () => ({ findKeywordInMessage }));
 // The resolver is contract-tested against real Postgres; here the DM path's own
 // contract is that it records the trigger and still delivers.
@@ -60,10 +57,9 @@ vi.mock("../services/conversationService.js", () => ({
   findLatestIncompleteConversation,
   hasCompletedKeyword,
   openConversationIn,
-  markCompleted,
   markGated,
 }));
-vi.mock("../services/sequenceSender.js", () => ({ sendSequence }));
+vi.mock("../services/guideDeliveryService.js", () => ({ deliverGuideForTrigger }));
 vi.mock("../services/dmDeliveryService.js", () => ({ sendTrackedText }));
 vi.mock("../services/igUserService.js", () => ({ resolveUsername }));
 vi.mock("../services/eventLogger.js", () => ({
@@ -75,14 +71,13 @@ vi.mock("../lib/logger.js", () => ({ logger }));
 // The real env has AI_DRAFTS_ENABLED=false (all AI ships off), so drafting is
 // mocked ON here and toggled per test. `aiDraftsEnabled` is mutable so one test
 // can prove the flag genuinely gates the queue call.
-const aiFlags = { AI_DRAFTS_ENABLED: true, AI_FOLLOW_UPS_ENABLED: true };
+const aiFlags = { AI_DRAFTS_ENABLED: true };
 vi.mock("../config/env.js", async (importOriginal) => {
   const actual = (await importOriginal()) as { env: Record<string, unknown> };
   return {
     env: new Proxy(actual.env, {
       get: (target, prop) => {
         if (prop === "AI_DRAFTS_ENABLED") return aiFlags.AI_DRAFTS_ENABLED;
-        if (prop === "AI_FOLLOW_UPS_ENABLED") return aiFlags.AI_FOLLOW_UPS_ENABLED;
         return target[prop as string];
       },
     }),
@@ -109,7 +104,10 @@ const keywordFixture = {
   gateMessage: "Follow and reply DONE",
   mediaId: null,
   inferredFromPost: null,
-  resource: { messages: [{ id: "m1", order: 0, type: "text", body: "guide" }] },
+  resource: {
+    id: "resource-1",
+    messages: [{ id: "m1", order: 0, type: "text", body: "guide" }],
+  },
 };
 
 beforeEach(() => {
@@ -122,16 +120,14 @@ beforeEach(() => {
     recordInboundCampaignHealthSignals,
     markInboundCampaignHealthCaptured,
     queueReplyDraft,
-    scheduleEngagementFollowUp,
     findKeywordInMessage,
     findActiveAwaitingDone,
     findLatestIncompleteConversation,
     hasCompletedKeyword,
     openConversationIn,
     resolveJourneyIntent,
-    markCompleted,
     markGated,
-    sendSequence,
+    deliverGuideForTrigger,
     sendTrackedText,
     resolveUsername,
     logEvent,
@@ -161,17 +157,11 @@ beforeEach(() => {
   });
   logEvent.mockResolvedValue(undefined);
   sendTrackedText.mockResolvedValue({ messageId: "mid-out" });
-  sendSequence.mockResolvedValue(undefined);
+  deliverGuideForTrigger.mockResolvedValue("completed");
   queueReplyDraft.mockResolvedValue({ id: "draft-1" });
-  scheduleEngagementFollowUp.mockResolvedValue({ scheduled: true, draftId: "follow-up-1" });
   recordInboundCampaignHealthSignals.mockResolvedValue({ recorded: 0 });
   markInboundCampaignHealthCaptured.mockResolvedValue(true);
-  markCompleted.mockResolvedValue({
-    id: "convo-1",
-    completedAt: new Date("2026-08-05T10:01:00.000Z"),
-  });
   aiFlags.AI_DRAFTS_ENABLED = true;
-  aiFlags.AI_FOLLOW_UPS_ENABLED = true;
 });
 
 describe("handleMessage — inbound capture", () => {
@@ -254,7 +244,7 @@ describe("handleMessage — inbound capture", () => {
     expect(resolveJourneyIntent).not.toHaveBeenCalled();
     expect(queueReplyDraft).not.toHaveBeenCalled();
     expect(sendTrackedText).not.toHaveBeenCalled();
-    expect(sendSequence).not.toHaveBeenCalled();
+    expect(deliverGuideForTrigger).not.toHaveBeenCalled();
   });
 
   it("ignores an echo of our own message", async () => {
@@ -313,7 +303,10 @@ describe("handleMessage — branch order is unchanged", () => {
     findActiveAwaitingDone.mockResolvedValue({
       id: "convo-old",
       keywordId: "keyword-old",
-      keyword: { keyword: "POTTY", resource: { messages: [{ id: "potty-msg" }] } },
+      keyword: {
+        keyword: "POTTY",
+        resource: { id: "resource-old", messages: [{ id: "potty-msg" }] },
+      },
     });
 
     await handleMessage(inbound("SLEEP"));
@@ -324,22 +317,39 @@ describe("handleMessage — branch order is unchanged", () => {
     );
     expect(findActiveAwaitingDone).not.toHaveBeenCalled();
     // A follower gets the NEW keyword's guide instantly — never the stale gate's.
-    expect(sendSequence).toHaveBeenCalledWith(
-      expect.objectContaining({ messages: keywordFixture.resource.messages }),
-    );
+    expect(deliverGuideForTrigger).toHaveBeenCalledWith({
+      conversationId: "convo-1",
+      resourceId: "resource-1",
+      igUserId: "ig-user-1",
+      threadId: "thread-1",
+      triggerKind: "inbound_reply",
+      triggerId: "message-1",
+      triggeredAt: new Date(1785895200000),
+      sendWindowExpiresAt: new Date(1785981600000),
+      followerAtTrigger: true,
+    });
   });
 
   it("delivers the guide on an open-gate reply and queues no draft", async () => {
     findActiveAwaitingDone.mockResolvedValue({
       id: "convo-1",
       keywordId: "keyword-1",
-      keyword: { keyword: "SLEEP", resource: { messages: [] } },
+      keyword: { keyword: "SLEEP", resource: { id: "resource-1", messages: [] } },
     });
 
     await handleMessage(inbound("Done"));
 
-    expect(sendSequence).toHaveBeenCalledOnce();
-    expect(markCompleted).toHaveBeenCalledWith("convo-1");
+    expect(deliverGuideForTrigger).toHaveBeenCalledWith({
+      conversationId: "convo-1",
+      resourceId: "resource-1",
+      igUserId: "ig-user-1",
+      threadId: "thread-1",
+      triggerKind: "inbound_reply",
+      triggerId: "message-1",
+      triggeredAt: new Date(1785895200000),
+      sendWindowExpiresAt: new Date(1785981600000),
+      followerAtTrigger: true,
+    });
     expect(queueReplyDraft).not.toHaveBeenCalled();
   });
 
@@ -349,7 +359,7 @@ describe("handleMessage — branch order is unchanged", () => {
       id: "expired-convo",
       keywordId: "keyword-1",
       state: "expired",
-      keyword: { keyword: "SLEEP", resource: { messages: [] } },
+      keyword: { keyword: "SLEEP", resource: { id: "resource-1", messages: [] } },
     });
 
     await handleMessage(inbound("Done"));
@@ -362,7 +372,7 @@ describe("handleMessage — branch order is unchanged", () => {
       }),
     );
     expect(markGated).toHaveBeenCalledWith("expired-convo");
-    expect(sendSequence).not.toHaveBeenCalled();
+    expect(deliverGuideForTrigger).not.toHaveBeenCalled();
     expect(queueReplyDraft).not.toHaveBeenCalled();
     expect(logEvent).toHaveBeenCalledWith(
       "follow_required",
@@ -375,13 +385,22 @@ describe("handleMessage — branch order is unchanged", () => {
       id: "expired-convo",
       keywordId: "keyword-1",
       state: "expired",
-      keyword: { keyword: "SLEEP", resource: { messages: [] } },
+      keyword: { keyword: "SLEEP", resource: { id: "resource-1", messages: [] } },
     });
 
-    await handleMessage(inbound("DONE!"));
+    await handleMessage(inbound("\tDoNe!!  "));
 
-    expect(sendSequence).toHaveBeenCalledOnce();
-    expect(markCompleted).toHaveBeenCalledWith("expired-convo");
+    expect(deliverGuideForTrigger).toHaveBeenCalledWith({
+      conversationId: "expired-convo",
+      resourceId: "resource-1",
+      igUserId: "ig-user-1",
+      threadId: "thread-1",
+      triggerKind: "inbound_reply",
+      triggerId: "message-1",
+      triggeredAt: new Date(1785895200000),
+      sendWindowExpiresAt: new Date(1785981600000),
+      followerAtTrigger: true,
+    });
     expect(queueReplyDraft).not.toHaveBeenCalled();
     expect(logEvent).toHaveBeenCalledWith(
       "done_received",
@@ -389,12 +408,16 @@ describe("handleMessage — branch order is unchanged", () => {
     );
   });
 
-  it("does not recover an expired request for arbitrary text", async () => {
-    await handleMessage(inbound("Can you help?"));
+  it.each(["Can you help?", "done please", "well done", "I followed"])(
+    "does not recover an expired request for non-contract text: %s",
+    async (text) => {
+      await handleMessage(inbound(text));
 
-    expect(findLatestIncompleteConversation).not.toHaveBeenCalled();
-    expect(queueReplyDraft).toHaveBeenCalledOnce();
-  });
+      expect(findLatestIncompleteConversation).not.toHaveBeenCalled();
+      expect(deliverGuideForTrigger).not.toHaveBeenCalled();
+      expect(queueReplyDraft).toHaveBeenCalledOnce();
+    },
+  );
 });
 
 describe("handleMessage — a story mention is engagement, not consent", () => {
@@ -414,7 +437,7 @@ describe("handleMessage — a story mention is engagement, not consent", () => {
     findActiveAwaitingDone.mockResolvedValue({
       id: "convo-1",
       keywordId: "keyword-1",
-      keyword: { keyword: "GREEN", resource: { messages: [] } },
+      keyword: { keyword: "GREEN", resource: { id: "resource-1", messages: [] } },
     });
   }
 
@@ -425,8 +448,7 @@ describe("handleMessage — a story mention is engagement, not consent", () => {
 
     // The production incident: a story tag unlocked a gated guide the person
     // never asked to unlock.
-    expect(sendSequence).not.toHaveBeenCalled();
-    expect(markCompleted).not.toHaveBeenCalled();
+    expect(deliverGuideForTrigger).not.toHaveBeenCalled();
     expect(sendTrackedText).not.toHaveBeenCalled();
     expect(logEvent).not.toHaveBeenCalledWith("done_received", expect.anything());
   });
@@ -437,7 +459,7 @@ describe("handleMessage — a story mention is engagement, not consent", () => {
     await handleMessage(storyMention());
 
     expect(markGated).not.toHaveBeenCalled();
-    expect(markCompleted).not.toHaveBeenCalled();
+    expect(deliverGuideForTrigger).not.toHaveBeenCalled();
   });
 
   it("does not draft a reply to a story mention", async () => {
@@ -470,166 +492,137 @@ describe("handleMessage — a story mention is engagement, not consent", () => {
       storyMention({ text: "Done", story: { reply_to: { link: "https://ig/story" } } }),
     );
 
-    expect(sendSequence).toHaveBeenCalledOnce();
-    expect(markCompleted).toHaveBeenCalledWith("convo-1");
+    expect(deliverGuideForTrigger).toHaveBeenCalledOnce();
   });
 });
 
-describe("handleMessage — engagement follow-up scheduling", () => {
-  const expectedScheduleInput = {
-    conversationId: "convo-1",
-    threadId: "thread-1",
-    inboundMessageId: "message-1",
-    inboundAt: new Date(1785895200000),
-    deliveredAt: new Date("2026-08-05T10:01:00.000Z"),
-  };
-
-  it("schedules exactly once after instant keyword guide delivery is completed", async () => {
+describe("handleMessage — durable guide delivery", () => {
+  it("keeps a confirmed non-follower keyword request on the gate-only path", async () => {
+    resolveUsername.mockResolvedValue({ isFollower: false, username: "geri", name: "Geri" });
     findKeywordInMessage.mockResolvedValue(keywordFixture);
 
     await handleMessage(inbound("SLEEP"));
 
-    expect(scheduleEngagementFollowUp).toHaveBeenCalledOnce();
-    expect(scheduleEngagementFollowUp).toHaveBeenCalledWith(expectedScheduleInput);
+    expect(deliverGuideForTrigger).not.toHaveBeenCalled();
+    expect(sendTrackedText).toHaveBeenCalledWith({
+      recipientIgUserId: "ig-user-1",
+      text: keywordFixture.gateMessage,
+      source: "keyword_automation",
+    });
+    expect(markGated).toHaveBeenCalledWith("convo-1");
   });
 
-  it("schedules exactly once after an already-delivered open gate is redelivered", async () => {
+  it("uses explicit redelivery and compiles the intro into an already-completed keyword request", async () => {
+    findKeywordInMessage.mockResolvedValue(keywordFixture);
+    hasCompletedKeyword.mockResolvedValue(true);
+
+    await handleMessage(inbound("SLEEP"));
+
+    expect(deliverGuideForTrigger).toHaveBeenCalledWith({
+      conversationId: "convo-1",
+      resourceId: "resource-1",
+      igUserId: "ig-user-1",
+      threadId: "thread-1",
+      triggerKind: "explicit_redelivery",
+      triggerId: "message-1",
+      triggeredAt: new Date(1785895200000),
+      sendWindowExpiresAt: new Date(1785981600000),
+      followerAtTrigger: true,
+      redeliveryIntro: "You've already got this one — here it is again 💛",
+    });
+    expect(sendTrackedText).toHaveBeenCalledOnce();
+    expect(sendTrackedText).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "Thanks for following! 💛" }),
+    );
+  });
+
+  it("uses explicit redelivery for an already-completed open-gate request", async () => {
     findActiveAwaitingDone.mockResolvedValue({
       id: "convo-1",
       keywordId: "keyword-1",
-      keyword: { keyword: "SLEEP", resource: { messages: [] } },
+      keyword: { keyword: "SLEEP", resource: { id: "resource-1", messages: [] } },
     });
     hasCompletedKeyword.mockResolvedValue(true);
 
     await handleMessage(inbound("Done"));
 
-    expect(scheduleEngagementFollowUp).toHaveBeenCalledOnce();
-    expect(scheduleEngagementFollowUp).toHaveBeenCalledWith(expectedScheduleInput);
-  });
-
-  it("schedules exactly once after a normal open-gate guide delivery is completed", async () => {
-    findActiveAwaitingDone.mockResolvedValue({
-      id: "convo-1",
-      keywordId: "keyword-1",
-      keyword: { keyword: "SLEEP", resource: { messages: [] } },
-    });
-
-    await handleMessage(inbound("Done"));
-
-    expect(scheduleEngagementFollowUp).toHaveBeenCalledOnce();
-    expect(scheduleEngagementFollowUp).toHaveBeenCalledWith(expectedScheduleInput);
-  });
-
-  it("does not schedule before a guide sequence succeeds", async () => {
-    findActiveAwaitingDone.mockResolvedValue({
-      id: "convo-1",
-      keywordId: "keyword-1",
-      keyword: { keyword: "SLEEP", resource: { messages: [] } },
-    });
-    sendSequence.mockRejectedValue(new Error("graph 400"));
-
-    await handleMessage(inbound("Done"));
-
-    expect(markCompleted).not.toHaveBeenCalled();
-    expect(scheduleEngagementFollowUp).not.toHaveBeenCalled();
-  });
-
-  it("does not schedule unless completion is confirmed", async () => {
-    findActiveAwaitingDone.mockResolvedValue({
-      id: "convo-1",
-      keywordId: "keyword-1",
-      keyword: { keyword: "SLEEP", resource: { messages: [] } },
-    });
-    markCompleted.mockRejectedValue(new Error("database unavailable"));
-
-    await handleMessage(inbound("Done"));
-
-    expect(sendSequence).toHaveBeenCalledOnce();
-    expect(scheduleEngagementFollowUp).not.toHaveBeenCalled();
-  });
-
-  it("keeps successful delivery successful when follow-up queueing fails", async () => {
-    findActiveAwaitingDone.mockResolvedValue({
-      id: "convo-1",
-      keywordId: "keyword-1",
-      keyword: { keyword: "SLEEP", resource: { messages: [] } },
-    });
-    const privateBody = "private DM or model output";
-    scheduleEngagementFollowUp.mockRejectedValue(new Error(privateBody));
-
-    await expect(handleMessage(inbound("Done"))).resolves.toBeUndefined();
-
-    expect(markThreadResolved).toHaveBeenCalledWith({
-      threadId: "thread-1",
-      inboundMessageId: "message-1",
-    });
-    expect(logEvent).not.toHaveBeenCalledWith("sequence_failed", expect.anything());
-    expect(logger.error).toHaveBeenCalledWith(
-      {
-        errorCode: "follow_up_schedule_failed",
+    expect(deliverGuideForTrigger).toHaveBeenCalledWith(
+      expect.objectContaining({
         conversationId: "convo-1",
-        threadId: "thread-1",
-        inboundMessageId: "message-1",
-      },
-      "Failed to schedule engagement follow-up after guide delivery",
+        resourceId: "resource-1",
+        triggerKind: "explicit_redelivery",
+        redeliveryIntro: "You've already got this one — here it is again 💛",
+      }),
     );
-    expect(JSON.stringify(logger.error.mock.calls)).not.toContain(privateBody);
+    expect(sendTrackedText).not.toHaveBeenCalled();
   });
 
-  it("does not queue without the completion timestamp and logs IDs only", async () => {
-    findKeywordInMessage.mockResolvedValue(keywordFixture);
-    markCompleted.mockResolvedValue({ id: "convo-1", completedAt: null });
-
-    await handleMessage(inbound("SLEEP"));
-
-    expect(scheduleEngagementFollowUp).not.toHaveBeenCalled();
-    expect(logger.error).toHaveBeenCalledWith(
-      {
-        errorCode: "follow_up_completion_timestamp_missing",
-        conversationId: "convo-1",
-        threadId: "thread-1",
-        inboundMessageId: "message-1",
-      },
-      "Failed to schedule engagement follow-up after guide delivery",
-    );
-  });
-
-  it("does not schedule while AI_FOLLOW_UPS_ENABLED is false", async () => {
-    aiFlags.AI_FOLLOW_UPS_ENABLED = false;
+  it("derives the same durable trigger from repeated processing of one captured inbound", async () => {
     findKeywordInMessage.mockResolvedValue(keywordFixture);
 
     await handleMessage(inbound("SLEEP"));
+    await handleMessage(inbound("SLEEP"));
 
-    expect(sendSequence).toHaveBeenCalledOnce();
-    expect(markCompleted).toHaveBeenCalledOnce();
-    expect(scheduleEngagementFollowUp).not.toHaveBeenCalled();
+    expect(deliverGuideForTrigger).toHaveBeenCalledTimes(2);
+    expect(deliverGuideForTrigger.mock.calls.map(([input]) => input.triggerId)).toEqual([
+      "message-1",
+      "message-1",
+    ]);
   });
 
-  it("does not schedule after a keyword gate-only send", async () => {
-    resolveUsername.mockResolvedValue({ isFollower: false, username: "geri", name: "Geri" });
+  it.each([
+    "preflight_failed",
+    "needs_review",
+    "retry_scheduled",
+    "already_processing",
+  ])("does not send the closing nudge when durable delivery returns %s", async (result) => {
     findKeywordInMessage.mockResolvedValue(keywordFixture);
+    deliverGuideForTrigger.mockResolvedValue(result);
 
     await handleMessage(inbound("SLEEP"));
 
-    expect(sendTrackedText).toHaveBeenCalledWith(
-      expect.objectContaining({ text: keywordFixture.gateMessage }),
-    );
-    expect(sendSequence).not.toHaveBeenCalled();
-    expect(scheduleEngagementFollowUp).not.toHaveBeenCalled();
+    expect(sendTrackedText).not.toHaveBeenCalled();
+    expect(markThreadResolved).not.toHaveBeenCalled();
+    expect(logEvent).not.toHaveBeenCalledWith("follow_nudge_sent", expect.anything());
   });
 
-  it("does not schedule after a follow-required nudge", async () => {
-    resolveUsername.mockResolvedValue({ isFollower: false, username: "geri", name: "Geri" });
+  it("does not send the closing nudge when an open-gate delivery needs review", async () => {
     findActiveAwaitingDone.mockResolvedValue({
       id: "convo-1",
       keywordId: "keyword-1",
-      keyword: { keyword: "SLEEP", resource: { messages: [] } },
+      keyword: { keyword: "SLEEP", resource: { id: "resource-1", messages: [] } },
+    });
+    deliverGuideForTrigger.mockResolvedValue("needs_review");
+
+    await handleMessage(inbound("Done"));
+
+    expect(sendTrackedText).not.toHaveBeenCalled();
+    expect(logEvent).not.toHaveBeenCalledWith("follow_nudge_sent", expect.anything());
+  });
+
+  it("sends the existing closing nudge when an open-gate delivery completes now", async () => {
+    findActiveAwaitingDone.mockResolvedValue({
+      id: "convo-1",
+      keywordId: "keyword-1",
+      keyword: { keyword: "SLEEP", resource: { id: "resource-1", messages: [] } },
     });
 
     await handleMessage(inbound("Done"));
 
-    expect(sendSequence).not.toHaveBeenCalled();
-    expect(scheduleEngagementFollowUp).not.toHaveBeenCalled();
+    expect(sendTrackedText).toHaveBeenCalledWith({
+      recipientIgUserId: "ig-user-1",
+      text: "Thanks for following! 💛",
+      source: "guide_automation",
+    });
+  });
+
+  it("leaves thread resolution and completion events to the durable finalizer", async () => {
+    findKeywordInMessage.mockResolvedValue(keywordFixture);
+
+    await handleMessage(inbound("SLEEP"));
+
+    expect(markThreadResolved).not.toHaveBeenCalled();
+    expect(logEvent).not.toHaveBeenCalledWith("sequence_completed", expect.anything());
   });
 });
 
@@ -694,7 +687,7 @@ describe("handleMessage — unhandled DMs", () => {
     findActiveAwaitingDone.mockResolvedValue({
       id: "convo-1",
       keywordId: "keyword-1",
-      keyword: { keyword: "SLEEP", resource: { messages: [] } },
+      keyword: { keyword: "SLEEP", resource: { id: "resource-1", messages: [] } },
     });
     const privateBody = "Done, my child finally slept";
 
@@ -719,10 +712,10 @@ describe("handleMessage — unhandled DMs", () => {
     findActiveAwaitingDone.mockResolvedValue({
       id: "convo-1",
       keywordId: "keyword-1",
-      keyword: { keyword: "SLEEP", resource: { messages: [] } },
+      keyword: { keyword: "SLEEP", resource: { id: "resource-1", messages: [] } },
     });
     const privateBody = "private model or DM output";
-    const graphError = new Error("graph request failed");
+    const graphError = new Error(privateBody);
     describeGraphError.mockReturnValue({
       category: "graph_response",
       httpStatus: 400,
@@ -730,28 +723,32 @@ describe("handleMessage — unhandled DMs", () => {
       graphSubcode: 2018278,
       traceId: "trace-1",
     });
-    sendSequence.mockRejectedValue(graphError);
+    deliverGuideForTrigger.mockRejectedValue(graphError);
 
     await handleMessage(inbound("Done"));
 
     const emitted = JSON.stringify({ logs: logger.error.mock.calls, events: logEvent.mock.calls });
     expect(emitted).not.toContain(privateBody);
-    expect(logEvent).toHaveBeenCalledWith("sequence_failed", {
-      conversationId: "convo-1",
-      errorCode: "graph_request_failed",
-      category: "graph_response",
-      httpStatus: 400,
-      graphCode: 10,
-      graphSubcode: 2018278,
-      traceId: "trace-1",
-    });
+    expect(logger.error).toHaveBeenCalledWith(
+      {
+        conversationId: "convo-1",
+        errorCode: "graph_request_failed",
+        category: "graph_response",
+        httpStatus: 400,
+        graphCode: 10,
+        graphSubcode: 2018278,
+        traceId: "trace-1",
+      },
+      "Guide delivery could not be started",
+    );
+    expect(logEvent).not.toHaveBeenCalledWith("sequence_failed", expect.anything());
   });
 
   it("never sends anything on the unhandled path", async () => {
     // Shadow drafting only. The owner approves before a word reaches the user.
     await handleMessage(inbound("Can you help with bedtime?"));
     expect(sendTrackedText).not.toHaveBeenCalled();
-    expect(sendSequence).not.toHaveBeenCalled();
+    expect(deliverGuideForTrigger).not.toHaveBeenCalled();
   });
 
   it("survives a draft-queue failure without breaking the webhook", async () => {
@@ -774,29 +771,26 @@ describe("handleMessage — unhandled DMs", () => {
 });
 
 describe("handleMessage — thread resolution", () => {
-  it("resolves the thread after a successful open-gate delivery", async () => {
+  it("leaves guide-path thread resolution to the durable finalizer", async () => {
     findActiveAwaitingDone.mockResolvedValue({
       id: "convo-1",
       keywordId: "keyword-1",
-      keyword: { keyword: "SLEEP", resource: { messages: [] } },
+      keyword: { keyword: "SLEEP", resource: { id: "resource-1", messages: [] } },
     });
 
     await handleMessage(inbound("Done"));
 
-    expect(markThreadResolved).toHaveBeenCalledWith({
-      threadId: "thread-1",
-      inboundMessageId: "message-1",
-    });
+    expect(markThreadResolved).not.toHaveBeenCalled();
   });
 
-  it("leaves needsReply set when the automatic send fails", async () => {
+  it("leaves needsReply set when durable delivery needs review", async () => {
     // The owner must see "Needs review" rather than a silently swallowed failure.
     findActiveAwaitingDone.mockResolvedValue({
       id: "convo-1",
       keywordId: "keyword-1",
-      keyword: { keyword: "SLEEP", resource: { messages: [] } },
+      keyword: { keyword: "SLEEP", resource: { id: "resource-1", messages: [] } },
     });
-    sendSequence.mockRejectedValue(new Error("graph 400"));
+    deliverGuideForTrigger.mockResolvedValue("needs_review");
 
     await handleMessage(inbound("Done"));
 
@@ -874,7 +868,7 @@ describe("handleMessage journey resolution is bookkeeping, not a gate", () => {
       gateMessage: "gate copy",
       mediaId: null,
       inferredFromPost: null,
-      resource: { messages: [{ id: "m1", body: "guide" }] },
+      resource: { id: "resource-1", messages: [{ id: "m1", body: "guide" }] },
     });
   });
 
@@ -891,7 +885,7 @@ describe("handleMessage journey resolution is bookkeeping, not a gate", () => {
     await handleMessage(inbound("SLEEP"));
 
     // maySendGate is false, and the guide goes out anyway.
-    expect(sendSequence).toHaveBeenCalledOnce();
+    expect(deliverGuideForTrigger).toHaveBeenCalledOnce();
   });
 
   it("still redelivers to someone who already completed", async () => {
@@ -906,7 +900,9 @@ describe("handleMessage journey resolution is bookkeeping, not a gate", () => {
 
     await handleMessage(inbound("SLEEP"));
 
-    expect(sendSequence).toHaveBeenCalledOnce();
+    expect(deliverGuideForTrigger).toHaveBeenCalledWith(
+      expect.objectContaining({ triggerKind: "explicit_redelivery" }),
+    );
   });
 
   // A DM has no comment id, so the inbound message id stands in — that is what
