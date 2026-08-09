@@ -32,6 +32,7 @@ const reconcileDrainedCampaigns = vi.fn();
 // QA-13: campaign-level stop conditions, which the shared circuit cannot express.
 const evaluateCampaignHealth = vi.fn();
 const reconcilePendingInboundCampaignHealthSignals = vi.fn();
+const reconcileHistoricalRecoveryAttributionSafely = vi.fn();
 const igUserFindUnique = vi.fn();
 const dmMessageCount = vi.fn();
 const conversationCount = vi.fn();
@@ -66,6 +67,9 @@ vi.mock("./recoveryCampaignControl.js", () => ({
 vi.mock("./historicalRecoveryHealth.js", () => ({ evaluateCampaignHealth }));
 vi.mock("./campaignHealthObservation.js", () => ({
   reconcilePendingInboundCampaignHealthSignals,
+}));
+vi.mock("./historicalRecoveryAttribution.js", () => ({
+  reconcileHistoricalRecoveryAttributionSafely,
 }));
 vi.mock("./eventLogger.js", () => ({ logEvent, describeGraphError }));
 // classifySourceReadFailure is deliberately NOT mocked: QA-09's defect was
@@ -145,6 +149,7 @@ beforeEach(() => {
     campaignFindUnique, campaignFindMany, completeCampaignIfDrained,
     reconcileDrainedCampaigns, evaluateCampaignHealth,
     reconcilePendingInboundCampaignHealthSignals,
+    reconcileHistoricalRecoveryAttributionSafely,
     igUserFindUnique, dmMessageCount, conversationCount, dispatchCount,
     acquireHistoricalTick, openCampaignBatch, finishHistoricalTick,
   ]) {
@@ -184,6 +189,7 @@ beforeEach(() => {
     failed: 0,
     remaining: false,
   });
+  reconcileHistoricalRecoveryAttributionSafely.mockResolvedValue({ inbound: 0, completed: 0 });
   igUserFindUnique.mockResolvedValue({ inferredOrigin: "us_western" });
   dmMessageCount.mockResolvedValue(0);
   conversationCount.mockResolvedValue(0);
@@ -214,6 +220,16 @@ describe("runHistoricalRecoveryTick — the send path", () => {
       }),
     );
     expect(result.sent).toBe(1);
+  });
+
+  it("replays durable attribution before and after dispatch finalization", async () => {
+    await runHistoricalRecoveryTick();
+
+    expect(reconcileHistoricalRecoveryAttributionSafely).toHaveBeenCalledTimes(2);
+    expect(reconcileHistoricalRecoveryAttributionSafely.mock.invocationCallOrder[0])
+      .toBeLessThan(finalizeHistoricalDispatch.mock.invocationCallOrder[0]!);
+    expect(reconcileHistoricalRecoveryAttributionSafely.mock.invocationCallOrder[1])
+      .toBeGreaterThan(finalizeHistoricalDispatch.mock.invocationCallOrder[0]!);
   });
 
   it("does not call Meta when final dispatch authorization is blocked", async () => {

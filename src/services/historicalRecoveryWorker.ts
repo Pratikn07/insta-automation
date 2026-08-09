@@ -12,6 +12,7 @@ import {
 } from "./recoveryCampaignControl.js";
 import { evaluateCampaignHealth } from "./historicalRecoveryHealth.js";
 import { reconcilePendingInboundCampaignHealthSignals } from "./campaignHealthObservation.js";
+import { reconcileHistoricalRecoveryAttributionSafely } from "./historicalRecoveryAttribution.js";
 import { recheckBeforeSend, type SourceCommentState } from "./historicalRecoveryRecheck.js";
 import { resolveApprovedHistoricalSource } from "./historicalRecoverySourceChoice.js";
 import {
@@ -138,6 +139,10 @@ async function runLeasedTickBody(
       released: reconciled.released,
     });
   }
+
+  // Live attribution can race finalization or fail after the source event commits.
+  // Replaying durable DM/conversation evidence on every leased tick closes both gaps.
+  await reconcileHistoricalRecoveryAttributionSafely();
 
   // Independent of rows touched by this process. A previous worker may have committed
   // the final outcome and exited before campaign completion bookkeeping.
@@ -601,6 +606,10 @@ async function runLeasedTickBody(
       });
     }
   }
+
+  // Pick up events that landed after dispatch-start but before this tick finalized the
+  // candidate. A failure is logged and retried by the next tick's replay above.
+  await reconcileHistoricalRecoveryAttributionSafely();
 
   // Close any campaign this tick finished (QA-12).
   //

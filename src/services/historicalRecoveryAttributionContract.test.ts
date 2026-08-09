@@ -49,6 +49,7 @@ type CandidateOptions = {
   keywordId?: string;
   dispatchStartedAt?: Date;
   sentAt?: Date;
+  outcome?: "pending" | "sent" | "send_uncertain";
 };
 
 async function createCandidate(options: CandidateOptions) {
@@ -67,6 +68,7 @@ async function createCandidate(options: CandidateOptions) {
   });
   const commentId = `${prefix}-comment-${randomUUID()}`;
   const treatment = options.arm === "treatment";
+  const outcome = treatment ? (options.outcome ?? "sent") : "holdout_withheld";
   const sentAt = options.sentAt ?? new Date((options.dispatchStartedAt ?? T0).getTime() + 1_000);
   return db.recoveryCandidate.create({
     data: {
@@ -81,13 +83,23 @@ async function createCandidate(options: CandidateOptions) {
       publicReplyText: "contract",
       evidence: "gate_sent_no_read",
       arm: options.arm,
-      outcome: treatment ? "sent" : "holdout_withheld",
+      outcome,
       eligibleAt: T0,
       ...(treatment
         ? {
             dispatchStartedAt: options.dispatchStartedAt ?? T0,
-            sentAt,
-            publicReplyId: `179${randomUUID().slice(0, 8)}`,
+            ...(outcome === "pending"
+              ? {
+                  claimedAt: options.dispatchStartedAt ?? T0,
+                  claimExpiresAt: new Date((options.dispatchStartedAt ?? T0).getTime() + 60_000),
+                  claimToken: randomUUID(),
+                  attempts: 1,
+                  lastAttemptAt: options.dispatchStartedAt ?? T0,
+                }
+              : {}),
+            ...(outcome === "sent"
+              ? { sentAt, publicReplyId: `179${randomUUID().slice(0, 8)}` }
+              : {}),
           }
         : {}),
     },
@@ -95,9 +107,12 @@ async function createCandidate(options: CandidateOptions) {
 }
 
 async function wipe(): Promise<void> {
+  await db.dmMessage.deleteMany({ where: { thread: { igUserId: { startsWith: prefix } } } });
+  await db.dmThread.deleteMany({ where: { igUserId: { startsWith: prefix } } });
   await db.recoveryCandidate.deleteMany({ where: { igUserId: { startsWith: prefix } } });
   await db.recoveryCampaign.deleteMany({ where: { selectionVersion: { startsWith: prefix } } });
   await db.journeyIntent.deleteMany({ where: { igUserId: { startsWith: prefix } } });
+  await db.conversation.deleteMany({ where: { igUserId: { startsWith: prefix } } });
   await db.igUser.deleteMany({ where: { id: { startsWith: prefix } } });
 }
 
@@ -221,6 +236,74 @@ describeWithDatabase("bounded historical recovery attribution", () => {
     await expect(attribution.attributeRecoveryOutcome({
       igUserId: row.igUserId, at, kind: "inbound",
     })).resolves.toBe(1);
+  });
+
+  it("reconciles durable inbound and completion evidence that arrived before finalization", async () => {
+    const campaignId = await createCampaign();
+    const row = await createCandidate({
+      campaignId,
+      arm: "treatment",
+      dispatchStartedAt: T0,
+      outcome: "pending",
+    });
+    const inboundAt = new Date(T0.getTime() + 5_000);
+    const completedAt = new Date(T0.getTime() + 6_000);
+    await db.dmThread.create({
+      data: {
+        igAccountId: `${prefix}-account`,
+        igUserId: row.igUserId,
+        lastMessageAt: inboundAt,
+        lastInboundAt: inboundAt,
+        messages: {
+          create: {
+            instagramMessageId: `${prefix}-mid-${randomUUID()}`,
+            direction: "inbound",
+            type: "text",
+            source: "instagram_user",
+            text: "DONE",
+            instagramTimestamp: inboundAt,
+          },
+        },
+      },
+    });
+    await db.conversation.create({
+      data: {
+        igUserId: row.igUserId,
+        keywordId,
+        state: "completed",
+        completedAt,
+      },
+    });
+
+    // The live hooks run while Meta finalization is still pending and cannot yet
+    // attribute the row. Both source events remain durable for reconciliation.
+    await expect(attribution.attributeRecoveryOutcome({
+      igUserId: row.igUserId, at: inboundAt, kind: "inbound",
+    })).resolves.toBe(0);
+    await expect(attribution.attributeRecoveryOutcome({
+      igUserId: row.igUserId, keywordId, at: completedAt, kind: "completed",
+    })).resolves.toBe(0);
+
+    await db.recoveryCandidate.update({
+      where: { id: row.id },
+      data: {
+        outcome: "sent",
+        sentAt: new Date(T0.getTime() + 10_000),
+        publicReplyId: `179${randomUUID().slice(0, 8)}`,
+        claimedAt: null,
+        claimExpiresAt: null,
+        claimToken: null,
+      },
+    });
+
+    await expect(attribution.reconcileHistoricalRecoveryAttribution())
+      .resolves.toEqual({ inbound: 1, completed: 1 });
+    await expect(attribution.reconcileHistoricalRecoveryAttribution())
+      .resolves.toEqual({ inbound: 0, completed: 0 });
+    expect(await db.recoveryCandidate.findUnique({
+      where: { id: row.id },
+      select: { laterInboundAt: true, laterCompletedAt: true },
+    })).toEqual({ laterInboundAt: inboundAt, laterCompletedAt: completedAt });
   });
 
   it("anchors holdout at campaign approval/start", async () => {

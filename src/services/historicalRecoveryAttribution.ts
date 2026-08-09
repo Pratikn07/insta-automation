@@ -63,6 +63,11 @@ type AttributedRow = {
   arm: "treatment" | "holdout";
 };
 
+export type AttributionReconciliationResult = {
+  inbound: number;
+  completed: number;
+};
+
 /**
  * Treatment starts at the final pre-network dispatch stamp. `sent_at` and
  * `last_attempt_at` are compatibility fallbacks for legacy settled rows created before
@@ -217,5 +222,151 @@ export async function attributeRecoveryOutcomeSafely(input: AttributionInput): P
       },
       "Could not attribute a historical recovery outcome",
     );
+  }
+}
+
+/**
+ * Rebuild attribution from the durable source-of-truth rows.
+ *
+ * Live webhooks are only a low-latency hint: an inbound or completion can commit after
+ * dispatch starts but before its candidate is finalized, or its attribution write can
+ * fail after the source event commits. In both cases the event must not disappear just
+ * because the live hook is processed once. These static bulk statements replay the
+ * persisted DM/conversation evidence after finalization and remain idempotent.
+ */
+export async function reconcileHistoricalRecoveryAttribution(): Promise<AttributionReconciliationResult> {
+  const inbound = await prisma.$queryRaw<AttributedRow[]>`
+    WITH eligible AS (
+      SELECT
+        rc."id",
+        rc."campaign_id",
+        rc."arm",
+        rc."ig_user_id",
+        CASE
+          WHEN rc."arm" = 'treatment' THEN
+            COALESCE(rc."dispatch_started_at", rc."sent_at", rc."last_attempt_at")
+          ELSE campaign."started_at"
+        END AS anchor_at,
+        campaign."inbound_window_hours" AS window_hours
+      FROM "recovery_candidate" rc
+      JOIN "recovery_campaign" campaign ON campaign."id" = rc."campaign_id"
+      WHERE (
+        (rc."arm" = 'treatment' AND rc."outcome" IN ('sent', 'send_uncertain'))
+        OR (rc."arm" = 'holdout' AND rc."outcome" = 'holdout_withheld')
+      )
+    ), evidence AS (
+      SELECT
+        eligible."id",
+        eligible."campaign_id",
+        eligible."arm",
+        MIN(message."instagram_timestamp") AS event_at
+      FROM eligible
+      JOIN "dm_thread" thread ON thread."ig_user_id" = eligible."ig_user_id"
+      JOIN "dm_message" message ON message."thread_id" = thread."id"
+      WHERE message."direction" = 'inbound'
+        AND eligible.anchor_at IS NOT NULL
+        AND message."instagram_timestamp" >= eligible.anchor_at
+        AND message."instagram_timestamp" <= eligible.anchor_at
+          + make_interval(hours => eligible.window_hours)
+      GROUP BY eligible."id", eligible."campaign_id", eligible."arm"
+    )
+    UPDATE "recovery_candidate" candidate
+    SET
+      "later_inbound_at" = LEAST(
+        COALESCE(candidate."later_inbound_at", evidence.event_at),
+        evidence.event_at
+      ),
+      "updated_at" = CURRENT_TIMESTAMP
+    FROM evidence
+    WHERE candidate."id" = evidence."id"
+      AND (
+        candidate."later_inbound_at" IS NULL
+        OR evidence.event_at < candidate."later_inbound_at"
+      )
+    RETURNING
+      candidate."campaign_id" AS "campaignId",
+      candidate."arm"::text AS "arm"
+  `;
+
+  const completed = await prisma.$queryRaw<AttributedRow[]>`
+    WITH eligible AS (
+      SELECT
+        rc."id",
+        rc."campaign_id",
+        rc."arm",
+        rc."ig_user_id",
+        rc."keyword_id",
+        CASE
+          WHEN rc."arm" = 'treatment' THEN
+            COALESCE(rc."dispatch_started_at", rc."sent_at", rc."last_attempt_at")
+          ELSE campaign."started_at"
+        END AS anchor_at,
+        campaign."completion_window_hours" AS window_hours
+      FROM "recovery_candidate" rc
+      JOIN "recovery_campaign" campaign ON campaign."id" = rc."campaign_id"
+      WHERE (
+        (rc."arm" = 'treatment' AND rc."outcome" IN ('sent', 'send_uncertain'))
+        OR (rc."arm" = 'holdout' AND rc."outcome" = 'holdout_withheld')
+      )
+    ), evidence AS (
+      SELECT
+        eligible."id",
+        eligible."campaign_id",
+        eligible."arm",
+        MIN(conversation."completed_at") AS event_at
+      FROM eligible
+      JOIN "conversations" conversation
+        ON conversation."ig_user_id" = eligible."ig_user_id"
+        AND conversation."keyword_id" = eligible."keyword_id"
+      WHERE conversation."state" = 'completed'
+        AND conversation."completed_at" IS NOT NULL
+        AND eligible.anchor_at IS NOT NULL
+        AND conversation."completed_at" >= eligible.anchor_at
+        AND conversation."completed_at" <= eligible.anchor_at
+          + make_interval(hours => eligible.window_hours)
+      GROUP BY eligible."id", eligible."campaign_id", eligible."arm"
+    )
+    UPDATE "recovery_candidate" candidate
+    SET
+      "later_completed_at" = LEAST(
+        COALESCE(candidate."later_completed_at", evidence.event_at),
+        evidence.event_at
+      ),
+      "updated_at" = CURRENT_TIMESTAMP
+    FROM evidence
+    WHERE candidate."id" = evidence."id"
+      AND (
+        candidate."later_completed_at" IS NULL
+        OR evidence.event_at < candidate."later_completed_at"
+      )
+    RETURNING
+      candidate."campaign_id" AS "campaignId",
+      candidate."arm"::text AS "arm"
+  `;
+
+  const changed = [...inbound, ...completed];
+  if (changed.length > 0) {
+    await logEvent("historical_recovery_attribution_reconciled", {
+      inbound: inbound.length,
+      completed: completed.length,
+    });
+    for (const campaignId of new Set(changed.map((candidate) => candidate.campaignId))) {
+      await completeCampaignIfDrained(campaignId, new Date());
+    }
+  }
+
+  return { inbound: inbound.length, completed: completed.length };
+}
+
+/** Retry on the next worker tick without putting message delivery or sends at risk. */
+export async function reconcileHistoricalRecoveryAttributionSafely(): Promise<AttributionReconciliationResult> {
+  try {
+    return await reconcileHistoricalRecoveryAttribution();
+  } catch {
+    logger.error(
+      { errorCode: "historical_recovery_attribution_reconciliation_failed" },
+      "Could not reconcile durable historical recovery attribution",
+    );
+    return { inbound: 0, completed: 0 };
   }
 }
