@@ -1,10 +1,14 @@
 import { gemini, geminiEnabled, GeminiDisabledError } from "../meta/geminiClient.js";
 import { env } from "../config/env.js";
 import type { Origin } from "./originInference.js";
+import {
+  CURRENT_ORIGIN_METHOD,
+  normalizeGeminiVerdict,
+} from "./historicalRecoveryOriginPolicy.js";
 
-// Bump to re-run every user through a changed prompt (stored in origin_method,
-// so a later pass can find and upgrade the rows an older prompt produced).
-export const ORIGIN_PROMPT_VERSION = "llm_v1";
+// Keep the existing caller-facing name while sharing the canonical method value
+// with the historical recovery policy.
+export { CURRENT_ORIGIN_METHOD as ORIGIN_PROMPT_VERSION } from "./historicalRecoveryOriginPolicy.js";
 
 // Gemini 2.5 Flash paid-tier pricing (per 1M tokens). Mirrors
 // geminiAnalysisService's PRICE block — kept local so a change to the reel
@@ -147,7 +151,7 @@ function toVerdict(raw: unknown, requestedIds: Set<string>): OriginVerdict | nul
 
   const evidence = typeof r.evidence === "string" ? r.evidence.slice(0, 200) : "";
 
-  return { id, origin, confidence, evidence };
+  return normalizeGeminiVerdict({ id, origin, confidence, evidence });
 }
 
 /**
@@ -166,7 +170,7 @@ export async function classifyOrigins(
       verdicts: [],
       costUsd: 0,
       modelId: env.GEMINI_MODEL,
-      promptVersion: ORIGIN_PROMPT_VERSION,
+      promptVersion: CURRENT_ORIGIN_METHOD,
     };
   }
   if (candidates.length > MAX_ORIGIN_BATCH) {
@@ -241,7 +245,7 @@ export async function classifyOrigins(
     verdicts,
     costUsd: estimateOriginCostUsd(candidates.length),
     modelId: env.GEMINI_MODEL,
-    promptVersion: ORIGIN_PROMPT_VERSION,
+    promptVersion: CURRENT_ORIGIN_METHOD,
     // Reported so a zero-verdict batch says WHY. Without this the worker logged
     // only "no usable verdicts", which read identically whether the model was
     // blocked, truncated, or genuinely undecided — and a truncation loop billed

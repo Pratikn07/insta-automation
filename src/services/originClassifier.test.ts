@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { CURRENT_ORIGIN_METHOD } from "./historicalRecoveryOriginPolicy.js";
 
 const post = vi.fn();
 
@@ -14,7 +15,7 @@ vi.mock("../meta/geminiClient.js", () => ({
 }));
 vi.mock("../config/env.js", () => ({ env: { GEMINI_MODEL: "gemini-2.5-flash" } }));
 
-const { classifyOrigins, estimateOriginCostUsd, MAX_ORIGIN_BATCH } = await import(
+const { classifyOrigins, estimateOriginCostUsd, MAX_ORIGIN_BATCH, ORIGIN_PROMPT_VERSION } = await import(
   "./originClassifier.js"
 );
 
@@ -37,6 +38,10 @@ beforeEach(() => {
 });
 
 describe("classifyOrigins", () => {
+  it("re-exports the shared current origin method for existing callers", () => {
+    expect(ORIGIN_PROMPT_VERSION).toBe(CURRENT_ORIGIN_METHOD);
+  });
+
   it("returns one verdict per account with the model's evidence", async () => {
     post.mockResolvedValue(
       reply([
@@ -53,6 +58,20 @@ describe("classifyOrigins", () => {
     ]);
     expect(res.promptVersion).toBe("llm_v1");
     expect(res.modelId).toBe("gemini-2.5-flash");
+  });
+
+  it("normalizes contradictory generic Western evidence at the classifier boundary", async () => {
+    post.mockResolvedValue(
+      reply([
+        { id: "u1", origin: "us_western", confidence: "low", evidence: "Generic handle, NO STRONG CUE" },
+      ]),
+    );
+
+    const res = await classifyOrigins([CANDIDATES[0]]);
+
+    expect(res.verdicts).toEqual([
+      { id: "u1", origin: "unknown", confidence: "low", evidence: "Generic handle, NO STRONG CUE" },
+    ]);
   });
 
   it("asks for a deterministic answer so a re-check cannot drift", async () => {
