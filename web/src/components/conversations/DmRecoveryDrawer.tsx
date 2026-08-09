@@ -158,6 +158,53 @@ export function DmRecoveryDrawer({
         ) : null}
       </section>
 
+      {row.triggerKind === "settings_blocked" && row.settingsEvidence ? (
+        <section className="space-y-2 rounded-md border px-3 py-2 text-xs">
+          <h3 className="font-semibold">Verified settings evidence</h3>
+          {row.settingsEvidence.status === "missing" ? (
+            <p className="text-rose-200">
+              Verification evidence missing. This legacy reminder cannot establish which controlled
+              Graph signature justified the settings-specific copy.
+            </p>
+          ) : (
+            <>
+              <p>
+                <span className="text-muted-foreground">Status · </span>
+                <span className={row.settingsEvidence.status === "current" ? "text-emerald-300" : "text-rose-200"}>
+                  {row.settingsEvidence.status}
+                </span>
+              </p>
+              <p>
+                <span className="text-muted-foreground">Version · </span>
+                {row.settingsEvidence.version} · {row.settingsEvidence.graphCode}:
+                {row.settingsEvidence.graphSubcode}
+              </p>
+              <p>
+                <span className="text-muted-foreground">Verified · </span>
+                {row.settingsEvidence.verifiedAt
+                  ? formatAbsolute(row.settingsEvidence.verifiedAt)
+                  : "unknown"}
+                {row.settingsEvidence.validUntil
+                  ? ` · valid until ${formatAbsolute(row.settingsEvidence.validUntil)}`
+                  : null}
+              </p>
+              <p className="break-all">
+                <span className="text-muted-foreground">Evidence · </span>
+                {row.settingsEvidence.evidenceReference}
+              </p>
+              <p className="break-all text-muted-foreground">
+                SHA-256 · {row.settingsEvidence.evidenceSha256}
+              </p>
+              {row.settingsEvidence.status !== "current" ? (
+                <p className="text-rose-200">
+                  This evidence is {row.settingsEvidence.status}; new settings-specific reminders are blocked.
+                </p>
+              ) : null}
+            </>
+          )}
+        </section>
+      ) : null}
+
       {conflicted ? (
         <p role="status" className="rounded-md border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs text-amber-100">
           {RECOVERY_CONFLICT_MESSAGE}

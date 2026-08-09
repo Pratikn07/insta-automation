@@ -3,6 +3,10 @@ import { prisma } from "../lib/prisma.js";
 import { suppressRecoveriesForCompletionSafely } from "./dmRecoveryService.js";
 import { attributeRecoveryOutcomeSafely } from "./historicalRecoveryAttribution.js";
 import { markIntentCompleted } from "./journeyIntentService.js";
+import {
+  operationalConversationWhere,
+  resolveCanonicalConversation,
+} from "./canonicalConversation.js";
 
 // Window during which we'll accept a DONE reply / keep a gate "open", measured
 // from when the gate was DELIVERED (gatedAt), falling back to createdAt for legacy
@@ -53,6 +57,7 @@ export async function findActiveAwaitingDone(igUserId: string) {
   const cutoff = new Date(Date.now() - GATE_WINDOW_HOURS * 60 * 60 * 1000);
   return prisma.conversation.findFirst({
     where: {
+      ...operationalConversationWhere(),
       igUserId,
       state: "awaiting_done",
       // Window measured from gatedAt when present, else createdAt (legacy/live).
@@ -74,6 +79,7 @@ export async function findActiveAwaitingDone(igUserId: string) {
 export async function findLatestIncompleteConversation(igUserId: string) {
   return prisma.conversation.findFirst({
     where: {
+      ...operationalConversationWhere(),
       igUserId,
       state: { in: ["awaiting_done", "expired"] },
     },
@@ -89,20 +95,73 @@ export async function markCompleted(conversationId: string) {
   // the user has the guide, so another "reply DONE to unlock" would be pure
   // spam. Those two writes must land together, so they share a transaction.
   const convo = await prisma.$transaction(async (tx) => {
-    const updated = await tx.conversation.update({
+    const resolution = await resolveCanonicalConversation(tx, conversationId);
+    if (!resolution) throw new Error("conversation_not_found");
+    const canonicalId =
+      resolution.role === "alias" && resolution.canonicalConversationId
+        ? resolution.canonicalConversationId
+        : conversationId;
+    const linked = resolution.canonicalIntentId
+      ? await tx.conversation.findMany({
+          where: { canonicalIntentId: resolution.canonicalIntentId },
+          select: { id: true },
+        })
+      : [{ id: conversationId }];
+    const linkedIds = Array.from(
+      new Set([conversationId, canonicalId, ...linked.map((row) => row.id)]),
+    );
+    const canonicalExisting =
+      canonicalId === conversationId
+        ? resolution.requestedConversation
+        : await tx.conversation.findUnique({
+            where: { id: canonicalId },
+            select: { completedAt: true },
+          });
+    const authoritativeCompletedAt = [
+      completedAt,
+      resolution.requestedConversation.completedAt,
+      resolution.intentCompletedAt,
+      canonicalExisting?.completedAt ?? null,
+    ].reduce<Date>(
+      (earliest, value) => value && value < earliest ? value : earliest,
+      completedAt,
+    );
+
+    // Preserve the alias completion as history, but move operational completion to the
+    // canonical owner. An earlier completion is never moved forward.
+    const requestedUpdated = await tx.conversation.update({
       where: { id: conversationId },
-      data: { state: "completed", completedAt },
+      data: {
+        state: "completed",
+        completedAt: authoritativeCompletedAt,
+      },
     });
+    const updated =
+      canonicalId === conversationId
+        ? requestedUpdated
+        : await tx.conversation.update({
+            where: { id: canonicalId },
+            data: { state: "completed", completedAt: authoritativeCompletedAt },
+          });
 
     await tx.gateQueue.updateMany({
-      where: { conversationId, status: "pending" },
-      data: { status: "abandoned", lastError: "conversation_completed" },
+      where: { conversationId: { in: linkedIds }, status: "pending" },
+      data: { status: "abandoned", lastError: "intent_completed" },
+    });
+
+    await tx.dmRecoveryReminder.updateMany({
+      where: { conversationId: { in: linkedIds }, status: "waiting" },
+      data: {
+        status: "suppressed",
+        suppressedAt: completedAt,
+        suppressionReason: "completed_elsewhere",
+      },
     });
 
     // Same transaction as the completion: a later comment inside the 48-hour
     // window must read `already_completed_recently` and stay silent. If these
     // could diverge, the person would be re-gated for a guide they already have.
-    await markIntentCompleted(tx, conversationId, completedAt);
+    await markIntentCompleted(tx, canonicalId, authoritativeCompletedAt);
 
     return updated;
   });

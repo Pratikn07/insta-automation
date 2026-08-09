@@ -36,6 +36,7 @@ function row(overrides: Partial<RecoveryReminderRow> = {}): RecoveryReminderRow 
     lastErrorCategory: null,
     reviewedAt: null,
     createdAt: hoursAgo(22),
+    settingsEvidence: null,
     ...overrides,
   };
 }

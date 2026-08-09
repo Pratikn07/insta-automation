@@ -7,6 +7,8 @@ const updateDmThreadProfile = vi.fn();
 const markThreadResolved = vi.fn();
 const markInboundDeleted = vi.fn();
 const recordRecoveryInbound = vi.fn();
+const recordInboundCampaignHealthSignals = vi.fn();
+const markInboundCampaignHealthCaptured = vi.fn();
 const queueReplyDraft = vi.fn();
 const scheduleEngagementFollowUp = vi.fn();
 const findKeywordInMessage = vi.fn();
@@ -43,6 +45,10 @@ vi.mock("../services/dmThreadService.js", () => ({
   markInboundDeleted,
 }));
 vi.mock("../services/dmRecoveryService.js", () => ({ recordRecoveryInbound }));
+vi.mock("../services/campaignHealthObservation.js", () => ({
+  recordInboundCampaignHealthSignals,
+  markInboundCampaignHealthCaptured,
+}));
 vi.mock("../services/replyDraftService.js", () => ({ queueReplyDraft }));
 vi.mock("../services/engagementFollowUpService.js", () => ({ scheduleEngagementFollowUp }));
 vi.mock("../services/keywordService.js", () => ({ findKeywordInMessage }));
@@ -113,6 +119,8 @@ beforeEach(() => {
     markThreadResolved,
     markInboundDeleted,
     recordRecoveryInbound,
+    recordInboundCampaignHealthSignals,
+    markInboundCampaignHealthCaptured,
     queueReplyDraft,
     scheduleEngagementFollowUp,
     findKeywordInMessage,
@@ -156,6 +164,8 @@ beforeEach(() => {
   sendSequence.mockResolvedValue(undefined);
   queueReplyDraft.mockResolvedValue({ id: "draft-1" });
   scheduleEngagementFollowUp.mockResolvedValue({ scheduled: true, draftId: "follow-up-1" });
+  recordInboundCampaignHealthSignals.mockResolvedValue({ recorded: 0 });
+  markInboundCampaignHealthCaptured.mockResolvedValue(true);
   markCompleted.mockResolvedValue({
     id: "convo-1",
     completedAt: new Date("2026-08-05T10:01:00.000Z"),
@@ -165,6 +175,53 @@ beforeEach(() => {
 });
 
 describe("handleMessage — inbound capture", () => {
+  it("captures a stable inbound message for campaign health classification", async () => {
+    await handleMessage(inbound("STOP"));
+
+    expect(recordInboundCampaignHealthSignals).toHaveBeenCalledWith({
+      igUserId: "ig-user-1",
+      instagramMessageId: "mid-1",
+      text: "STOP",
+      observedAt: new Date(1785895200000),
+    });
+    expect(markInboundCampaignHealthCaptured).toHaveBeenCalledWith(
+      "message-1",
+      expect.any(Date),
+    );
+  });
+
+  it("retries idempotent health capture for a duplicate webhook", async () => {
+    recordInboundMessage.mockResolvedValue({
+      duplicate: true,
+      becameLatest: false,
+      threadId: "thread-1",
+      messageId: "message-1",
+    });
+
+    await handleMessage(inbound("STOP"));
+
+    expect(recordInboundCampaignHealthSignals).toHaveBeenCalledWith({
+      igUserId: "ig-user-1",
+      instagramMessageId: "mid-1",
+      text: "STOP",
+      observedAt: new Date(1785895200000),
+    });
+  });
+
+  it("leaves durable capture state pending without breaking acknowledged inbound handling", async () => {
+    recordInboundCampaignHealthSignals.mockRejectedValue(new Error("private database detail"));
+
+    await expect(handleMessage(inbound("STOP"))).resolves.toBeUndefined();
+
+    expect(markInboundCampaignHealthCaptured).not.toHaveBeenCalled();
+    expect(recordRecoveryInbound).toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ errorCode: "campaign_health_inbound_capture_failed" }),
+      expect.any(String),
+    );
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain("private database detail");
+  });
+
   it("drops a duplicate webhook before automation or drafting", async () => {
     recordInboundMessage.mockResolvedValue({
       duplicate: true,

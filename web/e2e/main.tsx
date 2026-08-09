@@ -5,6 +5,7 @@ import { MemoryRouter } from "react-router-dom";
 import { DmThreadDrawer } from "@/components/conversations/DmThreadDrawer";
 import { Assistant } from "@/pages/Assistant";
 import { Conversations } from "@/pages/Conversations";
+import { HistoricalRecovery } from "@/pages/HistoricalRecovery";
 import "../src/index.css";
 
 /**
@@ -262,10 +263,206 @@ function recoveryCounts() {
   };
 }
 
+// ── Historical recovery + canonical history fixtures ─────────────────────
+
+const HISTORICAL_AS_OF = "2026-08-08T20:00:00.000Z";
+const HISTORICAL_FIRST_CAMPAIGN = "11111111-1111-4111-8111-111111111111";
+const HISTORICAL_SECOND_CAMPAIGN = "22222222-2222-4222-8222-222222222222";
+const HISTORICAL_FIRST_CANDIDATE = "33333333-3333-4333-8333-333333333333";
+const HISTORICAL_UNCERTAIN_CANDIDATE = "55555555-5555-4555-8555-555555555555";
+
+const HISTORICAL_APPROVED = new Set<string>();
+const HISTORICAL_REVIEWED = new Set<string>();
+const HISTORICAL_CAPS = new Map<
+  string,
+  { batchSize: number; hourlyCap: number; dailyCap: number }
+>();
+
+function historicalCampaign(overrides: Record<string, unknown> = {}) {
+  return {
+    id: HISTORICAL_FIRST_CAMPAIGN,
+    phase: "unknown_read_pilot",
+    state: "running",
+    selectionVersion: "selection-v2",
+    copyVersion: "recovery-v2",
+    sourceDataCutoff: "2026-08-01T00:00:00.000Z",
+    holdoutPercent: 50,
+    batchSize: 1,
+    hourlyCap: 3,
+    dailyCap: 10,
+    candidateCount: 2,
+    excludedCount: 0,
+    approvedBy: "owner@example.com",
+    approvedAt: "2026-08-02T01:00:00.000Z",
+    startedAt: "2026-08-02T01:00:00.000Z",
+    pausedAt: null,
+    pauseReason: null,
+    endedAt: null,
+    createdAt: "2026-08-02T00:00:00.000Z",
+    progress: {},
+    ...overrides,
+  };
+}
+
+function historicalCampaignRows() {
+  return [
+    historicalCampaign(),
+    historicalCampaign({
+      id: HISTORICAL_SECOND_CAMPAIGN,
+      phase: "confirmed_failure",
+      state: HISTORICAL_APPROVED.has(HISTORICAL_SECOND_CAMPAIGN)
+        ? "running"
+        : "awaiting_approval",
+      approvedBy: HISTORICAL_APPROVED.has(HISTORICAL_SECOND_CAMPAIGN)
+        ? "owner@example.com"
+        : null,
+      approvedAt: HISTORICAL_APPROVED.has(HISTORICAL_SECOND_CAMPAIGN)
+        ? "2026-08-08T20:05:00.000Z"
+        : null,
+      startedAt: HISTORICAL_APPROVED.has(HISTORICAL_SECOND_CAMPAIGN)
+        ? "2026-08-08T20:05:00.000Z"
+        : null,
+      createdAt: "2026-08-01T00:00:00.000Z",
+      ...(HISTORICAL_CAPS.get(HISTORICAL_SECOND_CAMPAIGN) ?? {}),
+    }),
+  ];
+}
+
+function historicalCandidate(overrides: Record<string, unknown> = {}) {
+  return {
+    id: HISTORICAL_FIRST_CANDIDATE,
+    campaignId: HISTORICAL_FIRST_CAMPAIGN,
+    campaignPhase: "unknown_read_pilot",
+    igUserId: "ig-sarah",
+    username: "sarah",
+    keywordSnapshot: "SLEEP",
+    commentId: "comment-sarah",
+    mediaId: "media-1",
+    commentAt: "2026-06-25T10:00:00.000Z",
+    publicReplyText: "Here is your SLEEP guide.",
+    evidence: "gate_sent_no_read",
+    arm: "treatment",
+    outcome: "pending",
+    audienceOrigin: "us_western",
+    audienceOriginConfidence: "high",
+    sentAt: null,
+    publicReplyId: null,
+    suppressionReason: null,
+    reviewedAt: null,
+    laterInboundAt: null,
+    laterCompletedAt: null,
+    attempts: 0,
+    createdAt: "2026-08-02T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function historicalCounts() {
+  return {
+    all: 3,
+    pending: 2,
+    sent: 0,
+    suppressed: 0,
+    attention: 1,
+    holdout: 0,
+    recovered: 0,
+  };
+}
+
+function historicalUncertainCandidate() {
+  return historicalCandidate({
+    id: HISTORICAL_UNCERTAIN_CANDIDATE,
+    igUserId: "ig-zoe",
+    username: "zoe",
+    commentId: "source-comment-uncertain",
+    outcome: "send_uncertain",
+    evidence: "transport_interrupted",
+    attempts: 1,
+    reviewedAt: HISTORICAL_REVIEWED.has(HISTORICAL_UNCERTAIN_CANDIDATE)
+      ? "2026-08-08T20:10:00.000Z"
+      : null,
+  });
+}
+
+function historicalCandidateDetail() {
+  const candidate = historicalUncertainCandidate();
+  return {
+    candidate,
+    campaign: {
+      id: HISTORICAL_FIRST_CAMPAIGN,
+      state: "running",
+      selectionVersion: "selection-v2",
+      copyVersion: "recovery-v2",
+      sourceDataCutoff: "2026-08-01T00:00:00.000Z",
+    },
+    intent: {
+      id: "intent-1",
+      keyword: { id: "keyword-1", keyword: "SLEEP" },
+      reconciledState: "canonical",
+      completedAt: null,
+      canonicalConversation: {
+        id: "canonical-conversation-1",
+        state: "expired",
+        reconciliationReason: null,
+      },
+      aliasConversations: [
+        {
+          id: "alias-conversation-1",
+          state: "expired",
+          reconciliationReason: "duplicate_inside_window",
+        },
+      ],
+      triggers: [
+        {
+          id: "trigger-1",
+          commentId: "trigger-comment-1",
+          mediaId: "media-1",
+          receivedAt: "2026-06-25T10:00:00.000Z",
+          triggerKind: "comment",
+          disposition: "canonical",
+        },
+      ],
+    },
+    mediaPermalink: "https://www.instagram.com/reel/exact-stored-source/",
+    auditEvents: [
+      {
+        id: "audit-selected",
+        kind: "historical_candidate_selected",
+        actor: "system",
+        action: null,
+        reason: null,
+        category: null,
+        createdAt: "2026-08-02T00:00:00.000Z",
+      },
+    ],
+  };
+}
+
+function canonicalConversation(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "canonical-conversation-1",
+    igUserId: "ig-history",
+    keywordId: "keyword-1",
+    state: "awaiting_done",
+    delivery: "delivered",
+    createdAt: "2026-08-08T19:00:00.000Z",
+    completedAt: null,
+    keyword: { id: "keyword-1", keyword: "SLEEP" },
+    username: "history-user",
+    name: "History User",
+    historyRole: "canonical",
+    canonicalOwner: { id: "canonical-conversation-1" },
+    aliasCount: 1,
+    reconciliationReason: null,
+    ...overrides,
+  };
+}
+
 function installFetchStub(): void {
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     const method = (init?.method ?? "GET").toUpperCase();
+    const requestUrl = new URL(url, window.location.origin);
     // api() builds `${VITE_API_URL}/api${path}`, so strip the origin AND the /api
     // prefix to get back to the route path the components asked for.
     const path = (url.replace(/^https?:\/\/[^/]+/, "").split("?")[0] ?? "").replace(
@@ -419,6 +616,24 @@ function installFetchStub(): void {
     }
 
     if (path === "/conversations" && method === "GET") {
+      if (recoveryScenario() === "canonical-conversations") {
+        const mode = requestUrl.searchParams.get("mode") ?? "canonical";
+        return json({
+          items:
+            mode === "raw"
+              ? [
+                  canonicalConversation({
+                    id: "alias-conversation-1",
+                    historyRole: "alias",
+                    canonicalOwner: { id: "canonical-conversation-1" },
+                    aliasCount: 0,
+                    reconciliationReason: "duplicate_inside_window",
+                  }),
+                ]
+              : [canonicalConversation()],
+          nextCursor: null,
+        });
+      }
       return json({ items: [], nextCursor: null });
     }
 
@@ -430,6 +645,88 @@ function installFetchStub(): void {
         retrying: 0,
         waitingOnReply: 1,
       });
+    }
+
+    // ── Historical recovery dashboard ───────────────────────────────────
+    if (path === "/historical-recovery/campaigns" && method === "GET") {
+      return json({ sendingEnabled: true, campaigns: historicalCampaignRows() });
+    }
+
+    if (path === "/historical-recovery/candidates" && method === "GET") {
+      const view = requestUrl.searchParams.get("view") ?? "pending";
+      const cursor = requestUrl.searchParams.get("cursor");
+      if (view === "attention") {
+        return json({
+          counts: historicalCounts(),
+          nextCursor: null,
+          asOf: HISTORICAL_AS_OF,
+          candidates: [historicalUncertainCandidate()],
+        });
+      }
+      if (cursor) {
+        if (
+          cursor !== HISTORICAL_FIRST_CANDIDATE ||
+          requestUrl.searchParams.get("asOf") !== HISTORICAL_AS_OF
+        ) {
+          return json({ error: "historical_snapshot_mismatch" }, 400);
+        }
+        return json({
+          counts: historicalCounts(),
+          nextCursor: null,
+          asOf: HISTORICAL_AS_OF,
+          candidates: [
+            historicalCandidate(),
+            historicalCandidate({
+              id: "44444444-4444-4444-8444-444444444444",
+              igUserId: "ig-maria",
+              username: "maria",
+              commentId: "comment-maria",
+            }),
+          ],
+        });
+      }
+      return json({
+        counts: historicalCounts(),
+        nextCursor: HISTORICAL_FIRST_CANDIDATE,
+        asOf: HISTORICAL_AS_OF,
+        candidates: [historicalCandidate()],
+      });
+    }
+
+    if (
+      path === `/historical-recovery/candidates/${HISTORICAL_UNCERTAIN_CANDIDATE}/mark-reviewed` &&
+      method === "POST"
+    ) {
+      HISTORICAL_REVIEWED.add(HISTORICAL_UNCERTAIN_CANDIDATE);
+      return new Response(null, { status: 204 });
+    }
+
+    if (
+      path === `/historical-recovery/candidates/${HISTORICAL_UNCERTAIN_CANDIDATE}` &&
+      method === "GET"
+    ) {
+      return json(historicalCandidateDetail());
+    }
+
+    if (
+      path === `/historical-recovery/campaigns/${HISTORICAL_SECOND_CAMPAIGN}/approve` &&
+      method === "POST"
+    ) {
+      HISTORICAL_APPROVED.add(HISTORICAL_SECOND_CAMPAIGN);
+      return json({ state: "running" });
+    }
+
+    if (
+      path === `/historical-recovery/campaigns/${HISTORICAL_SECOND_CAMPAIGN}/stage` &&
+      method === "POST"
+    ) {
+      const caps = JSON.parse(String(init?.body ?? "{}")) as {
+        batchSize: number;
+        hourlyCap: number;
+        dailyCap: number;
+      };
+      HISTORICAL_CAPS.set(HISTORICAL_SECOND_CAMPAIGN, caps);
+      return json({ state: "running" });
     }
 
 
@@ -468,6 +765,10 @@ function installFetchStub(): void {
           positiveSignalSample: 0,
         },
       });
+    }
+
+    if (path === "/recovery-reminders/settings-verifications" && method === "GET") {
+      return json({ records: [] });
     }
 
     if (path.startsWith("/recovery-reminders/") && method === "GET") {
@@ -609,6 +910,20 @@ export function CapabilitiesScenario() {
 
 export function Harness() {
   const scenario = new URLSearchParams(window.location.search).get("scenario");
+  if (scenario === "historical-dashboard") {
+    return (
+      <div className="p-4">
+        <HistoricalRecovery />
+      </div>
+    );
+  }
+  if (scenario === "canonical-conversations") {
+    return (
+      <div className="p-4">
+        <Conversations />
+      </div>
+    );
+  }
   if (scenario === "dm-approval") return <DmApprovalScenario />;
   if (scenario === "capabilities" || scenario === "capabilities-enabled") {
     return <CapabilitiesScenario />;

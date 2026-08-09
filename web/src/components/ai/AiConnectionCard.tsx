@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, Check, ExternalLink, Loader2, Sparkles } from "lucide-react";
 import { api } from "@/lib/api";
@@ -44,21 +44,15 @@ export function AiConnectionCard() {
     queryFn: () => api<AiConnectionStatus>("/ai/connection"),
     // Poll ONLY while a device code is outstanding: sign-in completes in the
     // browser at OpenAI, so this is the only way to notice. Idle otherwise.
-    refetchInterval: login ? 3_000 : false,
+    refetchInterval: (query) =>
+      login && !(query.state.data as AiConnectionStatus | undefined)?.connected ? 3_000 : false,
   });
-
-  // Once the poll reports a connection the code has been redeemed, so drop it
-  // and let the query drive the view. `connected` takes precedence inside
-  // connectionView too, so there is no frame where a stale code is shown.
-  useEffect(() => {
-    if (login && statusQ.data?.connected) setLogin(null);
-  }, [login, statusQ.data?.connected]);
 
   const view = connectionView({
     isLoading: statusQ.isLoading,
     error: statusQ.error,
     status: statusQ.data,
-    login,
+    login: statusQ.data?.connected ? null : login,
   });
 
   const startLogin = useMutation({

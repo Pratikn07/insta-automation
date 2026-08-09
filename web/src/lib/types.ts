@@ -90,6 +90,11 @@ export interface Conversation extends FollowFields {
   keyword: { id: string; keyword: string };
   username?: string | null;
   name?: string | null;
+  historyRole?: "unreconciled" | "canonical" | "alias";
+  canonicalOwner?: { id: string } | null;
+  canonicalConversationId?: string | null;
+  aliasCount?: number;
+  reconciliationReason?: string | null;
 }
 
 export interface ConversationCounts {
@@ -678,6 +683,39 @@ export type RecoveryStatus =
 
 export type RecoveryCohort = "treatment" | "control" | "not_applicable";
 export type RecoveryTriggerKind = "no_confirmed_read" | "settings_blocked";
+export type RecoverySettingsEvidenceStatus = "current" | "stale" | "retired" | "missing";
+
+export interface RecoverySettingsEvidence {
+  status: RecoverySettingsEvidenceStatus;
+  verificationId: string | null;
+  version: string | null;
+  graphCode: number | null;
+  graphSubcode: number | null;
+  classifiedAt: string | null;
+  verifiedAt: string | null;
+  validUntil: string | null;
+  apiVersion: string | null;
+  evidenceReference: string | null;
+  evidenceSha256: string | null;
+}
+
+export type SettingsBlockedVerificationStatus = "current" | "stale" | "retired" | "inactive";
+
+export interface SettingsBlockedVerificationRecord {
+  id: string;
+  version: string;
+  graphCode: number;
+  graphSubcode: number;
+  status: SettingsBlockedVerificationStatus;
+  verifiedAt: string;
+  validUntil: string;
+  apiVersion: string;
+  evidenceReference: string;
+  evidenceSha256: string;
+  active: boolean;
+  retiredAt: string | null;
+  retirementReason: string | null;
+}
 
 export type RecoveryView =
   | "all"
@@ -711,6 +749,7 @@ export interface RecoveryReminderRow {
   lastErrorCategory: string | null;
   reviewedAt: string | null;
   createdAt: string;
+  settingsEvidence: RecoverySettingsEvidence | null;
 }
 
 export interface RecoveryTimelineEntry {
@@ -789,6 +828,22 @@ export interface RecoveryMetrics {
     staleLeases: number;
     failed: number;
     settingsClassifierMatches: number;
+  };
+  settingsEvidence: {
+    current: number;
+    stale: number;
+    retired: number;
+    missing: number;
+    byVerification: Array<{
+      version: string | null;
+      graphCode: number | null;
+      graphSubcode: number | null;
+      evidenceStatus: RecoverySettingsEvidenceStatus;
+      ageDays: number | null;
+      count: number;
+      people: number;
+      byReminderStatus: Partial<Record<RecoveryStatus, number>>;
+    }>;
   };
   health: RecoveryHealthSnapshot;
 }

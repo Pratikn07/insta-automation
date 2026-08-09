@@ -4,6 +4,7 @@ import { PrismaClient } from "@prisma/client";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   resolveJourneyIntent,
+  recordJourneyPublicAcknowledgement,
   markIntentCompleted,
   JOURNEY_WINDOW_MS,
   type JourneyTriggerInput,
@@ -122,10 +123,23 @@ describeWithLocalDatabase("journey intent database contract", () => {
     const rows = await prisma.$queryRaw<{ table_name: string }[]>`
       SELECT table_name FROM information_schema.tables
       WHERE table_schema = 'public'
-        AND table_name IN ('journey_intent', 'journey_trigger')
+        AND table_name IN ('journey_intent', 'journey_source_event', 'journey_trigger')
       ORDER BY table_name
     `;
-    expect(rows.map((r) => r.table_name)).toEqual(["journey_intent", "journey_trigger"]);
+    expect(rows.map((r) => r.table_name)).toEqual([
+      "journey_intent",
+      "journey_source_event",
+      "journey_trigger",
+    ]);
+  });
+
+  it("models a comment once and links it to intent associations", async () => {
+    const rows = await prisma.$queryRaw<{ table_name: string }[]>`
+      SELECT table_name FROM information_schema.tables
+      WHERE table_schema = 'public'
+        AND table_name = 'journey_source_event'
+    `;
+    expect(rows).toEqual([{ table_name: "journey_source_event" }]);
   });
 
   // These tables record who asked for what. They are reachable only through the
@@ -133,15 +147,19 @@ describeWithLocalDatabase("journey intent database contract", () => {
   // expose them to anon.
   it("enables RLS on both tables with no permissive policies", async () => {
     const rls = await prisma.$queryRaw<{ relname: string; relrowsecurity: boolean }[]>`
-      SELECT relname, relrowsecurity FROM pg_class
-      WHERE relname IN ('journey_intent', 'journey_trigger')
+      SELECT c.relname, c.relrowsecurity
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public'
+        AND c.relname IN ('journey_intent', 'journey_source_event', 'journey_trigger')
     `;
-    expect(rls).toHaveLength(2);
+    expect(rls).toHaveLength(3);
     for (const row of rls) expect(row.relrowsecurity).toBe(true);
 
     const policies = await prisma.$queryRaw<{ count: bigint }[]>`
       SELECT COUNT(*)::bigint AS count FROM pg_policies
-      WHERE tablename IN ('journey_intent', 'journey_trigger')
+      WHERE schemaname = 'public'
+        AND tablename IN ('journey_intent', 'journey_source_event', 'journey_trigger')
     `;
     expect(Number(policies[0]!.count)).toBe(0);
   });
@@ -149,7 +167,8 @@ describeWithLocalDatabase("journey intent database contract", () => {
   it("stores every intent timestamp with a time zone", async () => {
     const cols = await prisma.$queryRaw<{ column_name: string; data_type: string }[]>`
       SELECT column_name, data_type FROM information_schema.columns
-      WHERE table_name = 'journey_intent'
+      WHERE table_schema = 'public'
+        AND table_name = 'journey_intent'
         AND column_name IN ('window_started_at', 'last_trigger_at', 'window_expires_at', 'completed_at')
     `;
     expect(cols).toHaveLength(4);
@@ -213,12 +232,16 @@ describeWithLocalDatabase("journey intent database contract", () => {
   it("rejects a duplicate comment id with P2002", async () => {
     const intent = await prisma.journeyIntent.create({ data: intentData() });
     const commentId = `intent-contract-comment-${randomUUID()}`;
+    const sourceEvent = await prisma.journeySourceEvent.create({
+      data: { commentId, firstReceivedAt: new Date() },
+    });
 
     await prisma.journeyTrigger.create({
       data: {
         intentId: intent.id,
+        keywordId: fixture.keywordId,
+        sourceEventId: sourceEvent.id,
         conversationId: fixture.conversationId,
-        commentId,
         receivedAt: new Date(),
         triggerKind: "comment",
         disposition: "new_journey",
@@ -229,7 +252,8 @@ describeWithLocalDatabase("journey intent database contract", () => {
       prisma.journeyTrigger.create({
         data: {
           intentId: intent.id,
-          commentId,
+          keywordId: fixture.keywordId,
+          sourceEventId: sourceEvent.id,
           receivedAt: new Date(),
           triggerKind: "comment",
           disposition: "replayed_comment",
@@ -241,12 +265,20 @@ describeWithLocalDatabase("journey intent database contract", () => {
   it("keeps many distinct triggers on one intent", async () => {
     const intent = await prisma.journeyIntent.create({ data: intentData() });
     for (const disposition of ["new_journey", "reused_active"] as const) {
+      const receivedAt = new Date();
+      const sourceEvent = await prisma.journeySourceEvent.create({
+        data: {
+          commentId: `intent-contract-comment-${randomUUID()}`,
+          firstReceivedAt: receivedAt,
+        },
+      });
       await prisma.journeyTrigger.create({
         data: {
           intentId: intent.id,
+          keywordId: fixture.keywordId,
           conversationId: fixture.conversationId,
-          commentId: `intent-contract-comment-${randomUUID()}`,
-          receivedAt: new Date(),
+          sourceEventId: sourceEvent.id,
+          receivedAt,
           triggerKind: "comment",
           disposition,
         },
@@ -267,12 +299,20 @@ describeWithLocalDatabase("journey intent database contract", () => {
     const intent = await prisma.journeyIntent.create({
       data: intentData({ canonicalConversationId: doomedId }),
     });
+    const triggerReceivedAt = new Date();
+    const sourceEvent = await prisma.journeySourceEvent.create({
+      data: {
+        commentId: `intent-contract-comment-${randomUUID()}`,
+        firstReceivedAt: triggerReceivedAt,
+      },
+    });
     await prisma.journeyTrigger.create({
       data: {
         intentId: intent.id,
+        keywordId: fixture.keywordId,
         conversationId: doomedId,
-        commentId: `intent-contract-comment-${randomUUID()}`,
-        receivedAt: new Date(),
+        sourceEventId: sourceEvent.id,
+        receivedAt: triggerReceivedAt,
         triggerKind: "comment",
         disposition: "new_journey",
       },
@@ -399,16 +439,23 @@ describeWithLocalDatabase("resolveJourneyIntent", () => {
         id: sameWordOtherPost,
         // Same displayed word as the fixture keyword, different row and guide.
         keyword: `intent-contract-${fixture.keywordId}`,
-        mediaId: "media-b",
+        mediaId: "media-a",
         resourceId: otherResource,
         publicReply: "test",
         gateMessage: "test",
       },
     });
 
-    const first = await resolveJourneyIntent(trigger({ mediaId: "media-a" }), makeConversation);
+    // One source comment can contain two configured words. Replay identity is
+    // therefore (comment, keyword), not comment alone: both requested guides
+    // must retain an auditable trigger association.
+    const sharedCommentId = `resolve-contract-shared-${randomUUID()}`;
+    const first = await resolveJourneyIntent(
+      trigger({ commentId: sharedCommentId, mediaId: "media-a" }),
+      makeConversation,
+    );
     const second = await resolveJourneyIntent(
-      trigger({ keywordId: sameWordOtherPost, mediaId: "media-b" }),
+      trigger({ keywordId: sameWordOtherPost, commentId: sharedCommentId, mediaId: "media-a" }),
       (tx) =>
         tx.conversation.create({
           data: { igUserId: fixture.igUserId, keywordId: sameWordOtherPost },
@@ -418,6 +465,11 @@ describeWithLocalDatabase("resolveJourneyIntent", () => {
 
     expect(second.disposition).toBe("new_journey");
     expect(second.intentId).not.toBe(first.intentId);
+    expect(
+      await prisma.journeyTrigger.count({
+        where: { sourceEvent: { commentId: sharedCommentId } },
+      }),
+    ).toBe(2);
 
     await prisma.journeyTrigger.deleteMany({ where: { intentId: second.intentId } });
     await prisma.conversation.updateMany({
@@ -471,6 +523,38 @@ describeWithLocalDatabase("resolveJourneyIntent", () => {
 
     const after = await prisma.journeyIntent.findUnique({ where: { id: first.intentId } });
     expect(after!.lastTriggerAt.toISOString()).toBe(before!.lastTriggerAt.toISOString());
+  });
+
+  it("freezes public acknowledgement evidence and accepts only exact replay", async () => {
+    const input = trigger();
+    const first = await resolveJourneyIntent(input, makeConversation);
+    const evidence = {
+      commentId: input.commentId,
+      keywordId: input.keywordId,
+      state: "confirmed" as const,
+      replyId: "provider-public-1",
+      errorCategory: null,
+    };
+
+    await recordJourneyPublicAcknowledgement(evidence);
+    await recordJourneyPublicAcknowledgement(evidence);
+
+    const row = await prisma.journeyTrigger.findFirstOrThrow({
+      where: { intentId: first.intentId },
+    });
+    expect(row).toMatchObject({
+      publicAcknowledgementState: "confirmed",
+      acknowledgementReplyId: "provider-public-1",
+      acknowledgementErrorCategory: null,
+    });
+    await expect(
+      recordJourneyPublicAcknowledgement({
+        ...evidence,
+        state: "failed",
+        replyId: null,
+        errorCategory: "graph_response",
+      }),
+    ).rejects.toThrow("journey_acknowledgement_evidence_conflict");
   });
 
   it("reports a completed request inside the window without re-sending", async () => {

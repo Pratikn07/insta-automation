@@ -1,3 +1,7 @@
+import { normalizeRecoveryKeyword } from "./recoveryCopyCore.js";
+
+export { normalizeRecoveryKeyword as normalizeKeywordForCopy } from "./recoveryCopyCore.js";
+
 /**
  * The public comment a historical recovery campaign posts.
  *
@@ -30,28 +34,13 @@ export const RECOVERY_HANDLE = "@tinysoho";
 export type RecoveryEvidence = "gate_exhausted" | "gate_sent_no_read";
 
 /**
- * Normalise the keyword for display.
- *
- * The design requires the configured keyword shown in uppercase (QA-18). Locale-safe
- * `toUpperCase` on a trimmed value, and the result is what gets stored, so a later
- * keyword rename cannot change what an approved campaign says.
- */
-export function normalizeKeywordForCopy(keyword: string): string {
-  const trimmed = keyword.trim();
-  if (trimmed.length === 0) {
-    throw new Error("historical recovery copy requires a non-empty keyword");
-  }
-  return trimmed.toUpperCase();
-}
-
-/**
  * Render the approved copy for one candidate.
  *
  * Templates are the design's §33 recommendations verbatim except for punctuation the
  * owner asked to avoid. Both name the keyword, so the instruction is executable.
  */
 export function recoveryCopyFor(evidence: string, keyword: string): string {
-  const kw = normalizeKeywordForCopy(keyword);
+  const kw = normalizeRecoveryKeyword(keyword);
 
   // Only for the cohort where Meta confirmed the DM could not be delivered.
   if (evidence === "gate_exhausted") {

@@ -29,12 +29,16 @@ afterAll(async () => {
 describeWithLocalDatabase("comment claim database contract", () => {
   it("enables row level security with no permissive policies", async () => {
     const [rls] = await prisma.$queryRaw<Array<{ relrowsecurity: boolean }>>`
-      SELECT relrowsecurity FROM pg_class WHERE relname = 'processed_comment'
+      SELECT c.relrowsecurity
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND c.relname = 'processed_comment'
     `;
     expect(rls?.relrowsecurity).toBe(true);
 
     const policies = await prisma.$queryRaw<Array<{ policyname: string }>>`
-      SELECT policyname FROM pg_policies WHERE tablename = 'processed_comment'
+      SELECT policyname FROM pg_policies
+      WHERE schemaname = 'public' AND tablename = 'processed_comment'
     `;
     expect(policies).toEqual([]);
   });

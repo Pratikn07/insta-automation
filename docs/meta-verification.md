@@ -104,7 +104,7 @@ so the order of these steps matters.
 - [ ] Receive one real signed webhook fixture for each new field.
 - [ ] Match a real `read.mid` to the accepted gate's stored `instagramGateMessageId`.
 - [ ] Confirm duplicate delivery leaves one evidence update.
-- [ ] Confirm the settings-blocked signature allowlist is empty unless code/subcode was verified.
+- [ ] Confirm the settings-blocked signature allowlist is empty unless the exact code/subcode has an active, unexpired registry record backed by a sanitized controlled-account evidence package.
 - [ ] Confirm the recovery circuit is closed and the hourly cap is conservative.
 - [ ] Confirm the two-week experiment start/end/version are fixed before launch.
 - [ ] Audit the first ready treatment row before and after its public comment.
@@ -163,20 +163,72 @@ be rejected before dispatch; the server acknowledges valid requests with 200
 ## Enabling the settings-blocked fallback
 
 `DM_RECOVERY_SETTINGS_BLOCKED_SIGNATURES` **starts empty, and should stay empty**
-until a real structured Meta response has been captured. An empty allowlist means
-no automatic settings fallback ever fires — which is the safe default, because
-that copy tells someone their own message-request settings blocked a DM.
+until a real structured Meta response has been captured **and** its controlled
+verification record has been activated. An empty allowlist means no automatic
+settings fallback ever fires — which is the safe default, because that copy tells
+someone their own message-request settings blocked a DM.
 
-To add a `code:subcode` pair:
+QA-17 uses two independent gates. The environment allowlist is the operator arming
+layer. The versioned `settings_blocked_verification` registry is the evidence layer.
+Both must contain the same exact numeric code/subcode, and the registry record must be
+active, unretired, and inside its validity window. Missing, stale, retired, malformed,
+or mismatched evidence creates no public fallback on either the first-send handler or
+the retry worker.
 
-1. Reproduce the blocked-settings case with a controlled Instagram account.
-2. Confirm Meta **rejected** the private-reply request rather than accepting it.
-3. Capture only the numeric `graphCode` and `graphSubcode` from `describeGraphError`.
-4. Confirm it is not a rate-limit signature: HTTP status is not `429`, and
+### Controlled verification procedure
+
+This procedure contacts a real controlled Meta account. Do not run it without the
+test-account credentials, an approved test window, and explicit authorization from the
+account owner. This repository work did **not** run it and did not contact Meta.
+
+1. Use a sandbox/test Instagram professional account and a separate controlled recipient.
+   Create a fresh test comment inside Meta's private-reply eligibility window. Confirm
+   the comment is present, has not already received a private reply, and is otherwise
+   eligible before changing the recipient's message-request setting.
+2. Reproduce the settings rejection on the first-send path. Confirm Meta rejected the
+   request; do not infer rejection from a timeout, missing response, or Business Suite UI.
+3. Preserve the raw response only in the approved restricted evidence store. Create a
+   separate sanitized JSON package containing: numeric Graph code/subcode, HTTP status,
+   semantic category `settings_blocked`, API version, controlled test-case identifier,
+   verification time, and the fact that Meta did not accept the send. Remove tokens,
+   URLs, request/response bodies, trace IDs, account IDs, usernames, comment text, DM
+   text, media IDs, and personal identifiers.
+4. Have a second owner check the sanitized package against the restricted original.
+   Hash the sanitized file with SHA-256 and record its approved internal reference. The
+   application registry accepts only a lowercase 64-character SHA-256 value.
+5. Create a new **inactive** registry row with a unique immutable version, exact numeric
+   signature, verification/expiry timestamps, verifier identity, controlled context,
+   API version, sanitized evidence reference/hash, and semantic category. Use a short,
+   explicit validity window so an API/version change forces reverification. Never edit
+   the evidence fields later; create a new version instead.
+6. Deploy with the allowlist still empty and confirm the admin dashboard shows the new
+   record as `inactive`. Stale and retired records deliberately have no Activate control.
+7. Activate the record from the owner dashboard (or the authenticated
+   `POST /api/recovery-reminders/settings-verifications/{id}/activate` endpoint). Then
+   add only that exact `code:subcode` pair to
+   `DM_RECOVERY_SETTINGS_BLOCKED_SIGNATURES` and redeploy. Activation and retirement are
+   audited; only one version per exact signature can be active.
+8. Repeat the controlled rejection through the first-send path and confirm one reminder
+   carries the exact registry ID/version, code/subcode, classification time, sanitized
+   evidence reference, and hash. Exact replay must retain those original values.
+9. Exercise the queued retry path with a controlled queued gate and confirm it records
+   the same evidence contract. Retire the registry record immediately if either path
+   differs, if the API version changes, or if the signature is no longer unambiguous.
+10. Clean up controlled comments/messages according to the test-account policy. Retain
+    the sanitized evidence package and audit record; do not copy the restricted raw
+    response into this repository, logs, API, dashboard, or application database.
+
+Before any activation, verify these classification properties:
+
+1. Confirm Meta **rejected** the private-reply request rather than accepting it.
+2. Capture only the numeric `graphCode` and `graphSubcode` through `describeGraphError`.
+3. Confirm it is not a rate-limit signature: HTTP status is not `429`, and
    `graphCode` is not `4`, `17`, `32`, or `613`. Those are the only rate-limit
    matches the classifier makes — it never matches on a subcode.
-5. Add the exact pair to the environment variable.
-6. Redeploy and audit the first immediate fallback row.
+4. Confirm an active, unexpired registry version exists for the exact pair before adding
+   the pair to the environment variable.
+5. Redeploy and audit the first immediate fallback row in the dashboard. Its evidence
+   state must be `current`; `stale`, `retired`, and `missing` are release blockers.
 
 Malformed entries are rejected at startup rather than silently ignored, so a typo
 fails the deploy instead of quietly disarming the fallback.
@@ -298,7 +350,7 @@ docker run -d --name insta-pg-contract -e POSTGRES_PASSWORD=postgres -e POSTGRES
 ```
 
 ```bash
-MIGRATION_TEST_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:55432/insta_contract" DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:55432/insta_contract" npm test
+MIGRATION_TEST_DATABASE_DISPOSABLE=true MIGRATION_TEST_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:55432/insta_contract" DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:55432/insta_contract" npm test
 ```
 
 A correct run reports **0 skipped**. Any skipped count means the contracts did

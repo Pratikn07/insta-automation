@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { prisma } from "../lib/prisma.js";
 import {
   decideEligibility,
@@ -12,6 +12,17 @@ import {
   type EligibilityFacts,
 } from "./historicalRecoveryEligibility.js";
 import { recoveryCopyFor } from "./historicalRecoveryCopy.js";
+import {
+  buildSelectionDecisionHash,
+  buildSelectionFingerprint,
+  type SelectionSnapshotConfiguration,
+  type SelectionSnapshotExclusion,
+  type SelectionSnapshotInclusion,
+} from "./historicalRecoverySnapshot.js";
+
+export const HISTORICAL_RECOVERY_ELIGIBILITY_POLICY_VERSION = "eligibility-v2";
+const DEFAULT_INBOUND_WINDOW_HOURS = 24;
+const DEFAULT_COMPLETION_WINDOW_HOURS = 48;
 
 /**
  * Build the candidate list for a historical recovery campaign (design §34–§37).
@@ -47,10 +58,16 @@ type SelectionRow = {
   supersededByNewerJourney: boolean;
   audienceOrigin: string | null;
   audienceOriginConfidence: string | null;
+  sources: Array<{
+    commentId: string;
+    mediaId: string | null;
+    receivedAt: string | Date;
+  }>;
 };
 
 export type SelectionReport = {
   campaignId: string | null;
+  selectionFingerprint: string;
   /**
    * Fingerprint of the decision set (QA-14). Printed by the CLI so two runs can be
    * compared without querying, and stored on the campaign so an approval can be tied
@@ -81,6 +98,7 @@ async function loadRows(cutoff: Date): Promise<SelectionRow[]> {
       c."id"           AS "conversationId",
       jt."comment_id"  AS "commentId",
       jt."media_id"    AS "mediaId",
+      COALESCE(jt."sources", '[]'::jsonb) AS "sources",
       -- Reported from ANY trigger, not from the chosen comment trigger.
       --
       -- The lateral join below deliberately considers comment triggers only, so a
@@ -152,6 +170,7 @@ async function loadRows(cutoff: Date): Promise<SelectionRow[]> {
                    AND m."created_at" <= ${cutoff})
         OR EXISTS (SELECT 1 FROM "dm_recovery_reminder" r2
                     WHERE r2."ig_user_id" = ji."ig_user_id"
+                      AND r2."keyword_id" = ji."keyword_id"
                       AND (
                         (r2."seen_at" IS NOT NULL
                           AND r2."seen_at" >= ji."window_started_at"
@@ -220,14 +239,28 @@ async function loadRows(cutoff: Date): Promise<SelectionRow[]> {
     -- choice deterministic when two triggers share a timestamp, which reproducibility
     -- (QA-14) depends on.
     LEFT JOIN LATERAL (
-      SELECT t."comment_id", t."media_id", t."trigger_kind", t."received_at"
+      SELECT
+        (array_agg(se."comment_id"
+          ORDER BY t."received_at" DESC, se."comment_id" DESC))[1] AS "comment_id",
+        (array_agg(se."media_id"
+          ORDER BY t."received_at" DESC, se."comment_id" DESC))[1] AS "media_id",
+        (array_agg(t."trigger_kind"
+          ORDER BY t."received_at" DESC, se."comment_id" DESC))[1] AS "trigger_kind",
+        (array_agg(t."received_at"
+          ORDER BY t."received_at" DESC, se."comment_id" DESC))[1] AS "received_at",
+        jsonb_agg(
+          jsonb_build_object(
+            'commentId', se."comment_id",
+            'mediaId', se."media_id",
+            'receivedAt', t."received_at"
+          )
+          ORDER BY t."received_at" DESC, se."comment_id" DESC
+        ) AS "sources"
       FROM "journey_trigger" t
+      JOIN "journey_source_event" se ON se."id" = t."source_event_id"
       WHERE t."intent_id" = ji."id"
         AND t."trigger_kind" = 'comment'
-        AND t."comment_id" IS NOT NULL
         AND t."received_at" <= ${cutoff}
-      ORDER BY t."received_at" DESC, t."comment_id" DESC
-      LIMIT 1
     ) jt ON TRUE
     -- Any trigger at all, purely so triggerKind can distinguish a DM-origin journey
     -- from one whose comment id was lost. Newest first, matching the choice above.
@@ -241,7 +274,11 @@ async function loadRows(cutoff: Date): Promise<SelectionRow[]> {
     WHERE ji."completed_at" IS NULL
       AND c."state" <> 'completed'
       AND ji."window_started_at" <= ${cutoff}
-    ORDER BY ji."window_started_at" ASC
+    ORDER BY
+      ji."window_started_at" ASC,
+      ji."ig_user_id" ASC,
+      ji."keyword_id" ASC,
+      ji."id" ASC
   `;
 }
 
@@ -263,9 +300,15 @@ export async function selectHistoricalCandidates(input: {
   /** Cap the campaign to the first N candidates, oldest first (staged rollout). */
   limit?: number;
   holdoutPercent?: number;
+  eligibilityPolicyVersion?: string;
+  inboundWindowHours?: number;
+  completionWindowHours?: number;
   persist: boolean;
   now?: Date;
 }): Promise<SelectionReport> {
+  if (input.limit !== undefined && (!Number.isInteger(input.limit) || input.limit <= 0)) {
+    throw new Error("invalid_selection_limit");
+  }
   const cutoff = input.now ?? new Date();
   const rows = await loadRows(cutoff);
 
@@ -373,30 +416,102 @@ export async function selectHistoricalCandidates(input: {
     }
   }
 
-  /**
-   * The canonical fingerprint of this decision set (QA-14).
-   *
-   * Every intent the selection saw, with what it decided and why, sorted by intent so
-   * two runs over the same data agree regardless of row order. Re-running with the same
-   * cutoff must reproduce this string; a different hash means a live predicate moved —
-   * a gate reaching `sent`, a keyword deactivated, an origin reclassified — none of
-   * which the cutoff can bound, because none of those tables keep history.
-   *
-   * Deliberately excludes the arm and the selection version. Arms are a function of
-   * (selectionVersion, igUserId), so folding them in would make every run differ by
-   * construction and the hash would answer a question nobody asked. What must be
-   * reproducible is WHO was chosen and on what grounds.
-   */
-  const decisionHash = createHash("sha256")
-    .update(
-      [
-        ...selected.map((e) => `${e.facts.intentId}:include:${e.evidence}`),
-        ...[...exclusions].map(([intentId, x]) => `${intentId}:exclude:${x.reason}`),
-      ]
-        .sort()
-        .join("\n"),
-    )
-    .digest("hex");
+  const holdoutPercent = input.holdoutPercent ?? 50;
+  const eligibilityPolicyVersion = input.eligibilityPolicyVersion
+    ?? HISTORICAL_RECOVERY_ELIGIBILITY_POLICY_VERSION;
+  const inboundWindowHours = input.inboundWindowHours ?? DEFAULT_INBOUND_WINDOW_HOURS;
+  const completionWindowHours = input.completionWindowHours
+    ?? DEFAULT_COMPLETION_WINDOW_HOURS;
+  for (const [name, hours] of [
+    ["inbound", inboundWindowHours],
+    ["completion", completionWindowHours],
+  ] as const) {
+    if (!Number.isInteger(hours) || hours < 24 || hours > 720) {
+      throw new Error(`invalid_${name}_measurement_window`);
+    }
+  }
+
+  // Arms are part of what the owner reviews. Compute and validate them before the first
+  // write so an unusable small-cohort realization cannot leave an approvable draft.
+  const arms = new Map(
+    selected.map((entry) => [
+      entry.facts.intentId,
+      assignArm(entry.facts.igUserId, input.selectionVersion, holdoutPercent),
+    ]),
+  );
+  if (selected.length > 0) {
+    const split = validateArmSplit({
+      treatment: [...arms.values()].filter((arm) => arm === "treatment").length,
+      holdout: [...arms.values()].filter((arm) => arm === "holdout").length,
+      holdoutPercent,
+    });
+    if (!split.ok) {
+      throw new Error(
+        `historical recovery selection produced an unusable arm split: ${split.reason}`,
+      );
+    }
+  }
+
+  const snapshotConfig: SelectionSnapshotConfiguration = {
+    phase: input.phase,
+    selectionVersion: input.selectionVersion,
+    sourceDataCutoff: cutoff.toISOString(),
+    commentFrom: input.commentFrom?.toISOString() ?? null,
+    commentTo: input.commentTo?.toISOString() ?? null,
+    selectionLimit: input.limit ?? null,
+    westernOnly: input.westernOnly,
+    holdoutPercent,
+    copyVersion: input.copyVersion,
+    eligibilityPolicyVersion,
+    inboundWindowHours,
+    completionWindowHours,
+  };
+
+  const inclusions: SelectionSnapshotInclusion[] = selected.map((entry, position) => {
+    const row = byIntent.get(entry.facts.intentId)!.row;
+    const eligibleSources = row.sources.filter((source) => {
+      const receivedAt = new Date(source.receivedAt);
+      return !(input.commentFrom && receivedAt < input.commentFrom)
+        && !(input.commentTo && receivedAt > input.commentTo);
+    });
+    const sources = eligibleSources.map((source, sourcePosition) => ({
+      position: sourcePosition,
+      commentId: source.commentId,
+      mediaId: source.mediaId,
+      receivedAt: new Date(source.receivedAt).toISOString(),
+      choiceReason: sourcePosition === 0 ? "newest_eligible_comment" : "approved_fallback",
+    }));
+    if (sources.length === 0 || sources[0]!.commentId !== row.commentId) {
+      throw new Error(`historical recovery source manifest incomplete for ${row.intentId}`);
+    }
+    return {
+      position,
+      intentId: row.intentId,
+      igUserId: row.igUserId,
+      conversationId: row.conversationId,
+      keywordId: row.keywordId,
+      commentId: row.commentId!,
+      mediaId: row.mediaId,
+      commentAt: row.commentAt.toISOString(),
+      keywordSnapshot: row.keywordSnapshot,
+      publicReplyText: recoveryCopyFor(entry.evidence, row.keywordSnapshot),
+      evidence: entry.evidence,
+      audienceOrigin: row.audienceOrigin,
+      audienceOriginConfidence: row.audienceOriginConfidence,
+      arm: arms.get(row.intentId)!,
+      sourceChoiceReason: "newest_eligible_comment",
+      sources,
+    };
+  });
+  const snapshotExclusions: SelectionSnapshotExclusion[] = [...exclusions].map(
+    ([intentId, exclusion]) => ({ intentId, ...exclusion }),
+  );
+  const selectionFingerprint = buildSelectionFingerprint(snapshotConfig);
+  const decisionHash = buildSelectionDecisionHash(
+    snapshotConfig,
+    inclusions,
+    snapshotExclusions,
+  );
 
   const byEvidence: Record<string, number> = {};
   for (const entry of selected) {
@@ -405,6 +520,7 @@ export async function selectHistoricalCandidates(input: {
 
   const report: SelectionReport = {
     campaignId: null,
+    selectionFingerprint,
     decisionHash,
     sourceDataCutoff: cutoff,
     rawIntents: rows.length,
@@ -428,120 +544,74 @@ export async function selectHistoricalCandidates(input: {
   // No campaign is written, because there is nothing to review or approve.
   if (selected.length === 0) return report;
 
-  const holdoutPercent = input.holdoutPercent ?? 50;
-  const campaign = await prisma.recoveryCampaign.create({
-    data: {
-      phase: input.phase,
-      selectionVersion: input.selectionVersion,
-      copyVersion: input.copyVersion,
-      sourceDataCutoff: cutoff,
-      commentFrom: input.commentFrom ?? null,
-      commentTo: input.commentTo ?? null,
-      holdoutPercent,
-      candidateCount: selected.length,
-      excludedCount: rows.length - selected.length,
-      decisionHash,
-    },
-  });
+  const campaignId = randomUUID();
+  const candidates = inclusions.map((inclusion) => ({ id: randomUUID(), inclusion }));
 
-  // Every exclusion, with the stage that made it. Written before the candidates so a
-  // failure part-way leaves a campaign that is visibly incomplete rather than one whose
-  // inclusions look authoritative while its exclusions are missing.
-  //
-  // One statement rather than ~3,000 creates, and joined back to the rows it references
-  // so an intent or keyword that disappeared between `loadRows` and here is skipped
-  // instead of failing the whole selection. Production never deletes journey intents —
-  // no code path does — but a selection is an audit record, and losing a campaign over a
-  // note about a row that no longer exists would be the wrong trade.
-  //
-  // ON CONFLICT DO NOTHING makes a re-run against the same campaign idempotent.
-  if (exclusions.size > 0) {
-    const entries = [...exclusions];
-    await prisma.$executeRaw`
-      WITH present AS (
-        SELECT x."intent_id", x."ig_user_id", x."keyword_id", x."reason"
-        FROM UNNEST(
-          ${entries.map(([intentId]) => intentId)}::uuid[],
-          ${entries.map(([, x]) => x.igUserId)}::text[],
-          ${entries.map(([, x]) => x.keywordId)}::uuid[],
-          ${entries.map(([, x]) => x.reason)}::text[]
-        ) AS x("intent_id", "ig_user_id", "keyword_id", "reason")
-        JOIN "journey_intent" ji ON ji."id" = x."intent_id"
-        JOIN "keywords" k2 ON k2."id" = x."keyword_id"
-        -- The join alone narrows the window but cannot close it: under READ COMMITTED a
-        -- row can be deleted between the join reading it and the foreign key check
-        -- running. FOR SHARE holds those rows until this statement commits, which is the
-        -- same lock the FK check would take, taken early enough to be worth having.
-        FOR SHARE OF ji, k2
-      )
-      INSERT INTO "recovery_selection_exclusion"
-        ("campaign_id", "intent_id", "ig_user_id", "keyword_id", "reason")
-      SELECT ${campaign.id}::uuid, "intent_id", "ig_user_id", "keyword_id", "reason"
-      FROM present
-      ON CONFLICT ("campaign_id", "intent_id") DO NOTHING
-    `;
-  }
+  await prisma.$transaction(async (tx) => {
+    await tx.recoveryCampaign.create({
+      data: {
+        id: campaignId,
+        phase: input.phase,
+        selectionVersion: input.selectionVersion,
+        copyVersion: input.copyVersion,
+        sourceDataCutoff: cutoff,
+        commentFrom: input.commentFrom ?? null,
+        commentTo: input.commentTo ?? null,
+        selectionLimit: input.limit ?? null,
+        holdoutPercent,
+        candidateCount: inclusions.length,
+        excludedCount: snapshotExclusions.length,
+        selectionFingerprint,
+        eligibilityPolicyVersion,
+        westernOnly: input.westernOnly,
+        inboundWindowHours,
+        completionWindowHours,
+        decisionHash,
+      },
+    });
 
-  // Arms assigned by hashing (selectionVersion, igUserId), NOT by list position.
-  // Position-based assignment on an oldest-first list gave 0 treatment for a 25-person
-  // pilot at 50%, and confounded the arm with comment age at scale (QA-07).
-  const arms = new Map(
-    selected.map((entry) => [
-      entry.facts.intentId,
-      assignArm(entry.facts.igUserId, input.selectionVersion, holdoutPercent),
-    ]),
-  );
-
-  // A hash on a small pool does not land on the nominal percentage, so check the
-  // realized split before writing rather than discovering it after approval.
-  const split = validateArmSplit({
-    treatment: [...arms.values()].filter((a) => a === "treatment").length,
-    holdout: [...arms.values()].filter((a) => a === "holdout").length,
-    holdoutPercent,
-  });
-  if (!split.ok) {
-    throw new Error(
-      `historical recovery selection produced an unusable arm split: ${split.reason}`,
-    );
-  }
-
-  await prisma.$transaction(
-    selected.map((entry) => {
-      const row = byIntent.get(entry.facts.intentId)!.row;
-      const arm = arms.get(entry.facts.intentId)!;
-      return prisma.recoveryCandidate.create({
-        data: {
-          campaignId: campaign.id,
-          // Denormalised so the database can enforce phase/evidence agreement rather
-          // than trusting the filter above to keep working.
-          campaignPhase: input.phase,
-          intentId: row.intentId,
-          igUserId: row.igUserId,
-          conversationId: row.conversationId,
-          keywordId: row.keywordId,
-          commentId: row.commentId!,
-          mediaId: row.mediaId,
-          commentAt: row.commentAt,
-          // Frozen: the keyword may be renamed and the copy revised, but an approved
-          // campaign sends what the owner approved.
-          keywordSnapshot: row.keywordSnapshot,
-          // Recovery copy, NOT the keyword's publicReply. The keyword says "Check
-          // your DMs!", which points a person at the exact thing that failed.
-          // Chosen by evidence so we never publicly claim the DM failed when all we
-          // know is that no read receipt arrived.
-          // Rendered with the keyword, because the instruction IS to DM that keyword.
-          // Copy without it would tell the person to send something we never named.
-          publicReplyText: recoveryCopyFor(entry.evidence, row.keywordSnapshot),
-          evidence: entry.evidence,
-          audienceOrigin: row.audienceOrigin,
-          audienceOriginConfidence: row.audienceOriginConfidence,
-          arm,
-          eligibleAt: cutoff,
-        },
+    if (snapshotExclusions.length > 0) {
+      await tx.recoverySelectionExclusion.createMany({
+        data: snapshotExclusions.map((exclusion) => ({ campaignId, ...exclusion })),
       });
-    }),
-  );
+    }
 
-  report.campaignId = campaign.id;
+    await tx.recoveryCandidate.createMany({
+      data: candidates.map(({ id, inclusion }) => ({
+        id,
+        campaignId,
+        campaignPhase: input.phase,
+        intentId: inclusion.intentId,
+        igUserId: inclusion.igUserId,
+        conversationId: inclusion.conversationId,
+        keywordId: inclusion.keywordId,
+        commentId: inclusion.commentId,
+        mediaId: inclusion.mediaId,
+        commentAt: new Date(inclusion.commentAt),
+        keywordSnapshot: inclusion.keywordSnapshot,
+        publicReplyText: inclusion.publicReplyText,
+        evidence: inclusion.evidence,
+        selectionPosition: inclusion.position,
+        audienceOrigin: inclusion.audienceOrigin,
+        audienceOriginConfidence: inclusion.audienceOriginConfidence,
+        arm: inclusion.arm,
+        eligibleAt: cutoff,
+        sourceChoiceReason: inclusion.sourceChoiceReason,
+      })),
+    });
+    await tx.recoveryCandidateSource.createMany({
+      data: candidates.flatMap(({ id: candidateId, inclusion }) =>
+        inclusion.sources.map((source) => ({
+          candidateId,
+          position: source.position,
+          commentId: source.commentId,
+          mediaId: source.mediaId,
+          receivedAt: new Date(source.receivedAt),
+          choiceReason: source.choiceReason,
+        }))),
+    });
+  }, { isolationLevel: "Serializable" });
+
+  report.campaignId = campaignId;
   return report;
 }

@@ -3,6 +3,7 @@ import {
   candidateView,
   campaignActions,
   campaignStatusView,
+  campaignPhaseView,
   suppressionLabel,
   recoveryRate,
   type CandidateRow,
@@ -15,6 +16,7 @@ import {
 function candidate(overrides: Partial<CandidateRow> = {}): CandidateRow {
   return {
     id: "cand-1",
+    campaignPhase: "unknown_read_pilot",
     username: "parent",
     igUserId: "person-1",
     keywordSnapshot: "SLEEP",
@@ -24,8 +26,10 @@ function candidate(overrides: Partial<CandidateRow> = {}): CandidateRow {
     evidence: "gate_sent_no_read",
     suppressionReason: null,
     publicReplyId: null,
+    reviewedAt: null,
     laterCompletedAt: null,
     audienceOrigin: "us_western",
+    createdAt: "2026-07-01T00:00:00.000Z",
     ...overrides,
   };
 }
@@ -35,12 +39,18 @@ function campaign(overrides: Partial<CampaignRow> = {}): CampaignRow {
     id: "camp-1",
     phase: "unknown_read_pilot",
     state: "draft",
+    selectionVersion: "selection-v2",
+    copyVersion: "recovery-v2",
+    sourceDataCutoff: "2026-08-01T00:00:00.000Z",
     candidateCount: 985,
     holdoutPercent: 50,
     batchSize: 1,
     hourlyCap: 3,
+    dailyCap: 10,
     approvedBy: null,
+    approvedAt: null,
     pauseReason: null,
+    createdAt: "2026-08-01T00:00:00.000Z",
     progress: {},
     ...overrides,
   };
@@ -212,6 +222,18 @@ describe("campaignStatusView", () => {
   it("is honest that cancelling does not unpost anything", () => {
     const view = campaignStatusView(campaign({ state: "cancelled" }), true);
     expect(view.description).toMatch(/stay posted/i);
+  });
+});
+
+describe("campaignPhaseView", () => {
+  it("states confirmed delivery failure only for the confirmed phase", () => {
+    expect(campaignPhaseView("confirmed_failure").description).toMatch(/could not be delivered/i);
+  });
+
+  it("describes unknown read evidence without claiming delivery failed", () => {
+    const view = campaignPhaseView("unknown_read_pilot");
+    expect(view.description).toMatch(/no read confirmation/i);
+    expect(view.description).not.toMatch(/never received|failed/i);
   });
 });
 

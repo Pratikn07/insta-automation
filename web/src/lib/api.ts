@@ -4,6 +4,7 @@ import type {
   RecoveryMetrics,
   RecoveryReminderDetail,
   RecoveryReminderRow,
+  SettingsBlockedVerificationRecord,
 } from "./types";
 
 const apiBase = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
@@ -87,6 +88,17 @@ export const recoveryApi = {
     ),
   counts: () => api<RecoveryCounts>("/recovery-reminders/counts"),
   metrics: () => api<RecoveryMetrics>("/recovery-reminders/metrics"),
+  settingsVerifications: () =>
+    api<{ records: SettingsBlockedVerificationRecord[] }>(
+      "/recovery-reminders/settings-verifications",
+    ),
+  activateSettingsVerification: (id: string) =>
+    api<void>(`/recovery-reminders/settings-verifications/${id}/activate`, { method: "POST" }),
+  retireSettingsVerification: (id: string, reason: string) =>
+    api<void>(`/recovery-reminders/settings-verifications/${id}/retire`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    }),
   detail: (id: string) => api<RecoveryReminderDetail>(`/recovery-reminders/${id}`),
   cancel: (id: string) => api<void>(`/recovery-reminders/${id}/cancel`, { method: "POST" }),
   markReviewed: (id: string) =>

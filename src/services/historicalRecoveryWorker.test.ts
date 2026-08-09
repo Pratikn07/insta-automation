@@ -5,11 +5,16 @@ const listDueCandidateIds = vi.fn();
 const claimCandidate = vi.fn();
 const reconcileExpiredCandidateLeases = vi.fn();
 const releaseCandidateClaim = vi.fn();
-const markCandidateSent = vi.fn();
 const markCandidateSuppressed = vi.fn();
 const markCandidateFailed = vi.fn();
-const markCandidateUncertain = vi.fn();
+const reserveHistoricalDispatch = vi.fn();
+const startHistoricalDispatch = vi.fn();
+const releaseHistoricalReservation = vi.fn();
+const finalizeHistoricalDispatch = vi.fn();
 const countCandidatesSentSince = vi.fn();
+const acquireHistoricalTick = vi.fn();
+const openCampaignBatch = vi.fn();
+const finishHistoricalTick = vi.fn();
 const replyToComment = vi.fn();
 const fetchComment = vi.fn();
 const evaluateRecoveryHealth = vi.fn();
@@ -19,39 +24,53 @@ const SAFE_UNKNOWN = { category: "unknown_error", httpStatus: null, graphCode: n
 const describeGraphError = vi.fn(() => SAFE_UNKNOWN);
 const classifyPublicReplyFailure = vi.fn();
 const campaignFindUnique = vi.fn();
-// QA-08: the tick now reads the campaign's staged batch size, and reserves capacity
-// under the shared control lock instead of merely observing counts.
-const campaignAggregate = vi.fn();
-const reserveSendCapacity = vi.fn();
+const campaignFindMany = vi.fn();
 // QA-12: completeCampaignIfDrained had no production caller, so a campaign that had sent
 // everything stayed `running` forever.
 const completeCampaignIfDrained = vi.fn();
+const reconcileDrainedCampaigns = vi.fn();
 // QA-13: campaign-level stop conditions, which the shared circuit cannot express.
 const evaluateCampaignHealth = vi.fn();
+const reconcilePendingInboundCampaignHealthSignals = vi.fn();
+const reconcileHistoricalRecoveryAttributionSafely = vi.fn();
 const igUserFindUnique = vi.fn();
 const dmMessageCount = vi.fn();
 const conversationCount = vi.fn();
-const reminderCount = vi.fn();
-// QA-11: the recheck now consults BOTH recovery systems for a prior public contact.
-const candidateCount = vi.fn();
+// QA-11: the shared ledger contains BOTH recovery systems' public contacts.
+const dispatchCount = vi.fn();
 
 vi.mock("./historicalRecoveryRepository.js", () => ({
   listDueCandidateIds,
   claimCandidate,
   reconcileExpiredCandidateLeases,
   releaseCandidateClaim,
-  markCandidateSent,
   markCandidateSuppressed,
   markCandidateFailed,
-  markCandidateUncertain,
+  reserveHistoricalDispatch,
+  startHistoricalDispatch,
+  releaseHistoricalReservation,
+  finalizeHistoricalDispatch,
   countCandidatesSentSince,
-  reserveSendCapacity,
+}));
+vi.mock("./historicalRecoveryTickRepository.js", () => ({
+  acquireHistoricalTick,
+  openCampaignBatch,
+  finishHistoricalTick,
 }));
 vi.mock("../meta/replyToComment.js", () => ({ replyToComment }));
 vi.mock("../meta/fetchComment.js", () => ({ fetchComment }));
 vi.mock("./dmRecoveryHealth.js", () => ({ evaluateRecoveryHealth, openRecoveryCircuit }));
-vi.mock("./recoveryCampaignControl.js", () => ({ completeCampaignIfDrained }));
+vi.mock("./recoveryCampaignControl.js", () => ({
+  completeCampaignIfDrained,
+  reconcileDrainedCampaigns,
+}));
 vi.mock("./historicalRecoveryHealth.js", () => ({ evaluateCampaignHealth }));
+vi.mock("./campaignHealthObservation.js", () => ({
+  reconcilePendingInboundCampaignHealthSignals,
+}));
+vi.mock("./historicalRecoveryAttribution.js", () => ({
+  reconcileHistoricalRecoveryAttributionSafely,
+}));
 vi.mock("./eventLogger.js", () => ({ logEvent, describeGraphError }));
 // classifySourceReadFailure is deliberately NOT mocked: QA-09's defect was
 // misclassification, so a stub here would prove nothing. Only the send-path classifier
@@ -65,12 +84,11 @@ vi.mock("../lib/logger.js", () => ({
 }));
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
-    recoveryCampaign: { findUnique: campaignFindUnique, aggregate: campaignAggregate },
+    recoveryCampaign: { findUnique: campaignFindUnique, findMany: campaignFindMany },
     igUser: { findUnique: igUserFindUnique },
     dmMessage: { count: dmMessageCount },
     conversation: { count: conversationCount },
-    dmRecoveryReminder: { count: reminderCount },
-    recoveryCandidate: { count: candidateCount },
+    publicRecoveryDispatch: { count: dispatchCount },
   },
 }));
 
@@ -84,6 +102,7 @@ vi.mock("../config/env.js", () => ({
     {
       DM_RECOVERY_BATCH_SIZE: 2,
       DM_RECOVERY_LEASE_MS: 60_000,
+      DM_RECOVERY_GLOBAL_DAILY_CAP: 100,
     } as Record<string, unknown>,
     {
       get: (target, prop) => {
@@ -110,6 +129,7 @@ const CANDIDATE = {
   // The moment evidence was frozen. The recheck asks "changed SINCE this", not "ever".
   selectedAt: new Date("2026-08-01T00:00:00Z"),
   commentId: "18111572197955347",
+  sources: [{ position: 0, commentId: "18111572197955347" }],
   publicReplyText: "I don't think my DM reached you",
   keywordSnapshot: "SLEEP",
   evidence: "gate_sent_no_read",
@@ -120,12 +140,18 @@ const CANDIDATE = {
 beforeEach(() => {
   for (const fn of [
     listDueCandidateIds, claimCandidate, reconcileExpiredCandidateLeases,
-    releaseCandidateClaim, markCandidateSent, markCandidateSuppressed,
-    markCandidateFailed, markCandidateUncertain, countCandidatesSentSince,
+    releaseCandidateClaim, markCandidateSuppressed, markCandidateFailed,
+    reserveHistoricalDispatch, startHistoricalDispatch, releaseHistoricalReservation,
+    finalizeHistoricalDispatch,
+    countCandidatesSentSince,
     replyToComment, fetchComment, evaluateRecoveryHealth, openRecoveryCircuit,
     logEvent, describeGraphError, classifyPublicReplyFailure,
-    campaignFindUnique, campaignAggregate, reserveSendCapacity, completeCampaignIfDrained, evaluateCampaignHealth,
-    igUserFindUnique, dmMessageCount, conversationCount, reminderCount, candidateCount,
+    campaignFindUnique, campaignFindMany, completeCampaignIfDrained,
+    reconcileDrainedCampaigns, evaluateCampaignHealth,
+    reconcilePendingInboundCampaignHealthSignals,
+    reconcileHistoricalRecoveryAttributionSafely,
+    igUserFindUnique, dmMessageCount, conversationCount, dispatchCount,
+    acquireHistoricalTick, openCampaignBatch, finishHistoricalTick,
   ]) {
     fn.mockReset();
   }
@@ -135,28 +161,44 @@ beforeEach(() => {
   describeGraphError.mockReturnValue(SAFE_UNKNOWN);
   reconcileExpiredCandidateLeases.mockResolvedValue({ uncertain: 0, released: 0 });
   evaluateRecoveryHealth.mockResolvedValue({ circuitOpen: false });
+  acquireHistoricalTick.mockResolvedValue({
+    token: "11111111-1111-4111-8111-111111111111",
+    expiresAt: new Date("2099-01-01T00:00:00Z"),
+  });
+  openCampaignBatch.mockResolvedValue({ id: "batch-1", allowance: 2 });
+  finishHistoricalTick.mockResolvedValue(true);
+  campaignFindMany.mockResolvedValue([{ id: "camp-1" }]);
   listDueCandidateIds.mockResolvedValue(["cand-1"]);
   claimCandidate.mockResolvedValue(CANDIDATE);
   campaignFindUnique.mockResolvedValue({ state: "running", hourlyCap: 3, dailyCap: 10 });
-  // No campaign-level batch override by default, so existing cases keep the env value.
-  campaignAggregate.mockResolvedValue({ _min: { batchSize: null } });
   // Capacity available by default; cases that test the cap return a refusal reason.
-  reserveSendCapacity.mockResolvedValue(null);
+  reserveHistoricalDispatch.mockResolvedValue({
+    kind: "reserved",
+    dispatchId: "dispatch-1",
+    reservationToken: "reservation-1",
+  });
+  startHistoricalDispatch.mockResolvedValue({ kind: "started" });
+  releaseHistoricalReservation.mockResolvedValue(true);
+  finalizeHistoricalDispatch.mockResolvedValue(true);
   completeCampaignIfDrained.mockResolvedValue(false);
+  reconcileDrainedCampaigns.mockResolvedValue([]);
   // Healthy by default, so existing cases test what they were written for.
   evaluateCampaignHealth.mockResolvedValue({ stopReason: null });
+  reconcilePendingInboundCampaignHealthSignals.mockResolvedValue({
+    processed: 0,
+    failed: 0,
+    remaining: false,
+  });
+  reconcileHistoricalRecoveryAttributionSafely.mockResolvedValue({ inbound: 0, completed: 0 });
   igUserFindUnique.mockResolvedValue({ inferredOrigin: "us_western" });
   dmMessageCount.mockResolvedValue(0);
   conversationCount.mockResolvedValue(0);
-  reminderCount.mockResolvedValue(0);
-  candidateCount.mockResolvedValue(0);
+  dispatchCount.mockResolvedValue(0);
   countCandidatesSentSince.mockResolvedValue(0);
   fetchComment.mockResolvedValue({ id: CANDIDATE.commentId, hidden: false, timestamp: null });
   replyToComment.mockResolvedValue({ replyId: "17900000000000000" });
-  markCandidateSent.mockResolvedValue(true);
   markCandidateSuppressed.mockResolvedValue(true);
   markCandidateFailed.mockResolvedValue(true);
-  markCandidateUncertain.mockResolvedValue(true);
   logEvent.mockResolvedValue(undefined);
 });
 
@@ -165,11 +207,73 @@ describe("runHistoricalRecoveryTick — the send path", () => {
     const result = await runHistoricalRecoveryTick();
 
     expect(replyToComment).toHaveBeenCalledWith(CANDIDATE.commentId, CANDIDATE.publicReplyText);
-    expect(markCandidateSent).toHaveBeenCalledWith("cand-1", "token-1", {
-      publicReplyId: "17900000000000000",
-      sentAt: expect.any(Date),
-    });
+    expect(startHistoricalDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ candidateId: "cand-1", claimToken: "token-1" }),
+    );
+    expect(finalizeHistoricalDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        candidateId: "cand-1",
+        outcome: expect.objectContaining({
+          kind: "sent",
+          providerReplyId: "17900000000000000",
+        }),
+      }),
+    );
     expect(result.sent).toBe(1);
+  });
+
+  it("replays durable attribution before and after dispatch finalization", async () => {
+    await runHistoricalRecoveryTick();
+
+    expect(reconcileHistoricalRecoveryAttributionSafely).toHaveBeenCalledTimes(2);
+    expect(reconcileHistoricalRecoveryAttributionSafely.mock.invocationCallOrder[0])
+      .toBeLessThan(finalizeHistoricalDispatch.mock.invocationCallOrder[0]!);
+    expect(reconcileHistoricalRecoveryAttributionSafely.mock.invocationCallOrder[1])
+      .toBeGreaterThan(finalizeHistoricalDispatch.mock.invocationCallOrder[0]!);
+  });
+
+  it("does not call Meta when final dispatch authorization is blocked", async () => {
+    startHistoricalDispatch.mockResolvedValue({
+      kind: "blocked",
+      reason: "campaign_not_running",
+    });
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(releaseHistoricalReservation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        candidateId: "cand-1",
+        reason: "dispatch_start_rejected:campaign_not_running",
+      }),
+    );
+    expect(result.deferred).toBe(1);
+  });
+
+  it("records a final locked eligibility suppression without calling Meta", async () => {
+    startHistoricalDispatch.mockResolvedValue({
+      kind: "suppressed",
+      reason: "keyword_inactive",
+    });
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(releaseHistoricalReservation).not.toHaveBeenCalled();
+    expect(result.suppressed).toBe(1);
+  });
+
+  it("stops the tick when final authorization sees pending inbound health capture", async () => {
+    startHistoricalDispatch.mockResolvedValue({
+      kind: "blocked",
+      reason: "campaign_health_capture_pending",
+    });
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(releaseHistoricalReservation).toHaveBeenCalled();
+    expect(result.skipped).toBe("campaign_health_capture_pending");
   });
 });
 
@@ -238,14 +342,44 @@ describe("runHistoricalRecoveryTick — pre-send recheck", () => {
   }
 
   // Measured: 1 of 3 sampled 44-day-old comments was already deleted.
-  it("suppresses rather than posting when Meta says the comment is gone", async () => {
+  it("suppresses when every approved source is gone", async () => {
     failSourceRead({ graphCode: 803 });
 
     const result = await runHistoricalRecoveryTick();
 
     expect(replyToComment).not.toHaveBeenCalled();
-    expect(markCandidateSuppressed).toHaveBeenCalledWith("cand-1", "token-1", "source_comment_deleted");
+    expect(markCandidateSuppressed).toHaveBeenCalledWith("cand-1", "token-1", "source_set_exhausted");
     expect(result.suppressed).toBe(1);
+  });
+
+  it("falls back to the next approved source after a definitive missing result", async () => {
+    claimCandidate.mockResolvedValue({
+      ...CANDIDATE,
+      sources: [
+        { position: 0, commentId: CANDIDATE.commentId },
+        { position: 1, commentId: "18111572197950000" },
+      ],
+    });
+    describeGraphError.mockReturnValue({
+      ...SAFE_UNKNOWN,
+      category: "graph_response",
+      graphCode: 803,
+    });
+    fetchComment
+      .mockRejectedValueOnce(new Error("missing"))
+      .mockResolvedValueOnce({ id: "18111572197950000", hidden: false, timestamp: null });
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(startHistoricalDispatch).toHaveBeenCalledWith(expect.objectContaining({
+      commentId: "18111572197950000",
+    }));
+    expect(replyToComment).toHaveBeenCalledWith(
+      "18111572197950000",
+      CANDIDATE.publicReplyText,
+    );
+    expect(markCandidateSuppressed).not.toHaveBeenCalled();
+    expect(result.sent).toBe(1);
   });
 
   // QA-09's core case. A timeout says nothing about whether the comment exists, and
@@ -297,13 +431,13 @@ describe("runHistoricalRecoveryTick — pre-send recheck", () => {
 
   // Worse than deletion: a reply to a hidden comment SUCCEEDS, so it would count as
   // a send while nobody ever saw it.
-  it("suppresses a hidden comment", async () => {
+  it("suppresses when the approved set is exhausted by a hidden comment", async () => {
     fetchComment.mockResolvedValue({ id: CANDIDATE.commentId, hidden: true, timestamp: null });
 
     await runHistoricalRecoveryTick();
 
     expect(replyToComment).not.toHaveBeenCalled();
-    expect(markCandidateSuppressed).toHaveBeenCalledWith("cand-1", "token-1", "source_comment_hidden");
+    expect(markCandidateSuppressed).toHaveBeenCalledWith("cand-1", "token-1", "source_set_exhausted");
   });
 
   it("suppresses when the person replied after selection", async () => {
@@ -316,7 +450,7 @@ describe("runHistoricalRecoveryTick — pre-send recheck", () => {
   });
 
   it("suppresses when another recovery already reached them", async () => {
-    reminderCount.mockResolvedValue(1);
+    dispatchCount.mockResolvedValue(1);
 
     await runHistoricalRecoveryTick();
 
@@ -355,7 +489,9 @@ describe("runHistoricalRecoveryTick — failure handling", () => {
     const result = await runHistoricalRecoveryTick();
 
     expect(openRecoveryCircuit).toHaveBeenCalled();
-    expect(markCandidateFailed).toHaveBeenCalledWith("cand-1", "token-1", "auth_or_permission");
+    expect(finalizeHistoricalDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: expect.objectContaining({ kind: "failed", reason: "auth_or_permission" }) }),
+    );
     expect(result.failed).toBe(1);
   });
 
@@ -366,7 +502,9 @@ describe("runHistoricalRecoveryTick — failure handling", () => {
 
     const result = await runHistoricalRecoveryTick();
 
-    expect(markCandidateFailed).toHaveBeenCalledWith("cand-1", "token-1", "code_190");
+    expect(finalizeHistoricalDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: expect.objectContaining({ kind: "failed", reason: "code_190" }) }),
+    );
     expect(result.failed).toBe(1);
   });
 
@@ -378,8 +516,9 @@ describe("runHistoricalRecoveryTick — failure handling", () => {
 
     const result = await runHistoricalRecoveryTick();
 
-    expect(markCandidateUncertain).toHaveBeenCalledWith("cand-1", "token-1", "unknown_error");
-    expect(markCandidateFailed).not.toHaveBeenCalled();
+    expect(finalizeHistoricalDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: { kind: "uncertain", reason: "unknown_error" } }),
+    );
     expect(result.uncertain).toBe(1);
   });
 
@@ -391,11 +530,18 @@ describe("runHistoricalRecoveryTick — failure handling", () => {
 
     const result = await runHistoricalRecoveryTick();
 
-    expect(releaseCandidateClaim).toHaveBeenCalledWith("cand-1", "token-1", expect.any(Date));
-    expect(markCandidateFailed).not.toHaveBeenCalled();
+    expect(finalizeHistoricalDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: expect.objectContaining({
+          kind: "released",
+          reason: "rate_limit",
+          nextAttemptAt: expect.any(Date),
+        }),
+      }),
+    );
     expect(result.deferred).toBe(1);
 
-    const retryAt = releaseCandidateClaim.mock.calls[0]?.[2] as Date;
+    const retryAt = finalizeHistoricalDispatch.mock.calls[0]?.[0].outcome.nextAttemptAt as Date;
     expect(retryAt.getTime()).toBeGreaterThan(Date.now());
   });
 
@@ -407,7 +553,9 @@ describe("runHistoricalRecoveryTick — failure handling", () => {
 
     const result = await runHistoricalRecoveryTick();
 
-    expect(markCandidateFailed).toHaveBeenCalledWith("cand-1", "token-1", "rate_limit_exhausted");
+    expect(finalizeHistoricalDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: expect.objectContaining({ kind: "failed", reason: "rate_limit_exhausted" }) }),
+    );
     expect(result.failed).toBe(1);
   });
 
@@ -418,8 +566,9 @@ describe("runHistoricalRecoveryTick — failure handling", () => {
 
     const result = await runHistoricalRecoveryTick();
 
-    expect(markCandidateSent).not.toHaveBeenCalled();
-    expect(markCandidateUncertain).toHaveBeenCalledWith("cand-1", "token-1", "missing_reply_id");
+    expect(finalizeHistoricalDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: { kind: "uncertain", reason: "missing_reply_id" } }),
+    );
     expect(result.uncertain).toBe(1);
   });
 
@@ -495,7 +644,7 @@ describe("runHistoricalRecoveryTick — claims and leases", () => {
 // staged rollout the plan depends on was writing a number nothing consulted.
 describe("runHistoricalRecoveryTick — campaign pacing", () => {
   it("uses the campaign's batch size instead of the env value", async () => {
-    campaignAggregate.mockResolvedValue({ _min: { batchSize: 1 } });
+    openCampaignBatch.mockResolvedValue({ id: "batch-1", allowance: 1 });
     listDueCandidateIds.mockResolvedValue(["cand-1", "cand-2"]);
 
     const result = await runHistoricalRecoveryTick();
@@ -505,19 +654,62 @@ describe("runHistoricalRecoveryTick — campaign pacing", () => {
     expect(replyToComment).toHaveBeenCalledTimes(1);
   });
 
-  // The env value stays an emergency ceiling: a campaign cannot stage its way past it.
-  it("never exceeds the env maximum even if a campaign asks for more", async () => {
-    campaignAggregate.mockResolvedValue({ _min: { batchSize: 50 } });
-    listDueCandidateIds.mockResolvedValue(["cand-1", "cand-2", "cand-3"]);
+  it("gives simultaneous campaigns independent batch allowances", async () => {
+    campaignFindMany.mockResolvedValue([{ id: "camp-1" }, { id: "camp-2" }]);
+    openCampaignBatch.mockImplementation(async (_tick, campaignId: string) => ({
+      id: `batch-${campaignId}`,
+      allowance: campaignId === "camp-1" ? 1 : 5,
+    }));
+    listDueCandidateIds.mockImplementation(async (_now, _limit, campaignId: string) =>
+      campaignId === "camp-1"
+        ? ["camp-1-cand-1"]
+        : Array.from({ length: 5 }, (_, index) => `camp-2-cand-${index + 1}`),
+    );
+    claimCandidate.mockImplementation(async (id: string) => ({
+      ...CANDIDATE,
+      id,
+      campaignId: id.startsWith("camp-1") ? "camp-1" : "camp-2",
+    }));
 
     const result = await runHistoricalRecoveryTick();
 
-    expect(result.sent).toBe(2); // DM_RECOVERY_BATCH_SIZE
+    expect(result.sent).toBe(6);
+    expect(startHistoricalDispatch.mock.calls.filter(
+      ([input]) => input.batchRunId === "batch-camp-1",
+    )).toHaveLength(1);
+    expect(startHistoricalDispatch.mock.calls.filter(
+      ([input]) => input.batchRunId === "batch-camp-2",
+    )).toHaveLength(5);
+  });
+
+  it("skips when another process owns the distributed tick lease", async () => {
+    acquireHistoricalTick.mockResolvedValue(null);
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(result.skipped).toBe("tick_already_running");
+    expect(campaignFindMany).not.toHaveBeenCalled();
+    expect(replyToComment).not.toHaveBeenCalled();
+  });
+
+  it("finishes the distributed tick even when campaign enumeration fails", async () => {
+    campaignFindMany.mockRejectedValue(new Error("db gone"));
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(result.skipped).toBe("tick_failed");
+    expect(finishHistoricalTick).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.any(Date),
+    );
   });
 
   // The reservation replaced a read-then-post pair with nothing holding the gap.
   it("posts nothing when the reservation refuses a slot", async () => {
-    reserveSendCapacity.mockResolvedValue("global_hourly_cap_reached");
+    reserveHistoricalDispatch.mockResolvedValue({
+      kind: "blocked",
+      reason: "global_hourly_cap_reached",
+    });
 
     const result = await runHistoricalRecoveryTick();
 
@@ -527,12 +719,29 @@ describe("runHistoricalRecoveryTick — campaign pacing", () => {
     expect(result.deferred).toBe(1);
   });
 
+  it("stops the tick when the shared rolling-day capacity is full", async () => {
+    reserveHistoricalDispatch.mockResolvedValue({
+      kind: "blocked",
+      reason: "global_daily_cap_reached",
+    });
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(result.skipped).toBe("global_daily_cap_reached");
+    expect(result.deferred).toBe(1);
+  });
+
   // The reservation must happen BEFORE Meta is contacted, or it reserves nothing.
   it("reserves capacity before dispatching", async () => {
     const order: string[] = [];
-    reserveSendCapacity.mockImplementation(async () => {
+    reserveHistoricalDispatch.mockImplementation(async () => {
       order.push("reserve");
-      return null;
+      return {
+        kind: "reserved",
+        dispatchId: "dispatch-1",
+        reservationToken: "reservation-1",
+      };
     });
     replyToComment.mockImplementation(async () => {
       order.push("dispatch");
@@ -556,7 +765,7 @@ describe("runHistoricalRecoveryTick — a failure before dispatch is not uncerta
 
     const result = await runHistoricalRecoveryTick();
 
-    expect(markCandidateUncertain).not.toHaveBeenCalled();
+    expect(finalizeHistoricalDispatch).not.toHaveBeenCalled();
     expect(markCandidateSuppressed).not.toHaveBeenCalled();
     expect(replyToComment).not.toHaveBeenCalled();
     expect(result.uncertain).toBe(0);
@@ -583,7 +792,9 @@ describe("runHistoricalRecoveryTick — a failure before dispatch is not uncerta
     const result = await runHistoricalRecoveryTick();
 
     expect(result.uncertain).toBe(1);
-    expect(markCandidateUncertain).toHaveBeenCalled();
+    expect(finalizeHistoricalDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: expect.objectContaining({ kind: "uncertain" }) }),
+    );
   });
 });
 
@@ -616,20 +827,19 @@ describe("runHistoricalRecoveryTick — evidence is scoped to since-selection", 
     expect(where.completedAt).toEqual({ gte: CANDIDATE.selectedAt });
   });
 
-  it("asks BOTH recovery systems about a prior public contact", async () => {
+  it("asks the shared ledger about either system's prior public contact", async () => {
     await runHistoricalRecoveryTick();
 
-    expect(reminderCount).toHaveBeenCalled();
-    expect(candidateCount).toHaveBeenCalled();
-    // Never itself: a candidate's own row must not read as someone else's send.
-    expect(whereOf(candidateCount).id).toEqual({ not: CANDIDATE.id });
+    expect(dispatchCount).toHaveBeenCalled();
+    const where = whereOf(dispatchCount);
+    expect(where.igUserId).toBe(CANDIDATE.igUserId);
+    expect(where.state).toEqual({ in: ["sent", "uncertain"] });
+    expect(where.dispatchStartedAt).toEqual({ gte: CANDIDATE.selectedAt });
   });
 
-  // A historical send by another campaign is a reason to stay silent, and before this
-  // the recheck could not see one at all.
-  it("suppresses when only the historical table shows a prior send", async () => {
-    reminderCount.mockResolvedValue(0);
-    candidateCount.mockResolvedValue(1);
+  // A send from either feature is a reason to stay silent; source tables are not read.
+  it("suppresses when the ledger shows a prior send", async () => {
+    dispatchCount.mockResolvedValue(1);
 
     const result = await runHistoricalRecoveryTick();
 
@@ -671,19 +881,27 @@ describe("runHistoricalRecoveryTick — evidence is scoped to since-selection", 
 // that had sent every candidate sat `running` forever: the dashboard showed active work
 // that would never move, and nothing recorded that the campaign had done its job.
 describe("runHistoricalRecoveryTick — closes a drained campaign", () => {
+  it("reconciles all drained campaigns even when this process changed no row", async () => {
+    listDueCandidateIds.mockResolvedValue([]);
+
+    await runHistoricalRecoveryTick();
+
+    expect(reconcileDrainedCampaigns).toHaveBeenCalledWith(expect.any(Date));
+  });
+
   it("attempts completion for every campaign the tick touched", async () => {
     await runHistoricalRecoveryTick();
 
     expect(completeCampaignIfDrained).toHaveBeenCalledWith("camp-1", expect.any(Date));
   });
 
-  // Once per campaign, not once per row: a per-row check would re-count the whole
-  // campaign on every send.
-  it("checks each campaign once even across several rows", async () => {
+  // Health is checked after each outcome so a stop from row one fences row two.
+  it("checks campaign health after each terminal outcome", async () => {
     listDueCandidateIds.mockResolvedValue(["cand-1", "cand-2"]);
 
     await runHistoricalRecoveryTick();
 
+    expect(evaluateCampaignHealth).toHaveBeenCalledTimes(3);
     expect(completeCampaignIfDrained).toHaveBeenCalledTimes(1);
   });
 
@@ -712,6 +930,60 @@ describe("runHistoricalRecoveryTick — closes a drained campaign", () => {
 // campaign could be failing on real people's public comments while the shared circuit
 // stayed closed because the prospective feature was healthy.
 describe("runHistoricalRecoveryTick — campaign stop conditions", () => {
+  it("does not open a campaign batch while durable inbound health capture is pending", async () => {
+    reconcilePendingInboundCampaignHealthSignals.mockResolvedValue({
+      processed: 100,
+      failed: 0,
+      remaining: true,
+    });
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(openCampaignBatch).not.toHaveBeenCalled();
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(result.skipped).toBe("campaign_health_capture_pending");
+  });
+
+  it("fails closed when a durable inbound health capture cannot be reconciled", async () => {
+    reconcilePendingInboundCampaignHealthSignals.mockResolvedValue({
+      processed: 0,
+      failed: 1,
+      remaining: false,
+    });
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(openCampaignBatch).not.toHaveBeenCalled();
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(result.skipped).toBe("campaign_health_capture_failed");
+  });
+
+  it("stops the campaign mid-batch before reserving a second candidate", async () => {
+    listDueCandidateIds.mockResolvedValue(["cand-1", "cand-2"]);
+    claimCandidate.mockImplementation(async (id: string) => ({ ...CANDIDATE, id }));
+    evaluateCampaignHealth
+      .mockResolvedValueOnce({ stopReason: null })
+      .mockResolvedValue({ stopReason: "complaint" });
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(replyToComment).toHaveBeenCalledTimes(1);
+    expect(reserveHistoricalDispatch).toHaveBeenCalledTimes(1);
+    expect(claimCandidate).toHaveBeenCalledTimes(1);
+    expect(result.skipped).toBe("campaign_auto_paused:complaint");
+  });
+
+  it("honors a durable stop observation before the first dispatch", async () => {
+    evaluateCampaignHealth.mockResolvedValue({ stopReason: "opt_out" });
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(openCampaignBatch).not.toHaveBeenCalled();
+    expect(claimCandidate).not.toHaveBeenCalled();
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(result.skipped).toBe("campaign_auto_paused:opt_out");
+  });
+
   it("evaluates campaign health after the tick", async () => {
     await runHistoricalRecoveryTick();
 
@@ -735,15 +1007,30 @@ describe("runHistoricalRecoveryTick — campaign stop conditions", () => {
     expect(completeCampaignIfDrained).toHaveBeenCalledWith("camp-1", expect.any(Date));
   });
 
-  // A tick that posted successfully must not report failure because the bookkeeping
-  // afterwards broke.
-  it("still reports the send when health evaluation fails", async () => {
+  it("fails closed before dispatch when initial health evaluation fails", async () => {
     evaluateCampaignHealth.mockRejectedValue(new Error("db gone"));
 
     const result = await runHistoricalRecoveryTick();
 
+    expect(result.sent).toBe(0);
+    expect(openCampaignBatch).not.toHaveBeenCalled();
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(result.skipped).toBe("campaign_health_check_failed");
+  });
+
+  it("stops before the next candidate when post-outcome health evaluation fails", async () => {
+    listDueCandidateIds.mockResolvedValue(["cand-1", "cand-2"]);
+    claimCandidate.mockImplementation(async (id: string) => ({ ...CANDIDATE, id }));
+    evaluateCampaignHealth
+      .mockResolvedValueOnce({ stopReason: null })
+      .mockRejectedValue(new Error("db gone"));
+
+    const result = await runHistoricalRecoveryTick();
+
     expect(result.sent).toBe(1);
-    expect(result.skipped).toBeUndefined();
+    expect(replyToComment).toHaveBeenCalledTimes(1);
+    expect(claimCandidate).toHaveBeenCalledTimes(1);
+    expect(result.skipped).toBe("campaign_health_check_failed");
   });
 
   // Every case above drives a tick where the send SUCCEEDS, and that was the whole gap:
@@ -786,5 +1073,33 @@ describe("runHistoricalRecoveryTick — campaign stop conditions", () => {
 
     expect(completeCampaignIfDrained).not.toHaveBeenCalled();
     expect(result.skipped).toBe("campaign_auto_paused:public_failure_rate");
+  });
+});
+
+describe("runHistoricalRecoveryTick — rolling reservation timestamps", () => {
+  it("does not backdate a later candidate to tick start", async () => {
+    vi.useFakeTimers();
+    try {
+      const startedAt = new Date("2026-08-08T20:00:00.000Z");
+      vi.setSystemTime(startedAt);
+      listDueCandidateIds.mockResolvedValue(["cand-1", "cand-2"]);
+      claimCandidate.mockImplementation(async (id: string) => ({ ...CANDIDATE, id }));
+      replyToComment.mockImplementation(async () => {
+        if (replyToComment.mock.calls.length === 1) {
+          vi.setSystemTime(new Date(startedAt.getTime() + 5 * 60_000));
+        }
+        return { replyId: `provider-${replyToComment.mock.calls.length}` };
+      });
+
+      await runHistoricalRecoveryTick();
+
+      expect(reserveHistoricalDispatch).toHaveBeenCalledTimes(2);
+      const first = reserveHistoricalDispatch.mock.calls[0]![0].now as Date;
+      const second = reserveHistoricalDispatch.mock.calls[1]![0].now as Date;
+      expect(first.getTime()).toBe(startedAt.getTime());
+      expect(second.getTime()).toBe(startedAt.getTime() + 5 * 60_000);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

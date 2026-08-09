@@ -62,6 +62,7 @@ function makeDetail(overrides: Partial<RecoveryReminderDetail> = {}): RecoveryRe
     lastErrorCategory: null,
     reviewedAt: null,
     createdAt: "2026-08-05T23:00:00.000Z",
+    settingsEvidence: null,
     commentId: "comment-1",
     keywordSnapshot: "SLEEP",
     templateVersion: "v1",
@@ -138,6 +139,53 @@ describe("DmRecoveryDrawer", () => {
     });
     expect(await screen.findByText(/Seen/)).toBeInTheDocument();
     expect(screen.queryByText("No read confirmation received")).not.toBeInTheDocument();
+  });
+
+  it("shows the sanitized verification snapshot for settings-specific copy", async () => {
+    renderDrawer({
+      triggerKind: "settings_blocked",
+      cohort: "not_applicable",
+      settingsEvidence: {
+        status: "current",
+        verificationId: "10000000-0000-4000-8000-000000000017",
+        version: "settings-proof-v1",
+        graphCode: 10,
+        graphSubcode: 12345,
+        classifiedAt: "2026-08-06T09:00:00.000Z",
+        verifiedAt: "2026-08-06T08:00:00.000Z",
+        validUntil: "2099-08-06T08:00:00.000Z",
+        apiVersion: "v23.0",
+        evidenceReference: "meta-sandbox/settings-proof-v1",
+        evidenceSha256: "a".repeat(64),
+      },
+    });
+
+    expect(await screen.findByText("Verified settings evidence")).toBeInTheDocument();
+    expect(screen.getAllByText(/settings-proof-v1/)).toHaveLength(2);
+    expect(screen.getByText(/10:12345/)).toBeInTheDocument();
+    expect(screen.getByText(/meta-sandbox\/settings-proof-v1/)).toBeInTheDocument();
+  });
+
+  it("warns when a legacy settings row has no verification evidence", async () => {
+    renderDrawer({
+      triggerKind: "settings_blocked",
+      cohort: "not_applicable",
+      settingsEvidence: {
+        status: "missing",
+        verificationId: null,
+        version: null,
+        graphCode: null,
+        graphSubcode: null,
+        classifiedAt: null,
+        verifiedAt: null,
+        validUntil: null,
+        apiVersion: null,
+        evidenceReference: null,
+        evidenceSha256: null,
+      },
+    });
+
+    expect(await screen.findByText(/Verification evidence missing/i)).toBeInTheDocument();
   });
 
   // There is deliberately no way to force a send from the dashboard: the policy

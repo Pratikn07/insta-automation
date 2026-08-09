@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api, recoveryApi } from "../../lib/api";
 import type {
@@ -8,6 +8,7 @@ import type {
   RecoveryMetrics,
   RecoveryReminderRow,
   RecoveryView,
+  SettingsBlockedVerificationRecord,
 } from "../../lib/types";
 import { cn, formatAbsolute } from "../../lib/utils";
 import { recoveryStatusView, type RecoveryTone } from "./dmRecoveryViewModel";
@@ -45,6 +46,7 @@ function pct(value: number | null): string {
 }
 
 export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void }) {
+  const queryClient = useQueryClient();
   const [view, setView] = useState<RecoveryView>("ready");
   const [keywordId, setKeywordId] = useState<string>("");
   const [cohort, setCohort] = useState<"" | RecoveryCohort>("");
@@ -65,6 +67,21 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
   const metricsQ = useQuery<RecoveryMetrics>({
     queryKey: ["recovery-reminders", "metrics"],
     queryFn: () => recoveryApi.metrics(),
+  });
+
+  const settingsVerificationsQ = useQuery<{ records: SettingsBlockedVerificationRecord[] }>({
+    queryKey: ["recovery-reminders", "settings-verifications"],
+    queryFn: () => recoveryApi.settingsVerifications(),
+  });
+
+  const activateVerificationM = useMutation({
+    mutationFn: (id: string) => recoveryApi.activateSettingsVerification(id),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ["recovery-reminders", "settings-verifications"],
+      });
+      await queryClient.invalidateQueries({ queryKey: ["recovery-reminders", "metrics"] });
+    },
   });
 
   const rowsQ = useInfiniteQuery({
@@ -94,6 +111,10 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
   const health = metricsQ.data?.health;
   const experiment = metricsQ.data?.experiment;
   const accuracy = metricsQ.data?.accuracy;
+  const settingsEvidence = metricsQ.data?.settingsEvidence;
+  const settingsVerificationRecords = Array.isArray(settingsVerificationsQ.data?.records)
+    ? settingsVerificationsQ.data.records
+    : [];
   const rows: RecoveryReminderRow[] = rowsQ.data?.pages.flatMap((p) => p.rows) ?? [];
   // The active view, not the grand total: a count that never changes as tabs
   // change is not describing what is on screen.
@@ -220,6 +241,45 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
         </dl>
       ) : null}
 
+      {settingsEvidence ? (
+        <p className="rounded-md border px-3 py-2 text-xs text-muted-foreground">
+          <span className="font-medium text-foreground">Settings verification · </span>
+          {settingsEvidence.current} current ·{" "}
+          {settingsEvidence.stale + settingsEvidence.retired + settingsEvidence.missing} invalid settings evidence
+        </p>
+      ) : null}
+
+      {settingsVerificationRecords.length > 0 ? (
+        <section className="space-y-2 rounded-lg border px-3 py-2 text-xs">
+          <h3 className="font-semibold">Settings verification registry</h3>
+          <ul className="space-y-1">
+            {settingsVerificationRecords.map((record) => (
+              <li key={record.id} className="flex flex-wrap items-center gap-2">
+                <span className="font-medium">{record.version}</span>
+                <span className="text-muted-foreground">
+                  {record.graphCode}:{record.graphSubcode} · {record.status}
+                </span>
+                {record.status === "inactive" ? (
+                  <button
+                    type="button"
+                    aria-label={`Activate ${record.version}`}
+                    disabled={activateVerificationM.isPending}
+                    onClick={() => activateVerificationM.mutate(record.id)}
+                    className="ml-auto rounded-md border px-2 py-1 hover:bg-accent/20 disabled:opacity-50"
+                  >
+                    Activate
+                  </button>
+                ) : record.status === "stale" || record.status === "retired" ? (
+                  <span className="ml-auto text-rose-200">Activation blocked</span>
+                ) : (
+                  <span className="ml-auto text-emerald-300">Active</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
       {rowsQ.isPending ? (
         <div className="space-y-2" aria-busy="true">
           {[0, 1, 2].map((i) => (
@@ -271,6 +331,17 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
                   >
                     {state.label}
                   </span>
+                  {row.triggerKind === "settings_blocked" &&
+                  row.settingsEvidence &&
+                  row.settingsEvidence.status !== "current" ? (
+                    <span className="shrink-0 rounded-full bg-rose-400/10 px-2 py-0.5 text-xs font-medium text-rose-300">
+                      {row.settingsEvidence.status === "missing"
+                        ? "Evidence missing"
+                        : row.settingsEvidence.status === "stale"
+                          ? "Evidence stale"
+                          : "Evidence retired"}
+                    </span>
+                  ) : null}
                 </button>
                 {row.media.permalink ? (
                   <a

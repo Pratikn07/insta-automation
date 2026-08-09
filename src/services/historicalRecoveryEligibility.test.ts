@@ -264,6 +264,16 @@ describe("keepLatestPerPerson", () => {
     expect(kept[0]!.facts.intentId).toBe("new");
   });
 
+  it("uses intent identity as a stable tie-break when request timestamps match", () => {
+    const left = { facts: facts({ intentId: "intent-a", igUserId: "p1", commentAt: day(10) }) };
+    const right = { facts: facts({ intentId: "intent-b", igUserId: "p1", commentAt: day(10) }) };
+
+    expect(keepLatestPerPerson([left, right]).map((entry) => entry.facts.intentId))
+      .toEqual(["intent-b"]);
+    expect(keepLatestPerPerson([right, left]).map((entry) => entry.facts.intentId))
+      .toEqual(["intent-b"]);
+  });
+
   it("leaves single-request people untouched", () => {
     const kept = keepLatestPerPerson([
       { facts: facts({ intentId: "a", igUserId: "p1", commentAt: day(1) }) },

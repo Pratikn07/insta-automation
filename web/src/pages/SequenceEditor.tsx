@@ -26,7 +26,7 @@ import {
   Trash2,
   Type as TypeIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { api, ApiError } from "@/lib/api";
@@ -51,8 +51,6 @@ const STEP_TYPES: { value: MessageType; label: string; icon: typeof TypeIcon }[]
 
 export function SequenceEditor() {
   const { id } = useParams<{ id: string }>();
-  const qc = useQueryClient();
-
   const resourceQ = useQuery<Resource>({
     queryKey: ["resource", id],
     queryFn: () => api<Resource>(`/resources/${id}`),
@@ -65,19 +63,57 @@ export function SequenceEditor() {
     enabled: !!id,
   });
 
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  useEffect(() => {
-    if (resourceQ.data) {
-      setName(resourceQ.data.name);
-      setDescription(resourceQ.data.description ?? "");
-    }
-  }, [resourceQ.data]);
+  const isLoading = resourceQ.isLoading || messagesQ.isLoading;
 
-  const [items, setItems] = useState<ResourceMessage[]>([]);
-  useEffect(() => {
-    if (messagesQ.data) setItems(messagesQ.data);
-  }, [messagesQ.data]);
+  if (isLoading) {
+    return (
+      <div className="space-y-4">
+        <Skeleton className="h-8 w-64" />
+        <Skeleton className="h-32" />
+      </div>
+    );
+  }
+
+  if (!id || !resourceQ.data) {
+    return (
+      <Card>
+        <CardContent className="p-8">
+          <p className="text-sm text-muted-foreground">Sequence not found.</p>
+          <Button variant="ghost" asChild className="mt-3">
+            <Link to="/sequences">
+              <ArrowLeft className="size-4" />
+              Back to Sequences
+            </Link>
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <SequenceEditorForm
+      key={resourceQ.data.id}
+      id={id}
+      resource={resourceQ.data}
+      initialMessages={messagesQ.data ?? []}
+    />
+  );
+}
+
+function SequenceEditorForm({
+  id,
+  resource,
+  initialMessages,
+}: {
+  id: string;
+  resource: Resource;
+  initialMessages: ResourceMessage[];
+}) {
+  const qc = useQueryClient();
+
+  const [name, setName] = useState(resource.name);
+  const [description, setDescription] = useState(resource.description ?? "");
+  const [items, setItems] = useState<ResourceMessage[]>(initialMessages);
 
   const [confirmDelete, setConfirmDelete] = useState<ResourceMessage | null>(null);
 
@@ -107,14 +143,14 @@ export function SequenceEditor() {
 
   const reorderMutation = useMutation({
     mutationKey: saveKey,
-    mutationFn: (orderedIds: string[]) =>
+    mutationFn: ({ orderedIds }: { orderedIds: string[]; previous: ResourceMessage[] }) =>
       api<ResourceMessage[]>(`/messages/reorder/${id}`, {
         method: "POST",
         body: JSON.stringify({ messageIds: orderedIds }),
       }),
-    onError: (err) => {
+    onError: (err, { previous }) => {
       toast.error(err instanceof ApiError ? err.message : "Reorder failed");
-      if (messagesQ.data) setItems(messagesQ.data);
+      setItems(previous);
     },
     onSettled: () => qc.invalidateQueries({ queryKey: ["resource-messages", id] }),
   });
@@ -132,7 +168,8 @@ export function SequenceEditor() {
           ...(type === "pdf" ? { mediaUrl: "https://placehold.co/600x400/0a0a0a/666?text=Upload+PDF" } : {}),
         }),
       }),
-    onSuccess: () => {
+    onSuccess: (next) => {
+      setItems((current) => [...current, next].sort((a, b) => a.order - b.order));
       qc.invalidateQueries({ queryKey: ["resource-messages", id] });
       qc.invalidateQueries({ queryKey: ["resources"] });
       qc.invalidateQueries({ queryKey: ["resource", id] });
@@ -144,7 +181,8 @@ export function SequenceEditor() {
   const deleteMutation = useMutation({
     mutationKey: saveKey,
     mutationFn: (mid: string) => api(`/messages/${mid}`, { method: "DELETE" }),
-    onSuccess: () => {
+    onSuccess: (_result, mid) => {
+      setItems((current) => current.filter((message) => message.id !== mid));
       qc.invalidateQueries({ queryKey: ["resource-messages", id] });
       qc.invalidateQueries({ queryKey: ["resources"] });
       qc.invalidateQueries({ queryKey: ["resource", id] });
@@ -162,36 +200,7 @@ export function SequenceEditor() {
     if (oldIndex < 0 || newIndex < 0) return;
     const next = arrayMove(items, oldIndex, newIndex);
     setItems(next);
-    reorderMutation.mutate(next.map((m) => m.id));
-  }
-
-  const isLoading = resourceQ.isLoading || messagesQ.isLoading;
-
-  const previewSteps = useMemo(() => items, [items]);
-
-  if (isLoading) {
-    return (
-      <div className="space-y-4">
-        <Skeleton className="h-8 w-64" />
-        <Skeleton className="h-32" />
-      </div>
-    );
-  }
-
-  if (!resourceQ.data) {
-    return (
-      <Card>
-        <CardContent className="p-8">
-          <p className="text-sm text-muted-foreground">Sequence not found.</p>
-          <Button variant="ghost" asChild className="mt-3">
-            <Link to="/sequences">
-              <ArrowLeft className="size-4" />
-              Back to Sequences
-            </Link>
-          </Button>
-        </CardContent>
-      </Card>
-    );
+    reorderMutation.mutate({ orderedIds: next.map((m) => m.id), previous: items });
   }
 
   return (
@@ -210,8 +219,8 @@ export function SequenceEditor() {
               onBlur={() => {
                 if (
                   name.trim() &&
-                  (name !== resourceQ.data?.name ||
-                    (description || null) !== (resourceQ.data?.description ?? null))
+                  (name !== resource.name ||
+                    (description || null) !== (resource.description ?? null))
                 ) {
                   renameMutation.mutate();
                 }
@@ -225,7 +234,7 @@ export function SequenceEditor() {
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             onBlur={() => {
-              if ((description || null) !== (resourceQ.data?.description ?? null)) {
+              if ((description || null) !== (resource.description ?? null)) {
                 renameMutation.mutate();
               }
             }}
@@ -302,7 +311,7 @@ export function SequenceEditor() {
             </h3>
             <span className="text-xs text-muted-foreground">After DONE reply</span>
           </div>
-          <PhoneMockup steps={previewSteps} />
+          <PhoneMockup steps={items} />
         </aside>
       </div>
 
@@ -339,10 +348,7 @@ function SortableStep({
     transition,
   };
   const qc = useQueryClient();
-  const [body, setBody] = useState(step.body ?? "");
-  const [mediaUrl, setMediaUrl] = useState(step.mediaUrl);
-  useEffect(() => setBody(step.body ?? ""), [step.body]);
-  useEffect(() => setMediaUrl(step.mediaUrl), [step.mediaUrl]);
+  const savedBody = useRef(step.body);
 
   const patchMutation = useMutation({
     mutationKey: ["sequence-save", step.resourceId],
@@ -351,8 +357,8 @@ function SortableStep({
         method: "PATCH",
         body: JSON.stringify(data),
       }),
-    onSuccess: (next) => {
-      onChange(next);
+    onSuccess: (_next, data) => {
+      if (data.body !== undefined) savedBody.current = data.body ?? null;
       qc.invalidateQueries({ queryKey: ["resource-messages", step.resourceId] });
     },
     onError: (err) =>
@@ -400,10 +406,10 @@ function SortableStep({
                   <Label>{step.type === "image" ? "Image" : "PDF"}</Label>
                   <MediaUpload
                     kind={step.type}
-                    value={mediaUrl}
+                    value={step.mediaUrl}
                     onChange={(url) => {
-                      setMediaUrl(url);
-                      if (url) patchMutation.mutate({ mediaUrl: url });
+                      onChange({ ...step, mediaUrl: url });
+                      patchMutation.mutate({ mediaUrl: url });
                     }}
                   />
                 </div>
@@ -414,11 +420,12 @@ function SortableStep({
                   {step.type === "text" ? "Message" : "Caption (optional)"}
                 </Label>
                 <Textarea
-                  value={body}
-                  onChange={(e) => setBody(e.target.value)}
+                  value={step.body ?? ""}
+                  onChange={(e) => onChange({ ...step, body: e.target.value })}
                   onBlur={() => {
-                    const next = body.trim() ? body : null;
-                    if (next !== (step.body ?? null)) patchMutation.mutate({ body: next });
+                    const value = step.body ?? "";
+                    const next = value.trim() ? value : null;
+                    if (next !== savedBody.current) patchMutation.mutate({ body: next });
                   }}
                   rows={step.type === "text" ? 3 : 2}
                   placeholder={

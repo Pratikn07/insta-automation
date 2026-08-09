@@ -168,8 +168,9 @@ describeWithLocalDatabase("journey trigger backfill covers alias history", () =>
     const triggers = await prisma.journeyTrigger.findMany({
       where: { intentId },
       orderBy: { receivedAt: "asc" },
+      include: { sourceEvent: true },
     });
-    expect(triggers.map((t) => t.commentId)).toEqual(commentIds);
+    expect(triggers.map((t) => t.sourceEvent.commentId)).toEqual(commentIds);
   });
 
   // Each alias keeps its OWN time. Stamping them all with the window start would make
@@ -218,11 +219,18 @@ describeWithLocalDatabase("journey trigger backfill covers alias history", () =>
       where: { id: intentId },
       select: { canonicalConversationId: true },
     });
+    const sourceEvent = await prisma.journeySourceEvent.create({
+      data: {
+        commentId: commentIds[0],
+        firstReceivedAt: new Date("2026-06-01T10:00:00Z"),
+      },
+    });
     await prisma.journeyTrigger.create({
       data: {
         intentId,
+        keywordId: fx.keywordId,
         conversationId: canonicalConvo!.canonicalConversationId,
-        commentId: commentIds[0],
+        sourceEventId: sourceEvent.id,
         receivedAt: new Date("2026-06-01T10:00:00Z"),
         triggerKind: "comment",
         disposition: "new_journey",
@@ -249,14 +257,22 @@ describeWithLocalDatabase("journey trigger backfill covers alias history", () =>
     const afterFirst = await prisma.journeyTrigger.findMany({
       where: { intentId },
       orderBy: { receivedAt: "asc" },
-      select: { commentId: true, disposition: true, receivedAt: true },
+      select: {
+        disposition: true,
+        receivedAt: true,
+        sourceEvent: { select: { commentId: true } },
+      },
     });
 
     await backfill(true);
     const afterSecond = await prisma.journeyTrigger.findMany({
       where: { intentId },
       orderBy: { receivedAt: "asc" },
-      select: { commentId: true, disposition: true, receivedAt: true },
+      select: {
+        disposition: true,
+        receivedAt: true,
+        sourceEvent: { select: { commentId: true } },
+      },
     });
 
     expect(afterFirst).toHaveLength(3);
@@ -273,10 +289,9 @@ describeWithLocalDatabase("journey trigger backfill covers alias history", () =>
     expect(await prisma.journeyTrigger.count({ where: { intentId } })).toBe(0);
   });
 
-  // journey_trigger.comment_id is globally unique, and one comment can legitimately
-  // match two keyword rows — two guides genuinely requested. Only the first intent can
-  // own the trigger, and the second must be REPORTED rather than silently dropped.
-  it("reports a comment claimed by another keyword instead of hiding it", async () => {
+  // One source comment can legitimately match two keyword rows — two guides genuinely
+  // requested. The association is unique per comment + keyword, not globally by comment.
+  it("retains one comment as history for two distinct keyword intents", async () => {
     const person = `${fx.igUserId}-shared-${randomUUID()}`;
     const first = await seedJourney({ aliasCount: 0, person });
     // A second intent on a different keyword, pointing at the SAME comment id.
@@ -307,8 +322,88 @@ describeWithLocalDatabase("journey trigger backfill covers alias history", () =>
 
     const summary = await backfill(true);
 
-    expect(summary.wrote).toBe(1);
-    expect(summary.skippedClaimed).toBe(1);
+    expect(summary.wrote).toBe(2);
+    expect(summary.skippedClaimed).toBe(0);
+    const associations = await prisma.journeyTrigger.findMany({
+      where: { sourceEvent: { commentId: first.commentIds[0] } },
+      orderBy: { keywordId: "asc" },
+      select: {
+        intentId: true,
+        keywordId: true,
+        sourceEvent: { select: { commentId: true } },
+      },
+    });
+    expect(associations).toEqual([
+      {
+        intentId: first.intentId,
+        keywordId: fx.keywordId,
+        sourceEvent: { commentId: first.commentIds[0] },
+      },
+      {
+        intentId: intent2.id,
+        keywordId: fx.keywordId2,
+        sourceEvent: { commentId: first.commentIds[0] },
+      },
+    ].sort((left, right) => left.keywordId.localeCompare(right.keywordId)));
+  });
+
+  it("retains every distinct source event on one conversation with original evidence", async () => {
+    const { intentId } = await seedJourney({ aliasCount: 0 });
+    const intent = await prisma.journeyIntent.findUniqueOrThrow({
+      where: { id: intentId },
+      select: { canonicalConversationId: true },
+    });
+    const secondAt = new Date("2026-06-01T11:15:00Z");
+    const secondCommentId = `bf-c-${randomUUID()}`;
+    const secondEvent = await prisma.eventLog.create({
+      data: {
+        kind: "keyword_matched",
+        payload: {
+          conversationId: intent.canonicalConversationId,
+          commentId: secondCommentId,
+          mediaId: "media-second",
+          source: "comment",
+          journeyDisposition: "reused_active",
+        },
+        createdAt: secondAt,
+      },
+    });
+    await prisma.eventLog.create({
+      data: {
+        kind: "public_reply_failed",
+        payload: {
+          conversationId: intent.canonicalConversationId,
+          commentId: secondCommentId,
+          category: "graph_response",
+        },
+        createdAt: new Date(secondAt.getTime() + 1000),
+      },
+    });
+
+    const summary = await backfill(true);
+
+    expect(summary.wrote).toBe(2);
+    const rows = await prisma.journeyTrigger.findMany({
+      where: { intentId },
+      orderBy: { receivedAt: "asc" },
+      select: {
+        sourceEventLogId: true,
+        receivedAt: true,
+        disposition: true,
+        publicAcknowledgementState: true,
+        acknowledgementErrorCategory: true,
+        sourceEvent: { select: { commentId: true, mediaId: true } },
+      },
+    });
+    expect(rows).toHaveLength(2);
+    expect(rows[1]).toMatchObject({
+      sourceEventLogId: secondEvent.id,
+      receivedAt: secondAt,
+      disposition: "reused_active",
+      publicAcknowledgementState: "failed",
+      acknowledgementErrorCategory: "graph_response",
+      sourceEvent: { commentId: secondCommentId, mediaId: "media-second" },
+    });
   });
 
   // A DM-matched keyword has no comment to reply to. It must be recorded as `dm` so the

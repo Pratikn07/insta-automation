@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { DmRecoveryCohort, DmRecoveryTriggerKind } from "@prisma/client";
 import type { Origin } from "./originInference.js";
+import { normalizeRecoveryKeyword } from "./recoveryCopyCore.js";
 
 export const RECOVERY_TEMPLATE_VERSION = "v1";
 
@@ -27,7 +28,8 @@ export type RecoverySuppressionReason =
   // posted. Named for the decision, not for the person: it records why WE did
   // not post, and it is never shown to anyone outside the dashboard.
   | "audience_out_of_market"
-  | "owner_cancelled";
+  | "owner_cancelled"
+  | "reconciled_alias";
 
 export type RecoveryDecision =
   | { kind: "wait" }
@@ -40,14 +42,16 @@ export function renderRecoveryCopy(
   trigger: "no_confirmed_read" | "settings_blocked",
   keywordSnapshot: string,
 ): string {
-  const trimmed = keywordSnapshot.trim();
-  if (!trimmed) {
+  let keyword: string;
+  try {
+    keyword = normalizeRecoveryKeyword(keywordSnapshot);
+  } catch {
     throw new Error("invalid_keyword_snapshot: Snapshot must be a non-empty string");
   }
 
   return trigger === "settings_blocked"
-    ? `I couldn’t send your DM 💛 Your message-request settings blocked it. DM @tinysoho “${trimmed}”.`
-    : `I sent your guide 💛 Check your DMs/Requests. If you don’t see it, DM @tinysoho “${trimmed}”.`;
+    ? `I couldn’t send your DM 💛 Your message-request settings blocked it. DM @tinysoho “${keyword}”.`
+    : `I sent your guide 💛 Check your DMs/Requests. If you don’t see it, DM @tinysoho “${keyword}”.`;
 }
 
 export function assignRecoveryCohort(

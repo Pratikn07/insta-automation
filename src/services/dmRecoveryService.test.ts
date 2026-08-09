@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // ── Mocks ────────────────────────────────────────────────────────────────
 
 const upsert = vi.fn();
+const reminderFindUnique = vi.fn();
 const updateMany = vi.fn();
 const findMany = vi.fn();
 const update = vi.fn();
@@ -11,10 +12,11 @@ const loggerInfo = vi.fn();
 const loggerError = vi.fn();
 const assignRecoveryCohortMock = vi.fn();
 const igUserFindUnique = vi.fn();
+const lockAndValidateSettingsBlockedVerificationEvidence = vi.fn();
 
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
-    dmRecoveryReminder: { upsert, updateMany, findMany, update },
+    dmRecoveryReminder: { upsert, findUnique: reminderFindUnique, updateMany, findMany, update },
     igUser: { findUnique: igUserFindUnique },
     $transaction,
   },
@@ -41,6 +43,10 @@ vi.mock("./dmRecoveryPolicy.js", async (importOriginal) => {
     assignRecoveryCohort: assignRecoveryCohortMock,
   };
 });
+
+vi.mock("./settingsBlockedVerificationService.js", () => ({
+  lockAndValidateSettingsBlockedVerificationEvidence,
+}));
 
 const {
   scheduleAcceptedGateRecovery,
@@ -73,7 +79,17 @@ const SETTINGS_INPUT = {
   keywordSnapshot: "PROTEIN",
   commentId: "comment-2",
   mediaId: "media-1",
-  rejectedAt: new Date("2026-08-06T08:00:00Z"),
+  verification: {
+    verificationId: "10000000-0000-4000-8000-000000000017",
+    verificationVersion: "settings-proof-2026-08-08-v1",
+    graphCode: 10,
+    graphSubcode: 12345,
+    classifiedAt: new Date("2026-08-06T08:00:00Z"),
+    verifiedAt: new Date("2026-08-06T07:00:00Z"),
+    validUntil: new Date("2026-09-06T07:00:00Z"),
+    evidenceReference: "meta-sandbox/settings-proof-2026-08-08-v1",
+    evidenceSha256: "a".repeat(64),
+  },
 };
 
 const TRACKING_INPUT = {
@@ -115,6 +131,7 @@ function makeRow(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   upsert.mockReset();
+  reminderFindUnique.mockReset();
   updateMany.mockReset();
   findMany.mockReset();
   update.mockReset();
@@ -123,6 +140,7 @@ beforeEach(() => {
   loggerError.mockReset();
   assignRecoveryCohortMock.mockReset();
   igUserFindUnique.mockReset();
+  lockAndValidateSettingsBlockedVerificationEvidence.mockReset();
   // Default: an unclassified person, so the name screen decides.
   igUserFindUnique.mockResolvedValue({
     username: "someone",
@@ -140,10 +158,14 @@ beforeEach(() => {
     id: "row-1",
     ...create,
   }));
+  reminderFindUnique.mockResolvedValue(null);
+  lockAndValidateSettingsBlockedVerificationEvidence.mockImplementation(
+    async (_tx, evidence) => evidence,
+  );
 
   // Default $transaction passes through
   $transaction.mockImplementation(async (fn: Function) =>
-    fn({ dmRecoveryReminder: { findMany, update } }),
+    fn({ dmRecoveryReminder: { findUnique: reminderFindUnique, upsert, findMany, update } }),
   );
 
   // Restore env defaults
@@ -484,6 +506,14 @@ describe("scheduleSettingsBlockedRecovery", () => {
           gateDmMessageId: null,
           publicReplyText:
             'I couldn\u2019t send your DM 💛 Your message-request settings blocked it. DM @tinysoho \u201cPROTEIN\u201d.',
+          settingsEvidenceLegacy: false,
+          settingsVerificationId: SETTINGS_INPUT.verification.verificationId,
+          settingsVerificationVersion: SETTINGS_INPUT.verification.verificationVersion,
+          settingsGraphCode: 10,
+          settingsGraphSubcode: 12345,
+          settingsClassifiedAt: SETTINGS_INPUT.verification.classifiedAt,
+          settingsEvidenceReference: SETTINGS_INPUT.verification.evidenceReference,
+          settingsEvidenceSha256: SETTINGS_INPUT.verification.evidenceSha256,
         }),
         update: {},
       }),
@@ -512,7 +542,7 @@ describe("scheduleSettingsBlockedRecovery", () => {
   });
 
   it("replays of same commentId return existing row", async () => {
-    upsert.mockResolvedValue({
+    reminderFindUnique.mockResolvedValue({
       id: "existing-settings",
       status: "sent",
       triggerKind: "settings_blocked",
@@ -521,6 +551,19 @@ describe("scheduleSettingsBlockedRecovery", () => {
 
     const result = await scheduleSettingsBlockedRecovery(SETTINGS_INPUT);
     expect(result).toEqual({ id: "existing-settings", status: "sent" });
+    expect(lockAndValidateSettingsBlockedVerificationEvidence).not.toHaveBeenCalled();
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the evidence is retired between classification and persistence", async () => {
+    lockAndValidateSettingsBlockedVerificationEvidence.mockRejectedValue(
+      Object.assign(new Error("retired"), { reason: "verification_retired" }),
+    );
+
+    await expect(scheduleSettingsBlockedRecovery(SETTINGS_INPUT)).rejects.toMatchObject({
+      reason: "verification_retired",
+    });
+    expect(upsert).not.toHaveBeenCalled();
   });
 });
 

@@ -151,15 +151,19 @@ describeWithLocalDatabase("recovery campaign database contract", () => {
   // only through the service role, so RLS is on and no policy exists.
   it("enables RLS on both tables with no permissive policies", async () => {
     const rls = await prisma.$queryRaw<{ relname: string; relrowsecurity: boolean }[]>`
-      SELECT relname, relrowsecurity FROM pg_class
-      WHERE relname IN ('recovery_campaign', 'recovery_candidate')
+      SELECT c.relname, c.relrowsecurity
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public'
+        AND c.relname IN ('recovery_campaign', 'recovery_candidate')
     `;
     expect(rls).toHaveLength(2);
     for (const row of rls) expect(row.relrowsecurity).toBe(true);
 
     const policies = await prisma.$queryRaw<{ count: bigint }[]>`
       SELECT COUNT(*)::bigint AS count FROM pg_policies
-      WHERE tablename IN ('recovery_campaign', 'recovery_candidate')
+      WHERE schemaname = 'public'
+        AND tablename IN ('recovery_campaign', 'recovery_candidate')
     `;
     expect(Number(policies[0]!.count)).toBe(0);
   });
@@ -167,8 +171,11 @@ describeWithLocalDatabase("recovery campaign database contract", () => {
   it("stores campaign and candidate timestamps with a time zone", async () => {
     const cols = await prisma.$queryRaw<{ data_type: string }[]>`
       SELECT data_type FROM information_schema.columns
-      WHERE (table_name = 'recovery_campaign' AND column_name IN ('source_data_cutoff', 'approved_at'))
-         OR (table_name = 'recovery_candidate' AND column_name IN ('eligible_at', 'sent_at', 'comment_at'))
+      WHERE table_schema = 'public'
+        AND (
+          (table_name = 'recovery_campaign' AND column_name IN ('source_data_cutoff', 'approved_at'))
+          OR (table_name = 'recovery_candidate' AND column_name IN ('eligible_at', 'sent_at', 'comment_at'))
+        )
     `;
     expect(cols).toHaveLength(5);
     for (const col of cols) expect(col.data_type).toBe("timestamp with time zone");

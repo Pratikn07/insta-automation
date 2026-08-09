@@ -2,27 +2,59 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const campaignUpdateMany = vi.fn();
 const campaignFindUnique = vi.fn();
+const campaignFindMany = vi.fn();
 const campaignUpdate = vi.fn();
 const candidateUpdateMany = vi.fn();
+const candidateFindMany = vi.fn();
 const candidateCount = vi.fn();
+const exclusionFindMany = vi.fn();
+const controlUpsert = vi.fn();
+const dispatchFindMany = vi.fn();
+const dispatchUpdateMany = vi.fn();
+const dispatchCount = vi.fn();
+const queryRaw = vi.fn();
 const logEvent = vi.fn();
+const verifyStoredSelectionSnapshot = vi.fn();
 
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
     recoveryCampaign: {
       updateMany: campaignUpdateMany,
       findUnique: campaignFindUnique,
+      findMany: campaignFindMany,
       update: campaignUpdate,
     },
-    recoveryCandidate: { updateMany: candidateUpdateMany, count: candidateCount },
+    recoveryCandidate: {
+      updateMany: candidateUpdateMany,
+      findMany: candidateFindMany,
+      count: candidateCount,
+    },
     $transaction: async (fn: (tx: unknown) => unknown) =>
       fn({
-        recoveryCampaign: { updateMany: campaignUpdateMany },
-        recoveryCandidate: { updateMany: candidateUpdateMany },
+        recoveryCampaign: {
+          updateMany: campaignUpdateMany,
+          update: campaignUpdate,
+          findUnique: campaignFindUnique,
+          findMany: campaignFindMany,
+        },
+        recoveryCandidate: {
+          updateMany: candidateUpdateMany,
+          findMany: candidateFindMany,
+          count: candidateCount,
+        },
+        recoverySelectionExclusion: { findMany: exclusionFindMany },
+        dmRecoveryControl: { upsert: controlUpsert },
+        publicRecoveryDispatch: {
+          findMany: dispatchFindMany,
+          updateMany: dispatchUpdateMany,
+          count: dispatchCount,
+        },
+        $queryRaw: queryRaw,
       }),
   },
 }));
 vi.mock("./eventLogger.js", () => ({ logEvent }));
+vi.mock("./historicalRecoverySnapshot.js", () => ({ verifyStoredSelectionSnapshot }));
 
 const {
   approveCampaign,
@@ -35,32 +67,50 @@ const {
 
 beforeEach(() => {
   for (const fn of [
-    campaignUpdateMany, campaignFindUnique, campaignUpdate,
-    candidateUpdateMany, candidateCount, logEvent,
+    campaignUpdateMany, campaignFindUnique, campaignFindMany, campaignUpdate,
+    candidateUpdateMany, candidateFindMany, candidateCount, controlUpsert,
+    dispatchFindMany, dispatchUpdateMany, dispatchCount, exclusionFindMany,
+    queryRaw, logEvent, verifyStoredSelectionSnapshot,
   ]) {
     fn.mockReset();
   }
   logEvent.mockResolvedValue(undefined);
+  queryRaw.mockResolvedValue([]);
+  controlUpsert.mockResolvedValue({ id: 1 });
+  candidateFindMany.mockResolvedValue([]);
+  exclusionFindMany.mockResolvedValue([]);
+  verifyStoredSelectionSnapshot.mockReturnValue({ ok: true });
+  dispatchFindMany.mockResolvedValue([]);
+  dispatchUpdateMany.mockResolvedValue({ count: 0 });
+  dispatchCount.mockResolvedValue(0);
+  candidateCount.mockResolvedValue(1);
+  campaignFindMany.mockResolvedValue([]);
+  campaignFindUnique.mockResolvedValue({
+    state: "draft",
+    candidateCount: 1,
+    decisionHash: "contract-hash",
+  });
+  campaignUpdate.mockResolvedValue({});
 });
 
 describe("approveCampaign", () => {
   // Approval is the moment public comments become possible, so it must record who
   // and when — chk_campaign_approval_complete requires both together.
   it("records the approver and starts the campaign running", async () => {
-    campaignUpdateMany.mockResolvedValue({ count: 1 });
     // Approval now settles the holdout arm terminally (QA-12), so this is consulted.
     candidateUpdateMany.mockResolvedValue({ count: 0 });
 
     const result = await approveCampaign("camp-1", "pratik");
 
     expect(result).toEqual({ ok: true, state: "running" });
-    expect(campaignUpdateMany).toHaveBeenCalledWith({
-      where: { id: "camp-1", state: { in: ["draft", "awaiting_approval"] } },
+    expect(campaignUpdate).toHaveBeenCalledWith({
+      where: { id: "camp-1" },
       data: {
         state: "running",
         approvedBy: "pratik",
         approvedAt: expect.any(Date),
         startedAt: expect.any(Date),
+        endedAt: null,
       },
     });
   });
@@ -91,8 +141,28 @@ describe("approveCampaign", () => {
     expect(await approveCampaign("nope", "pratik")).toEqual({ ok: false, reason: "not_found" });
   });
 
+  it.each([
+    "snapshot_incomplete",
+    "snapshot_fingerprint_mismatch",
+    "snapshot_hash_mismatch",
+  ])("refuses approval when verification reports %s", async (reason) => {
+    verifyStoredSelectionSnapshot.mockReturnValue({ ok: false, reason });
+
+    await expect(approveCampaign("camp-1", "pratik")).resolves.toEqual({
+      ok: false,
+      reason,
+    });
+    expect(candidateUpdateMany).not.toHaveBeenCalled();
+    expect(campaignUpdate).not.toHaveBeenCalled();
+  });
+
   it("logs the approval for the audit trail", async () => {
-    campaignUpdateMany.mockResolvedValue({ count: 1 });
+    campaignFindUnique.mockResolvedValue({
+      state: "draft",
+      candidateCount: 4,
+      decisionHash: "contract-hash",
+    });
+    candidateCount.mockResolvedValue(4);
     candidateUpdateMany.mockResolvedValue({ count: 4 });
 
     await approveCampaign("camp-1", "pratik");
@@ -109,7 +179,12 @@ describe("approveCampaign", () => {
   // The arm is settled terminally at approval, so the completion check can ignore it and
   // the worker can never claim it.
   it("settles the holdout arm at approval", async () => {
-    campaignUpdateMany.mockResolvedValue({ count: 1 });
+    campaignFindUnique.mockResolvedValue({
+      state: "draft",
+      candidateCount: 2,
+      decisionHash: "contract-hash",
+    });
+    candidateCount.mockResolvedValue(2);
     candidateUpdateMany.mockResolvedValue({ count: 2 });
 
     await approveCampaign("camp-1", "pratik");
@@ -145,28 +220,41 @@ describe("pauseCampaign", () => {
 });
 
 describe("resumeCampaign", () => {
+  const reviewedPause = (pauseReason: string) => ({
+    state: "paused",
+    pauseReason,
+    selectionFingerprint: "fingerprint",
+    decisionHash: "decision",
+    eligibilityPolicyVersion: "eligibility-v2",
+    westernOnly: true,
+  });
   // Approval is already on the row, so resuming does not re-ask for it — but the
   // query still requires approvedAt, making that invariant explicit.
   it("resumes only a paused, already-approved campaign", async () => {
     // Resume now reads the row first, to tell an automatic pause from an owner's (QA-13).
-    campaignFindUnique.mockResolvedValue({ state: "paused", pauseReason: "lunch" });
+    campaignFindUnique.mockResolvedValue(reviewedPause("lunch"));
     campaignUpdateMany.mockResolvedValue({ count: 1 });
 
     const result = await resumeCampaign("camp-1");
 
     expect(result).toEqual({ ok: true, state: "running" });
     expect(campaignUpdateMany).toHaveBeenCalledWith({
-      where: { id: "camp-1", state: "paused", approvedAt: { not: null } },
+      where: {
+        id: "camp-1",
+        state: "paused",
+        approvedAt: { not: null },
+        selectionFingerprint: { not: null },
+        decisionHash: { not: null },
+        eligibilityPolicyVersion: { not: null },
+        westernOnly: { not: null },
+      },
       data: { state: "running", pausedAt: null, pauseReason: null },
     });
   });
 
   // An automatic stop that any resume could undo is a suggestion, not a stop.
   it("refuses to resume an automatic pause without an acknowledgement", async () => {
-    campaignFindUnique.mockResolvedValue({
-      state: "paused",
-      pauseReason: "auto:public_failure_rate",
-    });
+    campaignFindUnique.mockResolvedValue(reviewedPause("auto:public_failure_rate"));
 
     const result = await resumeCampaign("camp-1");
 
@@ -177,10 +265,7 @@ describe("resumeCampaign", () => {
   });
 
   it("resumes an automatic pause once acknowledged", async () => {
-    campaignFindUnique.mockResolvedValue({
-      state: "paused",
-      pauseReason: "auto:uncertain_rate",
-    });
+    campaignFindUnique.mockResolvedValue(reviewedPause("auto:uncertain_rate"));
     campaignUpdateMany.mockResolvedValue({ count: 1 });
 
     const result = await resumeCampaign("camp-1", { acknowledgeAutoPause: "reviewed" });
@@ -197,26 +282,60 @@ describe("resumeCampaign", () => {
       reason: "not_resumable_from_cancelled",
     });
   });
+
+  it("refuses to resume a migrated legacy campaign without a reviewed manifest", async () => {
+    campaignFindUnique.mockResolvedValue({
+      state: "paused",
+      pauseReason: "migration:legacy_unverified_snapshot",
+      selectionFingerprint: null,
+      decisionHash: null,
+      eligibilityPolicyVersion: null,
+      westernOnly: null,
+    });
+
+    await expect(resumeCampaign("camp-1")).resolves.toEqual({
+      ok: false,
+      reason: "snapshot_incomplete",
+    });
+    expect(campaignUpdateMany).not.toHaveBeenCalled();
+  });
 });
 
 describe("cancelCampaign", () => {
   it("cancels the campaign and abandons pending candidates together", async () => {
-    campaignUpdateMany.mockResolvedValue({ count: 1 });
+    campaignFindUnique.mockResolvedValue({ state: "running" });
+    candidateFindMany.mockResolvedValue(
+      Array.from({ length: 42 }, (_, index) => ({
+        id: `candidate-${index}`,
+        dispatchStartedAt: null,
+      })),
+    );
     candidateUpdateMany.mockResolvedValue({ count: 42 });
 
     const result = await cancelCampaign("camp-1", "owner stopped it");
 
-    expect(result).toEqual({ ok: true, state: "cancelled" });
-    expect(candidateUpdateMany).toHaveBeenCalledWith({
-      where: { campaignId: "camp-1", outcome: "pending" },
-      data: { outcome: "cancelled", suppressionReason: "owner stopped it" },
+    expect(result).toEqual({
+      ok: true,
+      state: "cancelled",
+      cancelledCandidates: 42,
+      inFlightCandidates: 0,
     });
+    expect(candidateUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ outcome: "pending", dispatchStartedAt: null }),
+        data: expect.objectContaining({
+          outcome: "cancelled",
+          suppressionReason: "owner stopped it",
+        }),
+      }),
+    );
   });
 
   // Those comments are live on Instagram. Rewriting them to cancelled would make the
   // record false.
   it("touches only pending candidates, never sent ones", async () => {
-    campaignUpdateMany.mockResolvedValue({ count: 1 });
+    campaignFindUnique.mockResolvedValue({ state: "running" });
+    candidateFindMany.mockResolvedValue([{ id: "pending-1", dispatchStartedAt: null }]);
     candidateUpdateMany.mockResolvedValue({ count: 0 });
 
     await cancelCampaign("camp-1", "stop");
@@ -226,7 +345,13 @@ describe("cancelCampaign", () => {
   });
 
   it("reports how many candidates were abandoned", async () => {
-    campaignUpdateMany.mockResolvedValue({ count: 1 });
+    campaignFindUnique.mockResolvedValue({ state: "running" });
+    candidateFindMany.mockResolvedValue(
+      Array.from({ length: 7 }, (_, index) => ({
+        id: `candidate-${index}`,
+        dispatchStartedAt: null,
+      })),
+    );
     candidateUpdateMany.mockResolvedValue({ count: 7 });
 
     await cancelCampaign("camp-1", "stop");
@@ -235,11 +360,11 @@ describe("cancelCampaign", () => {
       campaignId: "camp-1",
       reason: "stop",
       cancelledCandidates: 7,
+      inFlightCandidates: 0,
     });
   });
 
   it("refuses to cancel an already-completed campaign", async () => {
-    campaignUpdateMany.mockResolvedValue({ count: 0 });
     campaignFindUnique.mockResolvedValue({ state: "completed" });
 
     expect(await cancelCampaign("camp-1", "x")).toEqual({
@@ -253,13 +378,16 @@ describe("completeCampaignIfDrained", () => {
   // `completed` means it finished its work; `cancelled` means it was stopped.
   // Conflating them would make the outcome data unreadable later.
   it("completes a campaign with nothing pending", async () => {
+    campaignFindUnique.mockResolvedValue({ state: "running" });
     candidateCount.mockResolvedValue(0);
+    dispatchCount.mockResolvedValue(0);
     campaignUpdateMany.mockResolvedValue({ count: 1 });
 
     expect(await completeCampaignIfDrained("camp-1")).toBe(true);
   });
 
   it("leaves a campaign alone while candidates remain", async () => {
+    campaignFindUnique.mockResolvedValue({ state: "running" });
     candidateCount.mockResolvedValue(5);
 
     expect(await completeCampaignIfDrained("camp-1")).toBe(false);
