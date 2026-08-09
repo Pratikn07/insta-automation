@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { CURRENT_ORIGIN_METHOD } from "./historicalRecoveryOriginPolicy.js";
 
 const databaseUrl = process.env.MIGRATION_TEST_DATABASE_URL;
 const describeWithDatabase = databaseUrl ? describe.sequential : describe.skip;
@@ -39,7 +40,14 @@ async function reserveScenario(input: {
   const now = new Date();
   const lease = new Date(now.getTime() + 60_000);
   const selectionCutoff = input.selectionCutoff ?? now;
-  await db.igUser.create({ data: { id: igUserId } });
+  await db.igUser.create({
+    data: {
+      id: igUserId,
+      inferredOrigin: "us_western",
+      originConfidence: "high",
+      originMethod: CURRENT_ORIGIN_METHOD,
+    },
+  });
   const intent = await db.journeyIntent.create({
     data: {
       igUserId,
@@ -313,30 +321,56 @@ describeWithDatabase("historical dispatch state interleavings", () => {
     });
   });
 
-  it("enforces the approved western-only policy when the current flag becomes permissive", async () => {
+  it("enforces the current-Gemini gate even when the legacy Western-only flag is permissive", async () => {
     const scenario = await reserveScenario();
     await db.igUser.update({
       where: { id: scenario.igUserId },
-      data: { inferredOrigin: "south_asian", originConfidence: "high" },
+      data: {
+        inferredOrigin: "south_asian",
+        originConfidence: "high",
+        originMethod: CURRENT_ORIGIN_METHOD,
+      },
     });
 
     await expect(historical.startHistoricalDispatch({
       ...scenario,
       currentWesternOnly: false,
-    })).resolves.toEqual({ kind: "suppressed", reason: "audience_out_of_market" });
+    })).resolves.toEqual({ kind: "suppressed", reason: "audience_south_asian" });
   });
 
-  it("enforces a stricter current western-only setting than the approved policy", async () => {
+  it.each([
+    ["south_asian", "audience_south_asian"],
+    ["unknown", "audience_unknown"],
+    ["other", "audience_other"],
+  ] as const)("releases and suppresses a current %s verdict at final locked authorization", async (origin, reason) => {
     const scenario = await reserveScenario({ westernOnly: false });
     await db.igUser.update({
       where: { id: scenario.igUserId },
-      data: { inferredOrigin: "south_asian", originConfidence: "high" },
+      data: {
+        inferredOrigin: origin,
+        originConfidence: "low",
+        originMethod: CURRENT_ORIGIN_METHOD,
+      },
     });
 
-    await expect(historical.startHistoricalDispatch({
-      ...scenario,
-      currentWesternOnly: true,
-    })).resolves.toEqual({ kind: "suppressed", reason: "audience_out_of_market" });
+    await expect(historical.startHistoricalDispatch(scenario)).resolves.toEqual({ kind: "suppressed", reason });
+    expect(await db.publicRecoveryDispatch.findUnique({
+      where: { id: scenario.dispatchId },
+      select: { state: true, dispatchStartedAt: true },
+    })).toEqual({ state: "released", dispatchStartedAt: null });
+    expect(await db.recoveryCandidate.findUnique({
+      where: { id: scenario.candidateId },
+      select: { outcome: true, suppressionReason: true, claimToken: true, dispatchStartedAt: true },
+    })).toEqual({
+      outcome: "suppressed",
+      suppressionReason: reason,
+      claimToken: null,
+      dispatchStartedAt: null,
+    });
+    expect(await db.recoveryCampaignBatchRun.findUnique({
+      where: { id: scenario.batchRunId },
+      select: { consumed: true },
+    })).toEqual({ consumed: 0 });
   });
 
   it("rechecks a concurrent origin downgrade under the final person lock", async () => {
@@ -349,16 +383,70 @@ describeWithDatabase("historical dispatch state interleavings", () => {
     await waitForBlockedControlQueries(1);
     await db.igUser.update({
       where: { id: scenario.igUserId },
-      data: { inferredOrigin: "south_asian", originConfidence: "high" },
+      data: {
+        inferredOrigin: "south_asian",
+        originConfidence: "high",
+        originMethod: CURRENT_ORIGIN_METHOD,
+      },
     });
     held.release();
 
     await expect(within(start)).resolves.toEqual({
       kind: "suppressed",
-      reason: "audience_out_of_market",
+      reason: "audience_south_asian",
     });
     await held.done;
   });
+
+  it("releases a reservation when the current Gemini verdict becomes stale while final authorization waits", async () => {
+    const scenario = await reserveScenario();
+    const held = await holdControlLock();
+    const start = historical.startHistoricalDispatch(scenario);
+    await waitForBlockedControlQueries(1);
+    await db.igUser.update({
+      where: { id: scenario.igUserId },
+      data: { originMethod: "name" },
+    });
+    held.release();
+
+    await expect(within(start)).resolves.toEqual({
+      kind: "deferred",
+      reason: "origin_not_current_gemini",
+    });
+    await held.done;
+    expect(await db.publicRecoveryDispatch.findUnique({
+      where: { id: scenario.dispatchId },
+      select: { state: true, dispatchStartedAt: true },
+    })).toEqual({ state: "released", dispatchStartedAt: null });
+    expect(await db.recoveryCandidate.findUnique({
+      where: { id: scenario.candidateId },
+      select: { outcome: true, claimToken: true, dispatchStartedAt: true },
+    })).toEqual({ outcome: "pending", claimToken: null, dispatchStartedAt: null });
+    expect(await db.recoveryCampaignBatchRun.findUnique({
+      where: { id: scenario.batchRunId },
+      select: { consumed: true },
+    })).toEqual({ consumed: 0 });
+  });
+
+  it.each([null, "medium"])(
+    "suppresses before dispatch when locked live confidence is invalid %p",
+    async (originConfidence) => {
+      const scenario = await reserveScenario();
+      await db.igUser.update({
+        where: { id: scenario.igUserId },
+        data: { originConfidence },
+      });
+
+      await expect(historical.startHistoricalDispatch(scenario)).resolves.toEqual({
+        kind: "suppressed",
+        reason: "audience_invalid_confidence",
+      });
+      expect(await db.publicRecoveryDispatch.findUnique({
+        where: { id: scenario.dispatchId },
+        select: { state: true, dispatchStartedAt: true },
+      })).toEqual({ state: "released", dispatchStartedAt: null });
+    },
+  );
 
   it("rechecks keyword deactivation inside final authorization", async () => {
     const scenario = await reserveScenario();

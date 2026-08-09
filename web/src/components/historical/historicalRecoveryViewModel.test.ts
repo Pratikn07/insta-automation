@@ -29,6 +29,8 @@ function candidate(overrides: Partial<CandidateRow> = {}): CandidateRow {
     reviewedAt: null,
     laterCompletedAt: null,
     audienceOrigin: "us_western",
+    audienceOriginMethod: "llm_v1",
+    audienceOriginConfidence: "low",
     createdAt: "2026-07-01T00:00:00.000Z",
     ...overrides,
   };

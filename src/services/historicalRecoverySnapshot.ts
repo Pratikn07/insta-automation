@@ -37,6 +37,7 @@ export type SelectionSnapshotInclusion = {
   publicReplyText: string;
   evidence: string;
   audienceOrigin: string | null;
+  audienceOriginMethod: string | null;
   audienceOriginConfidence: string | null;
   arm: "treatment" | "holdout";
   sourceChoiceReason: string;
@@ -130,6 +131,7 @@ export function verifyStoredSelectionSnapshot(
     if (
       inclusion.position !== position
       || intentIds.has(inclusion.intentId)
+      || !inclusion.audienceOriginMethod?.trim()
       || !inclusion.sourceChoiceReason.trim()
       || inclusion.sources.length === 0
       || inclusion.sources[0]!.commentId !== inclusion.commentId

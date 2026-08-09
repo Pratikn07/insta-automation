@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { CURRENT_ORIGIN_METHOD } from "./historicalRecoveryOriginPolicy.js";
 
 const campaignUpdateMany = vi.fn();
 const campaignFindUnique = vi.fn();
@@ -63,6 +64,7 @@ const {
   cancelCampaign,
   completeCampaignIfDrained,
   advanceCampaignStage,
+  PENDING_LAUNCH_PAUSE_REASON,
 } = await import("./recoveryCampaignControl.js");
 
 beforeEach(() => {
@@ -115,6 +117,27 @@ describe("approveCampaign", () => {
     });
   });
 
+  it("can approve directly into a scheduler-inert pending-launch pause", async () => {
+    const now = new Date("2026-08-09T20:00:00.000Z");
+    candidateUpdateMany.mockResolvedValue({ count: 0 });
+
+    const result = await approveCampaign("camp-1", "pratik", now, { startPaused: true });
+
+    expect(result).toEqual({ ok: true, state: "paused" });
+    expect(campaignUpdate).toHaveBeenCalledWith({
+      where: { id: "camp-1" },
+      data: {
+        state: "paused",
+        approvedBy: "pratik",
+        approvedAt: now,
+        startedAt: null,
+        pausedAt: now,
+        pauseReason: "approved_pending_launch",
+        endedAt: null,
+      },
+    });
+  });
+
   // An unattributable approval is not an audit trail.
   it("refuses an empty approver", async () => {
     const result = await approveCampaign("camp-1", "   ");
@@ -154,6 +177,44 @@ describe("approveCampaign", () => {
     });
     expect(candidateUpdateMany).not.toHaveBeenCalled();
     expect(campaignUpdate).not.toHaveBeenCalled();
+  });
+
+  it("reconstructs the stored candidate origin method for snapshot verification", async () => {
+    candidateUpdateMany.mockResolvedValue({ count: 0 });
+    candidateFindMany.mockResolvedValue([{
+      selectionPosition: 0,
+      intentId: "intent-1",
+      igUserId: "person-1",
+      conversationId: "conversation-1",
+      keywordId: "keyword-1",
+      commentId: "comment-1",
+      mediaId: null,
+      commentAt: new Date("2026-08-09T00:00:00.000Z"),
+      keywordSnapshot: "SLEEP",
+      publicReplyText: "Please DM SLEEP",
+      evidence: "gate_sent_no_read",
+      audienceOrigin: "us_western",
+      audienceOriginMethod: CURRENT_ORIGIN_METHOD,
+      audienceOriginConfidence: "high",
+      arm: "treatment",
+      sourceChoiceReason: "newest_eligible_comment",
+      sources: [{
+        position: 0,
+        commentId: "comment-1",
+        mediaId: null,
+        receivedAt: new Date("2026-08-09T00:00:00.000Z"),
+        choiceReason: "newest_eligible_comment",
+      }],
+    }]);
+
+    await expect(approveCampaign("camp-1", "pratik")).resolves.toEqual({
+      ok: true,
+      state: "running",
+    });
+
+    expect(verifyStoredSelectionSnapshot).toHaveBeenCalledWith(expect.objectContaining({
+      inclusions: [expect.objectContaining({ audienceOriginMethod: CURRENT_ORIGIN_METHOD })],
+    }));
   });
 
   it("logs the approval for the audit trail", async () => {
@@ -220,24 +281,65 @@ describe("pauseCampaign", () => {
 });
 
 describe("resumeCampaign", () => {
-  const reviewedPause = (pauseReason: string) => ({
+  const reviewedPause = (pauseReason: string, startedAt: Date | null = new Date("2026-08-09T00:00:00.000Z")) => ({
     state: "paused",
     pauseReason,
+    startedAt,
+    phase: "unknown_read_pilot",
+    selectionVersion: "selection-v1",
+    sourceDataCutoff: new Date("2026-08-09T00:00:00.000Z"),
+    commentFrom: null,
+    commentTo: null,
+    selectionLimit: null,
+    holdoutPercent: 0,
+    copyVersion: "copy-v1",
     selectionFingerprint: "fingerprint",
     decisionHash: "decision",
-    eligibilityPolicyVersion: "eligibility-v2",
+    eligibilityPolicyVersion: "eligibility-v3",
     westernOnly: true,
+    inboundWindowHours: 48,
+    completionWindowHours: 48,
+    candidateCount: 1,
+    excludedCount: 0,
+  });
+  const storedCandidate = (audienceOriginMethod: string | null) => ({
+    selectionPosition: 0,
+    intentId: "intent-1",
+    igUserId: "person-1",
+    conversationId: "conversation-1",
+    keywordId: "keyword-1",
+    commentId: "comment-1",
+    mediaId: null,
+    commentAt: new Date("2026-08-09T00:00:00.000Z"),
+    keywordSnapshot: "SLEEP",
+    publicReplyText: "Please DM SLEEP",
+    evidence: "gate_sent_no_read",
+    audienceOrigin: "us_western",
+    audienceOriginMethod,
+    audienceOriginConfidence: "high",
+    arm: "treatment",
+    sourceChoiceReason: "newest_eligible_comment",
+    sources: [{
+      position: 0,
+      commentId: "comment-1",
+      mediaId: null,
+      receivedAt: new Date("2026-08-09T00:00:00.000Z"),
+      choiceReason: "newest_eligible_comment",
+    }],
   });
   // Approval is already on the row, so resuming does not re-ask for it — but the
   // query still requires approvedAt, making that invariant explicit.
-  it("resumes only a paused, already-approved campaign", async () => {
-    // Resume now reads the row first, to tell an automatic pause from an owner's (QA-13).
+  it("resumes only a paused, already-approved campaign with a current-method snapshot", async () => {
     campaignFindUnique.mockResolvedValue(reviewedPause("lunch"));
+    candidateFindMany.mockResolvedValue([storedCandidate(CURRENT_ORIGIN_METHOD)]);
     campaignUpdateMany.mockResolvedValue({ count: 1 });
 
     const result = await resumeCampaign("camp-1");
 
     expect(result).toEqual({ ok: true, state: "running" });
+    expect(verifyStoredSelectionSnapshot).toHaveBeenCalledWith(expect.objectContaining({
+      inclusions: [expect.objectContaining({ audienceOriginMethod: CURRENT_ORIGIN_METHOD })],
+    }));
     expect(campaignUpdateMany).toHaveBeenCalledWith({
       where: {
         id: "camp-1",
@@ -250,6 +352,42 @@ describe("resumeCampaign", () => {
       },
       data: { state: "running", pausedAt: null, pauseReason: null },
     });
+  });
+
+  it("sets startedAt only when launching an approved pending-launch campaign", async () => {
+    const launchAt = new Date("2026-08-09T21:00:00.000Z");
+    campaignFindUnique.mockResolvedValue(reviewedPause(PENDING_LAUNCH_PAUSE_REASON, null));
+    candidateFindMany.mockResolvedValue([storedCandidate(CURRENT_ORIGIN_METHOD)]);
+    campaignUpdateMany.mockResolvedValue({ count: 1 });
+
+    await expect(resumeCampaign("camp-1", {}, launchAt)).resolves.toEqual({
+      ok: true,
+      state: "running",
+    });
+    expect(campaignUpdateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: {
+        state: "running",
+        startedAt: launchAt,
+        pausedAt: null,
+        pauseReason: null,
+      },
+    }));
+  });
+
+  it("refuses a complete-looking paused campaign whose stored candidate method is missing", async () => {
+    campaignFindUnique.mockResolvedValue(reviewedPause("lunch"));
+    candidateFindMany.mockResolvedValue([storedCandidate(null)]);
+    verifyStoredSelectionSnapshot.mockReturnValue({ ok: false, reason: "snapshot_incomplete" });
+    campaignUpdateMany.mockResolvedValue({ count: 1 });
+
+    await expect(resumeCampaign("camp-1")).resolves.toEqual({
+      ok: false,
+      reason: "snapshot_incomplete",
+    });
+    expect(verifyStoredSelectionSnapshot).toHaveBeenCalledWith(expect.objectContaining({
+      inclusions: [expect.objectContaining({ audienceOriginMethod: null })],
+    }));
+    expect(campaignUpdateMany).not.toHaveBeenCalled();
   });
 
   // An automatic stop that any resume could undo is a suggestion, not a stop.
@@ -292,6 +430,7 @@ describe("resumeCampaign", () => {
       eligibilityPolicyVersion: null,
       westernOnly: null,
     });
+    verifyStoredSelectionSnapshot.mockReturnValue({ ok: false, reason: "snapshot_incomplete" });
 
     await expect(resumeCampaign("camp-1")).resolves.toEqual({
       ok: false,
@@ -439,6 +578,48 @@ describe("advanceCampaignStage", () => {
     });
 
     expect(result).toEqual({ ok: true, state: "paused" });
+  });
+
+  it("allows safe initial caps to replace defaults before the first launch", async () => {
+    campaignFindUnique.mockResolvedValue({
+      state: "paused",
+      batchSize: 1,
+      hourlyCap: 3,
+      dailyCap: 10,
+      approvedAt: new Date("2026-08-09T20:00:00.000Z"),
+      startedAt: null,
+      pauseReason: PENDING_LAUNCH_PAUSE_REASON,
+    });
+
+    const result = await advanceCampaignStage("camp-1", {
+      batchSize: 1,
+      hourlyCap: 1,
+      dailyCap: 1000,
+    });
+
+    expect(result).toEqual({ ok: true, state: "paused" });
+    expect(campaignUpdate).toHaveBeenCalledWith({
+      where: { id: "camp-1" },
+      data: { batchSize: 1, hourlyCap: 1, dailyCap: 1000 },
+    });
+  });
+
+  it("still refuses lower caps after a paused campaign has launched before", async () => {
+    campaignFindUnique.mockResolvedValue({
+      state: "paused",
+      batchSize: 2,
+      hourlyCap: 5,
+      dailyCap: 1000,
+      approvedAt: new Date("2026-08-09T20:00:00.000Z"),
+      startedAt: new Date("2026-08-09T21:00:00.000Z"),
+      pauseReason: "owner_pause",
+    });
+
+    await expect(advanceCampaignStage("camp-1", {
+      batchSize: 1,
+      hourlyCap: 1,
+      dailyCap: 1000,
+    })).resolves.toEqual({ ok: false, reason: "caps_must_not_decrease" });
   });
 
   it("refuses to stage a draft that was never approved", async () => {

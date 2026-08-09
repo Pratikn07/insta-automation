@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { CURRENT_ORIGIN_METHOD } from "./historicalRecoveryOriginPolicy.js";
+import * as historicalRecoveryRecheck from "./historicalRecoveryRecheck.js";
 
 // --- mocks -------------------------------------------------------------------
 const listDueCandidateIds = vi.fn();
@@ -16,6 +18,7 @@ const acquireHistoricalTick = vi.fn();
 const openCampaignBatch = vi.fn();
 const finishHistoricalTick = vi.fn();
 const replyToComment = vi.fn();
+const loggerError = vi.fn();
 const fetchComment = vi.fn();
 const evaluateRecoveryHealth = vi.fn();
 const openRecoveryCircuit = vi.fn();
@@ -80,7 +83,7 @@ vi.mock("./graphErrorClassifier.js", async (importOriginal) => ({
   classifyPublicReplyFailure,
 }));
 vi.mock("../lib/logger.js", () => ({
-  logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
+  logger: { error: loggerError, warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
@@ -144,7 +147,7 @@ beforeEach(() => {
     reserveHistoricalDispatch, startHistoricalDispatch, releaseHistoricalReservation,
     finalizeHistoricalDispatch,
     countCandidatesSentSince,
-    replyToComment, fetchComment, evaluateRecoveryHealth, openRecoveryCircuit,
+    replyToComment, fetchComment, loggerError, evaluateRecoveryHealth, openRecoveryCircuit,
     logEvent, describeGraphError, classifyPublicReplyFailure,
     campaignFindUnique, campaignFindMany, completeCampaignIfDrained,
     reconcileDrainedCampaigns, evaluateCampaignHealth,
@@ -190,7 +193,11 @@ beforeEach(() => {
     remaining: false,
   });
   reconcileHistoricalRecoveryAttributionSafely.mockResolvedValue({ inbound: 0, completed: 0 });
-  igUserFindUnique.mockResolvedValue({ inferredOrigin: "us_western" });
+  igUserFindUnique.mockResolvedValue({
+    inferredOrigin: "us_western",
+    originConfidence: "high",
+    originMethod: CURRENT_ORIGIN_METHOD,
+  });
   dmMessageCount.mockResolvedValue(0);
   conversationCount.mockResolvedValue(0);
   dispatchCount.mockResolvedValue(0);
@@ -203,6 +210,47 @@ beforeEach(() => {
 });
 
 describe("runHistoricalRecoveryTick — the send path", () => {
+  it("posts only for exact send and started results", async () => {
+    const recheckSpy = vi.spyOn(historicalRecoveryRecheck, "recheckBeforeSend");
+    recheckSpy.mockReturnValue({ kind: "send" });
+    startHistoricalDispatch.mockResolvedValue({ kind: "started" });
+
+    try {
+      const result = await runHistoricalRecoveryTick();
+
+      expect(reserveHistoricalDispatch).toHaveBeenCalledTimes(1);
+      expect(startHistoricalDispatch).toHaveBeenCalledTimes(1);
+      expect(replyToComment).toHaveBeenCalledWith(CANDIDATE.commentId, CANDIDATE.publicReplyText);
+      expect(releaseCandidateClaim).not.toHaveBeenCalled();
+      expect(releaseHistoricalReservation).not.toHaveBeenCalled();
+      expect(result.sent).toBe(1);
+    } finally {
+      recheckSpy.mockRestore();
+    }
+  });
+
+  it("defers an unexpected unlocked recheck result without reserving or posting", async () => {
+    const recheckSpy = vi.spyOn(historicalRecoveryRecheck, "recheckBeforeSend");
+    recheckSpy.mockReturnValue({ kind: "unexpected" } as never);
+
+    try {
+      const result = await runHistoricalRecoveryTick();
+
+      expect(releaseCandidateClaim).toHaveBeenCalledWith("cand-1", "token-1");
+      expect(reserveHistoricalDispatch).not.toHaveBeenCalled();
+      expect(startHistoricalDispatch).not.toHaveBeenCalled();
+      expect(replyToComment).not.toHaveBeenCalled();
+      expect(markCandidateSuppressed).not.toHaveBeenCalled();
+      expect(loggerError).toHaveBeenCalledWith(
+        { errorCode: "historical_recheck_unexpected_result", kind: "unexpected" },
+        "Historical recovery recheck returned an unexpected result",
+      );
+      expect(result.deferred).toBe(1);
+    } finally {
+      recheckSpy.mockRestore();
+    }
+  });
+
   it("posts the frozen copy and records Meta's reply id", async () => {
     const result = await runHistoricalRecoveryTick();
 
@@ -261,6 +309,44 @@ describe("runHistoricalRecoveryTick — the send path", () => {
     expect(replyToComment).not.toHaveBeenCalled();
     expect(releaseHistoricalReservation).not.toHaveBeenCalled();
     expect(result.suppressed).toBe(1);
+  });
+
+  it("defers a final locked stale Gemini verdict without calling Meta", async () => {
+    startHistoricalDispatch.mockResolvedValue({
+      kind: "deferred",
+      reason: "origin_not_current_gemini",
+    });
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(replyToComment).not.toHaveBeenCalled();
+    // The repository released the reservation in the same locked transaction, so a
+    // second release here would operate on a stale token and hide an atomicity bug.
+    expect(releaseHistoricalReservation).not.toHaveBeenCalled();
+    expect(result.deferred).toBe(1);
+  });
+
+  it("releases a reservation for an unexpected final start result without posting", async () => {
+    startHistoricalDispatch.mockResolvedValue({ kind: "unexpected" } as never);
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(releaseHistoricalReservation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        candidateId: "cand-1",
+        claimToken: "token-1",
+        dispatchId: "dispatch-1",
+        reservationToken: "reservation-1",
+        reason: "dispatch_start_unexpected_result:unexpected",
+      }),
+    );
+    expect(markCandidateSuppressed).not.toHaveBeenCalled();
+    expect(loggerError).toHaveBeenCalledWith(
+      { errorCode: "historical_dispatch_start_unexpected_result", kind: "unexpected" },
+      "Historical recovery dispatch start returned an unexpected result",
+    );
+    expect(result.deferred).toBe(1);
   });
 
   it("stops the tick when final authorization sees pending inbound health capture", async () => {
@@ -458,15 +544,69 @@ describe("runHistoricalRecoveryTick — pre-send recheck", () => {
     expect(markCandidateSuppressed).toHaveBeenCalledWith("cand-1", "token-1", "contacted_since_selection");
   });
 
-  // The verdict is read LIVE, not from the snapshot: it is retired when the name it
-  // came from changes, so an in-market selection can read out-of-market now.
-  it("suppresses on the live origin verdict, not the snapshot", async () => {
-    igUserFindUnique.mockResolvedValue({ inferredOrigin: "south_asian" });
+  it.each([
+    ["South Asian", { inferredOrigin: "south_asian", originConfidence: "high", originMethod: CURRENT_ORIGIN_METHOD }, "audience_south_asian"],
+    ["unknown", { inferredOrigin: "unknown", originConfidence: "low", originMethod: CURRENT_ORIGIN_METHOD }, "audience_unknown"],
+    ["other", { inferredOrigin: "other", originConfidence: "low", originMethod: CURRENT_ORIGIN_METHOD }, "audience_other"],
+    ["null confidence", { inferredOrigin: "us_western", originConfidence: null, originMethod: CURRENT_ORIGIN_METHOD }, "audience_invalid_confidence"],
+    ["malformed confidence", { inferredOrigin: "us_western", originConfidence: "medium", originMethod: CURRENT_ORIGIN_METHOD }, "audience_invalid_confidence"],
+  ] as const)("suppresses a current live %s verdict before reservation", async (_label, person, reason) => {
+    flags.DM_RECOVERY_WESTERN_ONLY = false;
+    igUserFindUnique.mockResolvedValue(person);
 
-    await runHistoricalRecoveryTick();
+    const result = await runHistoricalRecoveryTick();
+
+    expect(igUserFindUnique).toHaveBeenCalledWith({
+      where: { id: "person-1" },
+      select: { inferredOrigin: true, originConfidence: true, originMethod: true },
+    });
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(reserveHistoricalDispatch).not.toHaveBeenCalled();
+    expect(startHistoricalDispatch).not.toHaveBeenCalled();
+    expect(markCandidateSuppressed).toHaveBeenCalledWith("cand-1", "token-1", reason);
+    expect(result.suppressed).toBe(1);
+  });
+
+  it.each(["name", null])("defers a %s live origin method before reservation", async (originMethod) => {
+    igUserFindUnique.mockResolvedValue({
+      inferredOrigin: "us_western",
+      originConfidence: "high",
+      originMethod,
+    });
+
+    const result = await runHistoricalRecoveryTick();
 
     expect(replyToComment).not.toHaveBeenCalled();
-    expect(markCandidateSuppressed).toHaveBeenCalledWith("cand-1", "token-1", "audience_out_of_market");
+    expect(reserveHistoricalDispatch).not.toHaveBeenCalled();
+    expect(startHistoricalDispatch).not.toHaveBeenCalled();
+    expect(markCandidateSuppressed).not.toHaveBeenCalled();
+    expect(releaseCandidateClaim).toHaveBeenCalledWith("cand-1", "token-1");
+    expect(logEvent).toHaveBeenCalledWith("historical_recovery_deferred", {
+      campaignId: "camp-1",
+      candidateId: "cand-1",
+      reason: "origin_not_current_gemini",
+      boundary: "advisory_pre_reservation",
+    });
+    expect(result.deferred).toBe(1);
+  });
+
+  it("audits a stale-origin deferral from final locked authorization", async () => {
+    startHistoricalDispatch.mockResolvedValue({
+      kind: "deferred",
+      reason: "origin_not_current_gemini",
+    });
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(reserveHistoricalDispatch).toHaveBeenCalledTimes(1);
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(logEvent).toHaveBeenCalledWith("historical_recovery_deferred", {
+      campaignId: "camp-1",
+      candidateId: "cand-1",
+      reason: "origin_not_current_gemini",
+      boundary: "final_locked_authorization",
+    });
+    expect(result.deferred).toBe(1);
   });
 
   it("defers rather than burning the row at the hourly cap", async () => {

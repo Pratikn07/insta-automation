@@ -33,7 +33,7 @@ vi.mock("./originClassifier.js", async (importOriginal) => {
 const { runOriginEnrichmentTick, _resetOriginSpendState } = await import(
   "./originEnrichmentWorker.js"
 );
-const { ORIGIN_PROMPT_VERSION } = await import("./originClassifier.js");
+const { CURRENT_ORIGIN_METHOD } = await import("./historicalRecoveryOriginPolicy.js");
 
 beforeEach(() => {
   // Spend that left no row behind is tracked in module state; without this a
@@ -46,13 +46,13 @@ beforeEach(() => {
   env.GEMINI_DAILY_BUDGET_USD = 5;
   findMany.mockResolvedValue([]);
   update.mockResolvedValue({});
-  updateMany.mockResolvedValue({ count: 0 });
+  updateMany.mockResolvedValue({ count: 1 });
   // Today's spend is a COUNT now, not a row fetch.
   count.mockResolvedValue(0);
   // The verdict writes travel as one round trip; the array is built from
   // prisma.igUser.update(...) calls, so resolve it without executing them.
   $transaction.mockImplementation(async (ops: unknown) =>
-    Array.isArray(ops) ? ops.map(() => ({})) : undefined,
+    Array.isArray(ops) ? Promise.all(ops) : undefined,
   );
   classifyOrigins.mockResolvedValue({ verdicts: [], costUsd: 0 });
 });
@@ -78,9 +78,21 @@ function writtenData(): Record<string, unknown> | undefined {
 /** The ids targeted by a single-row write, whichever statement performed it. */
 function writtenIds(): string[] {
   const fromUpdate = update.mock.calls.map((c) => c[0]?.where?.id);
-  const fromMany = updateMany.mock.calls.flatMap((c) => c[0]?.where?.id?.in ?? []);
+  const fromMany = updateMany.mock.calls.flatMap((c) => {
+    const id = c[0]?.where?.id;
+    if (typeof id === "string") return [id];
+    return id?.in ?? [];
+  });
   return [...fromUpdate, ...fromMany].filter(Boolean);
 }
+
+const STILL_DUE = {
+  OR: [
+    { originCheckedAt: null },
+    { originMethod: null },
+    { originMethod: { not: CURRENT_ORIGIN_METHOD } },
+  ],
+};
 
 describe("runOriginEnrichmentTick", () => {
   it("persists a verdict against the current prompt version", async () => {
@@ -99,12 +111,41 @@ describe("runOriginEnrichmentTick", () => {
       expect.objectContaining({
         inferredOrigin: "south_asian",
         originConfidence: "high",
-        originMethod: ORIGIN_PROMPT_VERSION,
+        originMethod: CURRENT_ORIGIN_METHOD,
         originEvidence: "Indian given name Priya",
         originCheckedAt: expect.any(Date),
       }),
     );
-    expect(update.mock.calls[0]?.[0]?.where).toEqual({ id: "u1" });
+    expect(update).not.toHaveBeenCalled();
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        id: "u1",
+        username: "priya_s",
+        name: "Priya Sharma",
+        ...STILL_DUE,
+      },
+    }));
+  });
+
+  it("does not count a classified verdict when identity changed during the Gemini call", async () => {
+    arrange([{ id: "u1", username: "old_handle", name: "Old Name" }]);
+    classifyOrigins.mockResolvedValue({
+      verdicts: [{ id: "u1", origin: "us_western", confidence: "low", evidence: "English name" }],
+      costUsd: 0.0001,
+    });
+    updateMany.mockResolvedValue({ count: 0 });
+
+    const res = await runOriginEnrichmentTick();
+
+    expect(res.classified).toBe(0);
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        id: "u1",
+        username: "old_handle",
+        name: "Old Name",
+        ...STILL_DUE,
+      },
+    }));
   });
 
   // A person with no name and no username cannot be classified by any method,
@@ -118,9 +159,26 @@ describe("runOriginEnrichmentTick", () => {
     expect(classifyOrigins).not.toHaveBeenCalled();
     expect(res.skippedNoSignal).toBe(1);
     expect(writtenIds()).toEqual(["u1"]);
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: "u1", username: null, name: null, ...STILL_DUE },
+    }));
     expect(writtenData()).toEqual(
-      expect.objectContaining({ inferredOrigin: "unknown", originConfidence: "low" }),
+      expect.objectContaining({
+        inferredOrigin: "unknown",
+        originConfidence: "low",
+        originMethod: CURRENT_ORIGIN_METHOD,
+        originCheckedAt: expect.any(Date),
+      }),
     );
+  });
+
+  it("does not count a no-signal stamp when the identity changed before its write", async () => {
+    arrange([{ id: "u1", username: null, name: null }]);
+    updateMany.mockResolvedValue({ count: 0 });
+
+    const res = await runOriginEnrichmentTick();
+
+    expect(res.skippedNoSignal).toBe(0);
   });
 
   it("treats a placeholder dash as no signal", async () => {
@@ -165,13 +223,39 @@ describe("runOriginEnrichmentTick", () => {
     // u2 is the one the model declined to place, stamped so the due query stops
     // returning it every tick forever.
     expect(writtenIds()).toContain("u2");
-    expect(updateMany.mock.calls[0]?.[0]?.data).toEqual(
+    const omittedWrite = updateMany.mock.calls.find((call) => call[0]?.where?.id === "u2");
+    expect(omittedWrite?.[0]?.where).toEqual({
+      id: "u2",
+      username: "b_name",
+      name: "B Name",
+      ...STILL_DUE,
+    });
+    expect(omittedWrite?.[0]?.data).toEqual(
       expect.objectContaining({
         inferredOrigin: "unknown",
         originConfidence: "low",
+        originMethod: CURRENT_ORIGIN_METHOD,
         originCheckedAt: expect.any(Date),
       }),
     );
+    expect(res.skippedNoSignal).toBe(1);
+  });
+
+  it("does not count an omitted-verdict fallback when identity changed during Gemini", async () => {
+    arrange([
+      { id: "u1", username: "a_name", name: "A Name" },
+      { id: "u2", username: "b_name", name: "B Name" },
+    ]);
+    classifyOrigins.mockResolvedValue({
+      verdicts: [{ id: "u1", origin: "unknown", confidence: "low", evidence: "no cue" }],
+      costUsd: 0.0001,
+    });
+    updateMany.mockImplementation(async (args) => ({ count: args.where.id === "u1" ? 1 : 0 }));
+
+    const res = await runOriginEnrichmentTick();
+
+    expect(res.classified).toBe(1);
+    expect(res.skippedNoSignal).toBe(0);
   });
 
   // An unreadable response is not a statement about these people, so they are
@@ -251,7 +335,13 @@ describe("runOriginEnrichmentTick", () => {
 
     expect(findMany).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        where: { originCheckedAt: null },
+        where: {
+          OR: [
+            { originCheckedAt: null },
+            { originMethod: null },
+            { originMethod: { not: CURRENT_ORIGIN_METHOD } },
+          ],
+        },
         orderBy: { createdAt: "desc" },
         take: 25,
       }),

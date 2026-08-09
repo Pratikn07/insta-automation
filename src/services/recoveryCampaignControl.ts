@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma.js";
+import type { Prisma } from "@prisma/client";
 import { logEvent } from "./eventLogger.js";
 import {
   verifyStoredSelectionSnapshot,
@@ -27,11 +28,143 @@ export type CampaignTransition =
     }
   | { ok: false; reason: string };
 
+export const PENDING_LAUNCH_PAUSE_REASON = "approved_pending_launch";
+
+export type CampaignApprovalOptions = {
+  /** Seal approval while keeping the scheduler unable to claim candidates. */
+  startPaused?: boolean;
+};
+
+/** Rebuild the exact owner-reviewed manifest from its frozen database rows. */
+async function readStoredSelectionSnapshot(
+  tx: Prisma.TransactionClient,
+  campaignId: string,
+) {
+  const current = await tx.recoveryCampaign.findUnique({
+    where: { id: campaignId },
+    select: {
+      state: true,
+      pauseReason: true,
+      startedAt: true,
+      phase: true,
+      selectionVersion: true,
+      sourceDataCutoff: true,
+      commentFrom: true,
+      commentTo: true,
+      selectionLimit: true,
+      holdoutPercent: true,
+      copyVersion: true,
+      selectionFingerprint: true,
+      eligibilityPolicyVersion: true,
+      westernOnly: true,
+      inboundWindowHours: true,
+      completionWindowHours: true,
+      candidateCount: true,
+      excludedCount: true,
+      decisionHash: true,
+    },
+  });
+  if (!current) return null;
+
+  const storedCandidates = await tx.recoveryCandidate.findMany({
+    where: { campaignId },
+    orderBy: [{ selectionPosition: "asc" }, { id: "asc" }],
+    select: {
+      selectionPosition: true,
+      intentId: true,
+      igUserId: true,
+      conversationId: true,
+      keywordId: true,
+      commentId: true,
+      mediaId: true,
+      commentAt: true,
+      keywordSnapshot: true,
+      publicReplyText: true,
+      evidence: true,
+      audienceOrigin: true,
+      audienceOriginMethod: true,
+      audienceOriginConfidence: true,
+      arm: true,
+      sourceChoiceReason: true,
+      sources: {
+        orderBy: [{ position: "asc" }, { id: "asc" }],
+        select: {
+          position: true,
+          commentId: true,
+          mediaId: true,
+          receivedAt: true,
+          choiceReason: true,
+        },
+      },
+    },
+  });
+  const storedExclusions = await tx.recoverySelectionExclusion.findMany({
+    where: { campaignId },
+    orderBy: [{ intentId: "asc" }, { id: "asc" }],
+    select: { intentId: true, igUserId: true, keywordId: true, reason: true },
+  });
+  const configuration: SelectionSnapshotConfiguration | null =
+    current.eligibilityPolicyVersion && current.westernOnly !== null
+      ? {
+          phase: current.phase,
+          selectionVersion: current.selectionVersion,
+          sourceDataCutoff: current.sourceDataCutoff.toISOString(),
+          commentFrom: current.commentFrom?.toISOString() ?? null,
+          commentTo: current.commentTo?.toISOString() ?? null,
+          selectionLimit: current.selectionLimit,
+          westernOnly: current.westernOnly,
+          holdoutPercent: current.holdoutPercent,
+          copyVersion: current.copyVersion,
+          eligibilityPolicyVersion: current.eligibilityPolicyVersion,
+          inboundWindowHours: current.inboundWindowHours,
+          completionWindowHours: current.completionWindowHours,
+        }
+      : null;
+  const inclusions: SelectionSnapshotInclusion[] = storedCandidates.map((candidate) => ({
+    position: candidate.selectionPosition ?? -1,
+    intentId: candidate.intentId,
+    igUserId: candidate.igUserId,
+    conversationId: candidate.conversationId,
+    keywordId: candidate.keywordId,
+    commentId: candidate.commentId,
+    mediaId: candidate.mediaId,
+    commentAt: candidate.commentAt.toISOString(),
+    keywordSnapshot: candidate.keywordSnapshot,
+    publicReplyText: candidate.publicReplyText,
+    evidence: candidate.evidence,
+    audienceOrigin: candidate.audienceOrigin,
+    audienceOriginMethod: candidate.audienceOriginMethod,
+    audienceOriginConfidence: candidate.audienceOriginConfidence,
+    arm: candidate.arm,
+    sourceChoiceReason: candidate.sourceChoiceReason ?? "",
+    sources: candidate.sources.map((source) => ({
+      position: source.position,
+      commentId: source.commentId,
+      mediaId: source.mediaId,
+      receivedAt: source.receivedAt.toISOString(),
+      choiceReason: source.choiceReason,
+    })),
+  }));
+
+  return {
+    current,
+    snapshot: {
+      configuration,
+      selectionFingerprint: current.selectionFingerprint,
+      decisionHash: current.decisionHash,
+      candidateCount: current.candidateCount,
+      excludedCount: current.excludedCount,
+      inclusions,
+      exclusions: storedExclusions,
+    },
+  };
+}
+
 /**
- * Approve a campaign and start sending.
+ * Approve a campaign, either starting it or sealing it in a pending-launch pause.
  *
- * This is the moment selection is frozen and public comments become possible, so it
- * records WHO approved and when — `chk_campaign_approval_complete` requires both,
+ * This is the moment selection is frozen, so it records WHO approved and when —
+ * `chk_campaign_approval_complete` requires both,
  * and `chk_campaign_running_is_approved` is what makes "running implies approved"
  * true at the database level rather than merely in this function.
  *
@@ -42,6 +175,7 @@ export async function approveCampaign(
   campaignId: string,
   approvedBy: string,
   now = new Date(),
+  options: CampaignApprovalOptions = {},
 ): Promise<CampaignTransition> {
   if (!approvedBy.trim()) {
     return { ok: false, reason: "approver_required" };
@@ -90,122 +224,16 @@ export async function approveCampaign(
       ORDER BY e."intent_id"
       FOR UPDATE OF e
     `;
-    const current = await tx.recoveryCampaign.findUnique({
-      where: { id: campaignId },
-      select: {
-        state: true,
-        phase: true,
-        selectionVersion: true,
-        sourceDataCutoff: true,
-        commentFrom: true,
-        commentTo: true,
-        selectionLimit: true,
-        holdoutPercent: true,
-        copyVersion: true,
-        selectionFingerprint: true,
-        eligibilityPolicyVersion: true,
-        westernOnly: true,
-        inboundWindowHours: true,
-        completionWindowHours: true,
-        candidateCount: true,
-        excludedCount: true,
-        decisionHash: true,
-      },
-    });
-    if (!current) return { kind: "blocked", reason: "not_found" } as const;
+    const stored = await readStoredSelectionSnapshot(tx, campaignId);
+    if (!stored) return { kind: "blocked", reason: "not_found" } as const;
+    const { current, snapshot } = stored;
     if (!(["draft", "awaiting_approval"] as string[]).includes(current.state)) {
       return {
         kind: "blocked",
         reason: `not_approvable_from_${current.state}`,
       } as const;
     }
-
-    const storedCandidates = await tx.recoveryCandidate.findMany({
-      where: { campaignId },
-      orderBy: [{ selectionPosition: "asc" }, { id: "asc" }],
-      select: {
-        selectionPosition: true,
-        intentId: true,
-        igUserId: true,
-        conversationId: true,
-        keywordId: true,
-        commentId: true,
-        mediaId: true,
-        commentAt: true,
-        keywordSnapshot: true,
-        publicReplyText: true,
-        evidence: true,
-        audienceOrigin: true,
-        audienceOriginConfidence: true,
-        arm: true,
-        sourceChoiceReason: true,
-        sources: {
-          orderBy: [{ position: "asc" }, { id: "asc" }],
-          select: {
-            position: true,
-            commentId: true,
-            mediaId: true,
-            receivedAt: true,
-            choiceReason: true,
-          },
-        },
-      },
-    });
-    const storedExclusions = await tx.recoverySelectionExclusion.findMany({
-      where: { campaignId },
-      orderBy: [{ intentId: "asc" }, { id: "asc" }],
-      select: { intentId: true, igUserId: true, keywordId: true, reason: true },
-    });
-    const configuration: SelectionSnapshotConfiguration | null =
-      current.eligibilityPolicyVersion && current.westernOnly !== null
-        ? {
-            phase: current.phase,
-            selectionVersion: current.selectionVersion,
-            sourceDataCutoff: current.sourceDataCutoff.toISOString(),
-            commentFrom: current.commentFrom?.toISOString() ?? null,
-            commentTo: current.commentTo?.toISOString() ?? null,
-            selectionLimit: current.selectionLimit,
-            westernOnly: current.westernOnly,
-            holdoutPercent: current.holdoutPercent,
-            copyVersion: current.copyVersion,
-            eligibilityPolicyVersion: current.eligibilityPolicyVersion,
-            inboundWindowHours: current.inboundWindowHours,
-            completionWindowHours: current.completionWindowHours,
-          }
-        : null;
-    const inclusions: SelectionSnapshotInclusion[] = storedCandidates.map((candidate) => ({
-      position: candidate.selectionPosition ?? -1,
-      intentId: candidate.intentId,
-      igUserId: candidate.igUserId,
-      conversationId: candidate.conversationId,
-      keywordId: candidate.keywordId,
-      commentId: candidate.commentId,
-      mediaId: candidate.mediaId,
-      commentAt: candidate.commentAt.toISOString(),
-      keywordSnapshot: candidate.keywordSnapshot,
-      publicReplyText: candidate.publicReplyText,
-      evidence: candidate.evidence,
-      audienceOrigin: candidate.audienceOrigin,
-      audienceOriginConfidence: candidate.audienceOriginConfidence,
-      arm: candidate.arm,
-      sourceChoiceReason: candidate.sourceChoiceReason ?? "",
-      sources: candidate.sources.map((source) => ({
-        position: source.position,
-        commentId: source.commentId,
-        mediaId: source.mediaId,
-        receivedAt: source.receivedAt.toISOString(),
-        choiceReason: source.choiceReason,
-      })),
-    }));
-    const verified = verifyStoredSelectionSnapshot({
-      configuration,
-      selectionFingerprint: current.selectionFingerprint,
-      decisionHash: current.decisionHash,
-      candidateCount: current.candidateCount,
-      excludedCount: current.excludedCount,
-      inclusions,
-      exclusions: storedExclusions,
-    });
+    const verified = verifyStoredSelectionSnapshot(snapshot);
     if (!verified.ok) {
       return { kind: "blocked", reason: verified.reason } as const;
     }
@@ -217,14 +245,25 @@ export async function approveCampaign(
     const treatmentPending = await tx.recoveryCandidate.count({
       where: { campaignId, arm: "treatment", outcome: "pending" },
     });
-    const state = treatmentPending === 0 ? "completed" : "running";
+    const state = treatmentPending === 0
+      ? "completed"
+      : options.startPaused
+        ? "paused"
+        : "running";
+    const pendingLaunch = state === "paused";
     await tx.recoveryCampaign.update({
       where: { id: campaignId },
       data: {
         state,
         approvedBy,
         approvedAt: now,
-        startedAt: now,
+        startedAt: pendingLaunch ? null : now,
+        ...(pendingLaunch
+          ? {
+              pausedAt: now,
+              pauseReason: PENDING_LAUNCH_PAUSE_REASON,
+            }
+          : {}),
         endedAt: state === "completed" ? now : null,
       },
     });
@@ -285,64 +324,106 @@ export async function pauseCampaign(
 export async function resumeCampaign(
   campaignId: string,
   options: { acknowledgeAutoPause?: string } = {},
+  now = new Date(),
 ): Promise<CampaignTransition> {
-  const current = await prisma.recoveryCampaign.findUnique({
-    where: { id: campaignId },
-    select: {
-      state: true,
-      pauseReason: true,
-      selectionFingerprint: true,
-      decisionHash: true,
-      eligibilityPolicyVersion: true,
-      westernOnly: true,
-    },
-  });
-  if (!current) return { ok: false, reason: "not_found" };
-  if (current.state !== "paused") return { ok: false, reason: `not_resumable_from_${current.state}` };
-  if (
-    !current.selectionFingerprint?.trim()
-    || !current.decisionHash?.trim()
-    || !current.eligibilityPolicyVersion?.trim()
-    || current.westernOnly === null
-  ) {
-    return { ok: false, reason: "snapshot_incomplete" };
-  }
-
-  const autoPaused = current.pauseReason?.startsWith("auto:") ?? false;
-  if (autoPaused && !options.acknowledgeAutoPause?.trim()) {
-    // Reports the reason so the caller can show the owner WHAT they are overriding.
-    return { ok: false, reason: `auto_pause_requires_review:${current.pauseReason}` };
-  }
-
-  const { count } = await prisma.recoveryCampaign.updateMany({
-    // `approvedAt` must already be set — a paused campaign always has it, but the
-    // condition makes the invariant explicit rather than assumed. Re-checking `paused`
-    // closes the gap between the read above and this write.
-    where: {
-      id: campaignId,
-      state: "paused",
-      approvedAt: { not: null },
-      selectionFingerprint: { not: null },
-      decisionHash: { not: null },
-      eligibilityPolicyVersion: { not: null },
-      westernOnly: { not: null },
-    },
-    data: { state: "running", pausedAt: null, pauseReason: null },
-  });
-
-  if (count === 0) {
-    const now = await prisma.recoveryCampaign.findUnique({
-      where: { id: campaignId },
-      select: { state: true },
+  const result = await prisma.$transaction(async (tx) => {
+    await tx.dmRecoveryControl.upsert({
+      where: { id: 1 },
+      create: { id: 1 },
+      update: {},
     });
-    return { ok: false, reason: now ? `not_resumable_from_${now.state}` : "not_found" };
-  }
+    await tx.$queryRaw`SELECT "id" FROM "dm_recovery_control" WHERE "id" = 1 FOR UPDATE`;
+    await tx.$queryRaw`
+      SELECT "id" FROM "recovery_campaign" WHERE "id" = ${campaignId}::uuid FOR UPDATE
+    `;
+    await tx.$queryRaw`
+      SELECT u."id"
+      FROM "ig_users" u
+      JOIN "recovery_candidate" c ON c."ig_user_id" = u."id"
+      WHERE c."campaign_id" = ${campaignId}::uuid
+      ORDER BY u."id"
+      FOR UPDATE OF u
+    `;
+    await tx.$queryRaw`
+      SELECT c."id"
+      FROM "recovery_candidate" c
+      WHERE c."campaign_id" = ${campaignId}::uuid
+      ORDER BY c."ig_user_id", c."id"
+      FOR UPDATE OF c
+    `;
+    await tx.$queryRaw`
+      SELECT s."id"
+      FROM "recovery_candidate_source" s
+      JOIN "recovery_candidate" c ON c."id" = s."candidate_id"
+      WHERE c."campaign_id" = ${campaignId}::uuid
+      ORDER BY c."ig_user_id", c."id", s."position"
+      FOR UPDATE OF s
+    `;
+    await tx.$queryRaw`
+      SELECT e."id"
+      FROM "recovery_selection_exclusion" e
+      WHERE e."campaign_id" = ${campaignId}::uuid
+      ORDER BY e."intent_id"
+      FOR UPDATE OF e
+    `;
+
+    const stored = await readStoredSelectionSnapshot(tx, campaignId);
+    if (!stored) return { kind: "blocked", reason: "not_found" } as const;
+    const { current, snapshot } = stored;
+    if (current.state !== "paused") {
+      return { kind: "blocked", reason: `not_resumable_from_${current.state}` } as const;
+    }
+    const verified = verifyStoredSelectionSnapshot(snapshot);
+    if (!verified.ok) return { kind: "blocked", reason: verified.reason } as const;
+
+    const autoPaused = current.pauseReason?.startsWith("auto:") ?? false;
+    if (autoPaused && !options.acknowledgeAutoPause?.trim()) {
+      return {
+        kind: "blocked",
+        reason: `auto_pause_requires_review:${current.pauseReason}`,
+      } as const;
+    }
+
+    const { count } = await tx.recoveryCampaign.updateMany({
+      // `approvedAt` must already be set — a paused campaign always has it, but the
+      // condition makes the invariant explicit rather than assumed. Re-checking `paused`
+      // closes the gap between the read above and this write.
+      where: {
+        id: campaignId,
+        state: "paused",
+        approvedAt: { not: null },
+        selectionFingerprint: { not: null },
+        decisionHash: { not: null },
+        eligibilityPolicyVersion: { not: null },
+        westernOnly: { not: null },
+      },
+      data: {
+        state: "running",
+        ...(current.startedAt === null ? { startedAt: now } : {}),
+        pausedAt: null,
+        pauseReason: null,
+      },
+    });
+    if (count === 0) {
+      const now = await tx.recoveryCampaign.findUnique({
+        where: { id: campaignId },
+        select: { state: true },
+      });
+      return {
+        kind: "blocked",
+        reason: now ? `not_resumable_from_${now.state}` : "not_found",
+      } as const;
+    }
+    return { kind: "moved", autoPaused, pauseReason: current.pauseReason } as const;
+  });
+
+  if (result.kind === "blocked") return { ok: false, reason: result.reason };
 
   await logEvent("historical_campaign_resumed", {
     campaignId,
     // The audit trail for overriding an automatic stop.
-    overrodeAutoPause: autoPaused ? current.pauseReason : null,
-    acknowledgedBy: autoPaused ? (options.acknowledgeAutoPause ?? null) : null,
+    overrodeAutoPause: result.autoPaused ? result.pauseReason : null,
+    acknowledgedBy: result.autoPaused ? (options.acknowledgeAutoPause ?? null) : null,
   });
   return { ok: true, state: "running" };
 }
@@ -557,8 +638,8 @@ export async function reconcileDrainedCampaigns(now = new Date()): Promise<strin
  * uncertain sends. Caps are raised rather than the campaign being re-selected, so
  * the approved candidate list never changes underneath the owner.
  *
- * Caps may only go UP. Lowering them would strand candidates the owner already
- * approved without making that visible anywhere.
+ * Caps may only go UP after launch. A campaign approved into the pending-launch
+ * pause may replace draft defaults once before the scheduler can see it.
  */
 export async function advanceCampaignStage(
   campaignId: string,
@@ -566,16 +647,32 @@ export async function advanceCampaignStage(
 ): Promise<CampaignTransition> {
   const campaign = await prisma.recoveryCampaign.findUnique({
     where: { id: campaignId },
-    select: { state: true, batchSize: true, hourlyCap: true, dailyCap: true },
+    select: {
+      state: true,
+      batchSize: true,
+      hourlyCap: true,
+      dailyCap: true,
+      approvedAt: true,
+      startedAt: true,
+      pauseReason: true,
+    },
   });
   if (!campaign) return { ok: false, reason: "not_found" };
   if (campaign.state !== "running" && campaign.state !== "paused") {
     return { ok: false, reason: `not_stageable_from_${campaign.state}` };
   }
+  const configuringPendingLaunch =
+    campaign.state === "paused"
+    && campaign.approvedAt !== null
+    && campaign.startedAt === null
+    && campaign.pauseReason === PENDING_LAUNCH_PAUSE_REASON;
   if (
-    caps.batchSize < campaign.batchSize ||
-    caps.hourlyCap < campaign.hourlyCap ||
-    caps.dailyCap < campaign.dailyCap
+    !configuringPendingLaunch
+    && (
+      caps.batchSize < campaign.batchSize
+      || caps.hourlyCap < campaign.hourlyCap
+      || caps.dailyCap < campaign.dailyCap
+    )
   ) {
     return { ok: false, reason: "caps_must_not_decrease" };
   }

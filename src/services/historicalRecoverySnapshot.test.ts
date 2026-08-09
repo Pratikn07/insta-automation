@@ -7,6 +7,7 @@ import {
   type SelectionSnapshotExclusion,
   type SelectionSnapshotInclusion,
 } from "./historicalRecoverySnapshot.js";
+import { CURRENT_ORIGIN_METHOD } from "./historicalRecoveryOriginPolicy.js";
 
 function config(
   overrides: Partial<SelectionSnapshotConfiguration> = {},
@@ -44,6 +45,7 @@ function inclusion(
     publicReplyText: "Please DM SLEEP",
     evidence: "gate_sent_no_read",
     audienceOrigin: "us_western",
+    audienceOriginMethod: CURRENT_ORIGIN_METHOD,
     audienceOriginConfidence: "high",
     arm: "treatment",
     sourceChoiceReason: "newest_eligible_comment",
@@ -122,7 +124,7 @@ describe("selection snapshot fingerprint", () => {
 });
 
 describe("selection snapshot decision hash", () => {
-  it("covers arms, ordered approved sources, source reason, and exclusions", () => {
+  it("covers origin method, arms, ordered approved sources, source reason, and exclusions", () => {
     const base = buildSelectionDecisionHash(config(), [inclusion()], [exclusion()]);
     const variants = [
       buildSelectionDecisionHash(config(), [inclusion({ arm: "holdout" })], [exclusion()]),
@@ -134,6 +136,11 @@ describe("selection snapshot decision hash", () => {
       buildSelectionDecisionHash(
         config(),
         [inclusion({ sourceChoiceReason: "manual_primary" })],
+        [exclusion()],
+      ),
+      buildSelectionDecisionHash(
+        config(),
+        [inclusion({ audienceOriginMethod: "name" })],
         [exclusion()],
       ),
       buildSelectionDecisionHash(config(), [inclusion()], [exclusion({ reason: "other" })]),
@@ -193,6 +200,11 @@ describe("stored selection snapshot verification", () => {
     [
       "source gap",
       { inclusions: [inclusion({ sources: [inclusion().sources[1]!] })] },
+      "snapshot_incomplete",
+    ],
+    [
+      "missing candidate origin method",
+      { inclusions: [inclusion({ audienceOriginMethod: null })] },
       "snapshot_incomplete",
     ],
     [

@@ -18,6 +18,9 @@ type HistoricalCandidateDetail = {
     keywordSnapshot: string;
     publicReplyText: string;
     evidence: string;
+    audienceOrigin: string | null;
+    audienceOriginMethod: string | null;
+    audienceOriginConfidence: string | null;
     arm: string;
     outcome: string;
     attempts: number;
@@ -132,6 +135,12 @@ export function HistoricalCandidateDrawer({
               <dd>{data.candidate.commentId}</dd>
               <dt className="text-muted-foreground">Evidence</dt>
               <dd>{readable(data.candidate.evidence)}</dd>
+              <dt className="text-muted-foreground">Audience origin</dt>
+              <dd>{data.candidate.audienceOrigin ? readable(data.candidate.audienceOrigin) : "Not recorded"}</dd>
+              <dt className="text-muted-foreground">Origin method</dt>
+              <dd>{data.candidate.audienceOriginMethod ? readable(data.candidate.audienceOriginMethod) : "Not recorded"}</dd>
+              <dt className="text-muted-foreground">Origin confidence</dt>
+              <dd>{data.candidate.audienceOriginConfidence ? readable(data.candidate.audienceOriginConfidence) : "Not recorded"}</dd>
               <dt className="text-muted-foreground">Outcome</dt>
               <dd>{readable(data.candidate.outcome)}</dd>
               <dt className="text-muted-foreground">Attempts</dt>

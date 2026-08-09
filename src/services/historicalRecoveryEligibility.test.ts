@@ -10,6 +10,9 @@ import {
   validateArmSplit,
   type EligibilityFacts,
 } from "./historicalRecoveryEligibility.js";
+import {
+  CURRENT_ORIGIN_METHOD,
+} from "./historicalRecoveryOriginPolicy.js";
 
 // Every `include` here becomes a PUBLIC comment naming a real person. A wrong
 // include is visible to that person's followers and cannot be recalled, so the
@@ -32,6 +35,8 @@ function facts(overrides: Partial<EligibilityFacts> = {}): EligibilityFacts {
     supersededByNewerJourney: false,
     keywordActive: true,
     audienceOrigin: "us_western",
+    audienceOriginConfidence: "high",
+    audienceOriginMethod: CURRENT_ORIGIN_METHOD,
     westernOnly: true,
     ...overrides,
   };
@@ -160,26 +165,63 @@ describe("decideEligibility — never contact twice", () => {
   });
 });
 
-describe("decideEligibility — Western-market filter", () => {
-  // Matches the prospective feature exactly: a south_asian verdict withholds at
-  // EITHER confidence, which is the change made to dmRecoveryPolicy step 3b.
-  it("excludes a south_asian verdict while westernOnly is on", () => {
-    expect(decideEligibility(facts({ audienceOrigin: "south_asian" }))).toEqual({
+describe("decideEligibility — current Gemini origin gate", () => {
+  it.each(["high", "low"]) (
+    "allows a current Gemini Western verdict at %s confidence",
+    (audienceOriginConfidence) => {
+      expect(decideEligibility(facts({ audienceOriginConfidence }))).toEqual({
+        kind: "include",
+        evidence: "gate_sent_no_read",
+      });
+    },
+  );
+
+  it.each(["high", "low"]) (
+    "blocks a current Gemini South Asian verdict at %s confidence",
+    (audienceOriginConfidence) => {
+      expect(decideEligibility(facts({
+        audienceOrigin: "south_asian",
+        audienceOriginConfidence,
+      }))).toEqual({ kind: "exclude", reason: "audience_south_asian" });
+    },
+  );
+
+  it.each([
+    ["a stale method", "name"],
+    ["a missing method", null],
+  ])("blocks %s", (_label, audienceOriginMethod) => {
+    expect(decideEligibility(facts({ audienceOriginMethod }))).toEqual({
       kind: "exclude",
-      reason: "audience_out_of_market",
+      reason: "origin_not_current_gemini",
     });
   });
 
-  it("ignores the origin entirely when westernOnly is off", () => {
-    const decision = decideEligibility(facts({ audienceOrigin: "south_asian", westernOnly: false }));
-    expect(decision).toEqual({ kind: "include", evidence: "gate_sent_no_read" });
+  it.each([
+    ["other", "audience_other"],
+    ["unknown", "audience_unknown"],
+    [null, "audience_unknown"],
+  ])("blocks a current Gemini %s verdict", (audienceOrigin, reason) => {
+    expect(decideEligibility(facts({ audienceOrigin }))).toEqual({
+      kind: "exclude",
+      reason,
+    });
   });
 
-  // Roughly a fifth of this audience has no usable name. Withholding from them
-  // would cancel much of the feature while looking like a targeting rule.
-  it("still includes an unknown origin", () => {
-    const decision = decideEligibility(facts({ audienceOrigin: null }));
-    expect(decision).toEqual({ kind: "include", evidence: "gate_sent_no_read" });
+  it.each([null, "", "medium", "HIGH"])(
+    "blocks a current Western verdict with invalid confidence %p",
+    (audienceOriginConfidence) => {
+      expect(decideEligibility(facts({ audienceOriginConfidence }))).toEqual({
+        kind: "exclude",
+        reason: "audience_invalid_confidence",
+      });
+    },
+  );
+
+  it("does not let the legacy westernOnly flag bypass the current Gemini gate", () => {
+    expect(decideEligibility(facts({
+      audienceOrigin: "south_asian",
+      westernOnly: false,
+    }))).toEqual({ kind: "exclude", reason: "audience_south_asian" });
   });
 });
 

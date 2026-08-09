@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { CURRENT_ORIGIN_METHOD } from "./historicalRecoveryOriginPolicy.js";
 
 const post = vi.fn();
 
@@ -14,7 +15,7 @@ vi.mock("../meta/geminiClient.js", () => ({
 }));
 vi.mock("../config/env.js", () => ({ env: { GEMINI_MODEL: "gemini-2.5-flash" } }));
 
-const { classifyOrigins, estimateOriginCostUsd, MAX_ORIGIN_BATCH } = await import(
+const { classifyOrigins, estimateOriginCostUsd, MAX_ORIGIN_BATCH, ORIGIN_PROMPT_VERSION } = await import(
   "./originClassifier.js"
 );
 
@@ -37,11 +38,15 @@ beforeEach(() => {
 });
 
 describe("classifyOrigins", () => {
+  it("re-exports the shared current origin method for existing callers", () => {
+    expect(ORIGIN_PROMPT_VERSION).toBe(CURRENT_ORIGIN_METHOD);
+  });
+
   it("returns one verdict per account with the model's evidence", async () => {
     post.mockResolvedValue(
       reply([
-        { id: "u1", origin: "south_asian", confidence: "high", evidence: "Indian given name Priya" },
-        { id: "u2", origin: "us_western", confidence: "low", evidence: "Western surname Robbins" },
+        { id: "u1", origin: "south_asian", confidence: "high", evidence: "Indian given name Priya", cueAssessment: "positive_cue" },
+        { id: "u2", origin: "us_western", confidence: "low", evidence: "Western surname Robbins", cueAssessment: "positive_cue" },
       ]),
     );
 
@@ -51,8 +56,42 @@ describe("classifyOrigins", () => {
       { id: "u1", origin: "south_asian", confidence: "high", evidence: "Indian given name Priya" },
       { id: "u2", origin: "us_western", confidence: "low", evidence: "Western surname Robbins" },
     ]);
-    expect(res.promptVersion).toBe("llm_v1");
+    expect(res.promptVersion).toBe("llm_v2");
     expect(res.modelId).toBe("gemini-2.5-flash");
+  });
+
+  it.each(["no meaningful cue", "no clear cues", "generic handles have no cues"])(
+    "normalizes structured no-cue Western evidence %p at the classifier boundary",
+    async (evidence) => {
+    post.mockResolvedValue(
+      reply([
+        { id: "u1", origin: "us_western", confidence: "low", evidence, cueAssessment: "no_meaningful_cue" },
+      ]),
+    );
+
+    const res = await classifyOrigins([CANDIDATES[0]]);
+
+    expect(res.verdicts).toEqual([
+      { id: "u1", origin: "unknown", confidence: "low", evidence },
+    ]);
+    },
+  );
+
+  it.each([
+    "not a generic handle",
+    "generic username, but distinctive Western surname Robbins",
+  ])("trusts a structured positive cue instead of parsing evidence text %p", async (evidence) => {
+    post.mockResolvedValue(reply([{
+      id: "u1",
+      origin: "us_western",
+      confidence: "low",
+      evidence,
+      cueAssessment: "positive_cue",
+    }]));
+
+    const res = await classifyOrigins([CANDIDATES[0]]);
+
+    expect(res.verdicts).toEqual([{ id: "u1", origin: "us_western", confidence: "low", evidence }]);
   });
 
   it("asks for a deterministic answer so a re-check cannot drift", async () => {
@@ -102,8 +141,8 @@ describe("classifyOrigins", () => {
     it("drops a verdict for an id that was never sent", async () => {
       post.mockResolvedValue(
         reply([
-          { id: "not-requested", origin: "south_asian", confidence: "high", evidence: "x" },
-          { id: "u1", origin: "us_western", confidence: "low", evidence: "ok" },
+          { id: "not-requested", origin: "south_asian", confidence: "high", evidence: "x", cueAssessment: "positive_cue" },
+          { id: "u1", origin: "us_western", confidence: "low", evidence: "ok", cueAssessment: "positive_cue" },
         ]),
       );
 
@@ -113,32 +152,48 @@ describe("classifyOrigins", () => {
 
     it("drops a verdict whose origin is outside the enum", async () => {
       post.mockResolvedValue(
-        reply([{ id: "u1", origin: "east_asian", confidence: "high", evidence: "x" }]),
+        reply([{ id: "u1", origin: "east_asian", confidence: "high", evidence: "x", cueAssessment: "positive_cue" }]),
       );
 
       const res = await classifyOrigins(CANDIDATES);
       expect(res.verdicts).toEqual([]);
     });
 
-    // "high" is the only value that withholds a send, so anything that is not
-    // exactly "high" must read as low rather than being coerced upward.
+    // A malformed confidence cannot authorize any current-method verdict. Dropping
+    // it lets the worker stamp a safe unknown fallback for this prompt revision.
     it.each([["HIGH"], ["definitely"], [true], [null], [undefined]])(
-      "treats a malformed confidence %p as low, never high",
+      "drops a malformed confidence %p",
       async (confidence) => {
         post.mockResolvedValue(
-          reply([{ id: "u1", origin: "south_asian", confidence, evidence: "x" }]),
+          reply([{ id: "u1", origin: "us_western", confidence, evidence: "x", cueAssessment: "positive_cue" }]),
         );
 
         const res = await classifyOrigins(CANDIDATES);
-        expect(res.verdicts[0]?.confidence).toBe("low");
+        expect(res.verdicts).toEqual([]);
+      },
+    );
+
+    it.each([[undefined], [null], ["unclear"]])(
+      "drops a verdict with malformed structured cue assessment %p",
+      async (cueAssessment) => {
+        post.mockResolvedValue(reply([{
+          id: "u1",
+          origin: "us_western",
+          confidence: "low",
+          evidence: "Western surname Robbins",
+          cueAssessment,
+        }]));
+
+        const res = await classifyOrigins(CANDIDATES);
+        expect(res.verdicts).toEqual([]);
       },
     );
 
     it("keeps the first verdict when the model repeats an id", async () => {
       post.mockResolvedValue(
         reply([
-          { id: "u1", origin: "south_asian", confidence: "high", evidence: "first" },
-          { id: "u1", origin: "us_western", confidence: "high", evidence: "second" },
+          { id: "u1", origin: "south_asian", confidence: "high", evidence: "first", cueAssessment: "positive_cue" },
+          { id: "u1", origin: "us_western", confidence: "high", evidence: "second", cueAssessment: "positive_cue" },
         ]),
       );
 
@@ -149,7 +204,7 @@ describe("classifyOrigins", () => {
 
     it("tolerates a short response rather than inventing the missing rows", async () => {
       post.mockResolvedValue(
-        reply([{ id: "u1", origin: "south_asian", confidence: "high", evidence: "x" }]),
+        reply([{ id: "u1", origin: "south_asian", confidence: "high", evidence: "x", cueAssessment: "positive_cue" }]),
       );
 
       const res = await classifyOrigins(CANDIDATES);
@@ -159,7 +214,7 @@ describe("classifyOrigins", () => {
     it("caps a runaway evidence string", async () => {
       post.mockResolvedValue(
         reply([
-          { id: "u1", origin: "south_asian", confidence: "high", evidence: "e".repeat(5000) },
+          { id: "u1", origin: "south_asian", confidence: "high", evidence: "e".repeat(5000), cueAssessment: "positive_cue" },
         ]),
       );
 

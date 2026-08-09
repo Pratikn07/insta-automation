@@ -300,8 +300,10 @@ async function runLeasedTickBody(
       completedSinceSelection: facts.completedCount > 0,
       contactedSinceSelection: facts.priorRecoveryCount > 0,
       audienceOrigin: facts.audienceOrigin,
-      // Never relax the policy the owner approved. A stricter current emergency
-      // setting applies immediately; a legacy/null snapshot is withheld at final start.
+      audienceOriginConfidence: facts.audienceOriginConfidence,
+      audienceOriginMethod: facts.audienceOriginMethod,
+      // Retained as part of the immutable campaign manifest, but cannot relax the
+      // mandatory current-Gemini historical public-comment gate.
       westernOnly: facts.approvedWesternOnly === true || env.DM_RECOVERY_WESTERN_ONLY,
       campaignRunning: facts.campaignState === "running",
       sentThisHour: facts.sentThisHour,
@@ -334,6 +336,14 @@ async function runLeasedTickBody(
 
       await releaseCandidateClaim(id, claimed.claimToken);
       result.deferred++;
+      if (decision.reason === "origin_not_current_gemini") {
+        await logEvent("historical_recovery_deferred", {
+          campaignId: claimed.campaignId,
+          candidateId: id,
+          reason: decision.reason,
+          boundary: "advisory_pre_reservation",
+        });
+      }
       // A cap or a pause applies to the whole campaign, so continuing the loop
       // would just release every remaining row one at a time.
       if (
@@ -358,6 +368,24 @@ async function runLeasedTickBody(
         });
         await observeTerminalOutcome(claimed.campaignId);
       }
+      continue;
+    }
+
+    // TypeScript narrows the declared union above, but this boundary receives a runtime
+    // result. Only a literal send result may consume capacity; malformed or future
+    // kinds are returned to the queue without making a public provider call.
+    if (decision.kind === "send") {
+      // The exact allowlist continues into the reservation below.
+    } else {
+      const kind = typeof (decision as { kind?: unknown }).kind === "string"
+        ? (decision as { kind: string }).kind
+        : "invalid";
+      logger.error(
+        { errorCode: "historical_recheck_unexpected_result", kind },
+        "Historical recovery recheck returned an unexpected result",
+      );
+      await releaseCandidateClaim(id, claimed.claimToken);
+      result.deferred++;
       continue;
     }
 
@@ -433,6 +461,18 @@ async function runLeasedTickBody(
       await observeTerminalOutcome(claimed.campaignId);
       continue;
     }
+    if (dispatchStart.kind === "deferred") {
+      // The final locked authorization released the reservation and claim atomically.
+      // Do not call the provider, and do not release a second time with a stale token.
+      result.deferred++;
+      await logEvent("historical_recovery_deferred", {
+        campaignId: claimed.campaignId,
+        candidateId: id,
+        reason: dispatchStart.reason,
+        boundary: "final_locked_authorization",
+      });
+      continue;
+    }
     if (dispatchStart.kind === "blocked") {
       await releaseHistoricalReservation({
         candidateId: id,
@@ -458,6 +498,31 @@ async function runLeasedTickBody(
       ) {
         stoppedCampaigns.add(item.campaignId);
       }
+      continue;
+    }
+
+    // `startHistoricalDispatch` is an I/O boundary despite its declared union. Only
+    // its explicit started result may enter the provider path; any malformed/future
+    // result releases the reservation and candidate claim through the fenced helper.
+    if (dispatchStart.kind === "started") {
+      // The exact allowlist continues into the provider path below.
+    } else {
+      const kind = typeof (dispatchStart as { kind?: unknown }).kind === "string"
+        ? (dispatchStart as { kind: string }).kind
+        : "invalid";
+      logger.error(
+        { errorCode: "historical_dispatch_start_unexpected_result", kind },
+        "Historical recovery dispatch start returned an unexpected result",
+      );
+      await releaseHistoricalReservation({
+        candidateId: id,
+        claimToken: claimed.claimToken,
+        dispatchId: reservation.dispatchId,
+        reservationToken: reservation.reservationToken,
+        at: new Date(),
+        reason: `dispatch_start_unexpected_result:${kind}`,
+      });
+      result.deferred++;
       continue;
     }
     campaignDispatchStarts.set(
@@ -707,6 +772,8 @@ type PreDispatchFacts = {
   hourlyCap: number;
   dailyCap: number;
   audienceOrigin: string | null;
+  audienceOriginConfidence: string | null;
+  audienceOriginMethod: string | null;
   approvedWesternOnly: boolean | null;
   inboundCount: number;
   completedCount: number;
@@ -731,7 +798,7 @@ async function gatherPreDispatchFacts(
     }),
     prisma.igUser.findUnique({
       where: { id: claimed.igUserId },
-      select: { inferredOrigin: true },
+      select: { inferredOrigin: true, originConfidence: true, originMethod: true },
     }),
     // What has changed SINCE SELECTION, scoped to this person and this keyword (QA-11).
     //
@@ -796,6 +863,8 @@ async function gatherPreDispatchFacts(
     hourlyCap: campaign?.hourlyCap ?? 3,
     dailyCap: campaign?.dailyCap ?? 10,
     audienceOrigin: person?.inferredOrigin ?? null,
+    audienceOriginConfidence: person?.originConfidence ?? null,
+    audienceOriginMethod: person?.originMethod ?? null,
     approvedWesternOnly: campaign?.westernOnly ?? null,
     inboundCount,
     completedCount,

@@ -15,6 +15,7 @@ vi.mock("../lib/prisma.js", () => ({
 }));
 
 const { historicalCandidateDetail } = await import("./historicalRecoveryCandidateDetail.js");
+const { CURRENT_ORIGIN_METHOD } = await import("./historicalRecoveryOriginPolicy.js");
 
 const CANDIDATE_ID = "22222222-2222-4222-8222-222222222222";
 const CANONICAL_CONVERSATION_ID = "33333333-3333-4333-8333-333333333333";
@@ -36,6 +37,7 @@ function candidateRow(overrides: Record<string, unknown> = {}) {
     publicReplyText: "I sent your guide.",
     evidence: "gate_sent_no_read",
     audienceOrigin: "us_western",
+    audienceOriginMethod: CURRENT_ORIGIN_METHOD,
     audienceOriginConfidence: "high",
     arm: "treatment",
     outcome: "send_uncertain",
@@ -132,6 +134,11 @@ describe("historicalCandidateDetail", () => {
     expect(detail?.intent.canonicalConversation?.id).toBe(CANONICAL_CONVERSATION_ID);
     expect(detail?.intent.aliasConversations.map((row) => row.id)).toEqual([ALIAS_ID]);
     expect(detail?.intent.triggers.map((row) => row.commentId)).toEqual(["comment-1"]);
+    expect(detail?.candidate).toMatchObject({
+      audienceOrigin: "us_western",
+      audienceOriginMethod: CURRENT_ORIGIN_METHOD,
+      audienceOriginConfidence: "high",
+    });
     expect(detail?.auditEvents[0]).toEqual({
       id: "88888888-8888-4888-8888-888888888888",
       kind: "historical_recovery_reviewed",

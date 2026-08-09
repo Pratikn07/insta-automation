@@ -343,6 +343,7 @@ historicalRecoveryRouter.get("/candidates", async (req, res) => {
         // The snapshot, not the live verdict: this is what the filter believed when
         // the campaign was approved, which is what an audit needs.
         audienceOrigin: r.audienceOrigin,
+        audienceOriginMethod: r.audienceOriginMethod,
         audienceOriginConfidence: r.audienceOriginConfidence,
         sentAt: r.sentAt?.toISOString() ?? null,
         publicReplyId: r.publicReplyId,
@@ -357,10 +358,13 @@ historicalRecoveryRouter.get("/candidates", async (req, res) => {
   });
 });
 
-const approveBody = z.object({ approvedBy: z.string().min(1).max(120) });
+const approveBody = z.object({
+  approvedBy: z.string().min(1).max(120),
+  startPaused: z.boolean().optional().default(false),
+});
 
 /**
- * Approve a campaign — the moment public comments become possible.
+ * Approve a campaign, optionally leaving it paused while launch caps are staged.
  *
  * The approver is required by the body schema and by
  * chk_campaign_approval_complete: an unattributable approval is not an audit trail
@@ -373,7 +377,12 @@ historicalRecoveryRouter.post("/campaigns/:id/approve", async (req, res) => {
     return;
   }
 
-  const result = await approveCampaign(req.params.id, body.data.approvedBy);
+  const result = await approveCampaign(
+    req.params.id,
+    body.data.approvedBy,
+    new Date(),
+    { startPaused: body.data.startPaused },
+  );
   if (!result.ok) {
     // 409, not 400: the request was well-formed, the campaign was simply not in a
     // state this action applies to.
