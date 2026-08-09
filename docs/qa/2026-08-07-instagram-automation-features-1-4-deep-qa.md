@@ -44,13 +44,53 @@ Fresh verification against a new disposable PostgreSQL 17 database:
   source-only send finalizer, copied canonical predicate, or path to Meta without a
   successful token-bearing dispatch-start transition.
 
+## P1 dispatch-safety remediation verification — 2026-08-08
+
+**Code-level verdict:** the dispatch-safety slice closes QA-08, QA-10, and QA-13.
+It also closes the approval, holdout-settlement, drain, and restart-reconciliation part
+of QA-12; earliest/windowed outcome attribution remains in the separate
+selection-attribution slice. The implementation is in `51a0931` through `faf0fe7` on
+branch `fix/p1-dispatch-safety`.
+
+This is not production authorization. The historical feature flag remained false, all
+database verification used a disposable local PostgreSQL database, and no production
+migration, campaign write, Meta request, merge, push, or deployment was performed.
+
+| P1 | Code status | Verification evidence |
+|---|---|---|
+| QA-08 | Closed | A distributed singleton tick lease and database-backed per-campaign batch runs fence concurrent workers; the final dispatch-start transaction consumes the campaign allowance; prospective and historical recovery share rolling global hour/day authority, including uncertain and in-flight attempts. |
+| QA-10 | Closed | The last authorization boundary rechecks the campaign, circuit, claim, batch lease, allowance, and reservation; pre-network failures release safely, dispatch-started work remains truthful through cancellation, and expired in-flight work reconciles to `send_uncertain`. |
+| QA-12 | Lifecycle portion closed; attribution portion pending | Approval and holdout settlement are one transaction, only actionable treatment rows block drain, and every running campaign is restart-reconciled to its actual terminal state. Earliest 24/48-hour attribution is intentionally left for the selection-attribution slice. |
+| QA-13 | Closed | Append-only, idempotent complaint, opt-out, block, negative-reply, and classifier-anomaly observations join failure/uncertainty/source/duplicate rates. Health is evaluated after each terminal outcome before the next candidate, and stop reasons remain owner-latched. |
+
+Fresh verification against the disposable PostgreSQL database:
+
+- Prisma client generation and schema validation passed; `git diff --check` passed.
+- Focused migration, interleaving, claim, ledger, lifecycle, distributed-tick, and health
+  matrix: **8 files / 100 tests passed**, then passed unchanged on three consecutive
+  repeat runs.
+- Database-enabled Vitest files run serially by configuration because these contract
+  files deliberately exercise shared singleton/global tables. Concurrency remains real
+  inside each multi-client contract; unit-only files retain normal parallel execution.
+- Independent code review found and remediation closed migration-target guarding,
+  pre-dispatch health fencing, health-query fail-closed behavior, inbound evidence retry,
+  real reservation timestamps, acknowledged-webhook durability, concurrent lifecycle
+  gaps, reserve/start opt-out attribution, and captured-inbound final authorization.
+  Its final verdict was **Ready: Yes** with no Critical or Important findings; the
+  focused fix suite passed **7 files / 163 tests**.
+- Complete backend: **97 files / 1,487 tests passed**; Prisma/TypeScript build passed.
+- Frontend: **25 files / 376 tests passed**; production build passed; Playwright passed
+  **66/66** desktop/mobile tests.
+- Repository-wide frontend lint still reports the same nine pre-existing P2 errors in
+  the same five untouched files; no suppression or unrelated change was made here.
+
 ## Executive verdict
 
 **Do not enable historical recovery (Feature 4) in production yet.** The five P0 code
-defects from the original audit are now closed, but production still requires the
-read-only collision/backfill preflight, migration compatibility review, controlled Meta
-verification, and separate rollout authorization. Remaining non-P0 findings and launch
-evidence in this report are not waived by the P0 remediation.
+defects and the P1 dispatch-safety slice are now closed at code level, but QA-07,
+QA-11, the attribution portion of QA-12, QA-14 through QA-17, and the production gates
+remain. Production still requires the read-only collision/backfill preflight, migration
+compatibility review, controlled Meta verification, and separate rollout authorization.
 
 Feature 1 must remain inert until a controlled Meta settings-rejection signature is
 verified and its evidence/version is carried into the recovery audit record. Feature 2,
@@ -78,12 +118,12 @@ the current P0 verdict.
 | QA-05 | 3 | P0 | **Closed at code level (`eaf2c1a`, `5e2c6a6`, `c3cae3a`)** — only canonical owners remain operational |
 | QA-06 | 2, 3 | P1 | **Closed at code level (`5e2c6a6`)** — final authorization reads canonical intent and sibling completion authority |
 | QA-07 | 4 | P1 | Position-based arm assignment breaks the small randomized pilot |
-| QA-08 | 4 | P1 | Campaign batch size is ignored and cap accounting has no transactional reservation |
+| QA-08 | 4 | P1 | **Closed at code level (`e30ef49`)** — distributed per-campaign batch runs and shared rolling global capacity fence concurrent ticks |
 | QA-09 | 4 | P1 | Source lookup errors are converted into confirmed deletion suppressions |
-| QA-10 | 4 | P1 | Safe retries are unbounded, while pre-dispatch failures can become false `send_uncertain` outcomes |
+| QA-10 | 4 | P1 | **Closed at code level (`d82cfe1`)** — final dispatch authorization and truthful cancellation separate pre-network retry from in-flight uncertainty |
 | QA-11 | 3, 4 | P1 | Historical source/evidence selection uses the oldest trigger and incomplete or incorrectly scoped evidence |
-| QA-12 | 4 | P1 | Holdout, completion, and outcome-attribution lifecycle is not wired, so campaigns and recovery metrics cannot finish |
-| QA-13 | 4 | P1 | Historical failure, uncertainty, complaint, and duplicate stop conditions are not implemented |
+| QA-12 | 4 | P1 | **Partial (`fda2ee9`)** — approval, holdout settlement, drain, and restart reconciliation are closed; earliest/windowed attribution remains |
+| QA-13 | 4 | P1 | **Closed at code level (`4015e5b`, `a019786`, `faf0fe7`)** — durable observations, acknowledged-webhook reconciliation, and ledger-derived checks stop a campaign before the next candidate |
 | QA-14 | 4 | P1 | The claimed selection cutoff does not make selection reproducible |
 | QA-15 | 3 | P1 | Historical reconciliation uses incomplete gate evidence and is not atomic per intent window |
 | QA-16 | 3 | P1 | Trigger backfill retains only one canonical trigger and drops alias/distinct-keyword history |
@@ -258,6 +298,15 @@ At 50%, the first 25-person pilot sends to nobody. At 10%, it withholds 40%, not
 
 **Regression tests:** two-process cap race, campaign batch-size stage change, uncertain-attempt capacity, prospective+historical global cap.
 
+**2026-08-08 resolution:** Closed at code level. A database singleton lease admits one
+historical tick across service instances, and each running campaign receives its own
+database-backed batch run and allowance. Dispatch start validates and consumes that
+allowance under the documented lock order. The public dispatch ledger now reserves a
+shared rolling global daily cap as well as the existing hourly/campaign limits. Real
+PostgreSQL contracts cover concurrent ticks, different campaign batch sizes, stale lease
+tokens, exact expiry boundaries, cross-feature daily exhaustion, and in-flight/uncertain
+capacity.
+
 ### QA-09 — Fetch failures are mislabeled as deleted comments
 
 **Severity:** P1  
@@ -280,6 +329,15 @@ At 50%, the first 25-person pilot sends to nobody. At 10%, it withholds 40%, not
 **Required fix:** add an explicit attempt state with durable attempts, exponential backoff/jitter, and a maximum. Distinguish `claimed/preparing` from `dispatch_started`; release safely on pre-network failures, and mark uncertain only when dispatch may have started. Store a claim token as required by QA-02.
 
 **Regression tests:** DB failure before dispatch returns candidate to retry without uncertainty; crash after dispatch start becomes uncertain; repeated safe-retry respects backoff/max.
+
+**2026-08-08 resolution:** Closed at code level. Historical dispatch start now returns a
+typed result and performs the final campaign, circuit, claim, batch, allowance, and
+reservation checks before any network call. Pre-network blocks release only a reserved
+ledger row; a dispatch-started row cannot be released or rewritten as ordinary
+cancellation. Cancellation reports in-flight candidates separately, terminal outcomes
+may still finalize after cancellation, and expired dispatch-started work reconciles to
+`send_uncertain`. Real PostgreSQL interleaving contracts cover pause/cancel/circuit races
+on both sides of the dispatch boundary.
 
 ### QA-11 — Source and eligibility evidence are wrong or incomplete
 
@@ -311,6 +369,14 @@ At 50%, the first 25-person pilot sends to nobody. At 10%, it withholds 40%, not
 
 **Regression tests:** treatment+holdout campaign finishes, recovered treatment attribution, spontaneous holdout completion, idempotent replay, cancellation and no-treatment campaigns.
 
+**2026-08-08 partial resolution:** The campaign-lifecycle half is closed. Approval and
+holdout settlement now commit atomically; approval verifies the persisted manifest,
+decision hash, and declared counts. Drain ignores terminal holdouts, preserves a paused
+latch, and reconciles all running campaigns on worker start/end so a crash after the last
+candidate cannot strand a campaign in `running`. Earliest event handling and explicit
+24/48-hour outcome windows remain part of the selection-attribution slice, so QA-12 is
+not yet fully closed.
+
 ### QA-13 — Required historical stop conditions are absent
 
 **Severity:** P1  
@@ -321,6 +387,23 @@ At 50%, the first 25-person pilot sends to nobody. At 10%, it withholds 40%, not
 **Required fix:** add phase/campaign health observations for failure, uncertainty, source-unavailable, complaint/negative reply, opt-out/block, duplicate reply, and classifier anomalies. Pause and latch the campaign automatically at conservative thresholds; require owner review to resume the relevant stop reasons.
 
 **Regression tests:** each required stop signal, campaign-only pause, shared auth circuit, and controlled recovery/resume.
+
+**2026-08-08 resolution:** Closed at code level. Safe, append-only campaign observations
+record complaint, opt-out, block, negative-reply, and classifier-anomaly signals without
+storing inbound text or provider payloads. Observation insert and campaign pause share
+the final dispatch campaign lock, so a committed signal fences the next start. Source
+keys make capture idempotent. Because the webhook endpoint acknowledges before handler
+work, every new inbound message also remains a durable pending safety-inbox row until
+classification succeeds; the historical worker drains that inbox or fails closed before
+opening a batch. Inbound persistence shares the global dispatch-control lock, reserved
+attempts use their reservation timestamp for attribution, and final authorization
+rechecks all inbound evidence since candidate selection even after its safety-inbox row
+was marked captured. Manual safety observations require admin identity and a bounded
+safe detail. Duplicate contact is derived from terminal/in-flight dispatch-ledger
+history rather than the one-row-per-candidate table. After every terminal worker
+outcome, health is reevaluated and the campaign is stopped before the next candidate
+when a conservative threshold is crossed. An unavailable health reading also fails
+closed for that campaign. Stop reasons remain owner-latched.
 
 ### QA-14 — Source cutoff does not make selection reproducible
 
@@ -466,17 +549,17 @@ rollout evidence.
 | Stable randomized pilot/holdout | Fail | QA-07 |
 | Exclusive claims and no duplicate public sends | Pass at code level | QA-02/04 real-PostgreSQL concurrency contracts pass |
 | Final source/evidence/cooldown recheck | Partial | QA-04 is closed; QA-09/11 remain separate findings |
-| Batch/hour/day caps and outage recovery | Partial | Daily check now exists; QA-08/10 remain |
-| Kill switch/pause/cancel/shared auth circuit | Partial pass | Basic controls exist; historical stop conditions do not |
-| Campaign lifecycle, attribution, audit dashboard | Fail/Partial | QA-12/19 |
+| Batch/hour/day caps and outage recovery | Pass at code level | QA-08/10 closed with distributed tick/batch fencing, shared rolling capacity, and truthful reconciliation |
+| Kill switch/pause/cancel/shared auth circuit | Pass at code level | Final dispatch authorization and QA-13 durable stop observations are owner-latched and tested |
+| Campaign lifecycle, attribution, audit dashboard | Partial | Approval/holdout/drain/restart lifecycle is closed; attribution and QA-19 remain |
 | Phase 1 observation before Phase 2 pilot | Not enforceable | CLI defaults directly to unknown-read and dependencies are not gated |
 
 ## Required implementation order
 
 1. **Keep `DM_RECOVERY_HISTORICAL_ENABLED=false`.** Do not create/approve a production historical campaign from the current selector.
 2. P0 code remediation is complete for QA-01 through QA-05. Before production, run the read-only collision/backfill preflight and review migration compatibility.
-3. Fix authoritative final policy and pacing: QA-06 through QA-11, with real-Postgres concurrency tests.
-4. Wire lifecycle, measurement, stop conditions, and reproducible manifests: QA-12 through QA-16.
+3. QA-06, QA-08, QA-09, QA-10, and QA-13 are closed at code level. Finish selection and evidence correctness in QA-07/11/14.
+4. Finish outcome attribution plus journey history and reconciliation in QA-12/15/16.
 5. Finish Feature 1 audit evidence and operational UI: QA-17 through QA-19.
 6. Run QA-20 verification, then perform a reviewed Phase 1 dry run. Only after owner-reviewed Phase 1 and prospective Feature 2 evidence should a small randomized Phase 2 pilot be selectable.
 
@@ -519,4 +602,39 @@ cd web && npx eslint src/pages/Conversations.tsx src/pages/Conversations.test.ts
 
 cd web && npm run lint
 # unchanged repository baseline: 9 errors in 5 unrelated files
+
+# 2026-08-08 P1 dispatch-safety slice, disposable local PostgreSQL database
+npm run prisma:generate
+npx prisma validate
+git diff --check origin/main...HEAD
+# all passed
+
+MIGRATION_TEST_DATABASE_DISPOSABLE=true MIGRATION_TEST_DATABASE_URL=<disposable-local-url> DATABASE_URL=<same-local-url> npm test -- \
+  src/services/historicalRecoverySafetyMigrationContract.test.ts \
+  src/services/historicalRecoveryDispatchInterleavingContract.test.ts \
+  src/services/historicalRecoveryClaimContract.test.ts \
+  src/services/publicRecoveryDispatchPostgresContract.test.ts \
+  src/services/historicalRecoveryLifecycleContract.test.ts \
+  src/services/historicalRecoveryTickContract.test.ts \
+  src/services/campaignHealthObservationContract.test.ts \
+  src/services/historicalRecoveryHealthContract.test.ts
+# 8 passed files; 100 passed tests; passed initially and on three repeat runs
+
+MIGRATION_TEST_DATABASE_DISPOSABLE=true MIGRATION_TEST_DATABASE_URL=<disposable-local-url> DATABASE_URL=<same-local-url> npm test
+# 97 passed files; 1,487 passed tests
+
+npm run build
+# passed (Prisma generate + TypeScript)
+
+cd web && npm test
+# 25 passed files; 376 passed tests
+
+cd web && npm run build
+# passed (2,312 modules; 356.02 kB JS / 104.03 kB gzip)
+
+cd web && npm run test:e2e
+# 66 passed (desktop and mobile)
+
+cd web && npm run lint
+# unchanged repository baseline: 9 errors in the same 5 untouched P2 files
 ```
