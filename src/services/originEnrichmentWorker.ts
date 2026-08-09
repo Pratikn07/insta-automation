@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma.js";
+import type { Prisma } from "@prisma/client";
 import { logger } from "../lib/logger.js";
 import { env } from "../config/env.js";
 import { geminiEnabled } from "../meta/geminiClient.js";
@@ -95,6 +96,41 @@ function hasSignal(u: { username: string | null; name: string | null }): boolean
   return Boolean(clean(u.username) || clean(u.name));
 }
 
+const ORIGIN_STILL_DUE = {
+  OR: [
+    { originCheckedAt: null },
+    { originMethod: null },
+    { originMethod: { not: CURRENT_ORIGIN_METHOD } },
+  ],
+} satisfies Prisma.IgUserWhereInput;
+
+/**
+ * Persist classifier output only for the exact identity snapshot that was sent to
+ * Gemini and only while it still needs this method revision. A profile update clears
+ * origin fields; matching name and username prevents a delayed old response from
+ * immediately restoring a verdict for the prior identity.
+ */
+async function compareAndSetOrigin(
+  writes: Array<{
+    candidate: OriginCandidate;
+    data: Prisma.IgUserUpdateManyMutationInput;
+  }>,
+): Promise<number> {
+  if (writes.length === 0) return 0;
+  const results = await prisma.$transaction(
+    writes.map(({ candidate, data }) => prisma.igUser.updateMany({
+      where: {
+        id: candidate.id,
+        username: candidate.username,
+        name: candidate.name,
+        ...ORIGIN_STILL_DUE,
+      },
+      data,
+    })),
+  );
+  return results.reduce((count, write) => count + write.count, 0);
+}
+
 /**
  * Classify a paced batch of users with no current-method origin result.
  *
@@ -129,13 +165,7 @@ async function tickBody(): Promise<OriginEnrichmentResult> {
   // Newest first. New arrivals are the ones with a reminder already ticking
   // toward its ten-hour send; an old unclassified row has no deadline.
   const due = await prisma.igUser.findMany({
-    where: {
-      OR: [
-        { originCheckedAt: null },
-        { originMethod: null },
-        { originMethod: { not: CURRENT_ORIGIN_METHOD } },
-      ],
-    },
+    where: ORIGIN_STILL_DUE,
     select: { id: true, username: true, name: true },
     orderBy: { createdAt: "desc" },
     take: batchSize,
@@ -151,16 +181,16 @@ async function tickBody(): Promise<OriginEnrichmentResult> {
   };
 
   const classifiable: OriginCandidate[] = [];
-  const noSignal: string[] = [];
+  const noSignal: OriginCandidate[] = [];
   for (const u of due) {
     if (hasSignal(u)) classifiable.push(u);
-    else noSignal.push(u.id);
+    else noSignal.push(u);
   }
 
-  // Every no-signal row is stamped identically, so one statement does it.
+  // Each write carries the identity snapshot even though the stamp is identical.
   if (noSignal.length > 0) {
-    await prisma.igUser.updateMany({
-      where: { id: { in: noSignal } },
+    result.skippedNoSignal += await compareAndSetOrigin(noSignal.map((candidate) => ({
+      candidate,
       data: {
         inferredOrigin: "unknown",
         originConfidence: "low",
@@ -168,8 +198,7 @@ async function tickBody(): Promise<OriginEnrichmentResult> {
         originEvidence: "no name or username to classify",
         originCheckedAt: now,
       },
-    });
-    result.skippedNoSignal += noSignal.length;
+    })));
   }
 
   if (classifiable.length === 0) return result;
@@ -195,12 +224,12 @@ async function tickBody(): Promise<OriginEnrichmentResult> {
     return result;
   }
 
-  // Each verdict differs, so these cannot collapse into one statement — but they
-  // can travel as one round trip instead of up to fifty sequential ones.
-  await prisma.$transaction(
-    verdicts.map((v) =>
-      prisma.igUser.update({
-        where: { id: v.id },
+  const candidateById = new Map(classifiable.map((candidate) => [candidate.id, candidate]));
+  result.classified += await compareAndSetOrigin(
+    verdicts.flatMap((v) => {
+      const candidate = candidateById.get(v.id);
+      return candidate ? [{
+        candidate,
         data: {
           inferredOrigin: v.origin,
           originConfidence: v.confidence,
@@ -208,10 +237,9 @@ async function tickBody(): Promise<OriginEnrichmentResult> {
           originEvidence: v.evidence,
           originCheckedAt: now,
         },
-      }),
-    ),
+      }] : [];
+    }),
   );
-  result.classified += verdicts.length;
 
   // The model answered, so anyone it left out is someone it declined to place
   // rather than a failed call. Stamping them `unknown` stops the query
@@ -219,10 +247,10 @@ async function tickBody(): Promise<OriginEnrichmentResult> {
   // indefinitely once the backlog drained. `unknown` never withholds a
   // reminder, so this errs toward sending; a prompt-version bump re-runs them.
   const classified = new Set(verdicts.map((v) => v.id));
-  const unplaced = classifiable.filter((c) => !classified.has(c.id)).map((c) => c.id);
+  const unplaced = classifiable.filter((c) => !classified.has(c.id));
   if (unplaced.length > 0) {
-    await prisma.igUser.updateMany({
-      where: { id: { in: unplaced } },
+    result.skippedNoSignal += await compareAndSetOrigin(unplaced.map((candidate) => ({
+      candidate,
       data: {
         inferredOrigin: "unknown",
         originConfidence: "low",
@@ -230,8 +258,7 @@ async function tickBody(): Promise<OriginEnrichmentResult> {
         originEvidence: "model returned no verdict for this account",
         originCheckedAt: now,
       },
-    });
-    result.skippedNoSignal += unplaced.length;
+    })));
   }
 
   await logEvent("origin_enrichment_tick", {

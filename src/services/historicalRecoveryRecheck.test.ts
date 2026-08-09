@@ -220,6 +220,16 @@ describe("recheckBeforeSend — mandatory current-Gemini origin gate", () => {
       reason: "origin_not_current_gemini",
     });
   });
+
+  it.each([null, "", "medium", "HIGH"])(
+    "suppresses a current Western verdict with invalid confidence %p",
+    (audienceOriginConfidence) => {
+      expect(recheckBeforeSend(facts({ audienceOriginConfidence }))).toEqual({
+        kind: "suppress",
+        reason: "audience_invalid_confidence",
+      });
+    },
+  );
 });
 
 describe("recheckBeforeSend — reason precedence", () => {

@@ -6,14 +6,15 @@ import {
 } from "./historicalRecoveryOriginPolicy.js";
 
 describe("normalizeGeminiVerdict", () => {
-  it.each(["generic handle", "no cue", "no strong cue"])(
-    "downgrades contradictory evidence %p to unknown",
+  it.each(["no meaningful cue", "no clear cues", "generic handles have no cues"])(
+    "downgrades a structured no-cue Western verdict with evidence %p",
     (evidence) => {
       expect(normalizeGeminiVerdict({
         id: "u1",
         origin: "us_western",
         confidence: "low",
         evidence,
+        cueAssessment: "no_meaningful_cue",
       })).toEqual({
         id: "u1",
         origin: "unknown",
@@ -23,50 +24,51 @@ describe("normalizeGeminiVerdict", () => {
     },
   );
 
-  it("preserves a positive Western cue alongside a generic first name", () => {
+  it.each([
+    "not a generic handle",
+    "generic username, but distinctive Western surname Robbins",
+    "common English given name Emily",
+  ])("preserves a structured positive Western cue regardless of evidence wording %p", (evidence) => {
     expect(normalizeGeminiVerdict({
       id: "u1",
       origin: "us_western",
       confidence: "low",
-      evidence: "generic first name, distinctive Western surname Robbins",
+      evidence,
+      cueAssessment: "positive_cue",
     })).toEqual({
       id: "u1",
       origin: "us_western",
       confidence: "low",
-      evidence: "generic first name, distinctive Western surname Robbins",
+      evidence,
     });
   });
 
-  it("preserves legitimate positive Western evidence", () => {
-    expect(normalizeGeminiVerdict({
-      id: "u1",
-      origin: "us_western",
-      confidence: "low",
-      evidence: "distinctive Western surname Robbins",
-    })).toEqual({
-      id: "u1",
-      origin: "us_western",
-      confidence: "low",
-      evidence: "distinctive Western surname Robbins",
-    });
-  });
-
-  it("downgrades no-name-cue evidence regardless of case", () => {
+  it.each([null, "", "maybe"])("fails closed for a malformed cue assessment %p", (cueAssessment) => {
     expect(normalizeGeminiVerdict({
       id: "u1",
       origin: "us_western",
       confidence: "high",
-      evidence: "No Name Cue",
+      evidence: "distinctive Western surname Robbins",
+      cueAssessment,
     })).toEqual({
       id: "u1",
       origin: "unknown",
       confidence: "low",
-      evidence: "No Name Cue",
+      evidence: "distinctive Western surname Robbins",
     });
   });
 });
 
 describe("evaluateHistoricalOrigin", () => {
+  it("uses a new method revision so pre-normalization llm_v1 rows are stale", () => {
+    expect(CURRENT_ORIGIN_METHOD).toBe("llm_v2");
+    expect(evaluateHistoricalOrigin({
+      origin: "us_western",
+      confidence: "low",
+      method: "llm_v1",
+    })).toEqual({ kind: "stale", reason: "origin_not_current_gemini" });
+  });
+
   it("allows a current low-confidence Western verdict", () => {
     expect(evaluateHistoricalOrigin({
       origin: "us_western",
@@ -90,4 +92,15 @@ describe("evaluateHistoricalOrigin", () => {
       method: "name",
     })).toEqual({ kind: "stale", reason: "origin_not_current_gemini" });
   });
+
+  it.each([null, "", "medium", "HIGH"])(
+    "blocks current Western verdicts with invalid confidence %p",
+    (confidence) => {
+      expect(evaluateHistoricalOrigin({
+        origin: "us_western",
+        confidence,
+        method: CURRENT_ORIGIN_METHOD,
+      })).toEqual({ kind: "block", reason: "audience_invalid_confidence" });
+    },
+  );
 });

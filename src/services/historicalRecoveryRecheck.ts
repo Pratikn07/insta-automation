@@ -83,7 +83,8 @@ export type RecheckSuppressionReason =
   | "contacted_since_selection"
   | "audience_south_asian"
   | "audience_unknown"
-  | "audience_other";
+  | "audience_other"
+  | "audience_invalid_confidence";
 
 export type RecheckDeferralReason =
   | "campaign_not_running"

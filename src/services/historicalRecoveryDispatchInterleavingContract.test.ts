@@ -428,6 +428,26 @@ describeWithDatabase("historical dispatch state interleavings", () => {
     })).toEqual({ consumed: 0 });
   });
 
+  it.each([null, "medium"])(
+    "suppresses before dispatch when locked live confidence is invalid %p",
+    async (originConfidence) => {
+      const scenario = await reserveScenario();
+      await db.igUser.update({
+        where: { id: scenario.igUserId },
+        data: { originConfidence },
+      });
+
+      await expect(historical.startHistoricalDispatch(scenario)).resolves.toEqual({
+        kind: "suppressed",
+        reason: "audience_invalid_confidence",
+      });
+      expect(await db.publicRecoveryDispatch.findUnique({
+        where: { id: scenario.dispatchId },
+        select: { state: true, dispatchStartedAt: true },
+      })).toEqual({ state: "released", dispatchStartedAt: null });
+    },
+  );
+
   it("rechecks keyword deactivation inside final authorization", async () => {
     const scenario = await reserveScenario();
     const held = await holdControlLock();

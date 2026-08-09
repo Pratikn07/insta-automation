@@ -1,6 +1,8 @@
 -- audience_origin_method was added after the sealed-manifest trigger. Include it in
 -- the trigger's explicit UPDATE OF list so the method used to authorize public contact
 -- cannot be changed or cleared after the owner has approved the frozen snapshot.
+BEGIN;
+
 DROP TRIGGER IF EXISTS recovery_candidate_manifest_mutable_before_seal
   ON "recovery_candidate";
 
@@ -13,3 +15,5 @@ BEFORE INSERT OR DELETE OR UPDATE OF
 ON "recovery_candidate"
 FOR EACH ROW
 EXECUTE FUNCTION enforce_recovery_candidate_manifest_mutable();
+
+COMMIT;

@@ -207,6 +207,16 @@ describe("decideEligibility — current Gemini origin gate", () => {
     });
   });
 
+  it.each([null, "", "medium", "HIGH"])(
+    "blocks a current Western verdict with invalid confidence %p",
+    (audienceOriginConfidence) => {
+      expect(decideEligibility(facts({ audienceOriginConfidence }))).toEqual({
+        kind: "exclude",
+        reason: "audience_invalid_confidence",
+      });
+    },
+  );
+
   it("does not let the legacy westernOnly flag bypass the current Gemini gate", () => {
     expect(decideEligibility(facts({
       audienceOrigin: "south_asian",

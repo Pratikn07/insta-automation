@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { CURRENT_ORIGIN_METHOD } from "./historicalRecoveryOriginPolicy.js";
 
 // ── Mocks ────────────────────────────────────────────────────────────────
 
@@ -216,7 +217,7 @@ describe("scheduleAcceptedGateRecovery", () => {
         name: "Priya M",
         inferredOrigin: "south_asian",
         originConfidence: "high",
-        originMethod: "llm_v1",
+        originMethod: CURRENT_ORIGIN_METHOD,
       });
 
       await scheduleAcceptedGateRecovery(ACCEPTED_INPUT);
@@ -241,7 +242,7 @@ describe("scheduleAcceptedGateRecovery", () => {
         name: "Priya M",
         inferredOrigin: "south_asian",
         originConfidence: "high",
-        originMethod: "llm_v1",
+        originMethod: CURRENT_ORIGIN_METHOD,
       });
 
       await scheduleAcceptedGateRecovery(ACCEPTED_INPUT);

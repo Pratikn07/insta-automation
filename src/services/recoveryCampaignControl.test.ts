@@ -64,6 +64,7 @@ const {
   cancelCampaign,
   completeCampaignIfDrained,
   advanceCampaignStage,
+  PENDING_LAUNCH_PAUSE_REASON,
 } = await import("./recoveryCampaignControl.js");
 
 beforeEach(() => {
@@ -111,6 +112,27 @@ describe("approveCampaign", () => {
         approvedBy: "pratik",
         approvedAt: expect.any(Date),
         startedAt: expect.any(Date),
+        endedAt: null,
+      },
+    });
+  });
+
+  it("can approve directly into a scheduler-inert pending-launch pause", async () => {
+    const now = new Date("2026-08-09T20:00:00.000Z");
+    candidateUpdateMany.mockResolvedValue({ count: 0 });
+
+    const result = await approveCampaign("camp-1", "pratik", now, { startPaused: true });
+
+    expect(result).toEqual({ ok: true, state: "paused" });
+    expect(campaignUpdate).toHaveBeenCalledWith({
+      where: { id: "camp-1" },
+      data: {
+        state: "paused",
+        approvedBy: "pratik",
+        approvedAt: now,
+        startedAt: null,
+        pausedAt: now,
+        pauseReason: "approved_pending_launch",
         endedAt: null,
       },
     });
@@ -259,9 +281,10 @@ describe("pauseCampaign", () => {
 });
 
 describe("resumeCampaign", () => {
-  const reviewedPause = (pauseReason: string) => ({
+  const reviewedPause = (pauseReason: string, startedAt: Date | null = new Date("2026-08-09T00:00:00.000Z")) => ({
     state: "paused",
     pauseReason,
+    startedAt,
     phase: "unknown_read_pilot",
     selectionVersion: "selection-v1",
     sourceDataCutoff: new Date("2026-08-09T00:00:00.000Z"),
@@ -272,7 +295,7 @@ describe("resumeCampaign", () => {
     copyVersion: "copy-v1",
     selectionFingerprint: "fingerprint",
     decisionHash: "decision",
-    eligibilityPolicyVersion: "eligibility-v2",
+    eligibilityPolicyVersion: "eligibility-v3",
     westernOnly: true,
     inboundWindowHours: 48,
     completionWindowHours: 48,
@@ -329,6 +352,26 @@ describe("resumeCampaign", () => {
       },
       data: { state: "running", pausedAt: null, pauseReason: null },
     });
+  });
+
+  it("sets startedAt only when launching an approved pending-launch campaign", async () => {
+    const launchAt = new Date("2026-08-09T21:00:00.000Z");
+    campaignFindUnique.mockResolvedValue(reviewedPause(PENDING_LAUNCH_PAUSE_REASON, null));
+    candidateFindMany.mockResolvedValue([storedCandidate(CURRENT_ORIGIN_METHOD)]);
+    campaignUpdateMany.mockResolvedValue({ count: 1 });
+
+    await expect(resumeCampaign("camp-1", {}, launchAt)).resolves.toEqual({
+      ok: true,
+      state: "running",
+    });
+    expect(campaignUpdateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: {
+        state: "running",
+        startedAt: launchAt,
+        pausedAt: null,
+        pauseReason: null,
+      },
+    }));
   });
 
   it("refuses a complete-looking paused campaign whose stored candidate method is missing", async () => {
@@ -535,6 +578,48 @@ describe("advanceCampaignStage", () => {
     });
 
     expect(result).toEqual({ ok: true, state: "paused" });
+  });
+
+  it("allows safe initial caps to replace defaults before the first launch", async () => {
+    campaignFindUnique.mockResolvedValue({
+      state: "paused",
+      batchSize: 1,
+      hourlyCap: 3,
+      dailyCap: 10,
+      approvedAt: new Date("2026-08-09T20:00:00.000Z"),
+      startedAt: null,
+      pauseReason: PENDING_LAUNCH_PAUSE_REASON,
+    });
+
+    const result = await advanceCampaignStage("camp-1", {
+      batchSize: 1,
+      hourlyCap: 1,
+      dailyCap: 1000,
+    });
+
+    expect(result).toEqual({ ok: true, state: "paused" });
+    expect(campaignUpdate).toHaveBeenCalledWith({
+      where: { id: "camp-1" },
+      data: { batchSize: 1, hourlyCap: 1, dailyCap: 1000 },
+    });
+  });
+
+  it("still refuses lower caps after a paused campaign has launched before", async () => {
+    campaignFindUnique.mockResolvedValue({
+      state: "paused",
+      batchSize: 2,
+      hourlyCap: 5,
+      dailyCap: 1000,
+      approvedAt: new Date("2026-08-09T20:00:00.000Z"),
+      startedAt: new Date("2026-08-09T21:00:00.000Z"),
+      pauseReason: "owner_pause",
+    });
+
+    await expect(advanceCampaignStage("camp-1", {
+      batchSize: 1,
+      hourlyCap: 1,
+      dailyCap: 1000,
+    })).resolves.toEqual({ ok: false, reason: "caps_must_not_decrease" });
   });
 
   it("refuses to stage a draft that was never approved", async () => {

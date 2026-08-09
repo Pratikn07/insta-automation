@@ -20,7 +20,7 @@ import {
   type SelectionSnapshotInclusion,
 } from "./historicalRecoverySnapshot.js";
 
-export const HISTORICAL_RECOVERY_ELIGIBILITY_POLICY_VERSION = "eligibility-v2";
+export const HISTORICAL_RECOVERY_ELIGIBILITY_POLICY_VERSION = "eligibility-v3";
 const DEFAULT_INBOUND_WINDOW_HOURS = 24;
 const DEFAULT_COMPLETION_WINDOW_HOURS = 48;
 

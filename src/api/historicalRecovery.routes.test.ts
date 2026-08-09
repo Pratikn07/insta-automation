@@ -9,6 +9,11 @@ const {
   getIgUsers,
   recordCampaignHealthObservation,
   logEvent,
+  approveCampaign,
+  pauseCampaign,
+  resumeCampaign,
+  cancelCampaign,
+  advanceCampaignStage,
 } = vi.hoisted(() => ({
   candidateCount: vi.fn(),
   candidateFindMany: vi.fn(),
@@ -16,6 +21,11 @@ const {
   getIgUsers: vi.fn(),
   recordCampaignHealthObservation: vi.fn(),
   logEvent: vi.fn(),
+  approveCampaign: vi.fn(),
+  pauseCampaign: vi.fn(),
+  resumeCampaign: vi.fn(),
+  cancelCampaign: vi.fn(),
+  advanceCampaignStage: vi.fn(),
 }));
 
 vi.mock("../lib/prisma.js", () => ({
@@ -29,6 +39,13 @@ vi.mock("../services/campaignHealthObservation.js", () => ({
   recordCampaignHealthObservation,
 }));
 vi.mock("../services/eventLogger.js", () => ({ logEvent }));
+vi.mock("../services/recoveryCampaignControl.js", () => ({
+  approveCampaign,
+  pauseCampaign,
+  resumeCampaign,
+  cancelCampaign,
+  advanceCampaignStage,
+}));
 
 import {
   buildHistoricalAttributionObservation,
@@ -60,6 +77,7 @@ beforeEach(() => {
   getIgUsers.mockResolvedValue({ "ig-1": { username: "frozen-owner" } });
   recordCampaignHealthObservation.mockResolvedValue({ created: true });
   logEvent.mockResolvedValue(undefined);
+  approveCampaign.mockResolvedValue({ ok: true, state: "paused" });
 });
 
 // The list and the tab badges both read from candidateViewWhere. If they could
@@ -224,6 +242,32 @@ describe("GET /candidates", () => {
       audienceOriginMethod: CURRENT_ORIGIN_METHOD,
       audienceOriginConfidence: "low",
     });
+  });
+});
+
+describe("POST /campaigns/:id/approve", () => {
+  it("forwards the safe pending-launch option to campaign approval", async () => {
+    const response = await request(app(true))
+      .post(`/campaigns/${CAMPAIGN_ID}/approve`)
+      .send({ approvedBy: "owner@example.com", startPaused: true });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ ok: true, state: "paused" });
+    expect(approveCampaign).toHaveBeenCalledWith(
+      CAMPAIGN_ID,
+      "owner@example.com",
+      expect.any(Date),
+      { startPaused: true },
+    );
+  });
+
+  it("rejects a non-boolean pending-launch option", async () => {
+    await request(app(true))
+      .post(`/campaigns/${CAMPAIGN_ID}/approve`)
+      .send({ approvedBy: "owner@example.com", startPaused: "yes" })
+      .expect(400);
+
+    expect(approveCampaign).not.toHaveBeenCalled();
   });
 });
 

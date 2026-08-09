@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { CURRENT_ORIGIN_METHOD } from "./historicalRecoveryOriginPolicy.js";
 
 const findMany = vi.fn();
 const findUnique = vi.fn();
@@ -513,7 +514,7 @@ describe("authorizeClaimForSend", () => {
 });
 
 describe("resolveAudienceOrigin", () => {
-  const LLM = "llm_v1";
+  const LLM = CURRENT_ORIGIN_METHOD;
 
   it("prefers a stored verdict from the current prompt over the name screen", () => {
     // The name alone yields nothing; the stored verdict is the only signal.

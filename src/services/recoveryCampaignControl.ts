@@ -28,6 +28,13 @@ export type CampaignTransition =
     }
   | { ok: false; reason: string };
 
+export const PENDING_LAUNCH_PAUSE_REASON = "approved_pending_launch";
+
+export type CampaignApprovalOptions = {
+  /** Seal approval while keeping the scheduler unable to claim candidates. */
+  startPaused?: boolean;
+};
+
 /** Rebuild the exact owner-reviewed manifest from its frozen database rows. */
 async function readStoredSelectionSnapshot(
   tx: Prisma.TransactionClient,
@@ -38,6 +45,7 @@ async function readStoredSelectionSnapshot(
     select: {
       state: true,
       pauseReason: true,
+      startedAt: true,
       phase: true,
       selectionVersion: true,
       sourceDataCutoff: true,
@@ -153,10 +161,10 @@ async function readStoredSelectionSnapshot(
 }
 
 /**
- * Approve a campaign and start sending.
+ * Approve a campaign, either starting it or sealing it in a pending-launch pause.
  *
- * This is the moment selection is frozen and public comments become possible, so it
- * records WHO approved and when — `chk_campaign_approval_complete` requires both,
+ * This is the moment selection is frozen, so it records WHO approved and when —
+ * `chk_campaign_approval_complete` requires both,
  * and `chk_campaign_running_is_approved` is what makes "running implies approved"
  * true at the database level rather than merely in this function.
  *
@@ -167,6 +175,7 @@ export async function approveCampaign(
   campaignId: string,
   approvedBy: string,
   now = new Date(),
+  options: CampaignApprovalOptions = {},
 ): Promise<CampaignTransition> {
   if (!approvedBy.trim()) {
     return { ok: false, reason: "approver_required" };
@@ -236,14 +245,25 @@ export async function approveCampaign(
     const treatmentPending = await tx.recoveryCandidate.count({
       where: { campaignId, arm: "treatment", outcome: "pending" },
     });
-    const state = treatmentPending === 0 ? "completed" : "running";
+    const state = treatmentPending === 0
+      ? "completed"
+      : options.startPaused
+        ? "paused"
+        : "running";
+    const pendingLaunch = state === "paused";
     await tx.recoveryCampaign.update({
       where: { id: campaignId },
       data: {
         state,
         approvedBy,
         approvedAt: now,
-        startedAt: now,
+        startedAt: pendingLaunch ? null : now,
+        ...(pendingLaunch
+          ? {
+              pausedAt: now,
+              pauseReason: PENDING_LAUNCH_PAUSE_REASON,
+            }
+          : {}),
         endedAt: state === "completed" ? now : null,
       },
     });
@@ -304,6 +324,7 @@ export async function pauseCampaign(
 export async function resumeCampaign(
   campaignId: string,
   options: { acknowledgeAutoPause?: string } = {},
+  now = new Date(),
 ): Promise<CampaignTransition> {
   const result = await prisma.$transaction(async (tx) => {
     await tx.dmRecoveryControl.upsert({
@@ -376,7 +397,12 @@ export async function resumeCampaign(
         eligibilityPolicyVersion: { not: null },
         westernOnly: { not: null },
       },
-      data: { state: "running", pausedAt: null, pauseReason: null },
+      data: {
+        state: "running",
+        ...(current.startedAt === null ? { startedAt: now } : {}),
+        pausedAt: null,
+        pauseReason: null,
+      },
     });
     if (count === 0) {
       const now = await tx.recoveryCampaign.findUnique({
@@ -612,8 +638,8 @@ export async function reconcileDrainedCampaigns(now = new Date()): Promise<strin
  * uncertain sends. Caps are raised rather than the campaign being re-selected, so
  * the approved candidate list never changes underneath the owner.
  *
- * Caps may only go UP. Lowering them would strand candidates the owner already
- * approved without making that visible anywhere.
+ * Caps may only go UP after launch. A campaign approved into the pending-launch
+ * pause may replace draft defaults once before the scheduler can see it.
  */
 export async function advanceCampaignStage(
   campaignId: string,
@@ -621,16 +647,32 @@ export async function advanceCampaignStage(
 ): Promise<CampaignTransition> {
   const campaign = await prisma.recoveryCampaign.findUnique({
     where: { id: campaignId },
-    select: { state: true, batchSize: true, hourlyCap: true, dailyCap: true },
+    select: {
+      state: true,
+      batchSize: true,
+      hourlyCap: true,
+      dailyCap: true,
+      approvedAt: true,
+      startedAt: true,
+      pauseReason: true,
+    },
   });
   if (!campaign) return { ok: false, reason: "not_found" };
   if (campaign.state !== "running" && campaign.state !== "paused") {
     return { ok: false, reason: `not_stageable_from_${campaign.state}` };
   }
+  const configuringPendingLaunch =
+    campaign.state === "paused"
+    && campaign.approvedAt !== null
+    && campaign.startedAt === null
+    && campaign.pauseReason === PENDING_LAUNCH_PAUSE_REASON;
   if (
-    caps.batchSize < campaign.batchSize ||
-    caps.hourlyCap < campaign.hourlyCap ||
-    caps.dailyCap < campaign.dailyCap
+    !configuringPendingLaunch
+    && (
+      caps.batchSize < campaign.batchSize
+      || caps.hourlyCap < campaign.hourlyCap
+      || caps.dailyCap < campaign.dailyCap
+    )
   ) {
     return { ok: false, reason: "caps_must_not_decrease" };
   }

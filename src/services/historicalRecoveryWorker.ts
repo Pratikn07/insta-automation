@@ -336,6 +336,14 @@ async function runLeasedTickBody(
 
       await releaseCandidateClaim(id, claimed.claimToken);
       result.deferred++;
+      if (decision.reason === "origin_not_current_gemini") {
+        await logEvent("historical_recovery_deferred", {
+          campaignId: claimed.campaignId,
+          candidateId: id,
+          reason: decision.reason,
+          boundary: "advisory_pre_reservation",
+        });
+      }
       // A cap or a pause applies to the whole campaign, so continuing the loop
       // would just release every remaining row one at a time.
       if (
@@ -457,6 +465,12 @@ async function runLeasedTickBody(
       // The final locked authorization released the reservation and claim atomically.
       // Do not call the provider, and do not release a second time with a stale token.
       result.deferred++;
+      await logEvent("historical_recovery_deferred", {
+        campaignId: claimed.campaignId,
+        candidateId: id,
+        reason: dispatchStart.reason,
+        boundary: "final_locked_authorization",
+      });
       continue;
     }
     if (dispatchStart.kind === "blocked") {

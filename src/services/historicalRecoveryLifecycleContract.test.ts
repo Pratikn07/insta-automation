@@ -106,7 +106,7 @@ async function draft(): Promise<string> {
       sourceDataCutoff: T0,
       copyVersion: "recovery-v2",
       state: "draft",
-      eligibilityPolicyVersion: "eligibility-v2",
+      eligibilityPolicyVersion: "eligibility-v3",
       westernOnly: true,
       inboundWindowHours: 48,
       completionWindowHours: 48,
@@ -270,6 +270,65 @@ async function stateOf(campaignId: string): Promise<string> {
 }
 
 describeWithLocalDatabase("holdout assignment is settled at approval", () => {
+  it("approves paused, stages one-per-hour caps, and records start only on launch", async () => {
+    const campaignId = await draft();
+    await candidate(campaignId, { arm: "treatment" });
+    const held = await candidate(campaignId, { arm: "holdout" });
+    await sealSnapshot(campaignId);
+
+    await expect(control.approveCampaign(campaignId, "owner", T0, {
+      startPaused: true,
+    })).resolves.toEqual({ ok: true, state: "paused" });
+    await expect(prisma.recoveryCampaign.findUniqueOrThrow({
+      where: { id: campaignId },
+      select: {
+        state: true,
+        approvedAt: true,
+        approvedBy: true,
+        startedAt: true,
+        pauseReason: true,
+      },
+    })).resolves.toEqual({
+      state: "paused",
+      approvedAt: T0,
+      approvedBy: "owner",
+      startedAt: null,
+      pauseReason: "approved_pending_launch",
+    });
+    await expect(prisma.recoveryCandidate.findUniqueOrThrow({
+      where: { id: held.id },
+      select: { outcome: true },
+    })).resolves.toEqual({ outcome: "holdout_withheld" });
+
+    await expect(control.advanceCampaignStage(campaignId, {
+      batchSize: 1,
+      hourlyCap: 1,
+      dailyCap: 1000,
+    })).resolves.toEqual({ ok: true, state: "paused" });
+
+    const launchAt = new Date(T0.getTime() + 60_000);
+    await expect(control.resumeCampaign(campaignId, {}, launchAt)).resolves.toEqual({
+      ok: true,
+      state: "running",
+    });
+    await expect(prisma.recoveryCampaign.findUniqueOrThrow({
+      where: { id: campaignId },
+      select: { state: true, batchSize: true, hourlyCap: true, dailyCap: true, startedAt: true },
+    })).resolves.toEqual({
+      state: "running",
+      batchSize: 1,
+      hourlyCap: 1,
+      dailyCap: 1000,
+      startedAt: launchAt,
+    });
+
+    await expect(control.advanceCampaignStage(campaignId, {
+      batchSize: 1,
+      hourlyCap: 10,
+      dailyCap: 1000,
+    })).resolves.toEqual({ ok: true, state: "running" });
+  });
+
   it("serializes an approval against a source inserted after review", async () => {
     const campaignId = await draft();
     const selected = await candidate(campaignId, { arm: "treatment" });
@@ -591,7 +650,7 @@ describeWithLocalDatabase("resumption verifies the sealed snapshot", () => {
       state: "paused",
       selectionFingerprint: expect.any(String),
       decisionHash: expect.any(String),
-      eligibilityPolicyVersion: "eligibility-v2",
+      eligibilityPolicyVersion: "eligibility-v3",
       inboundWindowHours: 48,
       completionWindowHours: 48,
     });

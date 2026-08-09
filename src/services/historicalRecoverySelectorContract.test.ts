@@ -722,7 +722,7 @@ describeWithLocalDatabase("selection records the decision it made", () => {
     });
 
     expect(campaign.selectionFingerprint).toMatch(/^[a-f0-9]{64}$/);
-    expect(campaign.eligibilityPolicyVersion).toBeTruthy();
+    expect(campaign.eligibilityPolicyVersion).toBe("eligibility-v3");
     expect(candidate.sourceChoiceReason).toBe("newest_eligible_comment");
     expect(candidate.sources.map((source) => source.commentId)).toEqual([
       commentIds[1],

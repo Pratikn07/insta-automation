@@ -548,6 +548,8 @@ describe("runHistoricalRecoveryTick — pre-send recheck", () => {
     ["South Asian", { inferredOrigin: "south_asian", originConfidence: "high", originMethod: CURRENT_ORIGIN_METHOD }, "audience_south_asian"],
     ["unknown", { inferredOrigin: "unknown", originConfidence: "low", originMethod: CURRENT_ORIGIN_METHOD }, "audience_unknown"],
     ["other", { inferredOrigin: "other", originConfidence: "low", originMethod: CURRENT_ORIGIN_METHOD }, "audience_other"],
+    ["null confidence", { inferredOrigin: "us_western", originConfidence: null, originMethod: CURRENT_ORIGIN_METHOD }, "audience_invalid_confidence"],
+    ["malformed confidence", { inferredOrigin: "us_western", originConfidence: "medium", originMethod: CURRENT_ORIGIN_METHOD }, "audience_invalid_confidence"],
   ] as const)("suppresses a current live %s verdict before reservation", async (_label, person, reason) => {
     flags.DM_RECOVERY_WESTERN_ONLY = false;
     igUserFindUnique.mockResolvedValue(person);
@@ -579,6 +581,31 @@ describe("runHistoricalRecoveryTick — pre-send recheck", () => {
     expect(startHistoricalDispatch).not.toHaveBeenCalled();
     expect(markCandidateSuppressed).not.toHaveBeenCalled();
     expect(releaseCandidateClaim).toHaveBeenCalledWith("cand-1", "token-1");
+    expect(logEvent).toHaveBeenCalledWith("historical_recovery_deferred", {
+      campaignId: "camp-1",
+      candidateId: "cand-1",
+      reason: "origin_not_current_gemini",
+      boundary: "advisory_pre_reservation",
+    });
+    expect(result.deferred).toBe(1);
+  });
+
+  it("audits a stale-origin deferral from final locked authorization", async () => {
+    startHistoricalDispatch.mockResolvedValue({
+      kind: "deferred",
+      reason: "origin_not_current_gemini",
+    });
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(reserveHistoricalDispatch).toHaveBeenCalledTimes(1);
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(logEvent).toHaveBeenCalledWith("historical_recovery_deferred", {
+      campaignId: "camp-1",
+      candidateId: "cand-1",
+      reason: "origin_not_current_gemini",
+      boundary: "final_locked_authorization",
+    });
     expect(result.deferred).toBe(1);
   });
 

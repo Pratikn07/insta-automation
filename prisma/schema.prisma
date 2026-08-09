@@ -184,7 +184,7 @@ model IgUser {
   // how it was derived so a later bio pass can upgrade name-only guesses.
   inferredOrigin   String?   @map("inferred_origin") // us_western | south_asian | other | unknown
   originConfidence String?   @map("origin_confidence") // high | low
-  originMethod     String?   @map("origin_method") // classifier/prompt version, e.g. llm_v1
+  originMethod     String?   @map("origin_method") // classifier/prompt version, e.g. llm_v2
   originEvidence   String?   @map("origin_evidence") // the token/script/bio that drove it
   originCheckedAt  DateTime? @map("origin_checked_at")
 

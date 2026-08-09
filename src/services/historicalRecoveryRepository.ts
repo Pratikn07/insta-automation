@@ -489,6 +489,7 @@ export type HistoricalDispatchStartSuppressionReason =
   | "audience_south_asian"
   | "audience_unknown"
   | "audience_other"
+  | "audience_invalid_confidence"
   | "keyword_inactive";
 
 export type HistoricalDispatchStartDeferReason = "origin_not_current_gemini";
