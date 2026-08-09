@@ -1225,6 +1225,7 @@ model RecoveryCandidate {
   /// What the origin filter believed at selection. ig_users is mutable, so the
   /// live value cannot reconstruct this later.
   audienceOrigin           String?                  @map("audience_origin")
+  audienceOriginMethod     String?                  @map("audience_origin_method")
   audienceOriginConfidence String?                  @map("audience_origin_confidence")
   arm                      RecoveryCandidateArm
   outcome                  RecoveryCandidateOutcome @default(pending)
