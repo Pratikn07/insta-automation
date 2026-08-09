@@ -19,6 +19,15 @@ export class ApiError extends Error {
   }
 }
 
+export function apiErrorCode(error: unknown): string | null {
+  if (!(error instanceof ApiError)) return null;
+  if (typeof error.body !== "object" || error.body === null || !("error" in error.body)) {
+    return null;
+  }
+  const code = (error.body as { error: unknown }).error;
+  return typeof code === "string" ? code : null;
+}
+
 function extractErrorMessage(body: unknown, status: number): string {
   if (typeof body === "string" && body) return body;
   if (typeof body === "object" && body && "error" in body) {
