@@ -546,7 +546,8 @@ describeWithLocalDatabase("outcomes are attributed to both arms", () => {
     const held = await candidate(campaignId, { arm: "holdout" });
     await approve(campaignId);
 
-    const at = new Date(T0.getTime() + 3 * 24 * 3600_000);
+    // Holdout attribution is bounded from approval/start; the exact 48h edge counts.
+    const at = new Date(T0.getTime() + 48 * 3600_000);
     await attribution.attributeRecoveryOutcome({
       igUserId: held.igUserId,
       keywordId: fx.keywordId,

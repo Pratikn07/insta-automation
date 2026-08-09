@@ -21,7 +21,8 @@ import {
 } from "./historicalRecoverySnapshot.js";
 
 export const HISTORICAL_RECOVERY_ELIGIBILITY_POLICY_VERSION = "eligibility-v2";
-const DEFAULT_MEASUREMENT_WINDOW_HOURS = 48;
+const DEFAULT_INBOUND_WINDOW_HOURS = 24;
+const DEFAULT_COMPLETION_WINDOW_HOURS = 48;
 
 /**
  * Build the candidate list for a historical recovery campaign (design §34–§37).
@@ -411,9 +412,9 @@ export async function selectHistoricalCandidates(input: {
   const holdoutPercent = input.holdoutPercent ?? 50;
   const eligibilityPolicyVersion = input.eligibilityPolicyVersion
     ?? HISTORICAL_RECOVERY_ELIGIBILITY_POLICY_VERSION;
-  const inboundWindowHours = input.inboundWindowHours ?? DEFAULT_MEASUREMENT_WINDOW_HOURS;
+  const inboundWindowHours = input.inboundWindowHours ?? DEFAULT_INBOUND_WINDOW_HOURS;
   const completionWindowHours = input.completionWindowHours
-    ?? DEFAULT_MEASUREMENT_WINDOW_HOURS;
+    ?? DEFAULT_COMPLETION_WINDOW_HOURS;
   for (const [name, hours] of [
     ["inbound", inboundWindowHours],
     ["completion", completionWindowHours],

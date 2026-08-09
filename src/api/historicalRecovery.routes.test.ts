@@ -12,7 +12,11 @@ vi.mock("../services/campaignHealthObservation.js", () => ({
 }));
 vi.mock("../services/eventLogger.js", () => ({ logEvent }));
 
-import { candidateViewWhere, CANDIDATE_VIEWS } from "./historicalRecovery.routes.js";
+import {
+  buildHistoricalAttributionObservation,
+  candidateViewWhere,
+  CANDIDATE_VIEWS,
+} from "./historicalRecovery.routes.js";
 import { historicalRecoveryRouter } from "./historicalRecovery.routes.js";
 
 const CAMPAIGN_ID = "11111111-1111-4111-8111-111111111111";
@@ -105,6 +109,57 @@ describe("candidateViewWhere", () => {
     for (const view of ["sent", "suppressed", "attention", "recovered"] as const) {
       expect(candidateViewWhere(view)).not.toEqual(pending);
     }
+  });
+});
+
+describe("buildHistoricalAttributionObservation", () => {
+  const anchor = new Date("2026-08-08T12:00:00.000Z");
+
+  it("uses dispatch start for treatment and includes the fixed 24/48h edges", () => {
+    expect(buildHistoricalAttributionObservation({
+      arm: "treatment",
+      dispatchStartedAt: anchor,
+      sentAt: new Date(anchor.getTime() + 10_000),
+      lastAttemptAt: null,
+      campaignStartedAt: new Date(anchor.getTime() - 3600_000),
+      laterInboundAt: new Date(anchor.getTime() + 24 * 3600_000),
+      laterCompletedAt: new Date(anchor.getTime() + 48 * 3600_000),
+    })).toEqual({
+      anchorAt: anchor,
+      inboundWithin24Hours: true,
+      completedWithin48Hours: true,
+    });
+  });
+
+  it("uses campaign start for holdout and excludes one millisecond beyond an edge", () => {
+    expect(buildHistoricalAttributionObservation({
+      arm: "holdout",
+      dispatchStartedAt: null,
+      sentAt: null,
+      lastAttemptAt: null,
+      campaignStartedAt: anchor,
+      laterInboundAt: new Date(anchor.getTime() + 24 * 3600_000 + 1),
+      laterCompletedAt: new Date(anchor.getTime() + 48 * 3600_000 + 1),
+    })).toEqual({
+      anchorAt: anchor,
+      inboundWithin24Hours: false,
+      completedWithin48Hours: false,
+    });
+  });
+
+  it("never reports an observation before its anchor", () => {
+    expect(buildHistoricalAttributionObservation({
+      arm: "treatment",
+      dispatchStartedAt: anchor,
+      sentAt: anchor,
+      lastAttemptAt: anchor,
+      campaignStartedAt: anchor,
+      laterInboundAt: new Date(anchor.getTime() - 1),
+      laterCompletedAt: new Date(anchor.getTime() - 1),
+    })).toMatchObject({
+      inboundWithin24Hours: false,
+      completedWithin48Hours: false,
+    });
   });
 });
 

@@ -979,7 +979,7 @@ model RecoveryCampaign {
   selectionFingerprint     String?               @unique(map: "recovery_campaign_selection_fingerprint_key") @map("selection_fingerprint")
   eligibilityPolicyVersion String?               @map("eligibility_policy_version")
   westernOnly              Boolean?              @map("western_only")
-  inboundWindowHours       Int                   @default(48) @map("inbound_window_hours")
+  inboundWindowHours       Int                   @default(24) @map("inbound_window_hours")
   completionWindowHours    Int                   @default(48) @map("completion_window_hours")
   /// Canonical hash of every decision this selection made (QA-14). Two selections over
   /// the same cutoff and filters must agree; a different hash means the data moved.

@@ -42,6 +42,19 @@ describeWithDatabase("P1 selection and attribution migration", () => {
       "selection_fingerprint",
       "western_only",
     ]);
+
+    const defaults = await db.$queryRaw<Array<{ column_name: string; column_default: string }>>`
+      SELECT column_name, column_default
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'recovery_campaign'
+        AND column_name IN ('inbound_window_hours', 'completion_window_hours')
+      ORDER BY column_name
+    `;
+    expect(defaults).toEqual([
+      { column_name: "completion_window_hours", column_default: "48" },
+      { column_name: "inbound_window_hours", column_default: "24" },
+    ]);
   });
 
   it("adds immutable ordered candidate source evidence", async () => {
