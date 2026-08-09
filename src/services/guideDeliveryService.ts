@@ -1,5 +1,6 @@
 import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
+import { env, type Env } from "../config/env.js";
 import type { MetaSendResult } from "../types/meta.js";
 import { sendTrackedMedia, sendTrackedText } from "./dmDeliveryService.js";
 import { describeGraphError, type GraphErrorMetadata } from "./eventLogger.js";
@@ -22,9 +23,6 @@ import {
 } from "./guideDeliveryRepository.js";
 
 const GUIDE_DELIVERY_STEP_DELAY_MS = 800;
-const DEFAULT_GUIDE_DELIVERY_LEASE_MS = 5 * 60_000;
-const DEFAULT_GUIDE_DELIVERY_MAX_ATTEMPTS = 3;
-const DEFAULT_GUIDE_DELIVERY_RETRY_BASE_MS = 60_000;
 
 const UNKNOWN_ERROR_METADATA: GraphErrorMetadata = {
   category: "unknown_error",
@@ -96,6 +94,18 @@ type GuideDeliveryServiceDependencies = {
   retryBaseMs: number;
   logger: DeliveryLogger;
 };
+
+type GuideDeliveryEnvironment = Pick<
+  Env,
+  | "GUIDE_DELIVERY_LEASE_MS"
+  | "GUIDE_DELIVERY_MAX_ATTEMPTS"
+  | "GUIDE_DELIVERY_RETRY_BASE_MS"
+>;
+
+type ConfiguredGuideDeliveryServiceDependencies = Omit<
+  GuideDeliveryServiceDependencies,
+  "leaseMs" | "maxAttempts" | "retryBaseMs"
+>;
 
 function hasUnconsumedOwnerAuthorization(unit: GuideDeliveryUnitRecord): boolean {
   return unit.ownerRetryAuthorizedAt !== null && unit.ownerRetryConsumedAt === null;
@@ -475,9 +485,21 @@ export function createGuideDeliveryService(dependencies: GuideDeliveryServiceDep
   return Object.assign(deliverGuideForTrigger, { processClaimedGuideDelivery });
 }
 
+export function createConfiguredGuideDeliveryService(
+  environment: GuideDeliveryEnvironment,
+  dependencies: ConfiguredGuideDeliveryServiceDependencies,
+) {
+  return createGuideDeliveryService({
+    ...dependencies,
+    leaseMs: environment.GUIDE_DELIVERY_LEASE_MS,
+    maxAttempts: environment.GUIDE_DELIVERY_MAX_ATTEMPTS,
+    retryBaseMs: environment.GUIDE_DELIVERY_RETRY_BASE_MS,
+  });
+}
+
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-const guideDeliveryService = createGuideDeliveryService({
+const guideDeliveryService = createConfiguredGuideDeliveryService(env, {
   repository: guideDeliveryRepository,
   loadResourceMessages: loadCurrentResourceMessages,
   sendTrackedText,
@@ -485,9 +507,6 @@ const guideDeliveryService = createGuideDeliveryService({
   finalizeGuideDelivery,
   now: () => new Date(),
   sleep,
-  leaseMs: DEFAULT_GUIDE_DELIVERY_LEASE_MS,
-  maxAttempts: DEFAULT_GUIDE_DELIVERY_MAX_ATTEMPTS,
-  retryBaseMs: DEFAULT_GUIDE_DELIVERY_RETRY_BASE_MS,
   logger,
 });
 

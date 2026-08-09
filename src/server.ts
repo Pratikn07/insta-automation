@@ -15,6 +15,8 @@ import { runReplyDraftTick } from "./services/replyDraftWorker.js";
 import { runReplyDraftRecoveryTick } from "./services/replyDraftRecoveryWorker.js";
 import { startDmRecoveryScheduler } from "./services/dmRecoveryScheduler.js";
 import { runDmRecoveryTick } from "./services/dmRecoveryWorker.js";
+import { startGuideDeliveryScheduler } from "./services/guideDeliveryScheduler.js";
+import { runGuideDeliveryTick } from "./services/guideDeliveryWorker.js";
 import { runHistoricalRecoveryTick } from "./services/historicalRecoveryWorker.js";
 import { runOriginEnrichmentTick } from "./services/originEnrichmentWorker.js";
 import { internalAiRouter } from "./api/internalAi.routes.js";
@@ -173,6 +175,16 @@ startDmRecoveryScheduler({
   setInterval: globalThis.setInterval,
   clearInterval: globalThis.clearInterval,
   runTick: runDmRecoveryTick,
+});
+
+// Guide delivery reconciliation is part of the send-safety contract and has no
+// feature flag. It runs immediately so stale provider outcomes are surfaced as
+// uncertain before the first interval elapses.
+startGuideDeliveryScheduler({
+  intervalMs: env.GUIDE_DELIVERY_WORKER_INTERVAL_MS,
+  setInterval: globalThis.setInterval,
+  clearInterval: globalThis.clearInterval,
+  runTick: runGuideDeliveryTick,
 });
 
 // Historical recovery (Feature 4). Reuses the same scheduler so a tick that throws

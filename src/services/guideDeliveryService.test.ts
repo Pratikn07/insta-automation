@@ -5,7 +5,10 @@ import type {
   GuideDeliveryRepository,
   PlannedDeliveryRecord,
 } from "./guideDeliveryRepository.js";
-import { createGuideDeliveryService } from "./guideDeliveryService.js";
+import {
+  createConfiguredGuideDeliveryService,
+  createGuideDeliveryService,
+} from "./guideDeliveryService.js";
 
 const startedAt = new Date("2026-08-09T12:00:00.000Z");
 const windowEnd = new Date("2026-08-10T12:00:00.000Z");
@@ -172,6 +175,34 @@ describe("deliverGuideForTrigger", () => {
       leaseMs: 300_000,
       maxAttempts: 3,
       retryBaseMs: 60_000,
+      logger: { error: loggerError },
+    });
+  }
+
+  function configuredSubject(config: {
+    GUIDE_DELIVERY_LEASE_MS: number;
+    GUIDE_DELIVERY_MAX_ATTEMPTS: number;
+    GUIDE_DELIVERY_RETRY_BASE_MS: number;
+  }) {
+    return createConfiguredGuideDeliveryService(config, {
+      repository: {
+        findByTrigger,
+        findRecipientIgUserId,
+        createOrLoadPlan,
+        claimById,
+        beginUnit,
+        markUnitSent,
+        markUnitFailed,
+        markUnitUncertain,
+        markWindowClosed,
+        markAttemptsExhausted,
+      } as unknown as GuideDeliveryRepository,
+      loadResourceMessages,
+      sendTrackedText,
+      sendTrackedMedia,
+      finalizeGuideDelivery,
+      now: () => clock,
+      sleep,
       logger: { error: loggerError },
     });
   }
@@ -417,6 +448,60 @@ describe("deliverGuideForTrigger", () => {
     expect(markUnitSent).toHaveBeenLastCalledWith(
       expect.objectContaining({ unitId: caption.id, providerMessageId: "mid-caption-confirmed" }),
     );
+  });
+
+  it("wires the validated lease and retry base into configured direct processing", async () => {
+    const text = unit(0, "text");
+    const existing = delivery([text]);
+    findByTrigger.mockResolvedValue(existing);
+    claimById.mockResolvedValue(claimed(existing));
+    beginUnit.mockResolvedValue({ ...text, status: "sending", attempts: 2 });
+    sendTrackedText.mockRejectedValue(graphFailure(429));
+
+    await expect(configuredSubject({
+      GUIDE_DELIVERY_LEASE_MS: 90_000,
+      GUIDE_DELIVERY_MAX_ATTEMPTS: 6,
+      GUIDE_DELIVERY_RETRY_BASE_MS: 20_000,
+    })(input)).resolves.toBe("retry_scheduled");
+
+    expect(claimById).toHaveBeenCalledWith({
+      deliveryId: existing.id,
+      now: startedAt,
+      claimExpiresAt: new Date(startedAt.getTime() + 90_000),
+    });
+    expect(beginUnit).toHaveBeenCalledWith(expect.objectContaining({ maxAttempts: 6 }));
+    expect(markUnitFailed).toHaveBeenCalledWith(expect.objectContaining({
+      nextAttemptAt: new Date(startedAt.getTime() + 40_000),
+      terminalReason: null,
+    }));
+  });
+
+  it("wires the validated attempt cap into configured worker processing", async () => {
+    const exhausted = unit(0, "text", {
+      status: "failed",
+      failureDisposition: "transient",
+      attempts: 4,
+    });
+    const workerClaim = claimed(delivery([exhausted], {
+      status: "failed",
+      failureCode: "guide_unit_transient",
+      nextAttemptAt: startedAt,
+    }));
+
+    await expect(configuredSubject({
+      GUIDE_DELIVERY_LEASE_MS: 90_000,
+      GUIDE_DELIVERY_MAX_ATTEMPTS: 4,
+      GUIDE_DELIVERY_RETRY_BASE_MS: 20_000,
+    }).processClaimedGuideDelivery(workerClaim)).resolves.toBe("needs_review");
+
+    expect(markAttemptsExhausted).toHaveBeenCalledWith({
+      deliveryId: workerClaim.id,
+      claimToken,
+      exhaustedAt: startedAt,
+      maxAttempts: 4,
+    });
+    expect(beginUnit).not.toHaveBeenCalled();
+    expect(sendTrackedText).not.toHaveBeenCalled();
   });
 
   it("marks a timeout uncertain, requires review, and never begins a later unit", async () => {
