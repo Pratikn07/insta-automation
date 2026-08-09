@@ -138,6 +138,52 @@ async function activeUnitAtAttempt(attempt: number, text = "PRIVATE ATTEMPT SENT
   return { delivery, claimed, begun };
 }
 
+async function needsReviewDelivery(
+  unitCount = 1,
+  expiresAt = sendWindowExpiresAt,
+) {
+  const delivery = await createDelivery(
+    { ok: true, units: Array.from({ length: unitCount }, (_, position) => unit(position, `PRIVATE REVIEW ${position}`)) },
+    { sendWindowExpiresAt: expiresAt },
+  );
+  const claimed = await claim(delivery.id);
+  if (!claimed) throw new Error("expected review delivery claim");
+  for (let position = 0; position < unitCount - 1; position += 1) {
+    const begun = await guideDeliveryRepository.beginUnit({
+      deliveryId: delivery.id,
+      claimToken: claimed.claimToken,
+      now: new Date(startedAt.getTime() + position + 1),
+      maxAttempts: 3,
+    });
+    if (!begun) throw new Error("expected sent prefix unit");
+    await guideDeliveryRepository.markUnitSent({
+      deliveryId: delivery.id,
+      unitId: begun.id,
+      claimToken: claimed.claimToken,
+      attempt: begun.attempts,
+      sentAt: new Date(startedAt.getTime() + position + 100),
+      providerMessageId: `provider-prefix-${position}`,
+      ownerConfirmedAt: null,
+    });
+  }
+  const uncertain = await guideDeliveryRepository.beginUnit({
+    deliveryId: delivery.id,
+    claimToken: claimed.claimToken,
+    now: new Date(startedAt.getTime() + 500),
+    maxAttempts: 3,
+  });
+  if (!uncertain) throw new Error("expected uncertain unit");
+  await guideDeliveryRepository.markUnitUncertain({
+    deliveryId: delivery.id,
+    unitId: uncertain.id,
+    claimToken: claimed.claimToken,
+    attempt: uncertain.attempts,
+    uncertainAt: new Date(startedAt.getTime() + 600),
+    error: uncertainError,
+  });
+  return { delivery, uncertain };
+}
+
 async function allSentUnclaimed() {
   const fixture = await activeUnit("completion-only snapshot");
   const sentAt = new Date(startedAt.getTime() + 1_000);
@@ -1466,5 +1512,264 @@ describeWithLocalDatabase("guide delivery repository PostgreSQL contract", () =>
     expect(completion).toMatchObject({ id: delivery.id, status: "sending" });
     expect(completion!.claimToken).not.toBe(claimed!.claimToken);
     expect(completion!.units.map((row) => row.status)).toEqual(["sent"]);
+  });
+
+  it("owner-confirms an uncertain unit atomically and permits completion after window close", async () => {
+    const fixture = await needsReviewDelivery(1);
+    const confirmedAt = afterWindow;
+
+    const result = await guideDeliveryRepository.ownerConfirmUnitDelivered({
+      deliveryId: fixture.delivery.id,
+      unitId: fixture.uncertain.id,
+      actor: "owner@example.com",
+      now: confirmedAt,
+    });
+    const state = await storedState(fixture.delivery.id);
+
+    expect(result).toEqual({ ok: true, directive: "finalize", idempotent: false });
+    expect(state.delivery).toMatchObject({ status: "planned", failureCode: null });
+    expect(state.delivery.units[0]).toMatchObject({
+      status: "sent",
+      sentAt: confirmedAt,
+      ownerConfirmedAt: confirmedAt,
+      providerMessageId: null,
+    });
+    const ownerEvents = state.events.filter((event) => event.kind === "guide_delivery_owner_action");
+    expect(ownerEvents).toHaveLength(1);
+    expect(ownerEvents[0]!.payload).toEqual({
+      actor: "owner@example.com",
+      action: "confirm_delivered",
+      deliveryId: fixture.delivery.id,
+      unitId: fixture.uncertain.id,
+      timestamp: confirmedAt.toISOString(),
+    });
+    expect(JSON.stringify(ownerEvents)).not.toContain("PRIVATE REVIEW");
+
+    const completionClaim = await claim(fixture.delivery.id, confirmedAt);
+    expect(completionClaim).toMatchObject({ status: "sending" });
+    expect(completionClaim!.units.map((row) => row.status)).toEqual(["sent"]);
+  });
+
+  it("owner confirmation closes an expired delivery when unsent work remains", async () => {
+    const fixture = await needsReviewDelivery(2);
+    const extraPending = await prisma.guideDeliveryUnit.create({
+      data: { ...unit(2, "PRIVATE REMAINING"), deliveryId: fixture.delivery.id },
+    });
+
+    const result = await guideDeliveryRepository.ownerConfirmUnitDelivered({
+      deliveryId: fixture.delivery.id,
+      unitId: fixture.uncertain.id,
+      actor: "owner@example.com",
+      now: afterWindow,
+    });
+    const state = await storedState(fixture.delivery.id);
+
+    expect(result).toEqual({ ok: true, directive: "none", idempotent: false });
+    expect(state.delivery).toMatchObject({
+      status: "failed",
+      failureCode: "messaging_window_closed",
+      claimToken: null,
+    });
+    expect(state.delivery.units.find((row) => row.id === extraPending.id)?.status).toBe("pending");
+  });
+
+  it("authorizes exactly one retry and beginUnit atomically consumes it without resetting sent units", async () => {
+    const fixture = await needsReviewDelivery(2);
+    await prisma.guideDeliveryUnit.update({
+      where: { id: fixture.uncertain.id },
+      data: { attempts: 3 },
+    });
+    const authorizedAt = new Date(startedAt.getTime() + 1_000);
+
+    const result = await guideDeliveryRepository.ownerRetryUncertainUnit({
+      deliveryId: fixture.delivery.id,
+      unitId: fixture.uncertain.id,
+      actor: "owner@example.com",
+      now: authorizedAt,
+    });
+    const beforeClaim = await storedState(fixture.delivery.id);
+
+    expect(result).toEqual({ ok: true, directive: "resume", idempotent: false });
+    expect(beforeClaim.delivery.units[0]).toMatchObject({ status: "sent", attempts: 1 });
+    expect(beforeClaim.delivery.units[1]).toMatchObject({
+      status: "failed",
+      failureDisposition: "transient",
+      attempts: 3,
+      ownerRetryAuthorizedAt: authorizedAt,
+      ownerRetryConsumedAt: null,
+    });
+    const retryClaim = await claim(fixture.delivery.id, authorizedAt);
+    const begun = await guideDeliveryRepository.beginUnit({
+      deliveryId: fixture.delivery.id,
+      claimToken: retryClaim!.claimToken,
+      now: new Date(authorizedAt.getTime() + 1),
+      maxAttempts: 3,
+    });
+    expect(begun).toMatchObject({
+      id: fixture.uncertain.id,
+      status: "sending",
+      attempts: 4,
+      ownerRetryAuthorizedAt: authorizedAt,
+      ownerRetryConsumedAt: new Date(authorizedAt.getTime() + 1),
+    });
+    await expect(guideDeliveryRepository.beginUnit({
+      deliveryId: fixture.delivery.id,
+      claimToken: retryClaim!.claimToken,
+      now: new Date(authorizedAt.getTime() + 2),
+      maxAttempts: 3,
+    })).resolves.toBeNull();
+  });
+
+  it("rejects retry at window equality with no state or event drift", async () => {
+    const fixture = await needsReviewDelivery(1);
+    const before = await storedState(fixture.delivery.id);
+
+    const result = await guideDeliveryRepository.ownerRetryUncertainUnit({
+      deliveryId: fixture.delivery.id,
+      unitId: fixture.uncertain.id,
+      actor: "owner@example.com",
+      now: sendWindowExpiresAt,
+    });
+    const after = await storedState(fixture.delivery.id);
+
+    expect(result).toEqual({ ok: false, error: "messaging_window_closed" });
+    expect(after.delivery).toEqual(before.delivery);
+    expect(after.events).toEqual(before.events);
+  });
+
+  it("serializes concurrent confirmations and creates one owner audit event", async () => {
+    const fixture = await needsReviewDelivery(1);
+    const input = {
+      deliveryId: fixture.delivery.id,
+      unitId: fixture.uncertain.id,
+      actor: "owner@example.com",
+      now: new Date(startedAt.getTime() + 1_000),
+    };
+
+    const outcomes = await Promise.all([
+      guideDeliveryRepository.ownerConfirmUnitDelivered(input),
+      guideDeliveryRepository.ownerConfirmUnitDelivered(input),
+    ]);
+    const events = await eventsFor(fixture.delivery.id);
+
+    expect(outcomes).toContainEqual({ ok: true, directive: "finalize", idempotent: false });
+    expect(outcomes).toContainEqual({ ok: true, directive: "none", idempotent: true });
+    expect(events.filter((event) => event.kind === "guide_delivery_owner_action")).toHaveLength(1);
+  });
+
+  it("cancels exactly once, including after window close, but never overrides completed or active work", async () => {
+    const review = await needsReviewDelivery(1);
+    const cancelAt = afterWindow;
+    const [left, right] = await Promise.all([
+      guideDeliveryRepository.ownerCancelDelivery({
+        deliveryId: review.delivery.id,
+        actor: "owner@example.com",
+        now: cancelAt,
+      }),
+      guideDeliveryRepository.ownerCancelDelivery({
+        deliveryId: review.delivery.id,
+        actor: "owner@example.com",
+        now: cancelAt,
+      }),
+    ]);
+    expect([left, right]).toContainEqual({ ok: true, directive: "none", idempotent: false });
+    expect([left, right]).toContainEqual({ ok: true, directive: "none", idempotent: true });
+    const cancelled = await storedState(review.delivery.id);
+    expect(cancelled.delivery).toMatchObject({ status: "cancelled", cancelledAt: cancelAt });
+    expect(cancelled.events.filter((event) => event.kind === "guide_delivery_owner_action"))
+      .toHaveLength(1);
+
+    const active = await createDelivery();
+    await claim(active.id);
+    await expect(guideDeliveryRepository.ownerCancelDelivery({
+      deliveryId: active.id,
+      actor: "owner@example.com",
+      now: cancelAt,
+    })).resolves.toEqual({ ok: false, error: "delivery_state_changed" });
+
+    const completedId = await allSentUnclaimed();
+    const completedClaim = await claim(completedId, new Date(startedAt.getTime() + 3_000));
+    await guideDeliveryRepository.finalizeCompleted({
+      deliveryId: completedId,
+      claimToken: completedClaim!.claimToken,
+      completedAt: startedAt,
+    });
+    await expect(guideDeliveryRepository.ownerCancelDelivery({
+      deliveryId: completedId,
+      actor: "owner@example.com",
+      now: cancelAt,
+    })).resolves.toEqual({ ok: false, error: "delivery_state_changed" });
+  });
+
+  it("fences missing units and stale delivery states without partial audit", async () => {
+    const fixture = await needsReviewDelivery(2);
+    const before = await eventsFor(fixture.delivery.id);
+    await expect(guideDeliveryRepository.ownerConfirmUnitDelivered({
+      deliveryId: fixture.delivery.id,
+      unitId: randomUUID(),
+      actor: "owner@example.com",
+      now: startedAt,
+    })).resolves.toEqual({ ok: false, error: "unit_not_found" });
+    expect(await eventsFor(fixture.delivery.id)).toEqual(before);
+
+    const alreadySent = await prisma.guideDeliveryUnit.findFirstOrThrow({
+      where: { deliveryId: fixture.delivery.id, status: "sent" },
+    });
+    await expect(guideDeliveryRepository.ownerConfirmUnitDelivered({
+      deliveryId: fixture.delivery.id,
+      unitId: alreadySent.id,
+      actor: "owner@example.com",
+      now: startedAt,
+    })).resolves.toEqual({ ok: false, error: "delivery_state_changed" });
+    expect(await eventsFor(fixture.delivery.id)).toEqual(before);
+
+    await prisma.guideDelivery.update({
+      where: { id: fixture.delivery.id },
+      data: { status: "failed", failureCode: "guide_unit_permanent" },
+    });
+    await expect(guideDeliveryRepository.ownerRetryUncertainUnit({
+      deliveryId: fixture.delivery.id,
+      unitId: fixture.uncertain.id,
+      actor: "owner@example.com",
+      now: startedAt,
+    })).resolves.toEqual({ ok: false, error: "delivery_state_changed" });
+    expect((await eventsFor(fixture.delivery.id)).filter((event) => event.kind === "guide_delivery_owner_action"))
+      .toHaveLength(0);
+  });
+
+  it("refuses every owner transition when any unit is still at the provider boundary", async () => {
+    const fixture = await needsReviewDelivery(1);
+    const active = await prisma.guideDeliveryUnit.create({
+      data: {
+        ...unit(1, "PRIVATE ACTIVE SENDER"),
+        deliveryId: fixture.delivery.id,
+        status: "sending",
+        sendingAt: startedAt,
+        attempts: 1,
+      },
+    });
+    const ownerInput = {
+      deliveryId: fixture.delivery.id,
+      actor: "owner@example.com",
+      now: new Date(startedAt.getTime() + 1_000),
+    };
+
+    await expect(guideDeliveryRepository.ownerConfirmUnitDelivered({
+      ...ownerInput,
+      unitId: fixture.uncertain.id,
+    })).resolves.toEqual({ ok: false, error: "delivery_state_changed" });
+    await expect(guideDeliveryRepository.ownerRetryUncertainUnit({
+      ...ownerInput,
+      unitId: fixture.uncertain.id,
+    })).resolves.toEqual({ ok: false, error: "delivery_state_changed" });
+    await expect(guideDeliveryRepository.ownerCancelDelivery(ownerInput))
+      .resolves.toEqual({ ok: false, error: "delivery_state_changed" });
+
+    const stored = await storedState(fixture.delivery.id);
+    expect(stored.delivery.status).toBe("needs_review");
+    expect(stored.delivery.units.find((candidate) => candidate.id === active.id)?.status)
+      .toBe("sending");
+    expect(stored.events.filter((event) => event.kind === "guide_delivery_owner_action"))
+      .toHaveLength(0);
   });
 });

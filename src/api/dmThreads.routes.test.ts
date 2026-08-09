@@ -171,4 +171,145 @@ describe("GET /api/dm-threads/:threadId", () => {
       }),
     );
   });
+
+  it("returns bounded safe guide-delivery reviews independent of the 200-message slice", async () => {
+    const expiresAt = new Date(Date.now() + 60_000);
+    findUnique.mockResolvedValueOnce({
+      id: "thread-1",
+      igUserId: "ig-user-1",
+      username: "geri",
+      name: "Geri",
+      needsReply: true,
+      latestInboundMessageId: "message-201",
+      lastMessageAt: messages[200]!.instagramTimestamp,
+      messages: [],
+      drafts: [],
+      guideDeliveries: [
+        {
+          id: "delivery-review-1",
+          status: "needs_review",
+          sendWindowExpiresAt: expiresAt,
+          failureCode: "guide_unit_uncertain",
+          units: [
+            { id: "unit-sent", position: 0, kind: "text", status: "sent" },
+            { id: "unit-uncertain", position: 1, kind: "image", status: "uncertain" },
+          ],
+        },
+      ],
+    });
+
+    const response = await request(makeApp()).get("/api/dm-threads/thread-1").expect(200);
+
+    expect(response.body.deliveryReviews).toEqual([
+      {
+        id: "delivery-review-1",
+        status: "needs_review",
+        confirmedUnits: 1,
+        totalUnits: 2,
+        sendWindowExpiresAt: expiresAt.toISOString(),
+        sendWindowOpen: true,
+        failureCode: "guide_unit_uncertain",
+        units: [
+          { id: "unit-sent", position: 0, kind: "text", status: "sent" },
+          { id: "unit-uncertain", position: 1, kind: "image", status: "uncertain" },
+        ],
+      },
+    ]);
+    expect(JSON.stringify(response.body)).not.toContain("textSnapshot");
+    expect(JSON.stringify(response.body)).not.toContain("providerMessageId");
+
+    const select = findUnique.mock.calls[0]?.[0].select;
+    expect(select.messages.take).toBe(200);
+    expect(select.guideDeliveries).toMatchObject({
+      take: 10,
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      select: {
+        id: true,
+        status: true,
+        sendWindowExpiresAt: true,
+        failureCode: true,
+        units: {
+          orderBy: { position: "asc" },
+          select: { id: true, position: true, kind: true, status: true },
+        },
+      },
+    });
+    const serializedSelector = JSON.stringify(select.guideDeliveries);
+    for (const forbidden of [
+      "textSnapshot",
+      "mediaUrlSnapshot",
+      "contentFingerprint",
+      "providerMessageId",
+      "errorTraceId",
+      "errorCategory",
+      "conversationId",
+    ]) {
+      expect(serializedSelector).not.toContain(forbidden);
+    }
+  });
+
+  it("treats the send window as closed at exact equality using one request-time now", async () => {
+    vi.useFakeTimers();
+    const requestNow = new Date("2026-08-09T12:00:00.000Z");
+    vi.setSystemTime(requestNow);
+    findUnique.mockResolvedValueOnce({
+      id: "thread-1",
+      igUserId: "ig-user-1",
+      username: "geri",
+      name: "Geri",
+      needsReply: true,
+      latestInboundMessageId: "message-201",
+      lastMessageAt: messages[200]!.instagramTimestamp,
+      messages: [],
+      drafts: [],
+      guideDeliveries: [{
+        id: "delivery-review-closed",
+        status: "failed",
+        sendWindowExpiresAt: requestNow,
+        failureCode: "messaging_window_closed",
+        units: [{ id: "unit-failed", position: 0, kind: "text", status: "failed" }],
+      }],
+    });
+
+    try {
+      const response = await request(makeApp()).get("/api/dm-threads/thread-1").expect(200);
+      expect(response.body.deliveryReviews[0].sendWindowOpen).toBe(false);
+      expect(response.body.deliveryReviews[0]).not.toHaveProperty("windowOpen");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("GET /api/dm-threads", () => {
+  it("adds only an actionable delivery review count to list rows", async () => {
+    findMany.mockResolvedValueOnce([{
+      id: "thread-1",
+      igUserId: "ig-user-1",
+      username: "geri",
+      name: "Geri",
+      needsReply: true,
+      latestInboundMessageId: "message-201",
+      lastMessageAt: messages[200]!.instagramTimestamp,
+      lastInboundAt: messages[200]!.instagramTimestamp,
+      lastOutboundAt: null,
+      messages: [],
+      drafts: [],
+      _count: { guideDeliveries: 2 },
+    }]);
+
+    const response = await request(makeApp()).get("/api/dm-threads").expect(200);
+
+    expect(response.body.items[0]).toMatchObject({ deliveryReviewCount: 2 });
+    expect(response.body.items[0]).not.toHaveProperty("guideDeliveries");
+    expect(response.body.items[0]).not.toHaveProperty("_count");
+    const select = findMany.mock.calls[0]?.[0].select;
+    expect(select._count.select.guideDeliveries.where).toEqual({
+      OR: [
+        { status: "needs_review" },
+        { status: "failed", failureCode: "messaging_window_closed" },
+      ],
+    });
+    expect(select).not.toHaveProperty("guideDeliveries");
+  });
 });

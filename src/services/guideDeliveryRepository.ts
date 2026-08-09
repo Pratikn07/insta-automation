@@ -175,6 +175,35 @@ export type ExpiredClaimReconciliation = {
   completionPending: ClaimedGuideDelivery[];
 };
 
+export type OwnerGuideDeliveryTransitionError =
+  | "delivery_not_found"
+  | "unit_not_found"
+  | "delivery_state_changed"
+  | "messaging_window_closed";
+
+export type OwnerGuideDeliveryPostCommitDirective = "finalize" | "resume" | "none";
+
+export type OwnerGuideDeliveryTransitionResult =
+  | {
+      ok: true;
+      directive: OwnerGuideDeliveryPostCommitDirective;
+      idempotent: boolean;
+    }
+  | { ok: false; error: OwnerGuideDeliveryTransitionError };
+
+export type OwnerGuideDeliveryUnitInput = {
+  deliveryId: string;
+  unitId: string;
+  actor: string;
+  now: Date;
+};
+
+export type OwnerCancelGuideDeliveryInput = {
+  deliveryId: string;
+  actor: string;
+  now: Date;
+};
+
 export interface GuideDeliveryRepository {
   findByTrigger(input: FindGuideDeliveryByTriggerInput): Promise<PlannedDeliveryRecord | null>;
   findById(deliveryId: string): Promise<PlannedDeliveryRecord | null>;
@@ -191,6 +220,15 @@ export interface GuideDeliveryRepository {
   finalizeCompleted(input: FinalizeGuideDeliveryInput): Promise<FinalizeGuideDeliveryResult>;
   releaseClaim(input: ReleaseGuideDeliveryClaimInput): Promise<boolean>;
   reconcileExpiredClaims(now: Date): Promise<ExpiredClaimReconciliation>;
+  ownerConfirmUnitDelivered(
+    input: OwnerGuideDeliveryUnitInput,
+  ): Promise<OwnerGuideDeliveryTransitionResult>;
+  ownerRetryUncertainUnit(
+    input: OwnerGuideDeliveryUnitInput,
+  ): Promise<OwnerGuideDeliveryTransitionResult>;
+  ownerCancelDelivery(
+    input: OwnerCancelGuideDeliveryInput,
+  ): Promise<OwnerGuideDeliveryTransitionResult>;
 }
 
 type LockedDelivery = {
@@ -366,6 +404,34 @@ function eventIdentity(delivery: LockedDelivery): Record<string, unknown> {
     resourceId: delivery.resourceId,
     triggerKind: delivery.triggerKind,
     triggerId: delivery.triggerId,
+  };
+}
+
+function requireOwnerActor(actor: string): void {
+  if (
+    typeof actor !== "string" ||
+    actor.length < 3 ||
+    actor.length > 320 ||
+    !actor.includes("@") ||
+    /[\u0000-\u001f\u007f]/.test(actor)
+  ) {
+    throw new Error("invalid_guide_delivery_owner_actor");
+  }
+}
+
+function ownerActionPayload(input: {
+  actor: string;
+  action: "confirm_delivered" | "retry_uncertain" | "cancel_delivery";
+  deliveryId: string;
+  unitId?: string;
+  now: Date;
+}): Prisma.InputJsonObject {
+  return {
+    actor: input.actor,
+    action: input.action,
+    deliveryId: input.deliveryId,
+    ...(input.unitId ? { unitId: input.unitId } : {}),
+    timestamp: input.now.toISOString(),
   };
 }
 
@@ -1561,6 +1627,208 @@ export function createGuideDeliveryRepository(
         }
       }
       return result;
+    },
+
+    async ownerConfirmUnitDelivered(input) {
+      requireOwnerActor(input.actor);
+      return database.$transaction(async (tx) => {
+        const delivery = await lockDelivery(tx, input.deliveryId);
+        if (!delivery) return { ok: false, error: "delivery_not_found" };
+        const units = await lockAndLoadUnits(tx, input.deliveryId);
+        const unit = units.find((candidate) => candidate.id === input.unitId);
+        if (!unit) return { ok: false, error: "unit_not_found" };
+        if (unit.status === "sent" && unit.ownerConfirmedAt !== null) {
+          return { ok: true, directive: "none", idempotent: true };
+        }
+        if (
+          delivery.status !== "needs_review" ||
+          delivery.claimToken !== null ||
+          unit.status !== "uncertain" ||
+          units.some((candidate) => candidate.status === "sending")
+        ) {
+          return { ok: false, error: "delivery_state_changed" };
+        }
+
+        const updatedUnit = await tx.guideDeliveryUnit.updateMany({
+          where: {
+            id: input.unitId,
+            deliveryId: input.deliveryId,
+            status: "uncertain",
+          },
+          data: {
+            status: "sent",
+            sentAt: input.now,
+            ownerConfirmedAt: input.now,
+            failureDisposition: null,
+            providerMessageId: null,
+            errorCategory: null,
+            errorHttpStatus: null,
+            errorGraphCode: null,
+            errorGraphSubcode: null,
+            errorTraceId: null,
+            errorTransportCode: null,
+            updatedAt: input.now,
+          },
+        });
+        if (updatedUnit.count !== 1) {
+          return { ok: false, error: "delivery_state_changed" };
+        }
+
+        const allUnitsSent = units.every(
+          (candidate) => candidate.id === unit.id || candidate.status === "sent",
+        );
+        const windowClosed = input.now >= delivery.sendWindowExpiresAt;
+        const directive: OwnerGuideDeliveryPostCommitDirective = allUnitsSent
+          ? "finalize"
+          : windowClosed
+            ? "none"
+            : "resume";
+        const updatedDelivery = await tx.guideDelivery.updateMany({
+          where: {
+            id: input.deliveryId,
+            status: "needs_review",
+            claimToken: null,
+          },
+          data: {
+            status: directive === "none" ? "failed" : "planned",
+            failureCode: directive === "none" ? "messaging_window_closed" : null,
+            nextAttemptAt: directive === "none" ? null : input.now,
+            updatedAt: input.now,
+          },
+        });
+        if (updatedDelivery.count !== 1) throw new Error("guide_delivery_owner_state_lost");
+        await tx.eventLog.create({
+          data: {
+            kind: "guide_delivery_owner_action",
+            payload: ownerActionPayload({
+              actor: input.actor,
+              action: "confirm_delivered",
+              deliveryId: input.deliveryId,
+              unitId: input.unitId,
+              now: input.now,
+            }),
+          },
+        });
+        return { ok: true, directive, idempotent: false };
+      });
+    },
+
+    async ownerRetryUncertainUnit(input) {
+      requireOwnerActor(input.actor);
+      return database.$transaction(async (tx) => {
+        const delivery = await lockDelivery(tx, input.deliveryId);
+        if (!delivery) return { ok: false, error: "delivery_not_found" };
+        const units = await lockAndLoadUnits(tx, input.deliveryId);
+        const unit = units.find((candidate) => candidate.id === input.unitId);
+        if (!unit) return { ok: false, error: "unit_not_found" };
+        if (
+          delivery.status !== "needs_review" ||
+          delivery.claimToken !== null ||
+          unit.status !== "uncertain" ||
+          units.some((candidate) => candidate.status === "sending")
+        ) {
+          return { ok: false, error: "delivery_state_changed" };
+        }
+        if (input.now >= delivery.sendWindowExpiresAt) {
+          return { ok: false, error: "messaging_window_closed" };
+        }
+
+        const updatedUnit = await tx.guideDeliveryUnit.updateMany({
+          where: {
+            id: input.unitId,
+            deliveryId: input.deliveryId,
+            status: "uncertain",
+          },
+          data: {
+            status: "failed",
+            failureDisposition: "transient",
+            ownerRetryAuthorizedAt: input.now,
+            ownerRetryConsumedAt: null,
+            updatedAt: input.now,
+          },
+        });
+        if (updatedUnit.count !== 1) {
+          return { ok: false, error: "delivery_state_changed" };
+        }
+        const updatedDelivery = await tx.guideDelivery.updateMany({
+          where: {
+            id: input.deliveryId,
+            status: "needs_review",
+            claimToken: null,
+          },
+          data: {
+            status: "planned",
+            failureCode: null,
+            nextAttemptAt: input.now,
+            updatedAt: input.now,
+          },
+        });
+        if (updatedDelivery.count !== 1) throw new Error("guide_delivery_owner_state_lost");
+        await tx.eventLog.create({
+          data: {
+            kind: "guide_delivery_owner_action",
+            payload: ownerActionPayload({
+              actor: input.actor,
+              action: "retry_uncertain",
+              deliveryId: input.deliveryId,
+              unitId: input.unitId,
+              now: input.now,
+            }),
+          },
+        });
+        return { ok: true, directive: "resume", idempotent: false };
+      });
+    },
+
+    async ownerCancelDelivery(input) {
+      requireOwnerActor(input.actor);
+      return database.$transaction(async (tx) => {
+        const delivery = await lockDelivery(tx, input.deliveryId);
+        if (!delivery) return { ok: false, error: "delivery_not_found" };
+        const units = await lockAndLoadUnits(tx, input.deliveryId);
+        if (delivery.status === "cancelled") {
+          return { ok: true, directive: "none", idempotent: true };
+        }
+        if (
+          delivery.status === "completed" ||
+          delivery.status === "sending" ||
+          delivery.claimToken !== null ||
+          units.some((unit) => unit.status === "sending")
+        ) {
+          return { ok: false, error: "delivery_state_changed" };
+        }
+        const updated = await tx.guideDelivery.updateMany({
+          where: {
+            id: input.deliveryId,
+            status: { in: ["planned", "failed", "needs_review"] },
+            claimToken: null,
+          },
+          data: {
+            status: "cancelled",
+            nextAttemptAt: null,
+            claimToken: null,
+            claimedAt: null,
+            claimExpiresAt: null,
+            cancelledAt: input.now,
+            updatedAt: input.now,
+          },
+        });
+        if (updated.count !== 1) {
+          return { ok: false, error: "delivery_state_changed" };
+        }
+        await tx.eventLog.create({
+          data: {
+            kind: "guide_delivery_owner_action",
+            payload: ownerActionPayload({
+              actor: input.actor,
+              action: "cancel_delivery",
+              deliveryId: input.deliveryId,
+              now: input.now,
+            }),
+          },
+        });
+        return { ok: true, directive: "none", idempotent: false };
+      });
     },
   };
 }
