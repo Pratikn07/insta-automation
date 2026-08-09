@@ -89,16 +89,36 @@ export type MarkGuideUnitSentInput = {
   ownerConfirmedAt: Date | null;
 };
 
-export type MarkGuideUnitFailedInput = {
+type MarkGuideUnitFailedBase = {
   deliveryId: string;
   unitId: string;
   claimToken: string;
   attempt: number;
   failedAt: Date;
-  disposition: "transient" | "permanent";
-  nextAttemptAt: Date | null;
   error: GraphErrorMetadata;
 };
+
+export type GuideDeliveryTerminalFailureReason =
+  | { code: "attempts_exhausted"; maxAttempts: number }
+  | { code: "messaging_window_closed" };
+
+export type MarkGuideUnitFailedInput = MarkGuideUnitFailedBase & (
+  | {
+      disposition: "transient";
+      nextAttemptAt: Date;
+      terminalReason: null;
+    }
+  | {
+      disposition: "transient";
+      nextAttemptAt: null;
+      terminalReason: GuideDeliveryTerminalFailureReason;
+    }
+  | {
+      disposition: "permanent";
+      nextAttemptAt: null;
+      terminalReason: null;
+    }
+);
 
 export type MarkGuideUnitUncertainInput = {
   deliveryId: string;
@@ -296,6 +316,36 @@ function isGraphErrorMetadata(value: unknown): value is GraphErrorMetadata {
 
 function requireGraphErrorMetadata(value: unknown): asserts value is GraphErrorMetadata {
   if (!isGraphErrorMetadata(value)) throw new Error("invalid_graph_error_metadata");
+}
+
+function requireFailureCheckpoint(input: MarkGuideUnitFailedInput): void {
+  const validRetryTime =
+    input.nextAttemptAt instanceof Date && Number.isFinite(input.nextAttemptAt.getTime());
+  if (input.disposition === "permanent") {
+    if (input.nextAttemptAt === null && input.terminalReason === null) return;
+    throw new Error("invalid_guide_delivery_failure_checkpoint");
+  }
+  if (validRetryTime && input.terminalReason === null) return;
+  if (input.nextAttemptAt !== null || !input.terminalReason) {
+    throw new Error("invalid_guide_delivery_failure_checkpoint");
+  }
+  const reason = input.terminalReason;
+  if (
+    reason.code === "messaging_window_closed" &&
+    Object.keys(reason).length === 1
+  ) {
+    return;
+  }
+  if (
+    reason.code === "attempts_exhausted" &&
+    Object.keys(reason).length === 2 &&
+    Number.isInteger(reason.maxAttempts) &&
+    reason.maxAttempts >= 1 &&
+    input.attempt >= reason.maxAttempts
+  ) {
+    return;
+  }
+  throw new Error("invalid_guide_delivery_failure_checkpoint");
 }
 
 function safeErrorEvent(error: GraphErrorMetadata): Record<string, unknown> {
@@ -927,6 +977,7 @@ export function createGuideDeliveryRepository(
     },
 
     async markUnitFailed(input) {
+      requireFailureCheckpoint(input);
       requireGraphErrorMetadata(input.error);
       return database.$transaction(async (tx) => {
         const delivery = await lockDelivery(tx, input.deliveryId);
@@ -967,16 +1018,21 @@ export function createGuideDeliveryRepository(
         `;
         if (!updated[0]) return false;
 
-        const nextAttemptAt = input.disposition === "transient" ? input.nextAttemptAt : null;
+        const terminalReason =
+          input.disposition === "transient" ? input.terminalReason : null;
+        const failureCode = terminalReason
+          ? terminalReason.code === "attempts_exhausted"
+            ? "guide_unit_attempts_exhausted"
+            : "messaging_window_closed"
+          : input.disposition === "transient"
+            ? "guide_unit_transient"
+            : "guide_unit_permanent";
         const deliveryUpdate = await tx.guideDelivery.updateMany({
           where: { id: input.deliveryId, claimToken: input.claimToken, status: "sending" },
           data: {
             status: "failed",
-            failureCode:
-              input.disposition === "transient"
-                ? "guide_unit_transient"
-                : "guide_unit_permanent",
-            nextAttemptAt,
+            failureCode,
+            nextAttemptAt: input.nextAttemptAt,
             claimToken: null,
             claimedAt: null,
             claimExpiresAt: null,
@@ -999,6 +1055,36 @@ export function createGuideDeliveryRepository(
             },
           },
         });
+        if (terminalReason?.code === "attempts_exhausted") {
+          await tx.eventLog.create({
+            data: {
+              kind: "guide_delivery_attempts_exhausted",
+              payload: {
+                ...eventIdentity(delivery),
+                unitId: unit.id,
+                position: unit.position,
+                unitKind: unit.kind,
+                attempts: input.attempt,
+                maxAttempts: terminalReason.maxAttempts,
+                exhaustedAt: input.failedAt.toISOString(),
+              },
+            },
+          });
+        } else if (terminalReason?.code === "messaging_window_closed") {
+          await tx.eventLog.create({
+            data: {
+              kind: "guide_delivery_window_closed",
+              payload: {
+                ...eventIdentity(delivery),
+                unitId: unit.id,
+                position: unit.position,
+                unitKind: unit.kind,
+                attempt: input.attempt,
+                at: input.failedAt.toISOString(),
+              },
+            },
+          });
+        }
         return true;
       });
     },

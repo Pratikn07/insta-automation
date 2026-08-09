@@ -99,6 +99,7 @@ describe("finalizeGuideDelivery", () => {
   it.each([
     ["zero-unit", []],
     ["pending-unit", [{ ...delivery().units[0], status: "pending" as const }]],
+    ["sent unit missing sentAt", [{ ...delivery().units[0], sentAt: null }]],
   ])("refuses completion for a %s delivery", async (_label, units) => {
     findById.mockResolvedValue(delivery({ units }));
 
@@ -108,6 +109,50 @@ describe("finalizeGuideDelivery", () => {
     expect(scheduleEngagementFollowUp).not.toHaveBeenCalled();
     expect(markThreadResolved).not.toHaveBeenCalled();
     expect(finalizeCompleted).not.toHaveBeenCalled();
+  });
+
+  it("uses the latest durable unit sentAt for explicit redelivery and bookkeeping retries", async () => {
+    const oldConversationCompletedAt = new Date("2026-08-01T08:00:00.000Z");
+    const firstSentAt = new Date("2026-08-09T12:02:00.000Z");
+    const deliveryCompletedAt = new Date("2026-08-09T12:03:00.000Z");
+    const retryNow = new Date("2026-08-09T13:00:00.000Z");
+    const first = { ...delivery().units[0], sentAt: firstSentAt };
+    const second = {
+      ...delivery().units[0],
+      id: "00000000-0000-4000-8000-000000000008",
+      resourceMessageId: "00000000-0000-4000-8000-000000000009",
+      position: 1,
+      sentAt: deliveryCompletedAt,
+    };
+    findById.mockResolvedValue(
+      delivery({ triggerKind: "explicit_redelivery", units: [first, second] }),
+    );
+    markCompleted.mockResolvedValue({ completedAt: oldConversationCompletedAt });
+    finalizeCompleted
+      .mockResolvedValueOnce("lost_claim")
+      .mockResolvedValueOnce("completed");
+
+    const finalize = createGuideDeliveryCompletion({
+      repository: { findById, finalizeCompleted } as unknown as GuideDeliveryRepository,
+      markCompleted,
+      scheduleEngagementFollowUp,
+      markThreadResolved,
+      followUpsEnabled: true,
+      logger: { error: loggerError },
+      now: () => retryNow,
+    });
+
+    await expect(finalize(delivery().id, claimToken)).resolves.toBe("lost_claim");
+    await expect(finalize(delivery().id, claimToken)).resolves.toBe("completed");
+
+    expect(scheduleEngagementFollowUp).toHaveBeenCalledTimes(2);
+    for (const [followUp] of scheduleEngagementFollowUp.mock.calls) {
+      expect(followUp.deliveredAt).toEqual(deliveryCompletedAt);
+    }
+    expect(finalizeCompleted).toHaveBeenCalledTimes(2);
+    for (const [checkpoint] of finalizeCompleted.mock.calls) {
+      expect(checkpoint.completedAt).toEqual(deliveryCompletedAt);
+    }
   });
 
   it("runs conversation completion, optional scheduling, thread resolution, then the fenced transition", async () => {

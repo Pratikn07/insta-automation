@@ -19,6 +19,55 @@ const safeError = {
 };
 
 describe("GuideDeliveryRepository public transition contract", () => {
+  it.each([
+    {
+      label: "transient without either a retry time or terminal reason",
+      disposition: "transient",
+      nextAttemptAt: null,
+      terminalReason: null,
+    },
+    {
+      label: "transient with both a retry time and terminal reason",
+      disposition: "transient",
+      nextAttemptAt: new Date(now.getTime() + 60_000),
+      terminalReason: { code: "messaging_window_closed" },
+    },
+    {
+      label: "permanent with a retry time",
+      disposition: "permanent",
+      nextAttemptAt: new Date(now.getTime() + 60_000),
+      terminalReason: null,
+    },
+    {
+      label: "permanent with a terminal transient reason",
+      disposition: "permanent",
+      nextAttemptAt: null,
+      terminalReason: { code: "messaging_window_closed" },
+    },
+    {
+      label: "attempt exhaustion before the declared cap",
+      disposition: "transient",
+      nextAttemptAt: null,
+      terminalReason: { code: "attempts_exhausted", maxAttempts: 2 },
+    },
+  ])("rejects $label before opening a transaction", async (failure) => {
+    const transaction = vi.fn(() => Promise.reject(new Error("database must not be called")));
+    const repository = createGuideDeliveryRepository({ $transaction: transaction } as never);
+
+    await expect(
+      repository.markUnitFailed({
+        deliveryId: randomUUID(),
+        unitId: randomUUID(),
+        claimToken: randomUUID(),
+        attempt: 1,
+        failedAt: now,
+        ...failure,
+        error: safeError,
+      } as never),
+    ).rejects.toThrow("invalid_guide_delivery_failure_checkpoint");
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
   it("rejects raw provider errors before opening a transaction", async () => {
     const transaction = vi.fn(() => Promise.reject(new Error("database must not be called")));
     const repository = createGuideDeliveryRepository({ $transaction: transaction } as never);
@@ -32,6 +81,7 @@ describe("GuideDeliveryRepository public transition contract", () => {
         failedAt: now,
         disposition: "permanent",
         nextAttemptAt: null,
+        terminalReason: null,
         error: new Error("PRIVATE PROVIDER BODY") as never,
       }),
     ).rejects.toThrow("invalid_graph_error_metadata");

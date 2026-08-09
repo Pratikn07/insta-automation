@@ -250,15 +250,36 @@ export function createGuideDeliveryService(dependencies: GuideDeliveryServiceDep
     }
 
     const transient = disposition === "definite_transient";
-    const nextAttemptAt =
-      transient && unit.attempts < dependencies.maxAttempts
-        ? retryAt(
-            failedAt,
-            unit.attempts,
-            dependencies.retryBaseMs,
-            delivery.sendWindowExpiresAt,
-          )
-        : null;
+    const nextAttemptAt = transient && unit.attempts < dependencies.maxAttempts
+      ? retryAt(
+          failedAt,
+          unit.attempts,
+          dependencies.retryBaseMs,
+          delivery.sendWindowExpiresAt,
+        )
+      : null;
+    const failureCheckpoint = !transient
+      ? {
+          disposition: "permanent" as const,
+          nextAttemptAt: null,
+          terminalReason: null,
+        }
+      : nextAttemptAt
+        ? {
+            disposition: "transient" as const,
+            nextAttemptAt,
+            terminalReason: null,
+          }
+        : {
+            disposition: "transient" as const,
+            nextAttemptAt: null,
+            terminalReason: unit.attempts >= dependencies.maxAttempts
+              ? {
+                  code: "attempts_exhausted" as const,
+                  maxAttempts: dependencies.maxAttempts,
+                }
+              : { code: "messaging_window_closed" as const },
+          };
     const recorded = await checkpointAfterProvider(
       () => dependencies.repository.markUnitFailed({
         deliveryId: delivery.id,
@@ -266,8 +287,7 @@ export function createGuideDeliveryService(dependencies: GuideDeliveryServiceDep
         claimToken: delivery.claimToken,
         attempt: unit.attempts,
         failedAt,
-        disposition: transient ? "transient" : "permanent",
-        nextAttemptAt,
+        ...failureCheckpoint,
         error,
       }),
       {

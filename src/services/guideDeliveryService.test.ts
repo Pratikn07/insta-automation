@@ -262,6 +262,24 @@ describe("deliverGuideForTrigger", () => {
     });
   });
 
+  it.each(["guide_unit_attempts_exhausted", "messaging_window_closed"])(
+    "replays terminal failure %s as needs_review without claiming",
+    async (failureCode) => {
+      findByTrigger.mockResolvedValue(
+        delivery(
+          [unit(0, "text", { status: "failed", failureDisposition: "transient" })],
+          { status: "failed", failureCode, nextAttemptAt: null },
+        ),
+      );
+
+      await expect(subject()(input)).resolves.toBe("needs_review");
+
+      expect(claimById).not.toHaveBeenCalled();
+      expect(beginUnit).not.toHaveBeenCalled();
+      expect(sendTrackedText).not.toHaveBeenCalled();
+    },
+  );
+
   it("processes a worker-claimed delivery without reclaiming and uses its durable recipient", async () => {
     const persisted = unit(0, "text", { textSnapshot: "worker snapshot" });
     const workerClaim = claimed(delivery([persisted]));
@@ -374,6 +392,7 @@ describe("deliverGuideForTrigger", () => {
         unitId: caption.id,
         disposition: "transient",
         nextAttemptAt: new Date(startedAt.getTime() + 60_000),
+        terminalReason: null,
       }),
     );
 
@@ -442,7 +461,11 @@ describe("deliverGuideForTrigger", () => {
     await expect(subject()(input)).resolves.toBe("needs_review");
 
     expect(markUnitFailed).toHaveBeenCalledWith(
-      expect.objectContaining({ disposition: "permanent", nextAttemptAt: null }),
+      expect.objectContaining({
+        disposition: "permanent",
+        nextAttemptAt: null,
+        terminalReason: null,
+      }),
     );
     expect(finalizeGuideDelivery).not.toHaveBeenCalled();
   });
@@ -471,6 +494,75 @@ describe("deliverGuideForTrigger", () => {
     });
     expect(beginUnit).not.toHaveBeenCalled();
     expect(sendTrackedText).not.toHaveBeenCalled();
+  });
+
+  it("atomically terminalizes the transient provider rejection that reaches the attempt cap", async () => {
+    const retrying = unit(0, "text", {
+      status: "failed",
+      failureDisposition: "transient",
+      attempts: 2,
+    });
+    const existing = delivery([retrying], {
+      status: "failed",
+      failureCode: "guide_unit_transient",
+      nextAttemptAt: startedAt,
+    });
+    findByTrigger.mockResolvedValue(existing);
+    claimById.mockResolvedValue(claimed(existing));
+    beginUnit.mockResolvedValue({
+      ...retrying,
+      status: "sending",
+      failureDisposition: null,
+      attempts: 3,
+    });
+    sendTrackedText.mockRejectedValue(graphFailure(429));
+
+    await expect(subject()(input)).resolves.toBe("needs_review");
+
+    expect(markUnitFailed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deliveryId: existing.id,
+        unitId: retrying.id,
+        claimToken,
+        attempt: 3,
+        disposition: "transient",
+        nextAttemptAt: null,
+        terminalReason: { code: "attempts_exhausted", maxAttempts: 3 },
+      }),
+    );
+    expect(markAttemptsExhausted).not.toHaveBeenCalled();
+  });
+
+  it("atomically terminalizes a transient rejection whose backoff reaches the window end", async () => {
+    const text = unit(0, "text");
+    const nearWindowEnd = new Date(startedAt.getTime() + 30_000);
+    const rejectedAt = new Date(startedAt.getTime() + 10_000);
+    const existing = delivery([text], { sendWindowExpiresAt: nearWindowEnd });
+    findByTrigger.mockResolvedValue(existing);
+    claimById.mockResolvedValue(claimed(existing));
+    beginUnit.mockResolvedValue({ ...text, status: "sending", attempts: 1 });
+    sendTrackedText.mockImplementation(async () => {
+      clock = rejectedAt;
+      throw graphFailure(429);
+    });
+
+    await expect(
+      subject()({ ...input, sendWindowExpiresAt: nearWindowEnd }),
+    ).resolves.toBe("needs_review");
+
+    expect(markUnitFailed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deliveryId: existing.id,
+        unitId: text.id,
+        claimToken,
+        attempt: 1,
+        failedAt: rejectedAt,
+        disposition: "transient",
+        nextAttemptAt: null,
+        terminalReason: { code: "messaging_window_closed" },
+      }),
+    );
+    expect(markWindowClosed).not.toHaveBeenCalled();
   });
 
   it("consumes one owner retry authorization above the cap before the Graph call", async () => {
@@ -539,6 +631,32 @@ describe("deliverGuideForTrigger", () => {
       closedAt: nearWindowEnd,
     });
     expect(beginUnit).toHaveBeenCalledOnce();
+  });
+
+  it("closes the begun unit when the window expires after begin but before the provider call", async () => {
+    const text = unit(0, "text");
+    const nearWindowEnd = new Date(startedAt.getTime() + 1_000);
+    const existing = delivery([text], { sendWindowExpiresAt: nearWindowEnd });
+    findByTrigger.mockResolvedValue(existing);
+    claimById.mockResolvedValue(claimed(existing));
+    beginUnit.mockImplementation(async () => {
+      clock = nearWindowEnd;
+      return { ...text, status: "sending", attempts: 1 };
+    });
+
+    await expect(
+      subject()({ ...input, sendWindowExpiresAt: nearWindowEnd }),
+    ).resolves.toBe("needs_review");
+
+    expect(sendTrackedText).not.toHaveBeenCalled();
+    expect(sendTrackedMedia).not.toHaveBeenCalled();
+    expect(markWindowClosed).toHaveBeenCalledWith({
+      deliveryId: existing.id,
+      claimToken,
+      unitId: text.id,
+      attempt: 1,
+      closedAt: nearWindowEnd,
+    });
   });
 
   it.each([false, "throws"])(

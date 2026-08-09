@@ -45,42 +45,33 @@ export function createGuideDeliveryCompletion(
     if (!(delivery.units.length > 0 && delivery.units.every((unit) => unit.status === "sent"))) {
       return "not_ready";
     }
+    if (delivery.units.some((unit) => unit.sentAt === null)) return "not_ready";
+    const deliveryCompletedAt = new Date(
+      Math.max(...delivery.units.map((unit) => unit.sentAt!.getTime())),
+    );
 
-    const completed = await dependencies.markCompleted(delivery.conversationId);
-    const completionTime = completed.completedAt ?? dependencies.now();
+    await dependencies.markCompleted(delivery.conversationId);
     const inboundTrigger = hasInboundTrigger(delivery.triggerKind);
 
     if (dependencies.followUpsEnabled && inboundTrigger && delivery.threadId) {
-      if (!completed.completedAt) {
+      try {
+        await dependencies.scheduleEngagementFollowUp({
+          conversationId: delivery.conversationId,
+          threadId: delivery.threadId,
+          inboundMessageId: delivery.triggerId,
+          inboundAt: delivery.triggeredAt,
+          deliveredAt: deliveryCompletedAt,
+        });
+      } catch {
         dependencies.logger.error(
           {
-            errorCode: "follow_up_completion_timestamp_missing",
+            errorCode: "follow_up_schedule_failed",
             conversationId: delivery.conversationId,
             threadId: delivery.threadId,
             inboundMessageId: delivery.triggerId,
           },
           "Failed to schedule engagement follow-up after guide delivery",
         );
-      } else {
-        try {
-          await dependencies.scheduleEngagementFollowUp({
-            conversationId: delivery.conversationId,
-            threadId: delivery.threadId,
-            inboundMessageId: delivery.triggerId,
-            inboundAt: delivery.triggeredAt,
-            deliveredAt: completed.completedAt,
-          });
-        } catch {
-          dependencies.logger.error(
-            {
-              errorCode: "follow_up_schedule_failed",
-              conversationId: delivery.conversationId,
-              threadId: delivery.threadId,
-              inboundMessageId: delivery.triggerId,
-            },
-            "Failed to schedule engagement follow-up after guide delivery",
-          );
-        }
       }
     }
 
@@ -94,7 +85,7 @@ export function createGuideDeliveryCompletion(
     return dependencies.repository.finalizeCompleted({
       deliveryId,
       claimToken,
-      completedAt: completionTime,
+      completedAt: deliveryCompletedAt,
     });
   };
 }

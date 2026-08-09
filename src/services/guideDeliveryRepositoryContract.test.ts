@@ -116,6 +116,28 @@ async function activeUnit(text = "PRIVATE FENCE SENTINEL") {
   return { delivery, claimed, begun };
 }
 
+async function activeUnitAtAttempt(attempt: number, text = "PRIVATE ATTEMPT SENTINEL") {
+  if (!Number.isInteger(attempt) || attempt < 1) throw new Error("invalid test attempt");
+  const delivery = await createDelivery({ ok: true, units: [unit(0, text)] });
+  const claimed = await claim(delivery.id);
+  if (!claimed) throw new Error("expected claimed delivery fixture");
+  const storedUnit = await prisma.guideDeliveryUnit.findFirstOrThrow({
+    where: { deliveryId: delivery.id },
+  });
+  await prisma.guideDeliveryUnit.update({
+    where: { id: storedUnit.id },
+    data: { attempts: attempt - 1 },
+  });
+  const begun = await guideDeliveryRepository.beginUnit({
+    deliveryId: delivery.id,
+    claimToken: claimed.claimToken,
+    now: startedAt,
+    maxAttempts: attempt,
+  });
+  if (!begun) throw new Error("expected begun unit fixture");
+  return { delivery, claimed, begun };
+}
+
 async function allSentUnclaimed() {
   const fixture = await activeUnit("completion-only snapshot");
   const sentAt = new Date(startedAt.getTime() + 1_000);
@@ -557,6 +579,7 @@ describeWithLocalDatabase("guide delivery repository PostgreSQL contract", () =>
       failedAt,
       disposition: "transient",
       nextAttemptAt: failedAt,
+      terminalReason: null,
       error: { ...permanentError, httpStatus: 503, graphCode: 2 },
     });
     await prisma.guideDeliveryUnit.update({
@@ -589,6 +612,127 @@ describeWithLocalDatabase("guide delivery repository PostgreSQL contract", () =>
     expect(state.events.filter((event) => event.kind === "guide_delivery_attempts_exhausted"))
       .toHaveLength(1);
     expect(JSON.stringify(state.events)).not.toContain("PRIVATE CAP SNAPSHOT");
+  });
+
+  it.each([
+    {
+      label: "attempt cap",
+      attempt: 3,
+      terminalReason: { code: "attempts_exhausted" as const, maxAttempts: 3 },
+      failureCode: "guide_unit_attempts_exhausted",
+      eventKind: "guide_delivery_attempts_exhausted",
+    },
+    {
+      label: "messaging window",
+      attempt: 1,
+      terminalReason: { code: "messaging_window_closed" as const },
+      failureCode: "messaging_window_closed",
+      eventKind: "guide_delivery_window_closed",
+    },
+  ])(
+    "atomically checkpoints a terminal transient provider failure at the $label",
+    async ({ attempt, terminalReason, failureCode, eventKind }) => {
+      const fixture = await activeUnitAtAttempt(attempt, `PRIVATE ${failureCode} BODY`);
+      const failedAt = new Date(startedAt.getTime() + 10_000);
+
+      await expect(
+        guideDeliveryRepository.markUnitFailed({
+          deliveryId: fixture.delivery.id,
+          unitId: fixture.begun.id,
+          claimToken: fixture.claimed.claimToken,
+          attempt: fixture.begun.attempts,
+          failedAt,
+          disposition: "transient",
+          nextAttemptAt: null,
+          terminalReason,
+          error: { ...permanentError, httpStatus: 503, graphCode: 2 },
+        }),
+      ).resolves.toBe(true);
+
+      const state = await storedState(fixture.delivery.id);
+      expect(state.delivery).toMatchObject({
+        status: "failed",
+        failureCode,
+        nextAttemptAt: null,
+        claimToken: null,
+        claimedAt: null,
+        claimExpiresAt: null,
+      });
+      expect(state.delivery.units[0]).toMatchObject({
+        status: "failed",
+        failureDisposition: "transient",
+        attempts: attempt,
+        errorCategory: "graph_response",
+        errorHttpStatus: 503,
+        errorGraphCode: 2,
+      });
+      expect(state.events.filter((event) => event.kind === "guide_delivery_unit_failed"))
+        .toHaveLength(1);
+      expect(state.events.filter((event) => event.kind === eventKind)).toHaveLength(1);
+      expect(state.events.find((event) => event.kind === eventKind)?.payload).toMatchObject(
+        terminalReason.code === "attempts_exhausted"
+          ? {
+              deliveryId: fixture.delivery.id,
+              conversationId,
+              unitId: fixture.begun.id,
+              position: 0,
+              unitKind: "text",
+              attempts: attempt,
+              maxAttempts: terminalReason.maxAttempts,
+              exhaustedAt: failedAt.toISOString(),
+            }
+          : {
+              deliveryId: fixture.delivery.id,
+              conversationId,
+              unitId: fixture.begun.id,
+              position: 0,
+              unitKind: "text",
+              attempt,
+              at: failedAt.toISOString(),
+            },
+      );
+      expect(JSON.stringify(state.events)).not.toContain(`PRIVATE ${failureCode} BODY`);
+      expect(await claim(fixture.delivery.id, new Date(failedAt.getTime() + 120_000)))
+        .toBeNull();
+    },
+  );
+
+  it.each([
+    {
+      attempt: 3,
+      terminalReason: { code: "attempts_exhausted" as const, maxAttempts: 3 },
+    },
+    {
+      attempt: 1,
+      terminalReason: { code: "messaging_window_closed" as const },
+    },
+  ])("fences $terminalReason.code checkpoints against stale token and attempt drift", async ({
+    attempt,
+    terminalReason,
+  }) => {
+    const fixture = await activeUnitAtAttempt(attempt);
+    const before = await storedState(fixture.delivery.id);
+    const input = {
+      deliveryId: fixture.delivery.id,
+      unitId: fixture.begun.id,
+      claimToken: fixture.claimed.claimToken,
+      attempt: fixture.begun.attempts,
+      failedAt: new Date(startedAt.getTime() + 10_000),
+      disposition: "transient" as const,
+      nextAttemptAt: null,
+      terminalReason,
+      error: { ...permanentError, httpStatus: 503, graphCode: 2 },
+    };
+
+    await expect(
+      guideDeliveryRepository.markUnitFailed({ ...input, claimToken: randomUUID() }),
+    ).resolves.toBe(false);
+    expect(await storedState(fixture.delivery.id)).toEqual(before);
+
+    await expect(
+      guideDeliveryRepository.markUnitFailed({ ...input, attempt: input.attempt + 1 }),
+    ).resolves.toBe(false);
+    expect(await storedState(fixture.delivery.id)).toEqual(before);
   });
 
   it("keeps a preflight failure terminal and stores no guide content in its event", async () => {
@@ -749,6 +893,7 @@ describeWithLocalDatabase("guide delivery repository PostgreSQL contract", () =>
       failedAt: new Date(startedAt.getTime() + 1_000),
       disposition: "permanent" as const,
       nextAttemptAt: null,
+      terminalReason: null,
       error: permanentError,
     };
 
@@ -1101,7 +1246,8 @@ describeWithLocalDatabase("guide delivery repository PostgreSQL contract", () =>
         attempt: fixture.begun.attempts,
         failedAt,
         disposition: "permanent",
-        nextAttemptAt: new Date(failedAt.getTime() + 60_000),
+        nextAttemptAt: null,
+        terminalReason: null,
         error: permanentError,
       }),
     ).resolves.toBe(true);
