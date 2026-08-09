@@ -649,9 +649,6 @@ model GuideDelivery {
   @@index([conversationId])
   @@index([resourceId])
   @@index([threadId])
-  @@index([nextAttemptAt, createdAt, id], map: "guide_delivery_due_idx")
-  @@index([claimExpiresAt, id], map: "guide_delivery_expired_claim_idx")
-  @@index([threadId, createdAt(sort: Desc)], map: "guide_delivery_thread_review_idx")
   @@map("guide_delivery")
 }
 
