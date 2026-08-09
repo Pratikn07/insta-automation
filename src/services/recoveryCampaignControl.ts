@@ -42,53 +42,81 @@ export async function approveCampaign(
     return { ok: false, reason: "approver_required" };
   }
 
-  const { count } = await prisma.recoveryCampaign.updateMany({
-    where: { id: campaignId, state: { in: ["draft", "awaiting_approval"] } },
-    data: { state: "running", approvedBy, approvedAt: now, startedAt: now },
-  });
-
-  if (count === 0) {
-    const current = await prisma.recoveryCampaign.findUnique({
-      where: { id: campaignId },
-      select: { state: true },
+  const result = await prisma.$transaction(async (tx) => {
+    await tx.dmRecoveryControl.upsert({
+      where: { id: 1 },
+      create: { id: 1 },
+      update: {},
     });
-    return { ok: false, reason: current ? `not_approvable_from_${current.state}` : "not_found" };
-  }
+    await tx.$queryRaw`SELECT "id" FROM "dm_recovery_control" WHERE "id" = 1 FOR UPDATE`;
+    await tx.$queryRaw`
+      SELECT u."id"
+      FROM "ig_users" u
+      JOIN "recovery_candidate" c ON c."ig_user_id" = u."id"
+      WHERE c."campaign_id" = ${campaignId}::uuid
+      ORDER BY u."id"
+      FOR UPDATE OF u
+    `;
+    await tx.$queryRaw`
+      SELECT c."id"
+      FROM "recovery_candidate" c
+      WHERE c."campaign_id" = ${campaignId}::uuid
+      ORDER BY c."ig_user_id", c."id"
+      FOR UPDATE OF c
+    `;
+    await tx.$queryRaw`
+      SELECT "id" FROM "recovery_campaign" WHERE "id" = ${campaignId}::uuid FOR UPDATE
+    `;
 
-  // Settle the holdout arm terminally, at approval (QA-12).
-  //
-  // Holdout rows stayed `outcome = pending` forever, which broke two things at once.
-  // The worker excluded them by arm so they were never sent — correct — but the
-  // completion check counts pending rows, so a campaign with a holdout could never
-  // drain and would sit `running` indefinitely. And `holdout_withheld` was declared in
-  // the enum and never written, so nothing recorded that withholding was deliberate
-  // rather than an oversight.
-  //
-  // `pending` means "we intend to act on this". A holdout is a decision already made:
-  // we will not contact this person, and that is the experiment. Recording it as an
-  // outcome is what makes the arm auditable.
-  //
-  // Done at approval rather than at selection because a draft can still be re-selected
-  // or cancelled; approval is the moment the assignment becomes real.
-  const withheld = await prisma.recoveryCandidate.updateMany({
-    where: { campaignId, arm: "holdout", outcome: "pending" },
-    data: { outcome: "holdout_withheld", suppressionReason: "holdout_arm" },
+    const current = await tx.recoveryCampaign.findUnique({
+      where: { id: campaignId },
+      select: { state: true, candidateCount: true, decisionHash: true },
+    });
+    if (!current) return { kind: "blocked", reason: "not_found" } as const;
+    if (!(["draft", "awaiting_approval"] as string[]).includes(current.state)) {
+      return {
+        kind: "blocked",
+        reason: `not_approvable_from_${current.state}`,
+      } as const;
+    }
+
+    const storedCandidates = await tx.recoveryCandidate.count({ where: { campaignId } });
+    if (
+      !current.decisionHash?.trim() ||
+      current.candidateCount <= 0 ||
+      storedCandidates !== current.candidateCount
+    ) {
+      return { kind: "blocked", reason: "snapshot_incomplete" } as const;
+    }
+
+    const withheld = await tx.recoveryCandidate.updateMany({
+      where: { campaignId, arm: "holdout", outcome: "pending" },
+      data: { outcome: "holdout_withheld", suppressionReason: "holdout_arm" },
+    });
+    const treatmentPending = await tx.recoveryCandidate.count({
+      where: { campaignId, arm: "treatment", outcome: "pending" },
+    });
+    const state = treatmentPending === 0 ? "completed" : "running";
+    await tx.recoveryCampaign.update({
+      where: { id: campaignId },
+      data: {
+        state,
+        approvedBy,
+        approvedAt: now,
+        startedAt: now,
+        endedAt: state === "completed" ? now : null,
+      },
+    });
+    return { kind: "moved", state, holdoutWithheld: withheld.count } as const;
   });
 
-  // Logged because this is the audit trail for a decision that results in public
-  // comments on real people's posts.
+  if (result.kind === "blocked") return { ok: false, reason: result.reason };
   await logEvent("historical_campaign_approved", {
     campaignId,
     approvedBy,
-    holdoutWithheld: withheld.count,
+    holdoutWithheld: result.holdoutWithheld,
   });
-
-  // A campaign approved with nothing to send — every candidate in the holdout, or an
-  // empty treatment arm — is already finished. Without this it would stay `running`
-  // with no work, and the dashboard would show an active campaign that never moves.
-  await completeCampaignIfDrained(campaignId, now);
-
-  return { ok: true, state: "running" };
+  return { ok: true, state: result.state };
 }
 
 /**
@@ -332,28 +360,49 @@ export async function completeCampaignIfDrained(
   campaignId: string,
   now = new Date(),
 ): Promise<boolean> {
-  // Drained means no actionable TREATMENT work left (QA-12).
-  //
-  // Counting every pending row made a holdout campaign undrainable, because holdout
-  // rows were pending forever and are never meant to be sent. Approval now settles them
-  // as `holdout_withheld`, and this scopes the question to the arm that actually sends.
-  //
-  // A row awaiting a backoff (`nextAttemptAt` in the future) still counts as actionable:
-  // it will come back, and completing the campaign under it would strand a candidate the
-  // owner approved.
-  const actionable = await prisma.recoveryCandidate.count({
-    where: { campaignId, outcome: "pending", arm: "treatment" },
-  });
-  if (actionable > 0) return false;
+  const completed = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`
+      SELECT "id" FROM "recovery_campaign" WHERE "id" = ${campaignId}::uuid FOR UPDATE
+    `;
+    const campaign = await tx.recoveryCampaign.findUnique({
+      where: { id: campaignId },
+      select: { state: true },
+    });
+    if (campaign?.state !== "running") return false;
 
-  const { count } = await prisma.recoveryCampaign.updateMany({
-    where: { id: campaignId, state: { in: ["running", "paused"] } },
-    data: { state: "completed", endedAt: now },
+    const actionable = await tx.recoveryCandidate.count({
+      where: { campaignId, outcome: "pending", arm: "treatment" },
+    });
+    if (actionable > 0) return false;
+    const activeDispatches = await tx.publicRecoveryDispatch.count({
+      where: { campaignId, state: { in: ["reserved", "dispatch_started"] } },
+    });
+    if (activeDispatches > 0) return false;
+
+    const { count } = await tx.recoveryCampaign.updateMany({
+      where: { id: campaignId, state: "running" },
+      data: { state: "completed", endedAt: now },
+    });
+    return count === 1;
   });
-  if (count === 0) return false;
+  if (!completed) return false;
 
   await logEvent("historical_campaign_completed", { campaignId });
   return true;
+}
+
+/** Recover a campaign whose final row settled before the previous process exited. */
+export async function reconcileDrainedCampaigns(now = new Date()): Promise<string[]> {
+  const running = await prisma.recoveryCampaign.findMany({
+    where: { state: "running" },
+    select: { id: true },
+    orderBy: { id: "asc" },
+  });
+  const completed: string[] = [];
+  for (const campaign of running) {
+    if (await completeCampaignIfDrained(campaign.id, now)) completed.push(campaign.id);
+  }
+  return completed;
 }
 
 /**

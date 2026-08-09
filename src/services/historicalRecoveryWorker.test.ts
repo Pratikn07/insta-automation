@@ -27,6 +27,7 @@ const campaignAggregate = vi.fn();
 // QA-12: completeCampaignIfDrained had no production caller, so a campaign that had sent
 // everything stayed `running` forever.
 const completeCampaignIfDrained = vi.fn();
+const reconcileDrainedCampaigns = vi.fn();
 // QA-13: campaign-level stop conditions, which the shared circuit cannot express.
 const evaluateCampaignHealth = vi.fn();
 const igUserFindUnique = vi.fn();
@@ -51,7 +52,10 @@ vi.mock("./historicalRecoveryRepository.js", () => ({
 vi.mock("../meta/replyToComment.js", () => ({ replyToComment }));
 vi.mock("../meta/fetchComment.js", () => ({ fetchComment }));
 vi.mock("./dmRecoveryHealth.js", () => ({ evaluateRecoveryHealth, openRecoveryCircuit }));
-vi.mock("./recoveryCampaignControl.js", () => ({ completeCampaignIfDrained }));
+vi.mock("./recoveryCampaignControl.js", () => ({
+  completeCampaignIfDrained,
+  reconcileDrainedCampaigns,
+}));
 vi.mock("./historicalRecoveryHealth.js", () => ({ evaluateCampaignHealth }));
 vi.mock("./eventLogger.js", () => ({ logEvent, describeGraphError }));
 // classifySourceReadFailure is deliberately NOT mocked: QA-09's defect was
@@ -126,7 +130,8 @@ beforeEach(() => {
     countCandidatesSentSince,
     replyToComment, fetchComment, evaluateRecoveryHealth, openRecoveryCircuit,
     logEvent, describeGraphError, classifyPublicReplyFailure,
-    campaignFindUnique, campaignAggregate, completeCampaignIfDrained, evaluateCampaignHealth,
+    campaignFindUnique, campaignAggregate, completeCampaignIfDrained,
+    reconcileDrainedCampaigns, evaluateCampaignHealth,
     igUserFindUnique, dmMessageCount, conversationCount, dispatchCount,
   ]) {
     fn.mockReset();
@@ -152,6 +157,7 @@ beforeEach(() => {
   releaseHistoricalReservation.mockResolvedValue(true);
   finalizeHistoricalDispatch.mockResolvedValue(true);
   completeCampaignIfDrained.mockResolvedValue(false);
+  reconcileDrainedCampaigns.mockResolvedValue([]);
   // Healthy by default, so existing cases test what they were written for.
   evaluateCampaignHealth.mockResolvedValue({ stopReason: null });
   igUserFindUnique.mockResolvedValue({ inferredOrigin: "us_western" });
@@ -726,6 +732,14 @@ describe("runHistoricalRecoveryTick — evidence is scoped to since-selection", 
 // that had sent every candidate sat `running` forever: the dashboard showed active work
 // that would never move, and nothing recorded that the campaign had done its job.
 describe("runHistoricalRecoveryTick — closes a drained campaign", () => {
+  it("reconciles all drained campaigns even when this process changed no row", async () => {
+    listDueCandidateIds.mockResolvedValue([]);
+
+    await runHistoricalRecoveryTick();
+
+    expect(reconcileDrainedCampaigns).toHaveBeenCalledWith(expect.any(Date));
+  });
+
   it("attempts completion for every campaign the tick touched", async () => {
     await runHistoricalRecoveryTick();
 

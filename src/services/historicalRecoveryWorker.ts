@@ -6,7 +6,10 @@ import { replyToComment } from "../meta/replyToComment.js";
 import { fetchComment } from "../meta/fetchComment.js";
 import { classifyPublicReplyFailure, classifySourceReadFailure } from "./graphErrorClassifier.js";
 import { evaluateRecoveryHealth, openRecoveryCircuit } from "./dmRecoveryHealth.js";
-import { completeCampaignIfDrained } from "./recoveryCampaignControl.js";
+import {
+  completeCampaignIfDrained,
+  reconcileDrainedCampaigns,
+} from "./recoveryCampaignControl.js";
 import { evaluateCampaignHealth } from "./historicalRecoveryHealth.js";
 import { recheckBeforeSend, type SourceCommentState } from "./historicalRecoveryRecheck.js";
 import {
@@ -100,6 +103,10 @@ async function runTickBody(): Promise<HistoricalTickResult> {
       released: reconciled.released,
     });
   }
+
+  // Independent of rows touched by this process. A previous worker may have committed
+  // the final outcome and exited before campaign completion bookkeeping.
+  await reconcileDrainedCampaigns(now);
 
   // Same circuit as the prospective path: an auth failure or a webhook gap should
   // stop BOTH kinds of send, since they share credentials and evidence.
@@ -509,6 +516,8 @@ async function runTickBody(): Promise<HistoricalTickResult> {
       );
     }
   }
+
+  await reconcileDrainedCampaigns(now);
 
   return result;
 }

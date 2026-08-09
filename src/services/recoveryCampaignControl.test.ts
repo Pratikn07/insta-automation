@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const campaignUpdateMany = vi.fn();
 const campaignFindUnique = vi.fn();
+const campaignFindMany = vi.fn();
 const campaignUpdate = vi.fn();
 const candidateUpdateMany = vi.fn();
 const candidateFindMany = vi.fn();
@@ -9,6 +10,7 @@ const candidateCount = vi.fn();
 const controlUpsert = vi.fn();
 const dispatchFindMany = vi.fn();
 const dispatchUpdateMany = vi.fn();
+const dispatchCount = vi.fn();
 const queryRaw = vi.fn();
 const logEvent = vi.fn();
 
@@ -17,6 +19,7 @@ vi.mock("../lib/prisma.js", () => ({
     recoveryCampaign: {
       updateMany: campaignUpdateMany,
       findUnique: campaignFindUnique,
+      findMany: campaignFindMany,
       update: campaignUpdate,
     },
     recoveryCandidate: {
@@ -30,12 +33,18 @@ vi.mock("../lib/prisma.js", () => ({
           updateMany: campaignUpdateMany,
           update: campaignUpdate,
           findUnique: campaignFindUnique,
+          findMany: campaignFindMany,
         },
-        recoveryCandidate: { updateMany: candidateUpdateMany, findMany: candidateFindMany },
+        recoveryCandidate: {
+          updateMany: candidateUpdateMany,
+          findMany: candidateFindMany,
+          count: candidateCount,
+        },
         dmRecoveryControl: { upsert: controlUpsert },
         publicRecoveryDispatch: {
           findMany: dispatchFindMany,
           updateMany: dispatchUpdateMany,
+          count: dispatchCount,
         },
         $queryRaw: queryRaw,
       }),
@@ -54,9 +63,9 @@ const {
 
 beforeEach(() => {
   for (const fn of [
-    campaignUpdateMany, campaignFindUnique, campaignUpdate,
+    campaignUpdateMany, campaignFindUnique, campaignFindMany, campaignUpdate,
     candidateUpdateMany, candidateFindMany, candidateCount, controlUpsert,
-    dispatchFindMany, dispatchUpdateMany, queryRaw, logEvent,
+    dispatchFindMany, dispatchUpdateMany, dispatchCount, queryRaw, logEvent,
   ]) {
     fn.mockReset();
   }
@@ -66,6 +75,14 @@ beforeEach(() => {
   candidateFindMany.mockResolvedValue([]);
   dispatchFindMany.mockResolvedValue([]);
   dispatchUpdateMany.mockResolvedValue({ count: 0 });
+  dispatchCount.mockResolvedValue(0);
+  candidateCount.mockResolvedValue(1);
+  campaignFindMany.mockResolvedValue([]);
+  campaignFindUnique.mockResolvedValue({
+    state: "draft",
+    candidateCount: 1,
+    decisionHash: "contract-hash",
+  });
   campaignUpdate.mockResolvedValue({});
 });
 
@@ -73,20 +90,20 @@ describe("approveCampaign", () => {
   // Approval is the moment public comments become possible, so it must record who
   // and when — chk_campaign_approval_complete requires both together.
   it("records the approver and starts the campaign running", async () => {
-    campaignUpdateMany.mockResolvedValue({ count: 1 });
     // Approval now settles the holdout arm terminally (QA-12), so this is consulted.
     candidateUpdateMany.mockResolvedValue({ count: 0 });
 
     const result = await approveCampaign("camp-1", "pratik");
 
     expect(result).toEqual({ ok: true, state: "running" });
-    expect(campaignUpdateMany).toHaveBeenCalledWith({
-      where: { id: "camp-1", state: { in: ["draft", "awaiting_approval"] } },
+    expect(campaignUpdate).toHaveBeenCalledWith({
+      where: { id: "camp-1" },
       data: {
         state: "running",
         approvedBy: "pratik",
         approvedAt: expect.any(Date),
         startedAt: expect.any(Date),
+        endedAt: null,
       },
     });
   });
@@ -118,7 +135,12 @@ describe("approveCampaign", () => {
   });
 
   it("logs the approval for the audit trail", async () => {
-    campaignUpdateMany.mockResolvedValue({ count: 1 });
+    campaignFindUnique.mockResolvedValue({
+      state: "draft",
+      candidateCount: 4,
+      decisionHash: "contract-hash",
+    });
+    candidateCount.mockResolvedValue(4);
     candidateUpdateMany.mockResolvedValue({ count: 4 });
 
     await approveCampaign("camp-1", "pratik");
@@ -135,7 +157,12 @@ describe("approveCampaign", () => {
   // The arm is settled terminally at approval, so the completion check can ignore it and
   // the worker can never claim it.
   it("settles the holdout arm at approval", async () => {
-    campaignUpdateMany.mockResolvedValue({ count: 1 });
+    campaignFindUnique.mockResolvedValue({
+      state: "draft",
+      candidateCount: 2,
+      decisionHash: "contract-hash",
+    });
+    candidateCount.mockResolvedValue(2);
     candidateUpdateMany.mockResolvedValue({ count: 2 });
 
     await approveCampaign("camp-1", "pratik");
@@ -302,13 +329,16 @@ describe("completeCampaignIfDrained", () => {
   // `completed` means it finished its work; `cancelled` means it was stopped.
   // Conflating them would make the outcome data unreadable later.
   it("completes a campaign with nothing pending", async () => {
+    campaignFindUnique.mockResolvedValue({ state: "running" });
     candidateCount.mockResolvedValue(0);
+    dispatchCount.mockResolvedValue(0);
     campaignUpdateMany.mockResolvedValue({ count: 1 });
 
     expect(await completeCampaignIfDrained("camp-1")).toBe(true);
   });
 
   it("leaves a campaign alone while candidates remain", async () => {
+    campaignFindUnique.mockResolvedValue({ state: "running" });
     candidateCount.mockResolvedValue(5);
 
     expect(await completeCampaignIfDrained("camp-1")).toBe(false);

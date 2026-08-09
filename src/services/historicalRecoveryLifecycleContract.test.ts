@@ -65,7 +65,14 @@ beforeAll(async () => {
 });
 
 async function wipe(): Promise<void> {
+  await prisma.publicRecoveryDispatch.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
   await prisma.recoveryCandidate.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
+  await prisma.recoveryCampaignBatchRun.deleteMany({
+    where: { campaign: { selectionVersion: { startsWith: "life-" } } },
+  });
+  await prisma.recoveryCampaignHealthObservation.deleteMany({
+    where: { campaign: { selectionVersion: { startsWith: "life-" } } },
+  });
   await prisma.recoveryCampaign.deleteMany({ where: { selectionVersion: { startsWith: "life-" } } });
   await prisma.conversation.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
   await prisma.journeyIntent.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
@@ -94,6 +101,7 @@ async function draft(): Promise<string> {
       sourceDataCutoff: T0,
       copyVersion: "recovery-v2",
       state: "draft",
+      decisionHash: `life-hash-${randomUUID()}`,
     },
   });
   return row.id;
@@ -141,6 +149,10 @@ async function candidate(
         : {}),
     },
   });
+  await prisma.recoveryCampaign.update({
+    where: { id: campaignId },
+    data: { candidateCount: { increment: 1 } },
+  });
   return { id: row.id, igUserId };
 }
 
@@ -153,6 +165,66 @@ async function stateOf(campaignId: string): Promise<string> {
 }
 
 describeWithLocalDatabase("holdout assignment is settled at approval", () => {
+  it("refuses to approve an incomplete reviewed snapshot", async () => {
+    const campaign = await prisma.recoveryCampaign.create({
+      data: {
+        phase: "unknown_read_pilot",
+        selectionVersion: `life-${randomUUID()}`,
+        sourceDataCutoff: T0,
+        copyVersion: "recovery-v2",
+        state: "draft",
+      },
+    });
+
+    await expect(control.approveCampaign(campaign.id, "owner", T0)).resolves.toEqual({
+      ok: false,
+      reason: "snapshot_incomplete",
+    });
+    expect(await stateOf(campaign.id)).toBe("draft");
+  });
+
+  it("rolls campaign approval back when holdout settlement fails", async () => {
+    const campaignId = await draft();
+    await candidate(campaignId, { arm: "treatment" });
+    const held = await candidate(campaignId, { arm: "holdout" });
+    await prisma.$executeRawUnsafe(`
+      CREATE OR REPLACE FUNCTION p1_reject_holdout_settlement()
+      RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.outcome = 'holdout_withheld' THEN
+          RAISE EXCEPTION 'injected holdout settlement failure';
+        END IF;
+        RETURN NEW;
+      END;
+      $$
+    `);
+    await prisma.$executeRawUnsafe(`
+      CREATE TRIGGER p1_reject_holdout_settlement_trigger
+      BEFORE UPDATE ON recovery_candidate
+      FOR EACH ROW EXECUTE FUNCTION p1_reject_holdout_settlement()
+    `);
+
+    try {
+      await expect(control.approveCampaign(campaignId, "owner", T0)).rejects.toThrow(
+        /holdout settlement failure/,
+      );
+    } finally {
+      await prisma.$executeRawUnsafe(
+        "DROP TRIGGER IF EXISTS p1_reject_holdout_settlement_trigger ON recovery_candidate",
+      );
+      await prisma.$executeRawUnsafe("DROP FUNCTION IF EXISTS p1_reject_holdout_settlement() ");
+    }
+
+    expect(await prisma.recoveryCampaign.findUnique({
+      where: { id: campaignId },
+      select: { state: true, approvedAt: true, approvedBy: true, startedAt: true },
+    })).toEqual({ state: "draft", approvedAt: null, approvedBy: null, startedAt: null });
+    expect(await prisma.recoveryCandidate.findUnique({
+      where: { id: held.id },
+      select: { outcome: true },
+    })).toEqual({ outcome: "pending" });
+  });
+
   // THE reason a holdout campaign could never finish: holdout rows counted as pending
   // work that would never be done.
   it("marks holdout rows holdout_withheld so they are not pending work", async () => {
@@ -187,8 +259,9 @@ describeWithLocalDatabase("holdout assignment is settled at approval", () => {
     await candidate(campaignId, { arm: "holdout" });
     await candidate(campaignId, { arm: "holdout" });
 
-    await control.approveCampaign(campaignId, "owner", T0);
+    const result = await control.approveCampaign(campaignId, "owner", T0);
 
+    expect(result).toEqual({ ok: true, state: "completed" });
     expect(await stateOf(campaignId)).toBe("completed");
   });
 
@@ -244,6 +317,69 @@ describeWithLocalDatabase("a drained campaign completes", () => {
 
     expect(await control.completeCampaignIfDrained(campaignId, T0)).toBe(false);
     expect(await stateOf(campaignId)).toBe("cancelled");
+  });
+
+  it("does not relabel an auto-paused drained campaign as completed", async () => {
+    const campaignId = await draft();
+    const treat = await candidate(campaignId, { arm: "treatment" });
+    await control.approveCampaign(campaignId, "owner", T0);
+    await prisma.recoveryCandidate.update({
+      where: { id: treat.id },
+      data: { outcome: "send_failed", suppressionReason: "contract" },
+    });
+    await control.pauseCampaign(campaignId, "auto:public_failure_rate", T0);
+
+    expect(await control.completeCampaignIfDrained(campaignId, T0)).toBe(false);
+    expect(await stateOf(campaignId)).toBe("paused");
+  });
+
+  it("reconciles a drained running campaign after a process restart", async () => {
+    const campaignId = await draft();
+    const treat = await candidate(campaignId, { arm: "treatment" });
+    await control.approveCampaign(campaignId, "owner", T0);
+    await prisma.recoveryCandidate.update({
+      where: { id: treat.id },
+      data: {
+        outcome: "sent",
+        sentAt: new Date(T0.getTime() + 1),
+        publicReplyId: `provider-${randomUUID()}`,
+      },
+    });
+
+    const reconcile = (
+      control as typeof control & {
+        reconcileDrainedCampaigns(now?: Date): Promise<string[]>;
+      }
+    ).reconcileDrainedCampaigns;
+    await expect(reconcile(T0)).resolves.toEqual([campaignId]);
+    expect(await stateOf(campaignId)).toBe("completed");
+  });
+
+  it("does not complete while the dispatch ledger is still active", async () => {
+    const campaignId = await draft();
+    const treat = await candidate(campaignId, { arm: "treatment" });
+    await control.approveCampaign(campaignId, "owner", T0);
+    await prisma.recoveryCandidate.update({
+      where: { id: treat.id },
+      data: { outcome: "send_failed", suppressionReason: "contract" },
+    });
+    await prisma.publicRecoveryDispatch.create({
+      data: {
+        reservationToken: randomUUID(),
+        igUserId: treat.igUserId,
+        sourceKind: "historical",
+        sourceId: treat.id,
+        attemptNumber: 1,
+        campaignId,
+        state: "dispatch_started",
+        reservedAt: T0,
+        leaseExpiresAt: new Date(T0.getTime() + 60_000),
+        dispatchStartedAt: T0,
+      },
+    });
+
+    expect(await control.completeCampaignIfDrained(campaignId, T0)).toBe(false);
+    expect(await stateOf(campaignId)).toBe("running");
   });
 });
 
