@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildSelectionDecisionHash,
   buildSelectionFingerprint,
+  verifyStoredSelectionSnapshot,
   type SelectionSnapshotConfiguration,
   type SelectionSnapshotExclusion,
   type SelectionSnapshotInclusion,
@@ -157,5 +158,54 @@ describe("selection snapshot decision hash", () => {
     expect(buildSelectionDecisionHash(config(), [inclusion(), second], [])).not.toBe(
       buildSelectionDecisionHash(config(), [second, inclusion()], []),
     );
+  });
+});
+
+describe("stored selection snapshot verification", () => {
+  function stored(overrides: Record<string, unknown> = {}) {
+    const configuration = config();
+    const inclusions = [inclusion()];
+    const exclusions = [exclusion()];
+    return {
+      configuration,
+      selectionFingerprint: buildSelectionFingerprint(configuration),
+      decisionHash: buildSelectionDecisionHash(configuration, inclusions, exclusions),
+      candidateCount: inclusions.length,
+      excludedCount: exclusions.length,
+      inclusions,
+      exclusions,
+      ...overrides,
+    };
+  }
+
+  it("accepts the exact complete manifest", () => {
+    expect(verifyStoredSelectionSnapshot(stored())).toEqual({ ok: true });
+  });
+
+  it.each([
+    ["missing config", { configuration: null }, "snapshot_incomplete"],
+    ["missing fingerprint", { selectionFingerprint: null }, "snapshot_incomplete"],
+    ["candidate count drift", { candidateCount: 2 }, "snapshot_incomplete"],
+    ["exclusion count drift", { excludedCount: 2 }, "snapshot_incomplete"],
+    [
+      "source gap",
+      { inclusions: [inclusion({ sources: [inclusion().sources[1]!] })] },
+      "snapshot_incomplete",
+    ],
+    [
+      "config drift",
+      { configuration: config({ westernOnly: false }) },
+      "snapshot_fingerprint_mismatch",
+    ],
+    [
+      "arm drift",
+      { inclusions: [inclusion({ arm: "holdout" })] },
+      "snapshot_hash_mismatch",
+    ],
+  ])("rejects %s", (_label, override, reason) => {
+    expect(verifyStoredSelectionSnapshot(stored(override as Record<string, unknown>))).toEqual({
+      ok: false,
+      reason,
+    });
   });
 });

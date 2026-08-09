@@ -25,6 +25,7 @@ const describeWithLocalDatabase = databaseUrl ? describe.sequential : describe.s
 let prisma: PrismaClient;
 let control: typeof import("./recoveryCampaignControl.js");
 let attribution: typeof import("./historicalRecoveryAttribution.js");
+let snapshots: typeof import("./historicalRecoverySnapshot.js");
 
 type Fixture = { resourceId: string; keywordId: string; otherKeywordId: string; igUserId: string };
 let fx: Fixture;
@@ -40,6 +41,7 @@ beforeAll(async () => {
   prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
   control = await import("./recoveryCampaignControl.js");
   attribution = await import("./historicalRecoveryAttribution.js");
+  snapshots = await import("./historicalRecoverySnapshot.js");
 
   fx = {
     resourceId: randomUUID(),
@@ -101,7 +103,10 @@ async function draft(): Promise<string> {
       sourceDataCutoff: T0,
       copyVersion: "recovery-v2",
       state: "draft",
-      decisionHash: `life-hash-${randomUUID()}`,
+      eligibilityPolicyVersion: "eligibility-v2",
+      westernOnly: true,
+      inboundWindowHours: 48,
+      completionWindowHours: 48,
     },
   });
   return row.id;
@@ -125,6 +130,8 @@ async function candidate(
     },
   });
   const sent = opts.outcome === "sent";
+  const selectionPosition = await prisma.recoveryCandidate.count({ where: { campaignId } });
+  const commentId = `life-c-${randomUUID()}`;
   const row = await prisma.recoveryCandidate.create({
     data: {
       campaignId,
@@ -132,11 +139,13 @@ async function candidate(
       intentId: intent.id,
       igUserId,
       keywordId,
-      commentId: `life-c-${randomUUID()}`,
+      commentId,
       commentAt: T0,
       keywordSnapshot: "SLEEP",
       publicReplyText: "t",
       evidence: "gate_sent_no_read",
+      selectionPosition,
+      sourceChoiceReason: "newest_eligible_comment",
       arm: opts.arm,
       eligibleAt: T0,
       outcome: opts.outcome ?? "pending",
@@ -153,7 +162,88 @@ async function candidate(
     where: { id: campaignId },
     data: { candidateCount: { increment: 1 } },
   });
+  await prisma.recoveryCandidateSource.create({
+    data: {
+      candidateId: row.id,
+      position: 0,
+      commentId,
+      receivedAt: T0,
+      choiceReason: "newest_eligible_comment",
+    },
+  });
   return { id: row.id, igUserId };
+}
+
+async function sealSnapshot(campaignId: string): Promise<void> {
+  const campaign = await prisma.recoveryCampaign.findUniqueOrThrow({ where: { id: campaignId } });
+  const rows = await prisma.recoveryCandidate.findMany({
+    where: { campaignId },
+    orderBy: [{ selectionPosition: "asc" }, { id: "asc" }],
+    include: { sources: { orderBy: [{ position: "asc" }, { id: "asc" }] } },
+  });
+  const exclusions = await prisma.recoverySelectionExclusion.findMany({
+    where: { campaignId },
+    orderBy: [{ intentId: "asc" }, { id: "asc" }],
+  });
+  const configuration = {
+    phase: campaign.phase,
+    selectionVersion: campaign.selectionVersion,
+    sourceDataCutoff: campaign.sourceDataCutoff.toISOString(),
+    commentFrom: campaign.commentFrom?.toISOString() ?? null,
+    commentTo: campaign.commentTo?.toISOString() ?? null,
+    westernOnly: campaign.westernOnly!,
+    holdoutPercent: campaign.holdoutPercent,
+    copyVersion: campaign.copyVersion,
+    eligibilityPolicyVersion: campaign.eligibilityPolicyVersion!,
+    inboundWindowHours: campaign.inboundWindowHours,
+    completionWindowHours: campaign.completionWindowHours,
+  };
+  const inclusions = rows.map((row) => ({
+    position: row.selectionPosition!,
+    intentId: row.intentId,
+    igUserId: row.igUserId,
+    conversationId: row.conversationId,
+    keywordId: row.keywordId,
+    commentId: row.commentId,
+    mediaId: row.mediaId,
+    commentAt: row.commentAt.toISOString(),
+    keywordSnapshot: row.keywordSnapshot,
+    publicReplyText: row.publicReplyText,
+    evidence: row.evidence,
+    audienceOrigin: row.audienceOrigin,
+    audienceOriginConfidence: row.audienceOriginConfidence,
+    arm: row.arm,
+    sourceChoiceReason: row.sourceChoiceReason!,
+    sources: row.sources.map((source) => ({
+      position: source.position,
+      commentId: source.commentId,
+      mediaId: source.mediaId,
+      receivedAt: source.receivedAt.toISOString(),
+      choiceReason: source.choiceReason,
+    })),
+  }));
+  const snapshotExclusions = exclusions.map(({ intentId, igUserId, keywordId, reason }) => ({
+    intentId,
+    igUserId,
+    keywordId,
+    reason,
+  }));
+  await prisma.recoveryCampaign.update({
+    where: { id: campaignId },
+    data: {
+      selectionFingerprint: snapshots.buildSelectionFingerprint(configuration),
+      decisionHash: snapshots.buildSelectionDecisionHash(
+        configuration,
+        inclusions,
+        snapshotExclusions,
+      ),
+    },
+  });
+}
+
+async function approve(campaignId: string): Promise<Awaited<ReturnType<typeof control.approveCampaign>>> {
+  await sealSnapshot(campaignId);
+  return control.approveCampaign(campaignId, "owner", T0);
 }
 
 async function stateOf(campaignId: string): Promise<string> {
@@ -187,6 +277,7 @@ describeWithLocalDatabase("holdout assignment is settled at approval", () => {
     const campaignId = await draft();
     await candidate(campaignId, { arm: "treatment" });
     const held = await candidate(campaignId, { arm: "holdout" });
+    await sealSnapshot(campaignId);
     await prisma.$executeRawUnsafe(`
       CREATE OR REPLACE FUNCTION p1_reject_holdout_settlement()
       RETURNS trigger LANGUAGE plpgsql AS $$
@@ -232,7 +323,7 @@ describeWithLocalDatabase("holdout assignment is settled at approval", () => {
     await candidate(campaignId, { arm: "treatment" });
     const held = await candidate(campaignId, { arm: "holdout" });
 
-    await control.approveCampaign(campaignId, "owner", T0);
+    await approve(campaignId);
 
     const row = await prisma.recoveryCandidate.findUnique({ where: { id: held.id } });
     expect(row!.outcome).toBe("holdout_withheld");
@@ -246,10 +337,55 @@ describeWithLocalDatabase("holdout assignment is settled at approval", () => {
     const campaignId = await draft();
     const treat = await candidate(campaignId, { arm: "treatment" });
 
-    await control.approveCampaign(campaignId, "owner", T0);
+    await approve(campaignId);
 
     const row = await prisma.recoveryCandidate.findUnique({ where: { id: treat.id } });
     expect(row!.outcome).toBe("pending");
+  });
+
+  it("refuses approval after an assigned arm drifts from the reviewed hash", async () => {
+    const campaignId = await draft();
+    const treat = await candidate(campaignId, { arm: "treatment" });
+    await sealSnapshot(campaignId);
+    await prisma.recoveryCandidate.update({
+      where: { id: treat.id },
+      data: { arm: "holdout" },
+    });
+
+    await expect(control.approveCampaign(campaignId, "owner", T0)).resolves.toEqual({
+      ok: false,
+      reason: "snapshot_hash_mismatch",
+    });
+    expect(await stateOf(campaignId)).toBe("draft");
+  });
+
+  it("refuses approval after normalized campaign configuration drifts", async () => {
+    const campaignId = await draft();
+    await candidate(campaignId, { arm: "treatment" });
+    await sealSnapshot(campaignId);
+    await prisma.recoveryCampaign.update({
+      where: { id: campaignId },
+      data: { westernOnly: false },
+    });
+
+    await expect(control.approveCampaign(campaignId, "owner", T0)).resolves.toEqual({
+      ok: false,
+      reason: "snapshot_fingerprint_mismatch",
+    });
+    expect(await stateOf(campaignId)).toBe("draft");
+  });
+
+  it("refuses approval when an approved source row is missing", async () => {
+    const campaignId = await draft();
+    const treat = await candidate(campaignId, { arm: "treatment" });
+    await sealSnapshot(campaignId);
+    await prisma.recoveryCandidateSource.deleteMany({ where: { candidateId: treat.id } });
+
+    await expect(control.approveCampaign(campaignId, "owner", T0)).resolves.toEqual({
+      ok: false,
+      reason: "snapshot_incomplete",
+    });
+    expect(await stateOf(campaignId)).toBe("draft");
   });
 
   // A campaign whose every candidate is a holdout has nothing to do. Without this it
@@ -259,7 +395,7 @@ describeWithLocalDatabase("holdout assignment is settled at approval", () => {
     await candidate(campaignId, { arm: "holdout" });
     await candidate(campaignId, { arm: "holdout" });
 
-    const result = await control.approveCampaign(campaignId, "owner", T0);
+    const result = await approve(campaignId);
 
     expect(result).toEqual({ ok: true, state: "completed" });
     expect(await stateOf(campaignId)).toBe("completed");
@@ -270,7 +406,7 @@ describeWithLocalDatabase("holdout assignment is settled at approval", () => {
     await candidate(campaignId, { arm: "treatment" });
     await candidate(campaignId, { arm: "holdout" });
 
-    await control.approveCampaign(campaignId, "owner", T0);
+    await approve(campaignId);
 
     expect(await stateOf(campaignId)).toBe("running");
   });
@@ -282,7 +418,7 @@ describeWithLocalDatabase("a drained campaign completes", () => {
     const campaignId = await draft();
     const treat = await candidate(campaignId, { arm: "treatment" });
     await candidate(campaignId, { arm: "holdout" });
-    await control.approveCampaign(campaignId, "owner", T0);
+    await approve(campaignId);
     expect(await stateOf(campaignId)).toBe("running");
 
     await prisma.recoveryCandidate.update({
@@ -301,7 +437,7 @@ describeWithLocalDatabase("a drained campaign completes", () => {
   it("refuses while a treatment row is still pending", async () => {
     const campaignId = await draft();
     await candidate(campaignId, { arm: "treatment" });
-    await control.approveCampaign(campaignId, "owner", T0);
+    await approve(campaignId);
 
     expect(await control.completeCampaignIfDrained(campaignId, T0)).toBe(false);
     expect(await stateOf(campaignId)).toBe("running");
@@ -312,7 +448,7 @@ describeWithLocalDatabase("a drained campaign completes", () => {
   it("does not relabel a cancelled campaign as completed", async () => {
     const campaignId = await draft();
     await candidate(campaignId, { arm: "treatment" });
-    await control.approveCampaign(campaignId, "owner", T0);
+    await approve(campaignId);
     await control.cancelCampaign(campaignId, "changed my mind", T0);
 
     expect(await control.completeCampaignIfDrained(campaignId, T0)).toBe(false);
@@ -322,7 +458,7 @@ describeWithLocalDatabase("a drained campaign completes", () => {
   it("does not relabel an auto-paused drained campaign as completed", async () => {
     const campaignId = await draft();
     const treat = await candidate(campaignId, { arm: "treatment" });
-    await control.approveCampaign(campaignId, "owner", T0);
+    await approve(campaignId);
     await prisma.recoveryCandidate.update({
       where: { id: treat.id },
       data: { outcome: "send_failed", suppressionReason: "contract" },
@@ -336,7 +472,7 @@ describeWithLocalDatabase("a drained campaign completes", () => {
   it("reconciles a drained running campaign after a process restart", async () => {
     const campaignId = await draft();
     const treat = await candidate(campaignId, { arm: "treatment" });
-    await control.approveCampaign(campaignId, "owner", T0);
+    await approve(campaignId);
     await prisma.recoveryCandidate.update({
       where: { id: treat.id },
       data: {
@@ -358,7 +494,7 @@ describeWithLocalDatabase("a drained campaign completes", () => {
   it("does not complete while the dispatch ledger is still active", async () => {
     const campaignId = await draft();
     const treat = await candidate(campaignId, { arm: "treatment" });
-    await control.approveCampaign(campaignId, "owner", T0);
+    await approve(campaignId);
     await prisma.recoveryCandidate.update({
       where: { id: treat.id },
       data: { outcome: "send_failed", suppressionReason: "contract" },
@@ -388,7 +524,7 @@ describeWithLocalDatabase("outcomes are attributed to both arms", () => {
   it("records a completion on a treated candidate", async () => {
     const campaignId = await draft();
     const treat = await candidate(campaignId, { arm: "treatment", outcome: "sent" });
-    await control.approveCampaign(campaignId, "owner", T0);
+    await approve(campaignId);
 
     const at = new Date(T0.getTime() + 2 * 24 * 3600_000);
     const n = await attribution.attributeRecoveryOutcome({
@@ -408,7 +544,7 @@ describeWithLocalDatabase("outcomes are attributed to both arms", () => {
   it("records a completion on a holdout that recovered on its own", async () => {
     const campaignId = await draft();
     const held = await candidate(campaignId, { arm: "holdout" });
-    await control.approveCampaign(campaignId, "owner", T0);
+    await approve(campaignId);
 
     const at = new Date(T0.getTime() + 3 * 24 * 3600_000);
     await attribution.attributeRecoveryOutcome({
@@ -427,7 +563,7 @@ describeWithLocalDatabase("outcomes are attributed to both arms", () => {
   it("keeps the earliest timestamp and ignores a replay", async () => {
     const campaignId = await draft();
     const treat = await candidate(campaignId, { arm: "treatment", outcome: "sent" });
-    await control.approveCampaign(campaignId, "owner", T0);
+    await approve(campaignId);
 
     const first = new Date(T0.getTime() + 2 * 24 * 3600_000);
     const later = new Date(T0.getTime() + 5 * 24 * 3600_000);
@@ -448,7 +584,7 @@ describeWithLocalDatabase("outcomes are attributed to both arms", () => {
   it("does not attribute a completion of another keyword", async () => {
     const campaignId = await draft();
     const treat = await candidate(campaignId, { arm: "treatment", outcome: "sent" });
-    await control.approveCampaign(campaignId, "owner", T0);
+    await approve(campaignId);
 
     const n = await attribution.attributeRecoveryOutcome({
       igUserId: treat.igUserId,
@@ -467,7 +603,7 @@ describeWithLocalDatabase("outcomes are attributed to both arms", () => {
   it("attributes an inbound without a keyword", async () => {
     const campaignId = await draft();
     const treat = await candidate(campaignId, { arm: "treatment", outcome: "sent" });
-    await control.approveCampaign(campaignId, "owner", T0);
+    await approve(campaignId);
 
     const at = new Date(T0.getTime() + 2 * 24 * 3600_000);
     await attribution.attributeRecoveryOutcome({
@@ -486,7 +622,7 @@ describeWithLocalDatabase("outcomes are attributed to both arms", () => {
   it("does not attribute to a candidate that was never settled", async () => {
     const campaignId = await draft();
     const treat = await candidate(campaignId, { arm: "treatment" });
-    await control.approveCampaign(campaignId, "owner", T0);
+    await approve(campaignId);
 
     const n = await attribution.attributeRecoveryOutcome({
       igUserId: treat.igUserId,
@@ -502,7 +638,7 @@ describeWithLocalDatabase("outcomes are attributed to both arms", () => {
   it("does not attribute a completion that predates the send", async () => {
     const campaignId = await draft();
     const treat = await candidate(campaignId, { arm: "treatment", outcome: "sent" });
-    await control.approveCampaign(campaignId, "owner", T0);
+    await approve(campaignId);
 
     const n = await attribution.attributeRecoveryOutcome({
       igUserId: treat.igUserId,

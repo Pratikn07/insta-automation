@@ -1089,6 +1089,7 @@ model RecoveryCandidate {
   keywordSnapshot          String                   @map("keyword_snapshot")
   publicReplyText          String                   @map("public_reply_text")
   evidence                 String
+  selectionPosition        Int?                     @map("selection_position")
   sourceChoiceReason       String?                  @map("source_choice_reason")
   /// Exact member of the approved ordered source set authorized at dispatch start.
   dispatchCommentId        String?                  @map("dispatch_comment_id")
@@ -1132,6 +1133,7 @@ model RecoveryCandidate {
   /// intent, and one per person, within a campaign.
   @@unique([campaignId, intentId], map: "recovery_candidate_campaign_intent_key")
   @@unique([campaignId, igUserId], map: "recovery_candidate_campaign_person_key")
+  @@unique([campaignId, selectionPosition], map: "recovery_candidate_campaign_id_selection_position_key")
   @@index([outcome, eligibleAt])
   @@index([igUserId, sentAt])
   @@index([dispatchStartedAt], map: "recovery_candidate_dispatch_started_idx")

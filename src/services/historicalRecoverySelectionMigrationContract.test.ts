@@ -63,11 +63,16 @@ describeWithDatabase("P1 selection and attribution migration", () => {
       FROM information_schema.columns
       WHERE table_schema = 'public'
         AND table_name = 'recovery_candidate'
-        AND column_name IN ('source_choice_reason', 'dispatch_comment_id')
+        AND column_name IN (
+          'selection_position',
+          'source_choice_reason',
+          'dispatch_comment_id'
+        )
       ORDER BY column_name
     `;
     expect(candidateColumns.map((row) => row.column_name)).toEqual([
       "dispatch_comment_id",
+      "selection_position",
       "source_choice_reason",
     ]);
   });
@@ -80,12 +85,14 @@ describeWithDatabase("P1 selection and attribution migration", () => {
         AND indexname IN (
           'recovery_campaign_selection_fingerprint_key',
           'recovery_candidate_source_candidate_id_position_key',
-          'recovery_candidate_source_candidate_id_comment_id_key'
+          'recovery_candidate_source_candidate_id_comment_id_key',
+          'recovery_candidate_campaign_id_selection_position_key'
         )
       ORDER BY indexname
     `;
     expect(indexes.map((row) => row.indexname)).toEqual([
       "recovery_campaign_selection_fingerprint_key",
+      "recovery_candidate_campaign_id_selection_position_key",
       "recovery_candidate_source_candidate_id_comment_id_key",
       "recovery_candidate_source_candidate_id_position_key",
     ]);

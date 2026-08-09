@@ -88,3 +88,76 @@ export function buildSelectionDecisionHash(
       || left.reason.localeCompare(right.reason)),
   });
 }
+
+export type StoredSelectionSnapshot = {
+  configuration: SelectionSnapshotConfiguration | null;
+  selectionFingerprint: string | null;
+  decisionHash: string | null;
+  candidateCount: number;
+  excludedCount: number;
+  inclusions: SelectionSnapshotInclusion[];
+  exclusions: SelectionSnapshotExclusion[];
+};
+
+export type StoredSelectionSnapshotVerification =
+  | { ok: true }
+  | {
+      ok: false;
+      reason:
+        | "snapshot_incomplete"
+        | "snapshot_fingerprint_mismatch"
+        | "snapshot_hash_mismatch";
+    };
+
+/** Verify that stored rows still equal the exact configuration and manifest reviewed. */
+export function verifyStoredSelectionSnapshot(
+  snapshot: StoredSelectionSnapshot,
+): StoredSelectionSnapshotVerification {
+  if (
+    snapshot.configuration === null
+    || !snapshot.selectionFingerprint?.trim()
+    || !snapshot.decisionHash?.trim()
+    || snapshot.candidateCount <= 0
+    || snapshot.inclusions.length !== snapshot.candidateCount
+    || snapshot.exclusions.length !== snapshot.excludedCount
+  ) {
+    return { ok: false, reason: "snapshot_incomplete" };
+  }
+
+  const intentIds = new Set<string>();
+  for (const [position, inclusion] of snapshot.inclusions.entries()) {
+    if (
+      inclusion.position !== position
+      || intentIds.has(inclusion.intentId)
+      || !inclusion.sourceChoiceReason.trim()
+      || inclusion.sources.length === 0
+      || inclusion.sources[0]!.commentId !== inclusion.commentId
+      || inclusion.sources.some((source, sourcePosition) =>
+        source.position !== sourcePosition
+        || !source.commentId.trim()
+        || !source.choiceReason.trim())
+      || new Set(inclusion.sources.map((source) => source.commentId)).size
+        !== inclusion.sources.length
+    ) {
+      return { ok: false, reason: "snapshot_incomplete" };
+    }
+    intentIds.add(inclusion.intentId);
+  }
+  if (new Set(snapshot.exclusions.map((row) => row.intentId)).size !== snapshot.exclusions.length) {
+    return { ok: false, reason: "snapshot_incomplete" };
+  }
+
+  if (buildSelectionFingerprint(snapshot.configuration) !== snapshot.selectionFingerprint) {
+    return { ok: false, reason: "snapshot_fingerprint_mismatch" };
+  }
+  if (
+    buildSelectionDecisionHash(
+      snapshot.configuration,
+      snapshot.inclusions,
+      snapshot.exclusions,
+    ) !== snapshot.decisionHash
+  ) {
+    return { ok: false, reason: "snapshot_hash_mismatch" };
+  }
+  return { ok: true };
+}

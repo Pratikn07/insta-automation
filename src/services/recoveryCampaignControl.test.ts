@@ -7,12 +7,14 @@ const campaignUpdate = vi.fn();
 const candidateUpdateMany = vi.fn();
 const candidateFindMany = vi.fn();
 const candidateCount = vi.fn();
+const exclusionFindMany = vi.fn();
 const controlUpsert = vi.fn();
 const dispatchFindMany = vi.fn();
 const dispatchUpdateMany = vi.fn();
 const dispatchCount = vi.fn();
 const queryRaw = vi.fn();
 const logEvent = vi.fn();
+const verifyStoredSelectionSnapshot = vi.fn();
 
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
@@ -40,6 +42,7 @@ vi.mock("../lib/prisma.js", () => ({
           findMany: candidateFindMany,
           count: candidateCount,
         },
+        recoverySelectionExclusion: { findMany: exclusionFindMany },
         dmRecoveryControl: { upsert: controlUpsert },
         publicRecoveryDispatch: {
           findMany: dispatchFindMany,
@@ -51,6 +54,7 @@ vi.mock("../lib/prisma.js", () => ({
   },
 }));
 vi.mock("./eventLogger.js", () => ({ logEvent }));
+vi.mock("./historicalRecoverySnapshot.js", () => ({ verifyStoredSelectionSnapshot }));
 
 const {
   approveCampaign,
@@ -65,7 +69,8 @@ beforeEach(() => {
   for (const fn of [
     campaignUpdateMany, campaignFindUnique, campaignFindMany, campaignUpdate,
     candidateUpdateMany, candidateFindMany, candidateCount, controlUpsert,
-    dispatchFindMany, dispatchUpdateMany, dispatchCount, queryRaw, logEvent,
+    dispatchFindMany, dispatchUpdateMany, dispatchCount, exclusionFindMany,
+    queryRaw, logEvent, verifyStoredSelectionSnapshot,
   ]) {
     fn.mockReset();
   }
@@ -73,6 +78,8 @@ beforeEach(() => {
   queryRaw.mockResolvedValue([]);
   controlUpsert.mockResolvedValue({ id: 1 });
   candidateFindMany.mockResolvedValue([]);
+  exclusionFindMany.mockResolvedValue([]);
+  verifyStoredSelectionSnapshot.mockReturnValue({ ok: true });
   dispatchFindMany.mockResolvedValue([]);
   dispatchUpdateMany.mockResolvedValue({ count: 0 });
   dispatchCount.mockResolvedValue(0);
@@ -132,6 +139,21 @@ describe("approveCampaign", () => {
     campaignFindUnique.mockResolvedValue(null);
 
     expect(await approveCampaign("nope", "pratik")).toEqual({ ok: false, reason: "not_found" });
+  });
+
+  it.each([
+    "snapshot_incomplete",
+    "snapshot_fingerprint_mismatch",
+    "snapshot_hash_mismatch",
+  ])("refuses approval when verification reports %s", async (reason) => {
+    verifyStoredSelectionSnapshot.mockReturnValue({ ok: false, reason });
+
+    await expect(approveCampaign("camp-1", "pratik")).resolves.toEqual({
+      ok: false,
+      reason,
+    });
+    expect(candidateUpdateMany).not.toHaveBeenCalled();
+    expect(campaignUpdate).not.toHaveBeenCalled();
   });
 
   it("logs the approval for the audit trail", async () => {

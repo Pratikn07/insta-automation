@@ -1,5 +1,10 @@
 import { prisma } from "../lib/prisma.js";
 import { logEvent } from "./eventLogger.js";
+import {
+  verifyStoredSelectionSnapshot,
+  type SelectionSnapshotConfiguration,
+  type SelectionSnapshotInclusion,
+} from "./historicalRecoverySnapshot.js";
 
 /**
  * Owner control over a historical recovery campaign.
@@ -65,12 +70,44 @@ export async function approveCampaign(
       FOR UPDATE OF c
     `;
     await tx.$queryRaw`
+      SELECT s."id"
+      FROM "recovery_candidate_source" s
+      JOIN "recovery_candidate" c ON c."id" = s."candidate_id"
+      WHERE c."campaign_id" = ${campaignId}::uuid
+      ORDER BY c."ig_user_id", c."id", s."position"
+      FOR UPDATE OF s
+    `;
+    await tx.$queryRaw`
+      SELECT e."id"
+      FROM "recovery_selection_exclusion" e
+      WHERE e."campaign_id" = ${campaignId}::uuid
+      ORDER BY e."intent_id"
+      FOR UPDATE OF e
+    `;
+    await tx.$queryRaw`
       SELECT "id" FROM "recovery_campaign" WHERE "id" = ${campaignId}::uuid FOR UPDATE
     `;
 
     const current = await tx.recoveryCampaign.findUnique({
       where: { id: campaignId },
-      select: { state: true, candidateCount: true, decisionHash: true },
+      select: {
+        state: true,
+        phase: true,
+        selectionVersion: true,
+        sourceDataCutoff: true,
+        commentFrom: true,
+        commentTo: true,
+        holdoutPercent: true,
+        copyVersion: true,
+        selectionFingerprint: true,
+        eligibilityPolicyVersion: true,
+        westernOnly: true,
+        inboundWindowHours: true,
+        completionWindowHours: true,
+        candidateCount: true,
+        excludedCount: true,
+        decisionHash: true,
+      },
     });
     if (!current) return { kind: "blocked", reason: "not_found" } as const;
     if (!(["draft", "awaiting_approval"] as string[]).includes(current.state)) {
@@ -80,13 +117,93 @@ export async function approveCampaign(
       } as const;
     }
 
-    const storedCandidates = await tx.recoveryCandidate.count({ where: { campaignId } });
-    if (
-      !current.decisionHash?.trim() ||
-      current.candidateCount <= 0 ||
-      storedCandidates !== current.candidateCount
-    ) {
-      return { kind: "blocked", reason: "snapshot_incomplete" } as const;
+    const storedCandidates = await tx.recoveryCandidate.findMany({
+      where: { campaignId },
+      orderBy: [{ selectionPosition: "asc" }, { id: "asc" }],
+      select: {
+        selectionPosition: true,
+        intentId: true,
+        igUserId: true,
+        conversationId: true,
+        keywordId: true,
+        commentId: true,
+        mediaId: true,
+        commentAt: true,
+        keywordSnapshot: true,
+        publicReplyText: true,
+        evidence: true,
+        audienceOrigin: true,
+        audienceOriginConfidence: true,
+        arm: true,
+        sourceChoiceReason: true,
+        sources: {
+          orderBy: [{ position: "asc" }, { id: "asc" }],
+          select: {
+            position: true,
+            commentId: true,
+            mediaId: true,
+            receivedAt: true,
+            choiceReason: true,
+          },
+        },
+      },
+    });
+    const storedExclusions = await tx.recoverySelectionExclusion.findMany({
+      where: { campaignId },
+      orderBy: [{ intentId: "asc" }, { id: "asc" }],
+      select: { intentId: true, igUserId: true, keywordId: true, reason: true },
+    });
+    const configuration: SelectionSnapshotConfiguration | null =
+      current.eligibilityPolicyVersion && current.westernOnly !== null
+        ? {
+            phase: current.phase,
+            selectionVersion: current.selectionVersion,
+            sourceDataCutoff: current.sourceDataCutoff.toISOString(),
+            commentFrom: current.commentFrom?.toISOString() ?? null,
+            commentTo: current.commentTo?.toISOString() ?? null,
+            westernOnly: current.westernOnly,
+            holdoutPercent: current.holdoutPercent,
+            copyVersion: current.copyVersion,
+            eligibilityPolicyVersion: current.eligibilityPolicyVersion,
+            inboundWindowHours: current.inboundWindowHours,
+            completionWindowHours: current.completionWindowHours,
+          }
+        : null;
+    const inclusions: SelectionSnapshotInclusion[] = storedCandidates.map((candidate) => ({
+      position: candidate.selectionPosition ?? -1,
+      intentId: candidate.intentId,
+      igUserId: candidate.igUserId,
+      conversationId: candidate.conversationId,
+      keywordId: candidate.keywordId,
+      commentId: candidate.commentId,
+      mediaId: candidate.mediaId,
+      commentAt: candidate.commentAt.toISOString(),
+      keywordSnapshot: candidate.keywordSnapshot,
+      publicReplyText: candidate.publicReplyText,
+      evidence: candidate.evidence,
+      audienceOrigin: candidate.audienceOrigin,
+      audienceOriginConfidence: candidate.audienceOriginConfidence,
+      arm: candidate.arm,
+      sourceChoiceReason: candidate.sourceChoiceReason ?? "",
+      sources: candidate.sources.map((source) => ({
+        position: source.position,
+        commentId: source.commentId,
+        mediaId: source.mediaId,
+        receivedAt: source.receivedAt.toISOString(),
+        choiceReason: source.choiceReason,
+      })),
+    }));
+    const verified = verifyStoredSelectionSnapshot({
+      configuration,
+      selectionFingerprint: current.selectionFingerprint,
+      decisionHash: current.decisionHash,
+      candidateCount: current.candidateCount,
+      excludedCount: current.excludedCount,
+      inclusions,
+      exclusions: storedExclusions,
+    });
+    if (!verified.ok) {
+      return { kind: "blocked", reason: verified.reason } as const;
     }
 
     const withheld = await tx.recoveryCandidate.updateMany({

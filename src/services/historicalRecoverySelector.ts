@@ -576,6 +576,7 @@ export async function selectHistoricalCandidates(input: {
         keywordSnapshot: inclusion.keywordSnapshot,
         publicReplyText: inclusion.publicReplyText,
         evidence: inclusion.evidence,
+        selectionPosition: inclusion.position,
         audienceOrigin: inclusion.audienceOrigin,
         audienceOriginConfidence: inclusion.audienceOriginConfidence,
         arm: inclusion.arm,
