@@ -287,8 +287,10 @@ export function createGuideDeliveryRepository(
   return {
     async createOrLoadPlan(input) {
       return database.$transaction(async (tx) => {
-        const status = input.plan.ok ? "planned" : "failed";
-        const failureCode = input.plan.ok ? null : "guide_preflight_failed";
+        const emptyPlan = input.plan.ok && input.plan.units.length === 0;
+        const rejected = !input.plan.ok || emptyPlan;
+        const status = rejected ? "failed" : "planned";
+        const failureCode = rejected ? "guide_preflight_failed" : null;
         const inserted = await tx.$queryRaw<Array<{ id: string }>>`
           INSERT INTO "guide_delivery" (
             "conversation_id",
@@ -319,12 +321,10 @@ export function createGuideDeliveryRepository(
 
         if (inserted[0]) {
           const deliveryId = inserted[0].id;
-          if (input.plan.ok) {
-            if (input.plan.units.length > 0) {
-              await tx.guideDeliveryUnit.createMany({
-                data: input.plan.units.map((unit) => ({ ...unit, deliveryId })),
-              });
-            }
+          if (input.plan.ok && !emptyPlan) {
+            await tx.guideDeliveryUnit.createMany({
+              data: input.plan.units.map((unit) => ({ ...unit, deliveryId })),
+            });
             await tx.eventLog.create({
               data: {
                 kind: "guide_delivery_planned",
@@ -338,7 +338,7 @@ export function createGuideDeliveryRepository(
                 },
               },
             });
-          } else {
+          } else if (!input.plan.ok) {
             await tx.eventLog.create({
               data: {
                 kind: "guide_delivery_preflight_rejected",
@@ -355,6 +355,22 @@ export function createGuideDeliveryRepository(
                   unitKind: input.plan.error.unitKind,
                   actualLength: input.plan.error.actualLength,
                   limit: input.plan.error.limit,
+                },
+              },
+            });
+          } else {
+            await tx.eventLog.create({
+              data: {
+                kind: "guide_delivery_preflight_rejected",
+                payload: {
+                  deliveryId,
+                  conversationId: input.conversationId,
+                  resourceId: input.resourceId,
+                  triggerKind: input.triggerKind,
+                  triggerId: input.triggerId,
+                  failureCode,
+                  preflightCode: "empty_plan",
+                  unitCount: 0,
                 },
               },
             });
@@ -391,6 +407,34 @@ export function createGuideDeliveryRepository(
           return null;
         }
         const units = await lockAndLoadUnits(tx, input.deliveryId);
+        if (units.length === 0) {
+          await tx.guideDelivery.updateMany({
+            where: {
+              id: input.deliveryId,
+              claimToken: null,
+              status: { in: ["planned", "failed"] },
+            },
+            data: {
+              status: "failed",
+              failureCode: "guide_preflight_failed",
+              nextAttemptAt: null,
+              updatedAt: input.now,
+            },
+          });
+          await tx.eventLog.create({
+            data: {
+              kind: "guide_delivery_preflight_rejected",
+              payload: {
+                ...eventIdentity(delivery),
+                failureCode: "guide_preflight_failed",
+                preflightCode: "empty_plan",
+                unitCount: 0,
+                detectedAt: input.now.toISOString(),
+              },
+            },
+          });
+          return null;
+        }
         const allSent = units.length > 0 && units.every((unit) => unit.status === "sent");
         if (delivery.sendWindowExpiresAt <= input.now && !allSent) {
           await tx.guideDelivery.updateMany({
@@ -435,11 +479,21 @@ export function createGuideDeliveryRepository(
               )
             )
             AND (delivery."next_attempt_at" IS NULL OR delivery."next_attempt_at" <= ${input.now})
+            AND EXISTS (
+              SELECT 1 FROM "guide_delivery_unit" AS unit
+              WHERE unit."delivery_id" = delivery."id"
+            )
             AND (
               delivery."send_window_expires_at" > ${input.now}
-              OR NOT EXISTS (
-                SELECT 1 FROM "guide_delivery_unit" AS unit
-                WHERE unit."delivery_id" = delivery."id" AND unit."status" <> 'sent'
+              OR (
+                EXISTS (
+                  SELECT 1 FROM "guide_delivery_unit" AS unit
+                  WHERE unit."delivery_id" = delivery."id"
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM "guide_delivery_unit" AS unit
+                  WHERE unit."delivery_id" = delivery."id" AND unit."status" <> 'sent'
+                )
               )
             )
           RETURNING delivery."id"
@@ -464,6 +518,63 @@ export function createGuideDeliveryRepository(
       );
 
       return database.$transaction(async (tx) => {
+        const empty = await tx.$queryRaw<LockedDelivery[]>(Prisma.sql`
+          WITH zero_unit AS (
+            SELECT delivery."id"
+            FROM "guide_delivery" AS delivery
+            WHERE delivery."status" IN ('planned', 'failed')
+              AND delivery."claim_token" IS NULL
+              AND (
+                delivery."status" = 'planned'
+                OR (
+                  delivery."failure_code" = 'guide_unit_transient'
+                  AND delivery."next_attempt_at" IS NOT NULL
+                )
+              )
+              AND (delivery."next_attempt_at" IS NULL OR delivery."next_attempt_at" <= ${input.now})
+              AND NOT EXISTS (
+                SELECT 1 FROM "guide_delivery_unit" AS unit
+                WHERE unit."delivery_id" = delivery."id"
+              )
+            ORDER BY COALESCE(delivery."next_attempt_at", delivery."created_at"), delivery."created_at", delivery."id"
+            FOR UPDATE OF delivery SKIP LOCKED
+            LIMIT ${input.limit}
+          )
+          UPDATE "guide_delivery" AS delivery
+          SET
+            "status" = 'failed',
+            "failure_code" = 'guide_preflight_failed',
+            "next_attempt_at" = NULL,
+            "updated_at" = ${input.now}
+          FROM zero_unit
+          WHERE delivery."id" = zero_unit."id"
+          RETURNING
+            delivery."id",
+            delivery."conversation_id" AS "conversationId",
+            delivery."resource_id" AS "resourceId",
+            delivery."trigger_kind"::text AS "triggerKind",
+            delivery."trigger_id" AS "triggerId",
+            delivery."status"::text AS "status",
+            delivery."failure_code" AS "failureCode",
+            delivery."next_attempt_at" AS "nextAttemptAt",
+            delivery."claim_token" AS "claimToken",
+            delivery."send_window_expires_at" AS "sendWindowExpiresAt"
+        `);
+        if (empty.length > 0) {
+          await tx.eventLog.createMany({
+            data: empty.map((delivery) => ({
+              kind: "guide_delivery_preflight_rejected",
+              payload: {
+                ...eventIdentity(delivery),
+                failureCode: "guide_preflight_failed",
+                preflightCode: "empty_plan",
+                unitCount: 0,
+                detectedAt: input.now.toISOString(),
+              },
+            })),
+          });
+        }
+
         const closed = await tx.$queryRaw<LockedDelivery[]>(Prisma.sql`
           WITH expired AS (
             SELECT delivery."id"
@@ -479,9 +590,15 @@ export function createGuideDeliveryRepository(
               )
               AND (delivery."next_attempt_at" IS NULL OR delivery."next_attempt_at" <= ${input.now})
               AND delivery."send_window_expires_at" <= ${input.now}
-              AND EXISTS (
-                SELECT 1 FROM "guide_delivery_unit" AS unit
-                WHERE unit."delivery_id" = delivery."id" AND unit."status" <> 'sent'
+              AND NOT (
+                EXISTS (
+                  SELECT 1 FROM "guide_delivery_unit" AS unit
+                  WHERE unit."delivery_id" = delivery."id"
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM "guide_delivery_unit" AS unit
+                  WHERE unit."delivery_id" = delivery."id" AND unit."status" <> 'sent'
+                )
               )
             ORDER BY COALESCE(delivery."next_attempt_at", delivery."created_at"), delivery."created_at", delivery."id"
             FOR UPDATE OF delivery SKIP LOCKED
@@ -535,11 +652,21 @@ export function createGuideDeliveryRepository(
                   )
                 )
                 AND (delivery."next_attempt_at" IS NULL OR delivery."next_attempt_at" <= ${input.now})
+                AND EXISTS (
+                  SELECT 1 FROM "guide_delivery_unit" AS unit
+                  WHERE unit."delivery_id" = delivery."id"
+                )
                 AND (
                   delivery."send_window_expires_at" > ${input.now}
-                  OR NOT EXISTS (
-                    SELECT 1 FROM "guide_delivery_unit" AS unit
-                    WHERE unit."delivery_id" = delivery."id" AND unit."status" <> 'sent'
+                  OR (
+                    EXISTS (
+                      SELECT 1 FROM "guide_delivery_unit" AS unit
+                      WHERE unit."delivery_id" = delivery."id"
+                    )
+                    AND NOT EXISTS (
+                      SELECT 1 FROM "guide_delivery_unit" AS unit
+                      WHERE unit."delivery_id" = delivery."id" AND unit."status" <> 'sent'
+                    )
                   )
                 )
               ORDER BY COALESCE(delivery."next_attempt_at", delivery."created_at"), delivery."created_at", delivery."id"
