@@ -273,6 +273,15 @@ describeWithLocalDatabase("final send check sees journey completion", () => {
         canonicalIntentId: opts.linkIntent ? intentId : null,
       },
     });
+    if (opts.linkIntent) {
+      // The reminder source is the canonical owner in this scenario. Without this
+      // authoritative pointer both linked conversations are aliases by definition, and
+      // the correct result would be `reconciled_alias` before completion is considered.
+      await prisma.journeyIntent.update({
+        where: { id: intentId },
+        data: { canonicalConversationId: source.id },
+      });
+    }
 
     const reminder = await prisma.dmRecoveryReminder.create({
       data: {
@@ -360,16 +369,23 @@ describeWithLocalDatabase("send capacity is reserved, not merely observed", () =
     return id;
   }
 
-  async function reserveFor(id: string, caps: { hourly: number; daily: number; global: number }) {
+  async function reserveRaw(id: string, caps: { hourly: number; daily: number; global: number }) {
     const row = await prisma.recoveryCandidate.findUnique({ where: { id } });
-    return repo.reserveSendCapacity({
+    if (!row?.claimToken) throw new Error("candidate must be claimed before reservation");
+    return repo.reserveHistoricalDispatch({
       candidateId: id,
-      campaignId: row!.campaignId,
+      claimToken: row.claimToken,
       now: new Date(),
       hourlyCap: caps.hourly,
       dailyCap: caps.daily,
       globalHourlyCap: caps.global,
+      prospectiveCooldownHours: 24,
     });
+  }
+
+  async function reserveFor(id: string, caps: { hourly: number; daily: number; global: number }) {
+    const result = await reserveRaw(id, caps);
+    return result.kind === "reserved" ? null : result.reason;
   }
 
   // THE two-process race. With a cap of 1 and two workers reserving at once, exactly one
@@ -402,7 +418,21 @@ describeWithLocalDatabase("send capacity is reserved, not merely observed", () =
     const next = await makeCandidate(campaignId);
     const now = new Date();
     const held = await repo.claimCandidate(spent, now, new Date(now.getTime() + 60_000));
-    await repo.markCandidateUncertain(spent, held!.claimToken, "transport_uncertain");
+    await repo.claimCandidate(next, now, new Date(now.getTime() + 60_000));
+    const reservation = await reserveRaw(spent, { hourly: 1, daily: 10, global: 50 });
+    if (reservation.kind !== "reserved") throw new Error("expected reservation");
+    await repo.startHistoricalDispatch({
+      candidateId: spent,
+      claimToken: held!.claimToken,
+      ...reservation,
+      now,
+    });
+    await repo.finalizeHistoricalDispatch({
+      candidateId: spent,
+      claimToken: held!.claimToken,
+      ...reservation,
+      outcome: { kind: "uncertain", reason: "transport_uncertain" },
+    });
 
     expect(await reserveFor(next, { hourly: 1, daily: 10, global: 50 })).toBe("hourly_cap_reached");
   });
@@ -422,11 +452,23 @@ describeWithLocalDatabase("send capacity is reserved, not merely observed", () =
     const now = new Date();
     const held = await repo.claimCandidate(throttled, now, new Date(now.getTime() + 60_000));
 
-    expect(await reserveFor(throttled, { hourly: 1, daily: 10, global: 50 })).toBeNull();
+    const reservation = await reserveRaw(throttled, { hourly: 1, daily: 10, global: 50 });
+    expect(reservation.kind).toBe("reserved");
+    if (reservation.kind !== "reserved") throw new Error("expected reservation");
 
     // Exactly what the worker's safe_retry branch does: release with a backoff, and
     // write no outcome, because there is no outcome to write.
-    await repo.releaseCandidateClaim(throttled, held!.claimToken, new Date(now.getTime() + 5 * 60_000));
+    await repo.finalizeHistoricalDispatch({
+      candidateId: throttled,
+      claimToken: held!.claimToken,
+      ...reservation,
+      outcome: {
+        kind: "released",
+        at: now,
+        reason: "rate_limit",
+        nextAttemptAt: new Date(now.getTime() + 5 * 60_000),
+      },
+    });
 
     // Claimed first, because reserving stamps the dispatch and
     // chk_candidate_dispatch_needs_claim requires a claim to stamp it under. That is the
@@ -444,8 +486,14 @@ describeWithLocalDatabase("send capacity is reserved, not merely observed", () =
     const id = await makeCandidate(campaignId);
     const now = new Date();
     const held = await repo.claimCandidate(id, now, new Date(now.getTime() + 60_000));
-    await reserveFor(id, { hourly: 5, daily: 50, global: 500 });
-    await repo.releaseCandidateClaim(id, held!.claimToken, now);
+    const reservation = await reserveRaw(id, { hourly: 5, daily: 50, global: 500 });
+    if (reservation.kind !== "reserved") throw new Error("expected reservation");
+    await repo.finalizeHistoricalDispatch({
+      candidateId: id,
+      claimToken: held!.claimToken,
+      ...reservation,
+      outcome: { kind: "released", at: now, reason: "rate_limit", nextAttemptAt: now },
+    });
 
     // Claimed again, then the worker dies before reserving. The lease is short but
     // valid — chk_candidate_claim_ordering forbids an expiry before the claim — and the
@@ -467,26 +515,12 @@ describeWithLocalDatabase("send capacity is reserved, not merely observed", () =
    */
   async function globalSendsThisHour(): Promise<number> {
     const hourAgo = new Date(Date.now() - 60 * 60 * 1000);
-    const [historical, prospective] = await Promise.all([
-      prisma.recoveryCandidate.count({
-        where: {
-          OR: [
-            { outcome: "sent", sentAt: { gte: hourAgo } },
-            { outcome: "send_uncertain", lastAttemptAt: { gte: hourAgo } },
-            { outcome: "pending", dispatchStartedAt: { gte: hourAgo } },
-          ],
-        },
-      }),
-      prisma.dmRecoveryReminder.count({
-        where: {
-          OR: [
-            { sentAt: { gte: hourAgo } },
-            { lastAttemptAt: { gte: hourAgo }, status: { in: ["sending", "send_uncertain"] } },
-          ],
-        },
-      }),
-    ]);
-    return historical + prospective;
+    return prisma.publicRecoveryDispatch.count({
+      where: {
+        state: { in: ["reserved", "dispatch_started", "sent", "uncertain"] },
+        reservedAt: { gt: hourAgo },
+      },
+    });
   }
 
   // The prospective feature posts under the same account name, so its sends have to
@@ -502,17 +536,19 @@ describeWithLocalDatabase("send capacity is reserved, not merely observed", () =
 
     const prospectivePerson = `${fx.igUserId}-pro-${randomUUID()}`;
     await prisma.igUser.create({ data: { id: prospectivePerson } });
-    const convo = await prisma.conversation.create({
-      data: { igUserId: prospectivePerson, keywordId: fx.keywordId, state: "expired" },
-    });
-    await prisma.dmRecoveryReminder.create({
+    await prisma.publicRecoveryDispatch.create({
       data: {
-        // A DIFFERENT person, so this exercises the global cap rather than the
-        // per-person cooldown. Created explicitly: the FK requires a real ig_user.
-        conversationId: convo.id, igUserId: prospectivePerson, keywordId: fx.keywordId,
-        keywordSnapshot: "RACE", templateVersion: "v1", publicReplyText: "t",
-        commentId: `glob-c-${randomUUID()}`, triggerKind: "no_confirmed_read",
-        status: "sent", cohort: "treatment", eligibleAt: now, sentAt: now,
+        reservationToken: randomUUID(),
+        igUserId: prospectivePerson,
+        sourceKind: "prospective",
+        sourceId: randomUUID(),
+        attemptNumber: 1,
+        state: "sent",
+        reservedAt: now,
+        leaseExpiresAt: new Date(now.getTime() + 60_000),
+        dispatchStartedAt: now,
+        sentAt: now,
+        providerReplyId: `provider-${randomUUID()}`,
       },
     });
 
@@ -535,9 +571,24 @@ describeWithLocalDatabase("send capacity is reserved, not merely observed", () =
     const next = await makeCandidate(campaignId);
     const now = new Date();
     const held = await repo.claimCandidate(spent, now, new Date(now.getTime() + 60_000));
-    await repo.markCandidateSent(spent, held!.claimToken, {
-      publicReplyId: `179${randomUUID().slice(0, 8)}`,
-      sentAt: now,
+    await repo.claimCandidate(next, now, new Date(now.getTime() + 60_000));
+    const reservation = await reserveRaw(spent, { hourly: 50, daily: 1, global: 50 });
+    if (reservation.kind !== "reserved") throw new Error("expected reservation");
+    await repo.startHistoricalDispatch({
+      candidateId: spent,
+      claimToken: held!.claimToken,
+      ...reservation,
+      now,
+    });
+    await repo.finalizeHistoricalDispatch({
+      candidateId: spent,
+      claimToken: held!.claimToken,
+      ...reservation,
+      outcome: {
+        kind: "sent",
+        providerReplyId: `179${randomUUID().slice(0, 8)}`,
+        at: now,
+      },
     });
 
     expect(await reserveFor(next, { hourly: 50, daily: 1, global: 50 })).toBe("daily_cap_reached");
@@ -599,8 +650,8 @@ describeWithLocalDatabase("historical candidate claim exclusivity", () => {
     expect(a?.claimToken).not.toBe(b?.claimToken);
   });
 
-  // The other half of QA-02: a stale claimant must not be able to finalise or release
-  // the winner's row. The old predicate was `id + outcome=pending`, which let it.
+  // The other half of QA-02: a stale claimant must not be able to change pre-dispatch
+  // source state. Ledger start/finalise fencing is covered by the shared dispatch contract.
   it("refuses to let a stale token finalise the winner's row", async () => {
     const id = await makeCandidate();
     const now = new Date();
@@ -608,14 +659,13 @@ describeWithLocalDatabase("historical candidate claim exclusivity", () => {
     expect(winner).not.toBeNull();
 
     const stale = randomUUID();
-    expect(await repo.markCandidateSent(id, stale, { publicReplyId: "179", sentAt: now })).toBe(false);
     expect(await repo.markCandidateSuppressed(id, stale, "nope")).toBe(false);
     expect(await repo.markCandidateFailed(id, stale, "nope")).toBe(false);
-    expect(await repo.markCandidateUncertain(id, stale, "nope")).toBe(false);
     expect(await repo.releaseCandidateClaim(id, stale)).toBe(false);
 
-    // Still the winner's, still pending, still sendable by the rightful holder.
-    expect(await repo.markCandidateSent(id, winner!.claimToken, { publicReplyId: "179", sentAt: now })).toBe(true);
+    // Still the winner's and still mutable by the rightful holder before reservation.
+    expect(await repo.markCandidateFailed(id, winner!.claimToken, "source_read_exhausted"))
+      .toBe(true);
   });
 
   it("frees the row for a later tick when the holder releases it", async () => {
@@ -652,15 +702,4 @@ describeWithLocalDatabase("historical candidate claim exclusivity", () => {
     expect(second!.attempts).toBe(2);
   });
 
-  // QA-08: an uncertain attempt may be live on Instagram, so it must consume cap.
-  // Excluding it let an unknown number of real public comments escape the limit.
-  it("counts an uncertain attempt against the cap", async () => {
-    const id = await makeCandidate();
-    const now = new Date();
-    const held = await repo.claimCandidate(id, now, new Date(now.getTime() + 60_000));
-    await repo.markCandidateUncertain(id, held!.claimToken, "timeout");
-
-    const counted = await repo.countCandidatesSentSince(fx.campaignId, new Date(now.getTime() - 60_000));
-    expect(counted).toBeGreaterThan(0);
-  });
 });

@@ -240,7 +240,7 @@ CREATE UNIQUE INDEX "public_recovery_dispatch_active_person_key"
 CREATE INDEX "public_recovery_dispatch_capacity_idx"
   ON "public_recovery_dispatch" ("state", "reserved_at");
 CREATE INDEX "public_recovery_dispatch_person_cooldown_idx"
-  ON "public_recovery_dispatch" ("ig_user_id", "sent_at");
+  ON "public_recovery_dispatch" ("ig_user_id", "dispatch_started_at");
 CREATE INDEX "public_recovery_dispatch_campaign_capacity_idx"
   ON "public_recovery_dispatch" ("campaign_id", "state", "reserved_at");
 

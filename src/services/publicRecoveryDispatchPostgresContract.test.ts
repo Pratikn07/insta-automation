@@ -11,6 +11,8 @@ let prospective: typeof import("./dmRecoveryRepository.js");
 const prefix = `dispatch-contract-${randomUUID()}`;
 let resourceId: string;
 let keywordId: string;
+let otherKeywordId: string;
+let intentSequence = 0;
 
 async function createPerson(): Promise<string> {
   const id = `${prefix}-${randomUUID()}`;
@@ -37,7 +39,7 @@ async function createCampaign(): Promise<string> {
 
 async function createCandidate(igUserId: string, requestedCampaignId?: string) {
   const campaignId = requestedCampaignId ?? await createCampaign();
-  const now = new Date();
+  const now = new Date(Date.now() + intentSequence++);
   const intent = await db.journeyIntent.create({
     data: {
       igUserId,
@@ -65,15 +67,15 @@ async function createCandidate(igUserId: string, requestedCampaignId?: string) {
   });
 }
 
-async function createReminder(igUserId: string) {
+async function createReminder(igUserId: string, requestedKeywordId = keywordId) {
   const conversation = await db.conversation.create({
-    data: { igUserId, keywordId, state: "expired" },
+    data: { igUserId, keywordId: requestedKeywordId, state: "expired" },
   });
   return db.dmRecoveryReminder.create({
     data: {
       conversationId: conversation.id,
       igUserId,
-      keywordId,
+      keywordId: requestedKeywordId,
       keywordSnapshot: "SLEEP",
       templateVersion: "contract-v1",
       publicReplyText: "contract",
@@ -96,15 +98,16 @@ beforeAll(async () => {
   prospective = await import("./dmRecoveryRepository.js");
   resourceId = randomUUID();
   keywordId = randomUUID();
+  otherKeywordId = randomUUID();
   await db.resource.create({ data: { id: resourceId, name: prefix } });
-  await db.keyword.create({
-    data: {
-      id: keywordId,
-      keyword: prefix,
+  await db.keyword.createMany({
+    data: [keywordId, otherKeywordId].map((id, index) => ({
+      id,
+      keyword: `${prefix}-${index}`,
       resourceId,
       publicReply: "contract",
       gateMessage: "contract",
-    },
+    })),
   });
 });
 
@@ -121,7 +124,7 @@ afterEach(async () => {
 
 afterAll(async () => {
   if (!db) return;
-  await db.keyword.deleteMany({ where: { id: keywordId } });
+  await db.keyword.deleteMany({ where: { id: { in: [keywordId, otherKeywordId] } } });
   await db.resource.deleteMany({ where: { id: resourceId } });
   await db.$disconnect();
 });
@@ -180,6 +183,37 @@ describeWithDatabase("public recovery dispatch concurrency", () => {
         prospectiveCooldownHours: 24,
       }),
     ]);
+
+    expect(results.filter((result) => result.kind === "reserved")).toHaveLength(1);
+    expect(await db.publicRecoveryDispatch.count({
+      where: { igUserId: person, state: { in: ["reserved", "dispatch_started"] } },
+    })).toBe(1);
+  });
+
+  it("allows only one reservation across five historical campaigns for one person", async () => {
+    const person = await createPerson();
+    const candidates = [];
+    for (let index = 0; index < 5; index++) {
+      candidates.push(await createCandidate(person));
+    }
+    const now = new Date();
+    const lease = new Date(now.getTime() + 60_000);
+    const claims = await Promise.all(
+      candidates.map((candidate) => historical.claimCandidate(candidate.id, now, lease)),
+    );
+    expect(claims.every(Boolean)).toBe(true);
+
+    const results = await Promise.all(
+      candidates.map((candidate, index) => historical.reserveHistoricalDispatch({
+        candidateId: candidate.id,
+        claimToken: claims[index]!.claimToken,
+        now,
+        hourlyCap: 10,
+        dailyCap: 10,
+        globalHourlyCap: 10,
+        prospectiveCooldownHours: 24,
+      })),
+    );
 
     expect(results.filter((result) => result.kind === "reserved")).toHaveLength(1);
     expect(await db.publicRecoveryDispatch.count({
@@ -358,5 +392,200 @@ describeWithDatabase("public recovery dispatch concurrency", () => {
     await expect(
       prospective.authorizeClaimForSend(reminder.id, claim!.claimToken, now),
     ).resolves.toEqual({ kind: "pause", reason: "hourly_cap" });
+  });
+
+  it("counts prospective ledger attempts against historical global capacity", async () => {
+    const capacityPerson = await createPerson();
+    const now = new Date();
+    await db.publicRecoveryDispatch.create({
+      data: {
+        reservationToken: randomUUID(),
+        igUserId: capacityPerson,
+        sourceKind: "prospective",
+        sourceId: randomUUID(),
+        attemptNumber: 1,
+        state: "sent",
+        reservedAt: now,
+        leaseExpiresAt: new Date(now.getTime() + 60_000),
+        dispatchStartedAt: now,
+        sentAt: now,
+        providerReplyId: `provider-${randomUUID()}`,
+      },
+    });
+    const candidate = await createCandidate(await createPerson());
+    const claim = await historical.claimCandidate(
+      candidate.id,
+      now,
+      new Date(now.getTime() + 60_000),
+    );
+
+    await expect(historical.reserveHistoricalDispatch({
+      candidateId: candidate.id,
+      claimToken: claim!.claimToken,
+      now,
+      hourlyCap: 10,
+      dailyCap: 10,
+      globalHourlyCap: 1,
+      prospectiveCooldownHours: 24,
+    })).resolves.toEqual({ kind: "blocked", reason: "global_hourly_cap_reached" });
+  });
+
+  it("frees released capacity but keeps uncertain capacity consumed", async () => {
+    const campaignId = await createCampaign();
+    const releasedCandidate = await createCandidate(await createPerson(), campaignId);
+    const uncertainCandidate = await createCandidate(await createPerson(), campaignId);
+    const nextCandidate = await createCandidate(await createPerson(), campaignId);
+    const now = new Date();
+    const lease = new Date(now.getTime() + 60_000);
+    const [releasedClaim, uncertainClaim, nextClaim] = await Promise.all([
+      historical.claimCandidate(releasedCandidate.id, now, lease),
+      historical.claimCandidate(uncertainCandidate.id, now, lease),
+      historical.claimCandidate(nextCandidate.id, now, lease),
+    ]);
+    const released = await historical.reserveHistoricalDispatch({
+      candidateId: releasedCandidate.id,
+      claimToken: releasedClaim!.claimToken,
+      now,
+      hourlyCap: 1,
+      dailyCap: 10,
+      globalHourlyCap: 10,
+      prospectiveCooldownHours: 24,
+    });
+    if (released.kind !== "reserved") throw new Error("expected reservation");
+    await historical.finalizeHistoricalDispatch({
+      candidateId: releasedCandidate.id,
+      claimToken: releasedClaim!.claimToken,
+      ...released,
+      outcome: { kind: "released", reason: "rate_limit", at: now },
+    });
+
+    const uncertain = await historical.reserveHistoricalDispatch({
+      candidateId: uncertainCandidate.id,
+      claimToken: uncertainClaim!.claimToken,
+      now,
+      hourlyCap: 1,
+      dailyCap: 10,
+      globalHourlyCap: 10,
+      prospectiveCooldownHours: 24,
+    });
+    expect(uncertain.kind).toBe("reserved");
+    if (uncertain.kind !== "reserved") throw new Error("expected reservation");
+    await historical.startHistoricalDispatch({
+      candidateId: uncertainCandidate.id,
+      claimToken: uncertainClaim!.claimToken,
+      ...uncertain,
+      now,
+    });
+    await historical.finalizeHistoricalDispatch({
+      candidateId: uncertainCandidate.id,
+      claimToken: uncertainClaim!.claimToken,
+      ...uncertain,
+      outcome: { kind: "uncertain", reason: "timeout" },
+    });
+
+    await expect(historical.reserveHistoricalDispatch({
+      candidateId: nextCandidate.id,
+      claimToken: nextClaim!.claimToken,
+      now,
+      hourlyCap: 1,
+      dailyCap: 10,
+      globalHourlyCap: 10,
+      prospectiveCooldownHours: 24,
+    })).resolves.toEqual({ kind: "blocked", reason: "hourly_cap_reached" });
+  });
+
+  it("treats exact 24-hour and 30-day cooldown boundaries as eligible", async () => {
+    const now = new Date();
+    const prospectivePerson = await createPerson();
+    await db.publicRecoveryDispatch.create({
+      data: {
+        reservationToken: randomUUID(),
+        igUserId: prospectivePerson,
+        sourceKind: "prospective",
+        sourceId: randomUUID(),
+        attemptNumber: 1,
+        state: "sent",
+        reservedAt: new Date(now.getTime() - 24 * 3600_000),
+        leaseExpiresAt: new Date(now.getTime() - 24 * 3600_000 + 60_000),
+        dispatchStartedAt: new Date(now.getTime() - 24 * 3600_000),
+        sentAt: new Date(now.getTime() - 24 * 3600_000),
+        providerReplyId: `provider-${randomUUID()}`,
+      },
+    });
+    const reminder = await createReminder(prospectivePerson, otherKeywordId);
+    const reminderClaim = await prospective.claimRecovery(
+      reminder.id,
+      now,
+      new Date(now.getTime() + 60_000),
+    );
+    const prospectiveDecision = await prospective.authorizeClaimForSend(
+      reminder.id,
+      reminderClaim!.claimToken,
+      now,
+    );
+    expect([
+      "send_settings_fallback",
+      "send_no_confirmed_read_reminder",
+    ]).toContain(prospectiveDecision.kind);
+
+    const historicalPerson = await createPerson();
+    await db.publicRecoveryDispatch.create({
+      data: {
+        reservationToken: randomUUID(),
+        igUserId: historicalPerson,
+        sourceKind: "prospective",
+        sourceId: randomUUID(),
+        attemptNumber: 1,
+        state: "uncertain",
+        reservedAt: new Date(now.getTime() - 30 * 24 * 3600_000),
+        leaseExpiresAt: new Date(now.getTime() - 30 * 24 * 3600_000 + 60_000),
+        dispatchStartedAt: new Date(now.getTime() - 30 * 24 * 3600_000),
+        terminalReason: "timeout",
+      },
+    });
+    const candidate = await createCandidate(historicalPerson);
+    const candidateClaim = await historical.claimCandidate(
+      candidate.id,
+      now,
+      new Date(now.getTime() + 60_000),
+    );
+    await expect(historical.reserveHistoricalDispatch({
+      candidateId: candidate.id,
+      claimToken: candidateClaim!.claimToken,
+      now,
+      hourlyCap: 10,
+      dailyCap: 10,
+      globalHourlyCap: 10,
+      prospectiveCooldownHours: 24,
+    })).resolves.toMatchObject({ kind: "reserved" });
+  });
+
+  it("shares person cooldown across different keywords just inside the boundary", async () => {
+    const person = await createPerson();
+    const now = new Date();
+    await db.publicRecoveryDispatch.create({
+      data: {
+        reservationToken: randomUUID(),
+        igUserId: person,
+        sourceKind: "prospective",
+        sourceId: randomUUID(),
+        attemptNumber: 1,
+        state: "sent",
+        reservedAt: new Date(now.getTime() - 24 * 3600_000 + 1),
+        leaseExpiresAt: new Date(now.getTime() - 24 * 3600_000 + 60_001),
+        dispatchStartedAt: new Date(now.getTime() - 24 * 3600_000 + 1),
+        sentAt: new Date(now.getTime() - 24 * 3600_000 + 1),
+        providerReplyId: `provider-${randomUUID()}`,
+      },
+    });
+    const reminder = await createReminder(person, otherKeywordId);
+    const claim = await prospective.claimRecovery(
+      reminder.id,
+      now,
+      new Date(now.getTime() + 60_000),
+    );
+    expect(claim).toBeNull();
+    expect(await db.dmRecoveryReminder.findUnique({ where: { id: reminder.id } }))
+      .toMatchObject({ status: "suppressed", suppressionReason: "person_cooldown" });
   });
 });

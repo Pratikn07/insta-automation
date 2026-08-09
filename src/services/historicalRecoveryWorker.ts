@@ -613,30 +613,15 @@ async function gatherPreDispatchFacts(
           completedAt: { gte: claimed.selectedAt },
         },
       }),
-      // Both recovery systems, because either one posting publicly on this person is a
-      // reason not to post again.
-      Promise.all([
-        prisma.dmRecoveryReminder.count({
-          where: {
-            igUserId: claimed.igUserId,
-            status: { in: ["sent", "sending", "send_uncertain"] },
-            OR: [
-              { sentAt: { gte: claimed.selectedAt } },
-              { lastAttemptAt: { gte: claimed.selectedAt } },
-            ],
-          },
-        }),
-        prisma.recoveryCandidate.count({
-          where: {
-            igUserId: claimed.igUserId,
-            id: { not: claimed.id },
-            OR: [
-              { outcome: "sent", sentAt: { gte: claimed.selectedAt } },
-              { outcome: "send_uncertain", lastAttemptAt: { gte: claimed.selectedAt } },
-            ],
-          },
-        }),
-      ]).then(([prospective, historical]) => prospective + historical),
+      // The shared ledger is the only cooldown authority. It contains both recovery
+      // systems, so this advisory recheck cannot drift from the locked reservation.
+      prisma.publicRecoveryDispatch.count({
+        where: {
+          igUserId: claimed.igUserId,
+          state: { in: ["sent", "uncertain"] },
+          dispatchStartedAt: { gte: claimed.selectedAt },
+        },
+      }),
     ]),
     // The Graph read that catches a deleted or hidden comment.
     readSourceComment(claimed.commentId),

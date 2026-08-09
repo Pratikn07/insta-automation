@@ -31,9 +31,8 @@ const evaluateCampaignHealth = vi.fn();
 const igUserFindUnique = vi.fn();
 const dmMessageCount = vi.fn();
 const conversationCount = vi.fn();
-const reminderCount = vi.fn();
-// QA-11: the recheck now consults BOTH recovery systems for a prior public contact.
-const candidateCount = vi.fn();
+// QA-11: the shared ledger contains BOTH recovery systems' public contacts.
+const dispatchCount = vi.fn();
 
 vi.mock("./historicalRecoveryRepository.js", () => ({
   listDueCandidateIds,
@@ -69,8 +68,7 @@ vi.mock("../lib/prisma.js", () => ({
     igUser: { findUnique: igUserFindUnique },
     dmMessage: { count: dmMessageCount },
     conversation: { count: conversationCount },
-    dmRecoveryReminder: { count: reminderCount },
-    recoveryCandidate: { count: candidateCount },
+    publicRecoveryDispatch: { count: dispatchCount },
   },
 }));
 
@@ -126,7 +124,7 @@ beforeEach(() => {
     replyToComment, fetchComment, evaluateRecoveryHealth, openRecoveryCircuit,
     logEvent, describeGraphError, classifyPublicReplyFailure,
     campaignFindUnique, campaignAggregate, completeCampaignIfDrained, evaluateCampaignHealth,
-    igUserFindUnique, dmMessageCount, conversationCount, reminderCount, candidateCount,
+    igUserFindUnique, dmMessageCount, conversationCount, dispatchCount,
   ]) {
     fn.mockReset();
   }
@@ -155,8 +153,7 @@ beforeEach(() => {
   igUserFindUnique.mockResolvedValue({ inferredOrigin: "us_western" });
   dmMessageCount.mockResolvedValue(0);
   conversationCount.mockResolvedValue(0);
-  reminderCount.mockResolvedValue(0);
-  candidateCount.mockResolvedValue(0);
+  dispatchCount.mockResolvedValue(0);
   countCandidatesSentSince.mockResolvedValue(0);
   fetchComment.mockResolvedValue({ id: CANDIDATE.commentId, hidden: false, timestamp: null });
   replyToComment.mockResolvedValue({ replyId: "17900000000000000" });
@@ -329,7 +326,7 @@ describe("runHistoricalRecoveryTick — pre-send recheck", () => {
   });
 
   it("suppresses when another recovery already reached them", async () => {
-    reminderCount.mockResolvedValue(1);
+    dispatchCount.mockResolvedValue(1);
 
     await runHistoricalRecoveryTick();
 
@@ -653,20 +650,19 @@ describe("runHistoricalRecoveryTick — evidence is scoped to since-selection", 
     expect(where.completedAt).toEqual({ gte: CANDIDATE.selectedAt });
   });
 
-  it("asks BOTH recovery systems about a prior public contact", async () => {
+  it("asks the shared ledger about either system's prior public contact", async () => {
     await runHistoricalRecoveryTick();
 
-    expect(reminderCount).toHaveBeenCalled();
-    expect(candidateCount).toHaveBeenCalled();
-    // Never itself: a candidate's own row must not read as someone else's send.
-    expect(whereOf(candidateCount).id).toEqual({ not: CANDIDATE.id });
+    expect(dispatchCount).toHaveBeenCalled();
+    const where = whereOf(dispatchCount);
+    expect(where.igUserId).toBe(CANDIDATE.igUserId);
+    expect(where.state).toEqual({ in: ["sent", "uncertain"] });
+    expect(where.dispatchStartedAt).toEqual({ gte: CANDIDATE.selectedAt });
   });
 
-  // A historical send by another campaign is a reason to stay silent, and before this
-  // the recheck could not see one at all.
-  it("suppresses when only the historical table shows a prior send", async () => {
-    reminderCount.mockResolvedValue(0);
-    candidateCount.mockResolvedValue(1);
+  // A send from either feature is a reason to stay silent; source tables are not read.
+  it("suppresses when the ledger shows a prior send", async () => {
+    dispatchCount.mockResolvedValue(1);
 
     const result = await runHistoricalRecoveryTick();
 

@@ -68,7 +68,6 @@ const {
   listDueRecoveryIds,
   claimRecovery,
   authorizeClaimForSend,
-  markRecoverySent,
   releaseOrSuppressClaim,
   resolveAudienceOrigin,
 } = await import("./dmRecoveryRepository.js");
@@ -582,34 +581,6 @@ describe("resolveAudienceOrigin", () => {
 });
 
 describe("finalizers", () => {
-  it("markRecoverySent records a confirmed reply", async () => {
-    const sentAt = new Date();
-    await expect(markRecoverySent("rec-1", { replyId: "rep-1", sentAt })).resolves.toBe(true);
-    expect(updateMany).toHaveBeenCalledWith({
-      where: { id: "rec-1", status: "sending" },
-      data: {
-        status: "sent",
-        publicReplyId: "rep-1",
-        sentAt,
-        claimedAt: null,
-        claimExpiresAt: null,
-        claimToken: null,
-      },
-    });
-  });
-
-  // Without an id from Meta the send is unconfirmed; recording it as `sent`
-  // would both claim delivery we cannot prove and start the person's cooldown.
-  it.each([["an empty id", ""], ["whitespace", "   "]])(
-    "markRecoverySent refuses %s",
-    async (_l, replyId) => {
-      await expect(
-        markRecoverySent("rec-1", { replyId, sentAt: new Date() }),
-      ).resolves.toBe(false);
-      expect(updateMany).not.toHaveBeenCalled();
-    },
-  );
-
   // Every non-send outcome must move the row out of `sending`. A row left
   // claimed is reconciled to send_uncertain when its lease expires, which sends
   // a healthy hold to manual review for no reason.

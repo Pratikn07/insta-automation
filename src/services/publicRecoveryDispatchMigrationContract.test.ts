@@ -58,7 +58,9 @@ describeWithDatabase("public recovery dispatch migration", () => {
       /UNIQUE.*ig_user_id.*reserved.*dispatch_started/i,
     );
     expect(byName.has("public_recovery_dispatch_capacity_idx")).toBe(true);
-    expect(byName.has("public_recovery_dispatch_person_cooldown_idx")).toBe(true);
+    expect(byName.get("public_recovery_dispatch_person_cooldown_idx")).toContain(
+      "ig_user_id, dispatch_started_at",
+    );
   });
 
   it("installs state-shape and lease-order constraints", async () => {

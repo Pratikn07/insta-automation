@@ -776,7 +776,7 @@ model PublicRecoveryDispatch {
 
   @@unique([sourceKind, sourceId, attemptNumber], map: "public_recovery_dispatch_source_attempt_key")
   @@index([state, reservedAt], map: "public_recovery_dispatch_capacity_idx")
-  @@index([igUserId, sentAt], map: "public_recovery_dispatch_person_cooldown_idx")
+  @@index([igUserId, dispatchStartedAt], map: "public_recovery_dispatch_person_cooldown_idx")
   @@index([campaignId, state, reservedAt], map: "public_recovery_dispatch_campaign_capacity_idx")
   @@map("public_recovery_dispatch")
 }
