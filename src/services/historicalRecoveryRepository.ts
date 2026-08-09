@@ -6,6 +6,7 @@ import {
   startPublicRecoveryDispatch,
   type DispatchReservation,
 } from "./publicRecoveryDispatchRepository.js";
+import { resolveCanonicalConversation } from "./canonicalConversation.js";
 
 /**
  * Claim and finalise historical recovery candidates.
@@ -188,6 +189,16 @@ export async function reserveHistoricalDispatch(
       source.claimExpiresAt <= input.now
     ) {
       return { kind: "blocked", reason: "stale_claim" };
+    }
+    if (source.conversationId) {
+      const canonical = await resolveCanonicalConversation(tx, source.conversationId);
+      if (
+        !canonical ||
+        canonical.role === "alias" ||
+        canonical.canonicalIntentId !== source.intentId
+      ) {
+        return { kind: "blocked", reason: "reconciled_alias" };
+      }
     }
 
     return reservePublicRecoveryDispatch(tx, {

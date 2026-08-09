@@ -4,6 +4,10 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { getIgUsers } from "../services/igUserService.js";
 import { env } from "../config/env.js";
+import {
+  conversationHistoryRole,
+  operationalConversationWhere,
+} from "../services/canonicalConversation.js";
 
 /**
  * Enough recovery state for a badge, and no more: the copy we would post and
@@ -74,9 +78,7 @@ const listQuerySchema = z.object({
 export type ConversationMode = "canonical" | "raw";
 
 export function conversationScopeWhere(mode: ConversationMode): Prisma.ConversationWhereInput {
-  return mode === "raw"
-    ? {}
-    : { OR: [{ ownedIntents: { some: {} } }, { canonicalIntentId: null }] };
+  return mode === "raw" ? {} : operationalConversationWhere();
 }
 
 conversationsRouter.get("/", async (req, res) => {
@@ -131,8 +133,11 @@ conversationsRouter.get("/", async (req, res) => {
   const trackingStart = trackingStartAt();
 
   const withUsers = items.map(({ recoveryReminders, ownedIntents, canonicalIntent, ...c }) => {
-    const historyRole =
-      ownedIntents.length > 0 ? "canonical" : c.canonicalIntentId ? "alias" : "unreconciled";
+    const historyRole = conversationHistoryRole({
+      conversationId: c.id,
+      canonicalIntentId: c.canonicalIntentId,
+      canonicalConversationId: canonicalIntent?.canonicalConversation?.id,
+    });
     const aliasCount = ownedIntents.reduce(
       (total, intent) => total + intent._count.aliasConversations,
       0,
@@ -148,6 +153,7 @@ conversationsRouter.get("/", async (req, res) => {
       ...c,
       historyRole,
       canonicalOwner,
+      canonicalConversationId: canonicalOwner?.id ?? null,
       aliasCount,
       recovery: summariseRecovery(recoveryReminders[0] ?? null),
       readTracking: readTrackingAvailability(

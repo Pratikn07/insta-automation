@@ -43,14 +43,17 @@ function conversation(overrides: Record<string, unknown> = {}) {
     state: "completed",
     createdAt: new Date("2026-08-05T10:00:00.000Z"),
     completedAt: null,
-    canonicalIntentId: null,
+    canonicalIntentId: "intent-1",
     reconciliationReason: "oldest_valid_owner",
     keyword: { id: "kw-1", keyword: "SLEEP" },
     recoveryReminders: [],
     ownedIntents: [
       { id: "intent-1", _count: { aliasConversations: 2 } },
     ],
-    canonicalIntent: null,
+    canonicalIntent: {
+      id: "intent-1",
+      canonicalConversation: { id: "convo-1" },
+    },
     ...overrides,
   };
 }
@@ -157,6 +160,7 @@ describe("GET /", () => {
     expect(res.body.items[0]).toMatchObject({
       historyRole: "alias",
       canonicalOwner: { id: "canonical-1" },
+      canonicalConversationId: "canonical-1",
       aliasCount: 0,
       reconciliationReason: "duplicate_inside_window",
     });

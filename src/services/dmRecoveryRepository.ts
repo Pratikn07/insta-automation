@@ -17,6 +17,7 @@ import {
   reservePublicRecoveryDispatch,
   startPublicRecoveryDispatch,
 } from "./publicRecoveryDispatchRepository.js";
+import { resolveCanonicalConversation } from "./canonicalConversation.js";
 
 export type ClaimedRecovery = DmRecoveryReminder & { claimToken: string };
 
@@ -49,6 +50,7 @@ type PolicyContext = {
   hasNewerEligibleCandidate: boolean;
   audienceOrigin: Origin;
   audienceOriginConfidence: "high" | "low";
+  isAlias: boolean;
 };
 
 /**
@@ -63,6 +65,7 @@ async function loadPolicyContext(
   row: DmRecoveryReminder,
   now: Date,
 ): Promise<PolicyContext> {
+  const canonical = await resolveCanonicalConversation(tx, row.conversationId);
   const convo = await tx.conversation.findUnique({
     where: { id: row.conversationId },
     select: { state: true, completedAt: true, igUserId: true, keywordId: true, canonicalIntentId: true },
@@ -174,6 +177,7 @@ async function loadPolicyContext(
     hasNewerEligibleCandidate: Boolean(newerCandidate),
     audienceOrigin: origin.origin,
     audienceOriginConfidence: origin.confidence,
+    isAlias: canonical?.role === "alias",
   };
 }
 
@@ -396,7 +400,9 @@ export async function claimRecovery(
           }
 
           const ctx = await loadPolicyContext(tx, candidate, now);
-          const decision = decideRecovery(toPolicyInput(candidate, ctx));
+          const decision: RecoveryDecision = ctx.isAlias
+            ? { kind: "suppress", reason: "reconciled_alias" }
+            : decideRecovery(toPolicyInput(candidate, ctx));
 
           if (!isSendDecision(decision)) {
             await persistNonSendDecision(tx, id, decision, now);
@@ -505,7 +511,9 @@ export async function authorizeClaimForSend(
       // before a public comment is posted. The row is `sending` because we hold
       // the claim; the policy is asked whether that claim may still proceed.
       const ctx = await loadPolicyContext(tx, row, now);
-      const decision = decideRecovery(toPolicyInput(row, ctx, "waiting"));
+      const decision: RecoveryDecision = ctx.isAlias
+        ? { kind: "suppress", reason: "reconciled_alias" }
+        : decideRecovery(toPolicyInput(row, ctx, "waiting"));
 
       if (!isSendDecision(decision)) {
         return decision;

@@ -433,12 +433,47 @@ describe("canonical intent completion", () => {
     );
   });
 
-  it("still delivers when the intent is open", async () => {
+  it("abandons an alias gate even when the intent is open", async () => {
     gateQueue.findMany.mockResolvedValue([row]);
     gateQueue.updateMany.mockResolvedValue({ count: 1 });
     conversation.findMany.mockResolvedValue([
-      { ...convoObj, state: "awaiting_done", canonicalIntent: { completedAt: null } },
+      {
+        ...convoObj,
+        state: "awaiting_done",
+        canonicalIntentId: "intent-1",
+        canonicalIntent: {
+          completedAt: null,
+          canonicalConversationId: "canonical-conversation",
+        },
+      },
     ]);
+
+    await runGateQueueTick();
+
+    expect(sendTrackedPrivateReply).not.toHaveBeenCalled();
+    expect(gateQueue.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "abandoned", lastError: "reconciled_alias" }),
+      }),
+    );
+  });
+
+  it("still delivers for the canonical owner while the intent is open", async () => {
+    conversation.findMany.mockResolvedValue([
+      {
+        ...convoObj,
+        canonicalIntentId: "intent-1",
+        canonicalIntent: {
+          completedAt: null,
+          canonicalConversationId: convoObj.id,
+        },
+      },
+    ]);
+    sendTrackedPrivateReply.mockResolvedValue({
+      instagramMessageId: "mid-1",
+      dmMessageId: "dm-1",
+      acceptedAt: new Date(),
+    });
 
     await runGateQueueTick();
 

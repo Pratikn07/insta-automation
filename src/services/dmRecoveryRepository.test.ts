@@ -326,6 +326,28 @@ describe("authorizeClaimForSend", () => {
     });
   });
 
+  it("suppresses an alias even while its canonical intent is open", async () => {
+    findUnique.mockResolvedValue(sendingRow());
+    convoFindUnique.mockResolvedValue({
+      id: "convo-1",
+      state: "awaiting_done",
+      completedAt: null,
+      igUserId: "ig-1",
+      keywordId: "kw-1",
+      canonicalIntentId: "intent-1",
+      canonicalIntent: {
+        id: "intent-1",
+        canonicalConversationId: "canonical-1",
+        completedAt: null,
+      },
+    });
+
+    await expect(authorizeClaimForSend("rec-1", "token-1", NOW)).resolves.toEqual({
+      kind: "suppress",
+      reason: "reconciled_alias",
+    });
+  });
+
   // No intent link: pre-Feature-3 journeys have siblings but no intent, so the sibling's
   // own completion has to be enough on its own.
   it("suppresses when a sibling conversation completed", async () => {

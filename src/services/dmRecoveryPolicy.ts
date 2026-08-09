@@ -27,7 +27,8 @@ export type RecoverySuppressionReason =
   // posted. Named for the decision, not for the person: it records why WE did
   // not post, and it is never shown to anyone outside the dashboard.
   | "audience_out_of_market"
-  | "owner_cancelled";
+  | "owner_cancelled"
+  | "reconciled_alias";
 
 export type RecoveryDecision =
   | { kind: "wait" }

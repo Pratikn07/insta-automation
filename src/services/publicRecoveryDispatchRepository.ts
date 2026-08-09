@@ -11,7 +11,8 @@ export type DispatchBlockReason =
   | "hourly_cap_reached"
   | "daily_cap_reached"
   | "global_hourly_cap_reached"
-  | "source_attempt_exists";
+  | "source_attempt_exists"
+  | "reconciled_alias";
 
 export type DispatchReservation =
   | { kind: "reserved"; dispatchId: string; reservationToken: string }

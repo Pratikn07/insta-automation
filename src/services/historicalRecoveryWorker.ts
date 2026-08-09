@@ -266,7 +266,10 @@ async function runTickBody(): Promise<HistoricalTickResult> {
       prospectiveCooldownHours: env.DM_RECOVERY_COOLDOWN_HOURS ?? 24,
     });
     if (reservation.kind === "blocked") {
-      if (reservation.reason === "person_cooldown") {
+      if (
+        reservation.reason === "person_cooldown" ||
+        reservation.reason === "reconciled_alias"
+      ) {
         if (await markCandidateSuppressed(id, claimed.claimToken, reservation.reason)) {
           result.suppressed++;
           campaignsToEvaluate.add(claimed.campaignId);
