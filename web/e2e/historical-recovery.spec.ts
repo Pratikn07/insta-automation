@@ -58,6 +58,6 @@ test("switches from canonical conversations to raw alias history", async ({ page
   await expect(page.getByText("Canonical · 1 alias")).toBeVisible();
   await page.getByRole("button", { name: "Raw history" }).click();
 
-  await expect(page.getByText("Alias", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Alias history · canonical owner/)).toBeVisible();
   await expect(page.getByText("Canonical owner canonical-conversation-1")).toBeVisible();
 });

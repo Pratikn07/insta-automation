@@ -388,6 +388,11 @@ function ConversationRow({ c, onClick }: { c: Conversation; onClick: () => void 
                 Alias history · canonical owner {c.canonicalOwner?.id ?? "unknown"}
               </p>
             )}
+            {c.historyRole === "canonical" && (c.aliasCount ?? 0) > 0 && (
+              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                Canonical · {c.aliasCount} {c.aliasCount === 1 ? "alias" : "aliases"}
+              </p>
+            )}
             {/* An old journey has no receipts because none were ever collected.
                 Without this the older half of the table reads as failures. */}
             {markers.note && (
