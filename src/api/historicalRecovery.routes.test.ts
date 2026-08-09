@@ -1,5 +1,40 @@
-import { describe, it, expect } from "vitest";
+import express from "express";
+import request from "supertest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
+
+const { recordCampaignHealthObservation, logEvent } = vi.hoisted(() => ({
+  recordCampaignHealthObservation: vi.fn(),
+  logEvent: vi.fn(),
+}));
+
+vi.mock("../services/campaignHealthObservation.js", () => ({
+  recordCampaignHealthObservation,
+}));
+vi.mock("../services/eventLogger.js", () => ({ logEvent }));
+
 import { candidateViewWhere, CANDIDATE_VIEWS } from "./historicalRecovery.routes.js";
+import { historicalRecoveryRouter } from "./historicalRecovery.routes.js";
+
+const CAMPAIGN_ID = "11111111-1111-4111-8111-111111111111";
+
+function app(authenticated: boolean) {
+  const server = express();
+  server.use(express.json());
+  if (authenticated) {
+    server.use((req, _res, next) => {
+      req.adminEmail = "owner@example.com";
+      next();
+    });
+  }
+  server.use(historicalRecoveryRouter);
+  return server;
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  recordCampaignHealthObservation.mockResolvedValue({ created: true });
+  logEvent.mockResolvedValue(undefined);
+});
 
 // The list and the tab badges both read from candidateViewWhere. If they could
 // disagree, a badge would promise rows the list does not show — the class of bug
@@ -70,5 +105,72 @@ describe("candidateViewWhere", () => {
     for (const view of ["sent", "suppressed", "attention", "recovered"] as const) {
       expect(candidateViewWhere(view)).not.toEqual(pending);
     }
+  });
+});
+
+describe("POST /campaigns/:id/health-observations", () => {
+  const body = {
+    kind: "complaint",
+    sourceKey: "moderation:case-123",
+    observedAt: "2026-08-08T20:00:00.000Z",
+    safeDetail: "verified_report",
+  };
+
+  it("requires an authenticated admin identity", async () => {
+    await request(app(false))
+      .post(`/campaigns/${CAMPAIGN_ID}/health-observations`)
+      .send(body)
+      .expect(401);
+
+    expect(recordCampaignHealthObservation).not.toHaveBeenCalled();
+  });
+
+  it.each(["opt_out", "negative_reply", "made_up"])(
+    "rejects manual ingestion of %s",
+    async (kind) => {
+      await request(app(true))
+        .post(`/campaigns/${CAMPAIGN_ID}/health-observations`)
+        .send({ ...body, kind })
+        .expect(400);
+    },
+  );
+
+  it("bounds source keys and safe detail", async () => {
+    await request(app(true))
+      .post(`/campaigns/${CAMPAIGN_ID}/health-observations`)
+      .send({ ...body, sourceKey: "x".repeat(201), safeDetail: "y".repeat(201) })
+      .expect(400);
+  });
+
+  it("records trusted evidence and audits only bounded safe fields", async () => {
+    await request(app(true))
+      .post(`/campaigns/${CAMPAIGN_ID}/health-observations`)
+      .send(body)
+      .expect(200, { created: true });
+
+    expect(recordCampaignHealthObservation).toHaveBeenCalledWith({
+      campaignId: CAMPAIGN_ID,
+      kind: "complaint",
+      sourceKey: "moderation:case-123",
+      observedAt: new Date("2026-08-08T20:00:00.000Z"),
+      safeDetail: "verified_report",
+    });
+    expect(logEvent).toHaveBeenCalledWith("historical_campaign_health_observation_ingested", {
+      campaignId: CAMPAIGN_ID,
+      kind: "complaint",
+      sourceKey: "moderation:case-123",
+      safeDetail: "verified_report",
+      actor: "owner@example.com",
+      created: true,
+    });
+  });
+
+  it("returns an idempotent replay as not created", async () => {
+    recordCampaignHealthObservation.mockResolvedValue({ created: false });
+
+    await request(app(true))
+      .post(`/campaigns/${CAMPAIGN_ID}/health-observations`)
+      .send(body)
+      .expect(200, { created: false });
   });
 });

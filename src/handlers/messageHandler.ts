@@ -26,6 +26,7 @@ import { parseProviderTimestamp } from "../lib/providerTime.js";
 import { logEvent, describeGraphError } from "../services/eventLogger.js";
 import { resolveUsername } from "../services/igUserService.js";
 import { attributeRecoveryOutcomeSafely } from "../services/historicalRecoveryAttribution.js";
+import { recordInboundCampaignHealthSignals } from "../services/campaignHealthObservation.js";
 import { env } from "../config/env.js";
 
 // Kept only as an analytics hint now — it is NO LONGER the trigger. Any reply to
@@ -163,6 +164,7 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
   }
 
   const text = msg.text ?? "";
+  const observedAt = parseProviderTimestamp(entry.timestamp);
 
   // Capture the real message into its thread. Idempotent on Meta's `mid`: Meta
   // retries webhooks, and a replay must not re-run automation, re-send a guide, or
@@ -182,7 +184,7 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     messageType,
     mediaUrl,
     // Meta's timestamp, not ours, so a delayed webhook still orders correctly.
-    instagramTimestamp: parseProviderTimestamp(entry.timestamp),
+    instagramTimestamp: observedAt,
   });
   if (inbound.duplicate) {
     logger.debug(
@@ -190,6 +192,22 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
       "Inbound webhook ignored (duplicate)",
     );
     return;
+  }
+
+  try {
+    await recordInboundCampaignHealthSignals({
+      igUserId: senderId,
+      instagramMessageId: msg.mid,
+      text,
+      observedAt,
+    });
+  } catch {
+    // Health capture is safety telemetry, but the inbound message is already durable.
+    // Never ask Meta to replay the whole webhook because this secondary write failed.
+    logger.error(
+      { errorCode: "campaign_health_inbound_capture_failed", senderId, mid: msg.mid },
+      "Could not record historical campaign health evidence",
+    );
   }
 
   // Record recovery inbound evidence for any newly captured inbound message (even if delayed)
@@ -200,7 +218,7 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
       : "inbound_reply";
   await recordRecoveryInbound({
     igUserId: senderId,
-    eventAt: parseProviderTimestamp(entry.timestamp),
+    eventAt: observedAt,
     receivedAt: new Date(),
     kind: recoveryKind,
   });
@@ -215,7 +233,7 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
   // Non-throwing: measurement must never break message handling.
   await attributeRecoveryOutcomeSafely({
     igUserId: senderId,
-    at: parseProviderTimestamp(entry.timestamp),
+    at: observedAt,
     kind: "inbound",
   });
 

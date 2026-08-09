@@ -11,13 +11,9 @@
  * a campaign whose own copy or cohort is going badly. That should pause the campaign and
  * leave the healthy prospective feature running.
  *
- * WHAT IS NOT HERE, and why. The QA asks for complaint, opt-out, block and
- * negative-reply signals. None of those exist in this system: verified against production
- * before writing any of this, there are 0 event_log kinds matching complaint / opt_out /
- * block / report, 0 gate errors mentioning a block, and no opt-out column on `ig_users`.
- * A detector for a signal that is never emitted is worse than none — it reads as
- * protection while protecting nothing. Those need the signal to be captured first; this
- * covers the four conditions that ARE measurable today.
+ * Complaint/block/classifier evidence is accepted only from the authenticated admin
+ * route. Opt-outs and conservative negative replies are captured from stable inbound
+ * message IDs. The observation row never stores the private message text.
  */
 
 import { prisma } from "../lib/prisma.js";
@@ -26,6 +22,11 @@ import { pauseCampaign } from "./recoveryCampaignControl.js";
 
 /** Why a campaign was stopped automatically. Each requires owner review to resume. */
 export type CampaignStopReason =
+  | "complaint"
+  | "opt_out"
+  | "block"
+  | "classifier_anomaly"
+  | "negative_reply"
   /** Meta rejected our public replies. Copy, permissions, or the comments themselves. */
   | "public_failure_rate"
   /** Too many sends whose outcome we cannot establish. Each may be a live comment. */
@@ -65,6 +66,11 @@ export type CampaignHealth = {
   uncertain: number;
   sourceUnavailable: number;
   duplicatePeople: number;
+  complaints: number;
+  optOuts: number;
+  blocks: number;
+  negativeReplies: number;
+  classifierAnomalies: number;
   stopReason: CampaignStopReason | null;
 };
 
@@ -75,7 +81,7 @@ export type CampaignHealth = {
  * whole system failing, and vice versa.
  */
 async function observe(campaignId: string): Promise<Omit<CampaignHealth, "stopReason">> {
-  const [sent, failed, uncertain, sourceUnavailable, duplicates] = await Promise.all([
+  const [sent, failed, uncertain, sourceUnavailable, duplicates, signals] = await Promise.all([
     prisma.recoveryCandidate.count({ where: { campaignId, outcome: "sent" } }),
     prisma.recoveryCandidate.count({ where: { campaignId, outcome: "send_failed" } }),
     prisma.recoveryCandidate.count({ where: { campaignId, outcome: "send_uncertain" } }),
@@ -86,20 +92,28 @@ async function observe(campaignId: string): Promise<Omit<CampaignHealth, "stopRe
         suppressionReason: { in: ["source_comment_deleted", "source_comment_hidden"] },
       },
     }),
-    // Two public replies for one person in one campaign. The (campaign, person) unique
-    // index makes this impossible to write, so a non-zero count means that index was
-    // dropped or bypassed — worth stopping for even though it should never fire.
+    // The shared dispatch ledger, not candidate shape, owns public contact truth. Two
+    // terminal attempts for one person can exist after a retry/interleaving even though
+    // candidate selection correctly contains one person once.
     prisma.$queryRaw<Array<{ n: bigint }>>`
       SELECT COUNT(*) AS n FROM (
         SELECT "ig_user_id"
-        FROM "recovery_candidate"
+        FROM "public_recovery_dispatch"
         WHERE "campaign_id" = ${campaignId}::uuid
-          AND "public_reply_id" IS NOT NULL
+          AND "state" IN ('sent', 'uncertain')
         GROUP BY "ig_user_id"
         HAVING COUNT(*) > 1
       ) d
     `,
+    prisma.recoveryCampaignHealthObservation.groupBy({
+      by: ["kind"],
+      where: { campaignId },
+      _count: { _all: true },
+    }),
   ]);
+
+  const signalCount = (kind: string) =>
+    signals.find((signal) => signal.kind === kind)?._count._all ?? 0;
 
   return {
     campaignId,
@@ -111,6 +125,11 @@ async function observe(campaignId: string): Promise<Omit<CampaignHealth, "stopRe
     uncertain,
     sourceUnavailable,
     duplicatePeople: Number(duplicates[0]?.n ?? 0),
+    complaints: signalCount("complaint"),
+    optOuts: signalCount("opt_out"),
+    blocks: signalCount("block"),
+    negativeReplies: signalCount("negative_reply"),
+    classifierAnomalies: signalCount("classifier_anomaly"),
   };
 }
 
@@ -124,6 +143,11 @@ async function observe(campaignId: string): Promise<Omit<CampaignHealth, "stopRe
 export function chooseStopReason(
   o: Omit<CampaignHealth, "stopReason">,
 ): CampaignStopReason | null {
+  if (o.complaints > 0) return "complaint";
+  if (o.optOuts > 0) return "opt_out";
+  if (o.blocks > 0) return "block";
+  if (o.classifierAnomalies > 0) return "classifier_anomaly";
+  if (o.negativeReplies > 0) return "negative_reply";
   if (o.duplicatePeople > 0) return "duplicate_public_reply";
 
   // Send-outcome rates need a sample of SENDS. Below the minimum a single failure would
@@ -178,6 +202,11 @@ export async function evaluateCampaignHealth(campaignId: string, now = new Date(
       uncertain: observations.uncertain,
       sourceUnavailable: observations.sourceUnavailable,
       duplicatePeople: observations.duplicatePeople,
+      complaints: observations.complaints,
+      optOuts: observations.optOuts,
+      blocks: observations.blocks,
+      negativeReplies: observations.negativeReplies,
+      classifierAnomalies: observations.classifierAnomalies,
     });
   }
 

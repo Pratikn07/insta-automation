@@ -190,6 +190,22 @@ async function runLeasedTickBody(
   const campaignDispatchStarts = new Map<string, number>();
   const stoppedCampaigns = new Set<string>();
 
+  const observeTerminalOutcome = async (campaignId: string): Promise<void> => {
+    campaignsToEvaluate.add(campaignId);
+    try {
+      const health = await evaluateCampaignHealth(campaignId, new Date());
+      if (health.stopReason) {
+        stoppedCampaigns.add(campaignId);
+        result.skipped = `campaign_auto_paused:${health.stopReason}`;
+      }
+    } catch {
+      logger.error(
+        { errorCode: "historical_campaign_health_check_failed", campaignId },
+        "Could not evaluate campaign health after a terminal outcome",
+      );
+    }
+  };
+
   for (const item of work) {
     const { id } = item;
     if (stoppedCampaigns.has(item.campaignId)) continue;
@@ -265,7 +281,7 @@ async function runLeasedTickBody(
           // records why we stopped asking rather than claiming it does not exist.
           if (await markCandidateFailed(id, claimed.claimToken, "source_read_exhausted")) {
             result.failed++;
-            campaignsToEvaluate.add(claimed.campaignId);
+            await observeTerminalOutcome(claimed.campaignId);
           }
           continue;
         }
@@ -292,13 +308,13 @@ async function runLeasedTickBody(
     if (decision.kind === "suppress") {
       if (await markCandidateSuppressed(id, claimed.claimToken, decision.reason)) {
         result.suppressed++;
-        campaignsToEvaluate.add(claimed.campaignId);
         await logEvent("historical_recovery_suppressed", {
           candidateId: id,
           campaignId: claimed.campaignId,
           igUserId: claimed.igUserId,
           reason: decision.reason,
         });
+        await observeTerminalOutcome(claimed.campaignId);
       }
       continue;
     }
@@ -327,7 +343,7 @@ async function runLeasedTickBody(
       ) {
         if (await markCandidateSuppressed(id, claimed.claimToken, reservation.reason)) {
           result.suppressed++;
-          campaignsToEvaluate.add(claimed.campaignId);
+          await observeTerminalOutcome(claimed.campaignId);
         }
         continue;
       }
@@ -351,12 +367,6 @@ async function runLeasedTickBody(
       }
       continue;
     }
-
-    // Past the reservation the row will reach an outcome on this tick — sent, failed, or
-    // uncertain — so the campaign is registered here rather than after a successful post.
-    // A rate-limited retry is the one exception, and including it is right too: a
-    // campaign Meta is throttling is worth a health reading.
-    campaignsToEvaluate.add(claimed.campaignId);
 
     const dispatchStart = await startHistoricalDispatch({
       candidateId: id,
@@ -412,13 +422,14 @@ async function runLeasedTickBody(
       const category = classifyPublicReplyFailure(meta);
 
       if (category === "open_circuit") {
-        await finalizeHistoricalDispatch({
+        const finalized = await finalizeHistoricalDispatch({
           candidateId: id,
           claimToken: claimed.claimToken,
           dispatchId: reservation.dispatchId,
           reservationToken: reservation.reservationToken,
           outcome: { kind: "failed", at: new Date(), reason: "auth_or_permission" },
         });
+        if (finalized) await observeTerminalOutcome(claimed.campaignId);
         await openRecoveryCircuit("auth_or_permission", now);
         result.failed++;
         break; // Credentials will not fix themselves inside this batch.
@@ -440,6 +451,7 @@ async function runLeasedTickBody(
             igUserId: claimed.igUserId,
             category: reason,
           });
+          await observeTerminalOutcome(claimed.campaignId);
         }
         continue;
       }
@@ -459,6 +471,7 @@ async function runLeasedTickBody(
             outcome: { kind: "failed", at: new Date(), reason: "rate_limit_exhausted" },
           })) {
             result.failed++;
+            await observeTerminalOutcome(claimed.campaignId);
           }
           continue;
         }
@@ -494,6 +507,7 @@ async function runLeasedTickBody(
           igUserId: claimed.igUserId,
           category: meta.category ?? "unknown",
         });
+        await observeTerminalOutcome(claimed.campaignId);
       }
       continue;
     }
@@ -516,6 +530,7 @@ async function runLeasedTickBody(
           igUserId: claimed.igUserId,
           category: "missing_reply_id",
         });
+        await observeTerminalOutcome(claimed.campaignId);
       }
       continue;
     }
@@ -537,6 +552,7 @@ async function runLeasedTickBody(
         evidence: claimed.evidence,
         arm: claimed.arm,
       });
+      await observeTerminalOutcome(claimed.campaignId);
     } else {
       // The row moved underneath us after a successful post. Recorded rather than
       // silently dropped: the comment IS live on Instagram.
@@ -561,21 +577,7 @@ async function runLeasedTickBody(
   // because the bookkeeping afterwards broke.
   for (const campaignId of campaignsToEvaluate) {
     try {
-      // Stop conditions BEFORE completion (QA-13). `evaluateRecoveryHealth` reads only
-      // dm_recovery_reminder, so a historical campaign could be failing on real people's
-      // public comments while the shared circuit stayed closed on a healthy prospective
-      // feature. This is scoped to the campaign and pauses only that campaign — the
-      // shared circuit stays reserved for genuinely shared faults like a broken token.
-      //
-      // Ordered first because a campaign that has just tripped a stop condition should
-      // read as `paused`, not `completed`: completing it would hide the fault behind a
-      // state that looks like success.
-      const health = await evaluateCampaignHealth(campaignId, now);
-      if (health.stopReason) {
-        result.skipped = `campaign_auto_paused:${health.stopReason}`;
-        continue;
-      }
-
+      if (stoppedCampaigns.has(campaignId)) continue;
       await completeCampaignIfDrained(campaignId, now);
     } catch (err) {
       logger.error(

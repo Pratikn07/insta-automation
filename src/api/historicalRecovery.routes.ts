@@ -11,6 +11,8 @@ import {
   cancelCampaign,
   advanceCampaignStage,
 } from "../services/recoveryCampaignControl.js";
+import { recordCampaignHealthObservation } from "../services/campaignHealthObservation.js";
+import { logEvent } from "../services/eventLogger.js";
 
 /**
  * Read models and owner actions for historical recovery campaigns.
@@ -305,5 +307,44 @@ historicalRecoveryRouter.post("/campaigns/:id/stage", async (req, res) => {
     res.status(409).json({ error: result.reason });
     return;
   }
+  res.json(result);
+});
+
+const manualHealthObservationBody = z.object({
+  kind: z.enum(["complaint", "block", "classifier_anomaly"]),
+  sourceKey: z.string().trim().min(1).max(200),
+  observedAt: z.string().datetime(),
+  safeDetail: z.string().trim().min(1).max(200).optional(),
+});
+
+/** Ingest externally verified, bounded safety evidence. */
+historicalRecoveryRouter.post("/campaigns/:id/health-observations", async (req, res) => {
+  if (!req.adminEmail) {
+    res.status(401).json({ error: "owner_auth_required" });
+    return;
+  }
+  const campaignId = z.string().uuid().safeParse(req.params.id);
+  const body = manualHealthObservationBody.safeParse(req.body);
+  if (!campaignId.success || !body.success) {
+    res.status(400).json({ error: "invalid_health_observation" });
+    return;
+  }
+
+  const input = {
+    campaignId: campaignId.data,
+    kind: body.data.kind,
+    sourceKey: body.data.sourceKey,
+    observedAt: new Date(body.data.observedAt),
+    safeDetail: body.data.safeDetail,
+  };
+  const result = await recordCampaignHealthObservation(input);
+  await logEvent("historical_campaign_health_observation_ingested", {
+    campaignId: input.campaignId,
+    kind: input.kind,
+    sourceKey: input.sourceKey,
+    safeDetail: input.safeDetail,
+    actor: req.adminEmail,
+    created: result.created,
+  });
   res.json(result);
 });

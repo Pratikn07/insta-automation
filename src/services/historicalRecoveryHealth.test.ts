@@ -19,6 +19,11 @@ function healthy(overrides: Record<string, number> = {}) {
     uncertain: 0,
     sourceUnavailable: 0,
     duplicatePeople: 0,
+    complaints: 0,
+    optOuts: 0,
+    blocks: 0,
+    negativeReplies: 0,
+    classifierAnomalies: 0,
     ...overrides,
   };
 }
@@ -26,6 +31,21 @@ function healthy(overrides: Record<string, number> = {}) {
 describe("chooseStopReason", () => {
   it("does not stop a campaign that is sending cleanly", () => {
     expect(chooseStopReason(healthy())).toBeNull();
+  });
+
+  it.each([
+    ["complaints", "complaint"],
+    ["optOuts", "opt_out"],
+    ["blocks", "block"],
+    ["classifierAnomalies", "classifier_anomaly"],
+    ["negativeReplies", "negative_reply"],
+  ] as const)("stops immediately on %s", (field, reason) => {
+    expect(chooseStopReason(healthy({ [field]: 1 }))).toBe(reason);
+  });
+
+  it("reports a complaint ahead of duplicate contact and rates", () => {
+    expect(chooseStopReason(healthy({ complaints: 1, duplicatePeople: 1, failed: 20 })))
+      .toBe("complaint");
   });
 
   // The worst possible failure: two public comments to one person. Reported ahead of any

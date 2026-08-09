@@ -812,13 +812,13 @@ describe("runHistoricalRecoveryTick — closes a drained campaign", () => {
     expect(completeCampaignIfDrained).toHaveBeenCalledWith("camp-1", expect.any(Date));
   });
 
-  // Once per campaign, not once per row: a per-row check would re-count the whole
-  // campaign on every send.
-  it("checks each campaign once even across several rows", async () => {
+  // Health is checked after each outcome so a stop from row one fences row two.
+  it("checks campaign health after each terminal outcome", async () => {
     listDueCandidateIds.mockResolvedValue(["cand-1", "cand-2"]);
 
     await runHistoricalRecoveryTick();
 
+    expect(evaluateCampaignHealth).toHaveBeenCalledTimes(2);
     expect(completeCampaignIfDrained).toHaveBeenCalledTimes(1);
   });
 
@@ -847,6 +847,19 @@ describe("runHistoricalRecoveryTick — closes a drained campaign", () => {
 // campaign could be failing on real people's public comments while the shared circuit
 // stayed closed because the prospective feature was healthy.
 describe("runHistoricalRecoveryTick — campaign stop conditions", () => {
+  it("stops the campaign mid-batch before reserving a second candidate", async () => {
+    listDueCandidateIds.mockResolvedValue(["cand-1", "cand-2"]);
+    claimCandidate.mockImplementation(async (id: string) => ({ ...CANDIDATE, id }));
+    evaluateCampaignHealth.mockResolvedValue({ stopReason: "complaint" });
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(replyToComment).toHaveBeenCalledTimes(1);
+    expect(reserveHistoricalDispatch).toHaveBeenCalledTimes(1);
+    expect(claimCandidate).toHaveBeenCalledTimes(1);
+    expect(result.skipped).toBe("campaign_auto_paused:complaint");
+  });
+
   it("evaluates campaign health after the tick", async () => {
     await runHistoricalRecoveryTick();
 
