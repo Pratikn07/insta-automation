@@ -29,6 +29,7 @@ function detail(overrides: Record<string, unknown> = {}) {
       publicReplyText: "Recovery copy",
       evidence: "gate_sent_no_read",
       audienceOrigin: "us_western",
+      audienceOriginMethod: "llm_v1",
       audienceOriginConfidence: "high",
       arm: "treatment",
       outcome: "send_uncertain",
@@ -127,6 +128,15 @@ describe("HistoricalCandidateDrawer", () => {
     expect(screen.getByText("alias-1")).toBeInTheDocument();
     expect(screen.getAllByText("comment-1")).toHaveLength(2);
     expect(screen.getByText("historical recovery send uncertain")).toBeInTheDocument();
+  });
+
+  it("shows the frozen audience origin provenance", async () => {
+    renderDrawer();
+
+    expect(await screen.findByText("Audience origin")).toBeInTheDocument();
+    expect(screen.getByText("us western")).toBeInTheDocument();
+    expect(screen.getByText("llm v1")).toBeInTheDocument();
+    expect(screen.getByText("high")).toBeInTheDocument();
   });
 
   it("links only to the verified stored source permalink", async () => {

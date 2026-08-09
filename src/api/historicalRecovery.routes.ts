@@ -343,6 +343,7 @@ historicalRecoveryRouter.get("/candidates", async (req, res) => {
         // The snapshot, not the live verdict: this is what the filter believed when
         // the campaign was approved, which is what an audit needs.
         audienceOrigin: r.audienceOrigin,
+        audienceOriginMethod: r.audienceOriginMethod,
         audienceOriginConfidence: r.audienceOriginConfidence,
         sentAt: r.sentAt?.toISOString() ?? null,
         publicReplyId: r.publicReplyId,

@@ -62,6 +62,8 @@ export type CandidateRow = {
   reviewedAt: string | null;
   laterCompletedAt: string | null;
   audienceOrigin: string | null;
+  audienceOriginMethod: string | null;
+  audienceOriginConfidence: string | null;
   createdAt: string;
 };
 
