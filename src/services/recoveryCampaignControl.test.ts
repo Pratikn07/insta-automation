@@ -262,21 +262,61 @@ describe("resumeCampaign", () => {
   const reviewedPause = (pauseReason: string) => ({
     state: "paused",
     pauseReason,
+    phase: "unknown_read_pilot",
+    selectionVersion: "selection-v1",
+    sourceDataCutoff: new Date("2026-08-09T00:00:00.000Z"),
+    commentFrom: null,
+    commentTo: null,
+    selectionLimit: null,
+    holdoutPercent: 0,
+    copyVersion: "copy-v1",
     selectionFingerprint: "fingerprint",
     decisionHash: "decision",
     eligibilityPolicyVersion: "eligibility-v2",
     westernOnly: true,
+    inboundWindowHours: 48,
+    completionWindowHours: 48,
+    candidateCount: 1,
+    excludedCount: 0,
+  });
+  const storedCandidate = (audienceOriginMethod: string | null) => ({
+    selectionPosition: 0,
+    intentId: "intent-1",
+    igUserId: "person-1",
+    conversationId: "conversation-1",
+    keywordId: "keyword-1",
+    commentId: "comment-1",
+    mediaId: null,
+    commentAt: new Date("2026-08-09T00:00:00.000Z"),
+    keywordSnapshot: "SLEEP",
+    publicReplyText: "Please DM SLEEP",
+    evidence: "gate_sent_no_read",
+    audienceOrigin: "us_western",
+    audienceOriginMethod,
+    audienceOriginConfidence: "high",
+    arm: "treatment",
+    sourceChoiceReason: "newest_eligible_comment",
+    sources: [{
+      position: 0,
+      commentId: "comment-1",
+      mediaId: null,
+      receivedAt: new Date("2026-08-09T00:00:00.000Z"),
+      choiceReason: "newest_eligible_comment",
+    }],
   });
   // Approval is already on the row, so resuming does not re-ask for it — but the
   // query still requires approvedAt, making that invariant explicit.
-  it("resumes only a paused, already-approved campaign", async () => {
-    // Resume now reads the row first, to tell an automatic pause from an owner's (QA-13).
+  it("resumes only a paused, already-approved campaign with a current-method snapshot", async () => {
     campaignFindUnique.mockResolvedValue(reviewedPause("lunch"));
+    candidateFindMany.mockResolvedValue([storedCandidate(CURRENT_ORIGIN_METHOD)]);
     campaignUpdateMany.mockResolvedValue({ count: 1 });
 
     const result = await resumeCampaign("camp-1");
 
     expect(result).toEqual({ ok: true, state: "running" });
+    expect(verifyStoredSelectionSnapshot).toHaveBeenCalledWith(expect.objectContaining({
+      inclusions: [expect.objectContaining({ audienceOriginMethod: CURRENT_ORIGIN_METHOD })],
+    }));
     expect(campaignUpdateMany).toHaveBeenCalledWith({
       where: {
         id: "camp-1",
@@ -289,6 +329,22 @@ describe("resumeCampaign", () => {
       },
       data: { state: "running", pausedAt: null, pauseReason: null },
     });
+  });
+
+  it("refuses a complete-looking paused campaign whose stored candidate method is missing", async () => {
+    campaignFindUnique.mockResolvedValue(reviewedPause("lunch"));
+    candidateFindMany.mockResolvedValue([storedCandidate(null)]);
+    verifyStoredSelectionSnapshot.mockReturnValue({ ok: false, reason: "snapshot_incomplete" });
+    campaignUpdateMany.mockResolvedValue({ count: 1 });
+
+    await expect(resumeCampaign("camp-1")).resolves.toEqual({
+      ok: false,
+      reason: "snapshot_incomplete",
+    });
+    expect(verifyStoredSelectionSnapshot).toHaveBeenCalledWith(expect.objectContaining({
+      inclusions: [expect.objectContaining({ audienceOriginMethod: null })],
+    }));
+    expect(campaignUpdateMany).not.toHaveBeenCalled();
   });
 
   // An automatic stop that any resume could undo is a suggestion, not a stop.
@@ -331,6 +387,7 @@ describe("resumeCampaign", () => {
       eligibilityPolicyVersion: null,
       westernOnly: null,
     });
+    verifyStoredSelectionSnapshot.mockReturnValue({ ok: false, reason: "snapshot_incomplete" });
 
     await expect(resumeCampaign("camp-1")).resolves.toEqual({
       ok: false,

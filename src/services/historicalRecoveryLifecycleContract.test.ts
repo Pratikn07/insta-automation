@@ -118,7 +118,12 @@ async function draft(): Promise<string> {
 /** One candidate, with its own person and intent. */
 async function candidate(
   campaignId: string,
-  opts: { arm: "treatment" | "holdout"; keywordId?: string; outcome?: "pending" | "sent" },
+  opts: {
+    arm: "treatment" | "holdout";
+    keywordId?: string;
+    outcome?: "pending" | "sent";
+    audienceOriginMethod?: string | null;
+  },
 ): Promise<{ id: string; igUserId: string }> {
   const igUserId = `${fx.igUserId}-${randomUUID()}`;
   const keywordId = opts.keywordId ?? fx.keywordId;
@@ -148,7 +153,9 @@ async function candidate(
       publicReplyText: "t",
       evidence: "gate_sent_no_read",
       audienceOrigin: "us_western",
-      audienceOriginMethod: CURRENT_ORIGIN_METHOD,
+      audienceOriginMethod: opts.audienceOriginMethod === undefined
+        ? CURRENT_ORIGIN_METHOD
+        : opts.audienceOriginMethod,
       audienceOriginConfidence: "high",
       selectionPosition,
       sourceChoiceReason: "newest_eligible_comment",
@@ -355,6 +362,18 @@ describeWithLocalDatabase("holdout assignment is settled at approval", () => {
       where: { id: selected.id },
       data: { publicReplyText: "unreviewed replacement" },
     })).rejects.toThrow(/reviewed campaign manifest is immutable/i);
+    await expect(prisma.recoveryCandidate.update({
+      where: { id: selected.id },
+      data: { audienceOriginMethod: "name" },
+    })).rejects.toThrow(/reviewed campaign manifest is immutable/i);
+    await expect(prisma.recoveryCandidate.update({
+      where: { id: selected.id },
+      data: { audienceOriginMethod: null },
+    })).rejects.toThrow(/reviewed campaign manifest is immutable/i);
+    await expect(prisma.recoveryCandidate.findUnique({
+      where: { id: selected.id },
+      select: { audienceOriginMethod: true },
+    })).resolves.toEqual({ audienceOriginMethod: CURRENT_ORIGIN_METHOD });
     await expect(prisma.recoveryCandidateSource.updateMany({
       where: { candidateId: selected.id },
       data: { commentId: `life-unreviewed-${randomUUID()}` },
@@ -538,6 +557,66 @@ describeWithLocalDatabase("holdout assignment is settled at approval", () => {
 
     await approve(campaignId);
 
+    expect(await stateOf(campaignId)).toBe("running");
+  });
+});
+
+describeWithLocalDatabase("resumption verifies the sealed snapshot", () => {
+  it("does not resume a pre-Task-4 paused campaign with a missing candidate method", async () => {
+    const campaignId = await draft();
+    const selected = await candidate(campaignId, { arm: "treatment", audienceOriginMethod: null });
+    await sealSnapshot(campaignId);
+    await prisma.recoveryCampaign.update({
+      where: { id: campaignId },
+      data: {
+        state: "paused",
+        approvedBy: "owner",
+        approvedAt: T0,
+        startedAt: T0,
+        pausedAt: T0,
+      },
+    });
+
+    await expect(prisma.recoveryCampaign.findUnique({
+      where: { id: campaignId },
+      select: {
+        state: true,
+        selectionFingerprint: true,
+        decisionHash: true,
+        eligibilityPolicyVersion: true,
+        inboundWindowHours: true,
+        completionWindowHours: true,
+      },
+    })).resolves.toEqual({
+      state: "paused",
+      selectionFingerprint: expect.any(String),
+      decisionHash: expect.any(String),
+      eligibilityPolicyVersion: "eligibility-v2",
+      inboundWindowHours: 48,
+      completionWindowHours: 48,
+    });
+    await expect(prisma.recoveryCandidate.findUnique({
+      where: { id: selected.id },
+      select: { audienceOriginMethod: true },
+    })).resolves.toEqual({ audienceOriginMethod: null });
+
+    await expect(control.resumeCampaign(campaignId)).resolves.toEqual({
+      ok: false,
+      reason: "snapshot_incomplete",
+    });
+    expect(await stateOf(campaignId)).toBe("paused");
+  });
+
+  it("resumes a paused campaign with a complete current-method snapshot", async () => {
+    const campaignId = await draft();
+    await candidate(campaignId, { arm: "treatment" });
+    await approve(campaignId);
+    await control.pauseCampaign(campaignId, "owner pause", T0);
+
+    await expect(control.resumeCampaign(campaignId)).resolves.toEqual({
+      ok: true,
+      state: "running",
+    });
     expect(await stateOf(campaignId)).toBe("running");
   });
 });
