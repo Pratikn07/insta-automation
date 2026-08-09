@@ -363,6 +363,24 @@ async function runLeasedTickBody(
       continue;
     }
 
+    // TypeScript narrows the declared union above, but this boundary receives a runtime
+    // result. Only a literal send result may consume capacity; malformed or future
+    // kinds are returned to the queue without making a public provider call.
+    if (decision.kind === "send") {
+      // The exact allowlist continues into the reservation below.
+    } else {
+      const kind = typeof (decision as { kind?: unknown }).kind === "string"
+        ? (decision as { kind: string }).kind
+        : "invalid";
+      logger.error(
+        { errorCode: "historical_recheck_unexpected_result", kind },
+        "Historical recovery recheck returned an unexpected result",
+      );
+      await releaseCandidateClaim(id, claimed.claimToken);
+      result.deferred++;
+      continue;
+    }
+
     // Capacity is RESERVED, not merely observed (QA-08).
     //
     // The recheck above compared counts read moments earlier, with nothing holding the
@@ -466,6 +484,31 @@ async function runLeasedTickBody(
       ) {
         stoppedCampaigns.add(item.campaignId);
       }
+      continue;
+    }
+
+    // `startHistoricalDispatch` is an I/O boundary despite its declared union. Only
+    // its explicit started result may enter the provider path; any malformed/future
+    // result releases the reservation and candidate claim through the fenced helper.
+    if (dispatchStart.kind === "started") {
+      // The exact allowlist continues into the provider path below.
+    } else {
+      const kind = typeof (dispatchStart as { kind?: unknown }).kind === "string"
+        ? (dispatchStart as { kind: string }).kind
+        : "invalid";
+      logger.error(
+        { errorCode: "historical_dispatch_start_unexpected_result", kind },
+        "Historical recovery dispatch start returned an unexpected result",
+      );
+      await releaseHistoricalReservation({
+        candidateId: id,
+        claimToken: claimed.claimToken,
+        dispatchId: reservation.dispatchId,
+        reservationToken: reservation.reservationToken,
+        at: new Date(),
+        reason: `dispatch_start_unexpected_result:${kind}`,
+      });
+      result.deferred++;
       continue;
     }
     campaignDispatchStarts.set(

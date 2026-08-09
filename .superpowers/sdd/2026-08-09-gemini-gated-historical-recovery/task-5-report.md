@@ -130,3 +130,78 @@ The worker calls `replyToComment()` only after `startHistoricalDispatch()` retur
 ## Concerns
 
 None blocking. Existing historical candidates without `originMethod === "llm_v1"` now defer until origin enrichment writes a current verdict; this is the intended fail-closed behavior and avoids any public reply on stale classification.
+
+## Fix round 1/5 — runtime result allowlists
+
+### Finding addressed
+
+The worker previously handled the declared `defer`/`suppress` and
+`suppressed`/`deferred`/`blocked` variants, then relied on TypeScript narrowing to
+fall through. A malformed runtime result with a different `kind` could therefore
+reserve capacity or reach `replyToComment`.
+
+The worker now requires the literal positive checks `decision.kind === "send"`
+before reservation and `dispatchStart.kind === "started"` before dispatch-start
+accounting/provider invocation. Every other runtime kind is logged with only a
+stable error code and `kind`, deferred, and cleaned up without terminal
+suppression. The unlocked path releases the claim before any reservation; the
+locked-start path calls `releaseHistoricalReservation()` with its fenced tokens,
+which releases both reservation and claim.
+
+The repository header now documents that the worker read is advisory, while the
+repository repeats the authoritative critical checks under final locks.
+
+### RED
+
+Command:
+
+```sh
+npx vitest run src/services/historicalRecoveryWorker.test.ts -t "posts only for exact send and started results|defers an unexpected unlocked recheck result without reserving or posting|releases a reservation for an unexpected final start result without posting"
+```
+
+Result: FAIL — 2 failures, 1 passing, 71 skipped. A runtime
+`{ kind: "unexpected" } as never` from the recheck did not release the claim,
+and the same malformed final-start result reached the provider mock.
+
+### GREEN
+
+Command:
+
+```sh
+npx vitest run src/services/historicalRecoveryWorker.test.ts -t "posts only for exact send and started results|defers an unexpected unlocked recheck result without reserving or posting|releases a reservation for an unexpected final start result without posting"
+```
+
+Result: PASS — 3 passing, 71 skipped.
+
+Command:
+
+```sh
+npx vitest run src/services/historicalRecoveryWorker.test.ts src/services/historicalRecoveryRecheck.test.ts src/services/historicalRecoveryOriginPolicy.test.ts
+```
+
+Result: PASS — 114 tests.
+
+Command:
+
+```sh
+npm run build
+```
+
+Result: PASS — `prisma generate && tsc` completed successfully.
+
+Command:
+
+```sh
+git diff --check
+```
+
+Result: PASS — no whitespace errors.
+
+### Fix-round files and commit
+
+- `src/services/historicalRecoveryWorker.ts`
+- `src/services/historicalRecoveryWorker.test.ts`
+- `src/services/historicalRecoveryRepository.ts`
+- `.superpowers/sdd/2026-08-09-gemini-gated-historical-recovery/task-5-report.md`
+
+The fix-round commit is created after this report append and contains only the files above.

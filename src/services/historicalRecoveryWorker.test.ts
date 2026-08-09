@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { CURRENT_ORIGIN_METHOD } from "./historicalRecoveryOriginPolicy.js";
+import * as historicalRecoveryRecheck from "./historicalRecoveryRecheck.js";
 
 // --- mocks -------------------------------------------------------------------
 const listDueCandidateIds = vi.fn();
@@ -17,6 +18,7 @@ const acquireHistoricalTick = vi.fn();
 const openCampaignBatch = vi.fn();
 const finishHistoricalTick = vi.fn();
 const replyToComment = vi.fn();
+const loggerError = vi.fn();
 const fetchComment = vi.fn();
 const evaluateRecoveryHealth = vi.fn();
 const openRecoveryCircuit = vi.fn();
@@ -81,7 +83,7 @@ vi.mock("./graphErrorClassifier.js", async (importOriginal) => ({
   classifyPublicReplyFailure,
 }));
 vi.mock("../lib/logger.js", () => ({
-  logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
+  logger: { error: loggerError, warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
@@ -145,7 +147,7 @@ beforeEach(() => {
     reserveHistoricalDispatch, startHistoricalDispatch, releaseHistoricalReservation,
     finalizeHistoricalDispatch,
     countCandidatesSentSince,
-    replyToComment, fetchComment, evaluateRecoveryHealth, openRecoveryCircuit,
+    replyToComment, fetchComment, loggerError, evaluateRecoveryHealth, openRecoveryCircuit,
     logEvent, describeGraphError, classifyPublicReplyFailure,
     campaignFindUnique, campaignFindMany, completeCampaignIfDrained,
     reconcileDrainedCampaigns, evaluateCampaignHealth,
@@ -208,6 +210,47 @@ beforeEach(() => {
 });
 
 describe("runHistoricalRecoveryTick — the send path", () => {
+  it("posts only for exact send and started results", async () => {
+    const recheckSpy = vi.spyOn(historicalRecoveryRecheck, "recheckBeforeSend");
+    recheckSpy.mockReturnValue({ kind: "send" });
+    startHistoricalDispatch.mockResolvedValue({ kind: "started" });
+
+    try {
+      const result = await runHistoricalRecoveryTick();
+
+      expect(reserveHistoricalDispatch).toHaveBeenCalledTimes(1);
+      expect(startHistoricalDispatch).toHaveBeenCalledTimes(1);
+      expect(replyToComment).toHaveBeenCalledWith(CANDIDATE.commentId, CANDIDATE.publicReplyText);
+      expect(releaseCandidateClaim).not.toHaveBeenCalled();
+      expect(releaseHistoricalReservation).not.toHaveBeenCalled();
+      expect(result.sent).toBe(1);
+    } finally {
+      recheckSpy.mockRestore();
+    }
+  });
+
+  it("defers an unexpected unlocked recheck result without reserving or posting", async () => {
+    const recheckSpy = vi.spyOn(historicalRecoveryRecheck, "recheckBeforeSend");
+    recheckSpy.mockReturnValue({ kind: "unexpected" } as never);
+
+    try {
+      const result = await runHistoricalRecoveryTick();
+
+      expect(releaseCandidateClaim).toHaveBeenCalledWith("cand-1", "token-1");
+      expect(reserveHistoricalDispatch).not.toHaveBeenCalled();
+      expect(startHistoricalDispatch).not.toHaveBeenCalled();
+      expect(replyToComment).not.toHaveBeenCalled();
+      expect(markCandidateSuppressed).not.toHaveBeenCalled();
+      expect(loggerError).toHaveBeenCalledWith(
+        { errorCode: "historical_recheck_unexpected_result", kind: "unexpected" },
+        "Historical recovery recheck returned an unexpected result",
+      );
+      expect(result.deferred).toBe(1);
+    } finally {
+      recheckSpy.mockRestore();
+    }
+  });
+
   it("posts the frozen copy and records Meta's reply id", async () => {
     const result = await runHistoricalRecoveryTick();
 
@@ -280,6 +323,29 @@ describe("runHistoricalRecoveryTick — the send path", () => {
     // The repository released the reservation in the same locked transaction, so a
     // second release here would operate on a stale token and hide an atomicity bug.
     expect(releaseHistoricalReservation).not.toHaveBeenCalled();
+    expect(result.deferred).toBe(1);
+  });
+
+  it("releases a reservation for an unexpected final start result without posting", async () => {
+    startHistoricalDispatch.mockResolvedValue({ kind: "unexpected" } as never);
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(releaseHistoricalReservation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        candidateId: "cand-1",
+        claimToken: "token-1",
+        dispatchId: "dispatch-1",
+        reservationToken: "reservation-1",
+        reason: "dispatch_start_unexpected_result:unexpected",
+      }),
+    );
+    expect(markCandidateSuppressed).not.toHaveBeenCalled();
+    expect(loggerError).toHaveBeenCalledWith(
+      { errorCode: "historical_dispatch_start_unexpected_result", kind: "unexpected" },
+      "Historical recovery dispatch start returned an unexpected result",
+    );
     expect(result.deferred).toBe(1);
   });
 

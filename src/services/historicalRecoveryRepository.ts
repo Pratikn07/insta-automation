@@ -18,9 +18,10 @@ import { evaluateHistoricalOrigin } from "./historicalRecoveryOriginPolicy.js";
  * kinds of send through one loop and historical sends inherit every safety fix
  * made to the prospective path.
  *
- * The candidate row is a frozen snapshot, so nothing here re-derives eligibility
- * from live data. The only live questions asked before a send are the ones that
- * could have CHANGED since selection, and those are asked in the worker.
+ * The worker's fresh reads are advisory and reject unsafe work before capacity is
+ * reserved. This repository owns authoritative dispatch authorization: it repeats the
+ * critical live checks under the final control/person/candidate locks immediately
+ * before it stamps a dispatch as started, so a race cannot reach the provider.
  */
 
 /** What the worker needs to post one public reply. */
