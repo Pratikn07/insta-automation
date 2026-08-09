@@ -72,7 +72,7 @@ For a definite transient rejection, expect bounded backoff and `guide_delivery_u
 1. Inject a timeout or connection reset after the request may have reached the provider.
 2. Verify the active unit becomes `uncertain`, the delivery becomes `needs_review`, and `next_attempt_at` is null.
 3. Allow at least two worker intervals to pass. Verify attempts and provider calls do not increase.
-4. Open Conversations. Verify `Delivery needs review` and all three actions are visible: **Already delivered**, **Retry sending**, and **Cancel delivery**.
+4. Open Conversations. Verify `Delivery needs review` and all three actions are visible: **Already delivered**, **Retry unit**, and **Cancel delivery**.
 
 If a process dies while a unit is `sending`, wait past the lease and verify reconciliation produces the same review boundary. Stale provider-boundary work must never return to `pending` or automatic retry.
 
@@ -81,7 +81,7 @@ If a process dies while a unit is `sending`, wait past the lease and verify reco
 Use one new controlled delivery for each path so the evidence is unambiguous.
 
 - **Already delivered:** Use this only after independently confirming the recipient received the uncertain unit. The unit becomes owner-confirmed `sent`. If all units are now `sent`, completion is allowed even when the window has closed. If unsent units remain and the window is open, resume skips every confirmed unit. If unsent units remain and the window is closed, the delivery becomes `failed` with `messaging_window_closed`.
-- **Retry sending:** The confirmation must explicitly acknowledge duplicate-delivery risk. It authorizes exactly one retry of the selected uncertain unit and may send a duplicate. It is rejected when the messaging window is closed. Verify earlier `sent` units are unchanged.
+- **Retry unit:** Select **Retry unit**, review the duplicate-delivery warning, and confirm with **Retry anyway**. This explicitly acknowledges duplicate risk, authorizes exactly one retry of the selected uncertain unit, and may send a duplicate. It is rejected when the messaging window is closed. Verify earlier `sent` units are unchanged.
 - **Cancel delivery:** Confirm the warning. The delivery becomes `cancelled`; no remaining unit is sent. Cancellation remains available after the messaging window closes, but cannot override active `sending` work or a `completed` delivery.
 
 For the required end-to-end resume check, choose **Already delivered** for the ambiguous unit, then verify remaining units resume without resending any earlier provider- or owner-confirmed unit.
@@ -113,7 +113,7 @@ The following event names and structural fields are approved for operational use
 
 Here, identity fields are delivery, conversation, resource, and trigger IDs plus trigger kind. Allowlisted provider-error metadata is category, HTTP status, Graph code/subcode, trace ID, and transport code. Never add snapshot text, authored bodies, media URLs, recipient IDs/usernames, request/response bodies, access tokens, or raw error strings to an event.
 
-Application logs use stable error codes such as `guide_delivery_tick_failed`, `guide_delivery_processing_failed`, `guide_delivery_completion_failed`, checkpoint/recipient lookup failures, and `guide_delivery_owner_resume_failed`. Bind only a delivery ID and aggregate counts where applicable. Do not log snapshots, content fingerprints alongside content, media URLs, recipients, provider request/response bodies, or raw exceptions.
+Application logs use stable `errorCode` values such as `guide_delivery_tick_failed`, `guide_delivery_processing_failed`, `guide_delivery_completion_failed`, checkpoint/recipient lookup failures, and `guide_delivery_owner_resume_failed`. Path-appropriate safe bindings are limited to `deliveryId`, `unitId`, `conversationId`, `threadId`, `inboundMessageId`, unit position/kind/attempt (`position`, `unitKind`, `attempt`), and aggregate count fields. Do not log snapshots, authored bodies, content fingerprints alongside content, media URLs, recipient identifiers, provider request/response bodies, access tokens, or raw exceptions.
 
 ## Monitoring
 
@@ -157,14 +157,14 @@ Alert on a sustained increase in `needs_review`, `guide_unit_attempts_exhausted`
 
 ## Rollback and incident containment
 
-1. Stop new backend application sends and the guide worker first by rolling back/stopping the application deployment. There is no runtime feature flag for this scheduler.
+1. Scale the backend deployment to zero replicas or stop its service processes entirely, which stops both new application sends and the always-on guide worker. If the platform cannot stop the deployment, deploy a purpose-built containment release that disables all guide send/worker entry points while preserving the ledger and durable routing. There is no runtime feature flag for this scheduler.
 2. Preserve `guide_delivery`, `guide_delivery_unit`, and their event history. Do not roll back the ledger migration while rows exist.
 3. Do not delete ledger rows, clear provider checkpoints, reset `uncertain`/`sending` units to `pending`, change attempts, or fabricate provider-message IDs.
-4. Do not restore or reintroduce `sequenceSender` or any direct guide sender. That would bypass preflight, idempotency, and unit checkpoints.
+4. Never deploy or roll back to a pre-ledger build, and never restore or reintroduce `sequenceSender` or any direct guide sender. Those builds bypass durable preflight, idempotency, and unit checkpoints.
 5. Investigate using delivery/unit IDs, statuses, timestamps, failure codes, attempts, and allowlisted metadata only. Route ambiguous cases to owner review.
 6. Resume with the fixed backend only after expired claims have been reconciled and active authored content passes the audit.
 
-Database rollback alone does not stop application sends. Application/worker containment comes first.
+Database rollback alone does not stop application sends. Application/worker containment comes first, before any database action.
 
 ## Follow recovery boundary
 
