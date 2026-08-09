@@ -8,6 +8,7 @@ import {
   type DispatchReservation,
 } from "./publicRecoveryDispatchRepository.js";
 import { resolveCanonicalConversation } from "./canonicalConversation.js";
+import { evaluateHistoricalOrigin } from "./historicalRecoveryOriginPolicy.js";
 
 /**
  * Claim and finalise historical recovery candidates.
@@ -238,7 +239,7 @@ export async function startHistoricalDispatch(input: {
   dispatchId: string;
   reservationToken: string;
   commentId: string;
-  /** Current process policy; final authorization applies the stricter snapshot/live rule. */
+  /** Retained for caller compatibility; it cannot relax the current-Gemini gate. */
   currentWesternOnly?: boolean;
   now: Date;
 }): Promise<StartHistoricalDispatchResult> {
@@ -332,7 +333,7 @@ export async function startHistoricalDispatch(input: {
     const [person, keyword] = await Promise.all([
       tx.igUser.findUnique({
         where: { id: source.igUserId },
-        select: { inferredOrigin: true },
+        select: { inferredOrigin: true, originConfidence: true, originMethod: true },
       }),
       tx.keyword.findUnique({
         where: { id: source.keywordId },
@@ -369,11 +370,36 @@ export async function startHistoricalDispatch(input: {
       }
       return { kind: "suppressed", reason };
     };
+    const deferBeforeStart = async (
+      reason: HistoricalDispatchStartDeferReason,
+    ): Promise<StartHistoricalDispatchResult> => {
+      const released = await releaseReservedPublicRecoveryDispatch(tx, {
+        dispatchId: input.dispatchId,
+        reservationToken: input.reservationToken,
+        at: input.now,
+        reason: `dispatch_start_deferred:${reason}`,
+      });
+      if (!released) return { kind: "blocked", reason: "reservation_not_active" };
+      const deferred = await tx.recoveryCandidate.updateMany({
+        where: {
+          id: source.id,
+          outcome: "pending",
+          claimToken: input.claimToken,
+          dispatchStartedAt: null,
+        },
+        data: {
+          claimedAt: null,
+          claimExpiresAt: null,
+          claimToken: null,
+          nextAttemptAt: null,
+        },
+      });
+      if (deferred.count !== 1) {
+        throw new Error("historical_dispatch_final_deferral_failed");
+      }
+      return { kind: "deferred", reason };
+    };
     if (!keyword?.active) return suppressBeforeStart("keyword_inactive");
-    const effectiveWesternOnly = campaign.westernOnly || (input.currentWesternOnly ?? true);
-    if (effectiveWesternOnly && person?.inferredOrigin === "south_asian") {
-      return suppressBeforeStart("audience_out_of_market");
-    }
 
     await tx.$queryRaw`
       SELECT "id" FROM "recovery_campaign_batch_run" WHERE "id" = ${input.batchRunId}::uuid FOR UPDATE
@@ -404,6 +430,18 @@ export async function startHistoricalDispatch(input: {
     if (batch.consumed >= batch.allowance) {
       return { kind: "blocked", reason: "campaign_batch_exhausted" };
     }
+
+    // The person row was locked with the control/candidate locks above, so this is the
+    // linearization point for origin enrichment: a committed rewrite is visible here;
+    // a later rewrite waits until dispatch has been explicitly marked started. This
+    // mandatory gate is deliberately immediately before the dispatch-start transition.
+    const originDecision = evaluateHistoricalOrigin({
+      origin: person?.inferredOrigin ?? null,
+      confidence: person?.originConfidence ?? null,
+      method: person?.originMethod ?? null,
+    });
+    if (originDecision.kind === "stale") return deferBeforeStart(originDecision.reason);
+    if (originDecision.kind === "block") return suppressBeforeStart(originDecision.reason);
 
     const started = await startPublicRecoveryDispatch(tx, input);
     if (!started) return { kind: "blocked", reason: "reservation_not_active" };
@@ -447,12 +485,17 @@ export type HistoricalDispatchStartBlockReason =
   | "reservation_not_active";
 
 export type HistoricalDispatchStartSuppressionReason =
-  | "audience_out_of_market"
+  | "audience_south_asian"
+  | "audience_unknown"
+  | "audience_other"
   | "keyword_inactive";
+
+export type HistoricalDispatchStartDeferReason = "origin_not_current_gemini";
 
 export type StartHistoricalDispatchResult =
   | { kind: "started" }
   | { kind: "suppressed"; reason: HistoricalDispatchStartSuppressionReason }
+  | { kind: "deferred"; reason: HistoricalDispatchStartDeferReason }
   | { kind: "blocked"; reason: HistoricalDispatchStartBlockReason };
 
 export async function releaseHistoricalReservation(input: {

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { CURRENT_ORIGIN_METHOD } from "./historicalRecoveryOriginPolicy.js";
 
 // --- mocks -------------------------------------------------------------------
 const listDueCandidateIds = vi.fn();
@@ -190,7 +191,11 @@ beforeEach(() => {
     remaining: false,
   });
   reconcileHistoricalRecoveryAttributionSafely.mockResolvedValue({ inbound: 0, completed: 0 });
-  igUserFindUnique.mockResolvedValue({ inferredOrigin: "us_western" });
+  igUserFindUnique.mockResolvedValue({
+    inferredOrigin: "us_western",
+    originConfidence: "high",
+    originMethod: CURRENT_ORIGIN_METHOD,
+  });
   dmMessageCount.mockResolvedValue(0);
   conversationCount.mockResolvedValue(0);
   dispatchCount.mockResolvedValue(0);
@@ -261,6 +266,21 @@ describe("runHistoricalRecoveryTick — the send path", () => {
     expect(replyToComment).not.toHaveBeenCalled();
     expect(releaseHistoricalReservation).not.toHaveBeenCalled();
     expect(result.suppressed).toBe(1);
+  });
+
+  it("defers a final locked stale Gemini verdict without calling Meta", async () => {
+    startHistoricalDispatch.mockResolvedValue({
+      kind: "deferred",
+      reason: "origin_not_current_gemini",
+    });
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(replyToComment).not.toHaveBeenCalled();
+    // The repository released the reservation in the same locked transaction, so a
+    // second release here would operate on a stale token and hide an atomicity bug.
+    expect(releaseHistoricalReservation).not.toHaveBeenCalled();
+    expect(result.deferred).toBe(1);
   });
 
   it("stops the tick when final authorization sees pending inbound health capture", async () => {
@@ -458,15 +478,42 @@ describe("runHistoricalRecoveryTick — pre-send recheck", () => {
     expect(markCandidateSuppressed).toHaveBeenCalledWith("cand-1", "token-1", "contacted_since_selection");
   });
 
-  // The verdict is read LIVE, not from the snapshot: it is retired when the name it
-  // came from changes, so an in-market selection can read out-of-market now.
-  it("suppresses on the live origin verdict, not the snapshot", async () => {
-    igUserFindUnique.mockResolvedValue({ inferredOrigin: "south_asian" });
+  it.each([
+    ["South Asian", { inferredOrigin: "south_asian", originConfidence: "high", originMethod: CURRENT_ORIGIN_METHOD }, "audience_south_asian"],
+    ["unknown", { inferredOrigin: "unknown", originConfidence: "low", originMethod: CURRENT_ORIGIN_METHOD }, "audience_unknown"],
+    ["other", { inferredOrigin: "other", originConfidence: "low", originMethod: CURRENT_ORIGIN_METHOD }, "audience_other"],
+  ] as const)("suppresses a current live %s verdict before reservation", async (_label, person, reason) => {
+    flags.DM_RECOVERY_WESTERN_ONLY = false;
+    igUserFindUnique.mockResolvedValue(person);
 
-    await runHistoricalRecoveryTick();
+    const result = await runHistoricalRecoveryTick();
+
+    expect(igUserFindUnique).toHaveBeenCalledWith({
+      where: { id: "person-1" },
+      select: { inferredOrigin: true, originConfidence: true, originMethod: true },
+    });
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(reserveHistoricalDispatch).not.toHaveBeenCalled();
+    expect(startHistoricalDispatch).not.toHaveBeenCalled();
+    expect(markCandidateSuppressed).toHaveBeenCalledWith("cand-1", "token-1", reason);
+    expect(result.suppressed).toBe(1);
+  });
+
+  it.each(["name", null])("defers a %s live origin method before reservation", async (originMethod) => {
+    igUserFindUnique.mockResolvedValue({
+      inferredOrigin: "us_western",
+      originConfidence: "high",
+      originMethod,
+    });
+
+    const result = await runHistoricalRecoveryTick();
 
     expect(replyToComment).not.toHaveBeenCalled();
-    expect(markCandidateSuppressed).toHaveBeenCalledWith("cand-1", "token-1", "audience_out_of_market");
+    expect(reserveHistoricalDispatch).not.toHaveBeenCalled();
+    expect(startHistoricalDispatch).not.toHaveBeenCalled();
+    expect(markCandidateSuppressed).not.toHaveBeenCalled();
+    expect(releaseCandidateClaim).toHaveBeenCalledWith("cand-1", "token-1");
+    expect(result.deferred).toBe(1);
   });
 
   it("defers rather than burning the row at the hourly cap", async () => {

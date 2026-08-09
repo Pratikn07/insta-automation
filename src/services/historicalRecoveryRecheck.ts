@@ -11,6 +11,8 @@
  * database or the Graph API.
  */
 
+import { evaluateHistoricalOrigin } from "./historicalRecoveryOriginPolicy.js";
+
 /**
  * What we learned by reading the source comment just now (QA-09).
  *
@@ -49,6 +51,14 @@ export type RecheckFacts = {
   contactedSinceSelection: boolean;
   /** Live origin verdict, which may have been rewritten since selection. */
   audienceOrigin: string | null;
+  /** Confidence belongs to the persisted Gemini verdict and is forwarded unchanged. */
+  audienceOriginConfidence: string | null;
+  /** Classifier method/version for the live verdict; anything else is stale. */
+  audienceOriginMethod: string | null;
+  /**
+   * Retained for the frozen campaign manifest and caller compatibility. Historical
+   * dispatch always requires the current Gemini Western verdict, even when false.
+   */
   westernOnly: boolean;
   /** Campaign still running — a pause between claim and send must stop the send. */
   campaignRunning: boolean;
@@ -64,11 +74,30 @@ export type RecheckFacts = {
   dailyCap: number;
 };
 
+export type RecheckSuppressionReason =
+  | "source_comment_deleted"
+  | "source_comment_hidden"
+  | "source_set_exhausted"
+  | "replied_since_selection"
+  | "completed_since_selection"
+  | "contacted_since_selection"
+  | "audience_south_asian"
+  | "audience_unknown"
+  | "audience_other";
+
+export type RecheckDeferralReason =
+  | "campaign_not_running"
+  | "daily_cap_reached"
+  | "hourly_cap_reached"
+  | "source_read_auth_failed"
+  | "source_read_failed"
+  | "origin_not_current_gemini";
+
 export type RecheckDecision =
   | { kind: "send" }
-  | { kind: "suppress"; reason: string }
+  | { kind: "suppress"; reason: RecheckSuppressionReason }
   /** Not this person's fault — try again on a later tick. */
-  | { kind: "defer"; reason: string };
+  | { kind: "defer"; reason: RecheckDeferralReason };
 
 export function recheckBeforeSend(facts: RecheckFacts): RecheckDecision {
   // Campaign state first: a pause is the owner's emergency stop, and it must take
@@ -125,11 +154,20 @@ export function recheckBeforeSend(facts: RecheckFacts): RecheckDecision {
     return { kind: "suppress", reason: "contacted_since_selection" };
   }
 
-  // Re-applied on the LIVE verdict, not the snapshot: a verdict is retired when the
-  // name it came from changes, so someone classified in-market at selection can read
-  // out-of-market now. Withholds at either confidence, matching dmRecoveryPolicy.
-  if (facts.westernOnly && facts.audienceOrigin === "south_asian") {
-    return { kind: "suppress", reason: "audience_out_of_market" };
+  // Historical public replies always require a fresh verdict from the current Gemini
+  // classifier. `westernOnly` is a frozen campaign-selection setting; it never relaxes
+  // this final public-comment gate. An unavailable or stale method can become current
+  // after enrichment, so defer it; a current non-Western/unknown verdict is terminal.
+  const originDecision = evaluateHistoricalOrigin({
+    origin: facts.audienceOrigin,
+    confidence: facts.audienceOriginConfidence,
+    method: facts.audienceOriginMethod,
+  });
+  if (originDecision.kind === "stale") {
+    return { kind: "defer", reason: originDecision.reason };
+  }
+  if (originDecision.kind === "block") {
+    return { kind: "suppress", reason: originDecision.reason };
   }
 
   return { kind: "send" };

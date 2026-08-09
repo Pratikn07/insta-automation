@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { recheckBeforeSend, type RecheckFacts } from "./historicalRecoveryRecheck.js";
+import { CURRENT_ORIGIN_METHOD } from "./historicalRecoveryOriginPolicy.js";
 
 // This function stands between a days-old snapshot and a public comment on a real
 // person's post. Every branch is tested, and the ordering is tested too: when two
@@ -12,6 +13,8 @@ function facts(overrides: Partial<RecheckFacts> = {}): RecheckFacts {
     completedSinceSelection: false,
     contactedSinceSelection: false,
     audienceOrigin: "us_western",
+    audienceOriginConfidence: "high",
+    audienceOriginMethod: CURRENT_ORIGIN_METHOD,
     westernOnly: true,
     campaignRunning: true,
     sentThisHour: 0,
@@ -179,24 +182,43 @@ describe("recheckBeforeSend — the premise must still hold", () => {
   });
 });
 
-describe("recheckBeforeSend — market rule on the live verdict", () => {
-  // An origin verdict is retired when the name it came from changes, so someone
-  // in-market at selection can read out-of-market now. That is exactly why §35
-  // requires the recheck rather than trusting the snapshot.
-  it("suppresses a south_asian verdict that appeared after selection", () => {
-    expect(recheckBeforeSend(facts({ audienceOrigin: "south_asian" }))).toEqual({
-      kind: "suppress",
-      reason: "audience_out_of_market",
+describe("recheckBeforeSend — mandatory current-Gemini origin gate", () => {
+  // A historical public reply may proceed only from a live verdict produced by the
+  // current Gemini classifier. Both confidence values remain eligible for a Western
+  // verdict; the method is the freshness fence, not a confidence threshold.
+  it.each(["high", "low"] as const)("sends for a current %s-confidence Western verdict", (confidence) => {
+    expect(recheckBeforeSend(facts({
+      audienceOrigin: "us_western",
+      audienceOriginConfidence: confidence,
+      audienceOriginMethod: CURRENT_ORIGIN_METHOD,
+    }))).toEqual({ kind: "send" });
+  });
+
+  it.each(["high", "low"] as const)("suppresses a current %s-confidence South Asian verdict", (confidence) => {
+    expect(recheckBeforeSend(facts({
+      audienceOrigin: "south_asian",
+      audienceOriginConfidence: confidence,
+      audienceOriginMethod: CURRENT_ORIGIN_METHOD,
+      westernOnly: false,
+    }))).toEqual({ kind: "suppress", reason: "audience_south_asian" });
+  });
+
+  it.each([
+    ["unknown", "audience_unknown"],
+    ["other", "audience_other"],
+  ] as const)("suppresses a current %s verdict with its explicit reason", (origin, reason) => {
+    expect(recheckBeforeSend(facts({
+      audienceOrigin: origin,
+      audienceOriginConfidence: "low",
+      audienceOriginMethod: CURRENT_ORIGIN_METHOD,
+    }))).toEqual({ kind: "suppress", reason });
+  });
+
+  it.each(["name", null])("defers a %s origin method rather than sending", (method) => {
+    expect(recheckBeforeSend(facts({ audienceOriginMethod: method }))).toEqual({
+      kind: "defer",
+      reason: "origin_not_current_gemini",
     });
-  });
-
-  it("ignores the origin when westernOnly is off", () => {
-    const decision = recheckBeforeSend(facts({ audienceOrigin: "south_asian", westernOnly: false }));
-    expect(decision).toEqual({ kind: "send" });
-  });
-
-  it("still sends to an unknown origin", () => {
-    expect(recheckBeforeSend(facts({ audienceOrigin: null }))).toEqual({ kind: "send" });
   });
 });
 
@@ -240,6 +262,7 @@ describe("recheckBeforeSend — reason precedence", () => {
       { completedSinceSelection: true },
       { contactedSinceSelection: true },
       { audienceOrigin: "south_asian" },
+      { audienceOriginMethod: "name" },
     ];
 
     for (const problem of problems) {

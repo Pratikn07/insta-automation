@@ -300,8 +300,10 @@ async function runLeasedTickBody(
       completedSinceSelection: facts.completedCount > 0,
       contactedSinceSelection: facts.priorRecoveryCount > 0,
       audienceOrigin: facts.audienceOrigin,
-      // Never relax the policy the owner approved. A stricter current emergency
-      // setting applies immediately; a legacy/null snapshot is withheld at final start.
+      audienceOriginConfidence: facts.audienceOriginConfidence,
+      audienceOriginMethod: facts.audienceOriginMethod,
+      // Retained as part of the immutable campaign manifest, but cannot relax the
+      // mandatory current-Gemini historical public-comment gate.
       westernOnly: facts.approvedWesternOnly === true || env.DM_RECOVERY_WESTERN_ONLY,
       campaignRunning: facts.campaignState === "running",
       sentThisHour: facts.sentThisHour,
@@ -431,6 +433,12 @@ async function runLeasedTickBody(
         boundary: "final_locked_authorization",
       });
       await observeTerminalOutcome(claimed.campaignId);
+      continue;
+    }
+    if (dispatchStart.kind === "deferred") {
+      // The final locked authorization released the reservation and claim atomically.
+      // Do not call the provider, and do not release a second time with a stale token.
+      result.deferred++;
       continue;
     }
     if (dispatchStart.kind === "blocked") {
@@ -707,6 +715,8 @@ type PreDispatchFacts = {
   hourlyCap: number;
   dailyCap: number;
   audienceOrigin: string | null;
+  audienceOriginConfidence: string | null;
+  audienceOriginMethod: string | null;
   approvedWesternOnly: boolean | null;
   inboundCount: number;
   completedCount: number;
@@ -731,7 +741,7 @@ async function gatherPreDispatchFacts(
     }),
     prisma.igUser.findUnique({
       where: { id: claimed.igUserId },
-      select: { inferredOrigin: true },
+      select: { inferredOrigin: true, originConfidence: true, originMethod: true },
     }),
     // What has changed SINCE SELECTION, scoped to this person and this keyword (QA-11).
     //
@@ -796,6 +806,8 @@ async function gatherPreDispatchFacts(
     hourlyCap: campaign?.hourlyCap ?? 3,
     dailyCap: campaign?.dailyCap ?? 10,
     audienceOrigin: person?.inferredOrigin ?? null,
+    audienceOriginConfidence: person?.originConfidence ?? null,
+    audienceOriginMethod: person?.originMethod ?? null,
     approvedWesternOnly: campaign?.westernOnly ?? null,
     inboundCount,
     completedCount,
