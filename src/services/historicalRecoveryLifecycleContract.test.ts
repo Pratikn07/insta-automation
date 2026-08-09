@@ -194,6 +194,7 @@ async function sealSnapshot(campaignId: string): Promise<void> {
     sourceDataCutoff: campaign.sourceDataCutoff.toISOString(),
     commentFrom: campaign.commentFrom?.toISOString() ?? null,
     commentTo: campaign.commentTo?.toISOString() ?? null,
+    selectionLimit: campaign.selectionLimit,
     westernOnly: campaign.westernOnly!,
     holdoutPercent: campaign.holdoutPercent,
     copyVersion: campaign.copyVersion,

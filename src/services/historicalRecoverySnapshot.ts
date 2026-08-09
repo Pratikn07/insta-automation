@@ -7,6 +7,7 @@ export type SelectionSnapshotConfiguration = {
   sourceDataCutoff: string;
   commentFrom: string | null;
   commentTo: string | null;
+  selectionLimit: number | null;
   westernOnly: boolean;
   holdoutPercent: number;
   copyVersion: string;

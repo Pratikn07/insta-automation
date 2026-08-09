@@ -274,7 +274,11 @@ async function loadRows(cutoff: Date): Promise<SelectionRow[]> {
     WHERE ji."completed_at" IS NULL
       AND c."state" <> 'completed'
       AND ji."window_started_at" <= ${cutoff}
-    ORDER BY ji."window_started_at" ASC
+    ORDER BY
+      ji."window_started_at" ASC,
+      ji."ig_user_id" ASC,
+      ji."keyword_id" ASC,
+      ji."id" ASC
   `;
 }
 
@@ -302,6 +306,9 @@ export async function selectHistoricalCandidates(input: {
   persist: boolean;
   now?: Date;
 }): Promise<SelectionReport> {
+  if (input.limit !== undefined && (!Number.isInteger(input.limit) || input.limit <= 0)) {
+    throw new Error("invalid_selection_limit");
+  }
   const cutoff = input.now ?? new Date();
   const rows = await loadRows(cutoff);
 
@@ -451,6 +458,7 @@ export async function selectHistoricalCandidates(input: {
     sourceDataCutoff: cutoff.toISOString(),
     commentFrom: input.commentFrom?.toISOString() ?? null,
     commentTo: input.commentTo?.toISOString() ?? null,
+    selectionLimit: input.limit ?? null,
     westernOnly: input.westernOnly,
     holdoutPercent,
     copyVersion: input.copyVersion,
@@ -461,7 +469,12 @@ export async function selectHistoricalCandidates(input: {
 
   const inclusions: SelectionSnapshotInclusion[] = selected.map((entry, position) => {
     const row = byIntent.get(entry.facts.intentId)!.row;
-    const sources = row.sources.map((source, sourcePosition) => ({
+    const eligibleSources = row.sources.filter((source) => {
+      const receivedAt = new Date(source.receivedAt);
+      return !(input.commentFrom && receivedAt < input.commentFrom)
+        && !(input.commentTo && receivedAt > input.commentTo);
+    });
+    const sources = eligibleSources.map((source, sourcePosition) => ({
       position: sourcePosition,
       commentId: source.commentId,
       mediaId: source.mediaId,
@@ -544,6 +557,7 @@ export async function selectHistoricalCandidates(input: {
         sourceDataCutoff: cutoff,
         commentFrom: input.commentFrom ?? null,
         commentTo: input.commentTo ?? null,
+        selectionLimit: input.limit ?? null,
         holdoutPercent,
         candidateCount: inclusions.length,
         excludedCount: snapshotExclusions.length,

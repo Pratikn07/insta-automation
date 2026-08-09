@@ -167,7 +167,14 @@ export function keepLatestPerPerson<T extends { facts: EligibilityFacts }>(inclu
 
   for (const entry of included) {
     const existing = latestByPerson.get(entry.facts.igUserId);
-    if (!existing || entry.facts.commentAt > existing.facts.commentAt) {
+    if (
+      !existing
+      || entry.facts.commentAt > existing.facts.commentAt
+      || (
+        entry.facts.commentAt.getTime() === existing.facts.commentAt.getTime()
+        && entry.facts.intentId.localeCompare(existing.facts.intentId) > 0
+      )
+    ) {
       latestByPerson.set(entry.facts.igUserId, entry);
     }
   }

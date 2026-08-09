@@ -220,6 +220,7 @@ historicalRecoveryRouter.get("/campaigns", async (_req, res) => {
       copyVersion: c.copyVersion,
       eligibilityPolicyVersion: c.eligibilityPolicyVersion,
       sourceDataCutoff: c.sourceDataCutoff.toISOString(),
+      selectionLimit: c.selectionLimit,
       westernOnly: c.westernOnly,
       holdoutPercent: c.holdoutPercent,
       inboundWindowHours: c.inboundWindowHours,

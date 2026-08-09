@@ -967,6 +967,7 @@ model RecoveryCampaign {
   sourceDataCutoff         DateTime              @map("source_data_cutoff") @db.Timestamptz(3)
   commentFrom              DateTime?             @map("comment_from") @db.Timestamptz(3)
   commentTo                DateTime?             @map("comment_to") @db.Timestamptz(3)
+  selectionLimit           Int?                  @map("selection_limit")
   holdoutPercent           Int                   @default(50) @map("holdout_percent")
   copyVersion              String                @map("copy_version")
   batchSize                Int                   @default(1) @map("batch_size")

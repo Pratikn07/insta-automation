@@ -638,6 +638,52 @@ describeWithLocalDatabase("selection records the decision it made", () => {
     ]);
   });
 
+  it("keeps every approved fallback inside the reviewed comment-age window", async () => {
+    const old = new Date(NOW.getTime() - 90 * 24 * 3600_000);
+    const recent = new Date(NOW.getTime() - 10 * 24 * 3600_000);
+    const { commentIds } = await seedEligible({ triggers: [{ at: old }, { at: recent }] });
+
+    const report = await selector.selectHistoricalCandidates({
+      phase: "unknown_read_pilot",
+      selectionVersion: `sel-test-bounded-sources-${randomUUID()}`,
+      copyVersion: "recovery-v2",
+      westernOnly: true,
+      holdoutPercent: 0,
+      commentFrom: new Date(NOW.getTime() - 30 * 24 * 3600_000),
+      commentTo: new Date(NOW.getTime() - 7 * 24 * 3600_000),
+      persist: true,
+      now: NOW,
+    });
+    const sources = await prisma.recoveryCandidateSource.findMany({
+      where: { candidate: { campaignId: report.campaignId! } },
+      orderBy: { position: "asc" },
+      select: { commentId: true },
+    });
+
+    expect(sources).toEqual([{ commentId: commentIds[1] }]);
+    expect(sources).not.toContainEqual({ commentId: commentIds[0] });
+  });
+
+  it("fingerprints distinct staged selection limits independently", async () => {
+    await seedEligible({ triggers: [{ at: COMMENT_AT }] });
+    await seedEligible({ triggers: [{ at: COMMENT_AT }] });
+    const selectionVersion = `sel-test-limit-${randomUUID()}`;
+    const run = (limit: number) => selector.selectHistoricalCandidates({
+      phase: "unknown_read_pilot" as const,
+      selectionVersion,
+      copyVersion: "recovery-v2",
+      westernOnly: true,
+      holdoutPercent: 0,
+      limit,
+      persist: false,
+      now: NOW,
+    });
+
+    const [one, two] = await Promise.all([run(1), run(2)]);
+    expect(one.selectionFingerprint).not.toBe(two.selectionFingerprint);
+    expect(one.decisionHash).not.toBe(two.decisionHash);
+  });
+
   it("rejects a duplicate normalized selection identity", async () => {
     await seedEligible({ triggers: [{ at: COMMENT_AT }] });
     const version = `sel-test-duplicate-${randomUUID()}`;
