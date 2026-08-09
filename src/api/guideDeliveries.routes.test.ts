@@ -18,6 +18,7 @@ describe("guide delivery owner routes", () => {
   const confirmUnitDelivered = vi.fn();
   const retryUncertainUnit = vi.fn();
   const cancelGuideDelivery = vi.fn();
+  const boundaryError = vi.fn();
 
   function app() {
     const server = express();
@@ -32,6 +33,17 @@ describe("guide delivery owner routes", () => {
       cancelGuideDelivery,
       now: () => new Date("2026-08-09T12:00:00.000Z"),
     }));
+    server.use(
+      (
+        error: unknown,
+        _req: express.Request,
+        res: express.Response,
+        _next: express.NextFunction,
+      ) => {
+        boundaryError(error);
+        res.status(500).json({ error: "internal_error" });
+      },
+    );
     return server;
   }
 
@@ -120,4 +132,41 @@ describe("guide delivery owner routes", () => {
       .expect(400, { error: "invalid_guide_delivery_request" });
     expect(confirmUnitDelivered).not.toHaveBeenCalled();
   });
+
+  it.each([
+    {
+      label: "confirm",
+      path: `/guide-deliveries/${deliveryId}/units/${unitId}/confirm-delivered`,
+      dependency: confirmUnitDelivered,
+      body: {},
+    },
+    {
+      label: "retry",
+      path: `/guide-deliveries/${deliveryId}/units/${unitId}/retry`,
+      dependency: retryUncertainUnit,
+      body: { acknowledgeDuplicateRisk: true },
+    },
+    {
+      label: "cancel",
+      path: `/guide-deliveries/${deliveryId}/cancel`,
+      dependency: cancelGuideDelivery,
+      body: {},
+    },
+  ])(
+    "forwards rejected $label dependencies to the safe app error boundary",
+    async ({ path, dependency, body }) => {
+      const sentinel = new Error("PRIVATE REJECTED SERVICE ERROR");
+      dependency.mockRejectedValueOnce(sentinel);
+
+      const response = await request(app())
+        .post(path)
+        .send(body)
+        .timeout({ deadline: 750 })
+        .expect(500);
+
+      expect(response.body).toEqual({ error: "internal_error" });
+      expect(boundaryError).toHaveBeenCalledWith(sentinel);
+      expect(response.text).not.toContain("PRIVATE REJECTED SERVICE ERROR");
+    },
+  );
 });

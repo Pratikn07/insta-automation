@@ -1,4 +1,5 @@
 import { Router } from "express";
+import type { NextFunction, Request, RequestHandler, Response } from "express";
 import { z } from "zod";
 import {
   cancelGuideDelivery,
@@ -19,7 +20,15 @@ type GuideDeliveryReviewRoutesDependencies = {
   now(): Date;
 };
 
-function sendResult(res: Parameters<Parameters<Router["post"]>[1]>[1], result: GuideDeliveryReviewResult) {
+function forwardAsync(
+  handler: (req: Request, res: Response, next: NextFunction) => Promise<unknown>,
+): RequestHandler {
+  return (req, res, next) => {
+    void handler(req, res, next).catch(next);
+  };
+}
+
+function sendResult(res: Response, result: GuideDeliveryReviewResult) {
   if (result.ok) {
     return result.directive === "none" ? res.status(204).end() : res.status(202).end();
   }
@@ -36,7 +45,7 @@ export function createGuideDeliveriesRouter(
 ): Router {
   const router = Router();
 
-  router.post("/:deliveryId/units/:unitId/confirm-delivered", async (req, res) => {
+  router.post("/:deliveryId/units/:unitId/confirm-delivered", forwardAsync(async (req, res) => {
     const deliveryId = idSchema.safeParse(req.params.deliveryId);
     const unitId = idSchema.safeParse(req.params.unitId);
     if (!deliveryId.success || !unitId.success) {
@@ -50,9 +59,9 @@ export function createGuideDeliveriesRouter(
       now: dependencies.now(),
     });
     return sendResult(res, result);
-  });
+  }));
 
-  router.post("/:deliveryId/units/:unitId/retry", async (req, res) => {
+  router.post("/:deliveryId/units/:unitId/retry", forwardAsync(async (req, res) => {
     const deliveryId = idSchema.safeParse(req.params.deliveryId);
     const unitId = idSchema.safeParse(req.params.unitId);
     if (!deliveryId.success || !unitId.success) {
@@ -71,9 +80,9 @@ export function createGuideDeliveriesRouter(
       now: dependencies.now(),
     });
     return sendResult(res, result);
-  });
+  }));
 
-  router.post("/:deliveryId/cancel", async (req, res) => {
+  router.post("/:deliveryId/cancel", forwardAsync(async (req, res) => {
     const deliveryId = idSchema.safeParse(req.params.deliveryId);
     if (!deliveryId.success) {
       return res.status(400).json({ error: "invalid_guide_delivery_request" });
@@ -85,7 +94,7 @@ export function createGuideDeliveriesRouter(
       now: dependencies.now(),
     });
     return sendResult(res, result);
-  });
+  }));
 
   return router;
 }
