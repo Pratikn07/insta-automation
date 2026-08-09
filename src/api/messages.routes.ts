@@ -1,6 +1,11 @@
-import { Router } from "express";
+import { Router, type Response } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
+import {
+  countInstagramCodeUnits,
+  INSTAGRAM_GUIDE_TEXT_LIMIT,
+  MESSAGE_BODY_TOO_LONG_ERROR,
+} from "../../shared/guideMessagePolicy.js";
 
 export const messagesRouter = Router();
 
@@ -9,19 +14,31 @@ const messageTypeSchema = z.enum(["text", "image", "pdf"]);
 const createSchema = z.object({
   resourceId: z.string().uuid(),
   type: messageTypeSchema,
-  body: z.string().max(2000).optional(),
+  body: z.string().max(INSTAGRAM_GUIDE_TEXT_LIMIT).optional(),
   mediaUrl: z.string().url().optional(),
 });
 
 const updateSchema = z.object({
   type: messageTypeSchema.optional(),
-  body: z.string().max(2000).nullable().optional(),
+  body: z.string().max(INSTAGRAM_GUIDE_TEXT_LIMIT).nullable().optional(),
   mediaUrl: z.string().url().nullable().optional(),
 });
 
 const reorderSchema = z.object({
   messageIds: z.array(z.string().uuid()).min(1),
 });
+
+function rejectLongBody(body: unknown, res: Response): boolean {
+  if (typeof body !== "string") return false;
+  const actual = countInstagramCodeUnits(body);
+  if (actual <= INSTAGRAM_GUIDE_TEXT_LIMIT) return false;
+  res.status(400).json({
+    error: MESSAGE_BODY_TOO_LONG_ERROR,
+    limit: INSTAGRAM_GUIDE_TEXT_LIMIT,
+    actual,
+  });
+  return true;
+}
 
 messagesRouter.get("/by-resource/:resourceId", async (req, res) => {
   const rows = await prisma.resourceMessage.findMany({
@@ -32,6 +49,7 @@ messagesRouter.get("/by-resource/:resourceId", async (req, res) => {
 });
 
 messagesRouter.post("/", async (req, res) => {
+  if (rejectLongBody(req.body?.body, res)) return;
   const parsed = createSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   const { resourceId, type, body, mediaUrl } = parsed.data;
@@ -57,6 +75,7 @@ messagesRouter.post("/", async (req, res) => {
 });
 
 messagesRouter.patch("/:id", async (req, res) => {
+  if (rejectLongBody(req.body?.body, res)) return;
   const parsed = updateSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   const updated = await prisma.resourceMessage.update({

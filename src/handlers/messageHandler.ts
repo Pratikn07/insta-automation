@@ -4,14 +4,16 @@ import {
   findActiveAwaitingDone,
   findLatestIncompleteConversation,
   hasCompletedKeyword,
-  markCompleted,
   markGated,
   openConversationIn,
 } from "../services/conversationService.js";
 import { findKeywordInMessage } from "../services/keywordService.js";
 import { resolveJourneyIntent } from "../services/journeyIntentService.js";
-import { sendSequence } from "../services/sequenceSender.js";
 import { sendTrackedText } from "../services/dmDeliveryService.js";
+import {
+  deliverGuideForTrigger,
+  type GuideDeliveryResult,
+} from "../services/guideDeliveryService.js";
 import {
   markInboundDeleted,
   markThreadResolved,
@@ -20,7 +22,6 @@ import {
 } from "../services/dmThreadService.js";
 import { recordRecoveryInbound } from "../services/dmRecoveryService.js";
 import { queueReplyDraft } from "../services/replyDraftService.js";
-import { scheduleEngagementFollowUp } from "../services/engagementFollowUpService.js";
 import { logger } from "../lib/logger.js";
 import { parseProviderTimestamp } from "../lib/providerTime.js";
 import { logEvent, describeGraphError } from "../services/eventLogger.js";
@@ -50,49 +51,35 @@ const REDELIVERY_INTRO = "You've already got this one — here it is again 💛"
 // register), so someone who just followed knows to simply reply again.
 const FOLLOW_GATE =
   "You're one step away! 💛 Follow @tinysoho, then reply DONE here and I'll send it right over. (Just followed? Give it a few seconds and reply DONE again.)";
+const STANDARD_DM_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 function graphFailureMetadata(err: unknown): Record<string, unknown> {
   return { errorCode: "graph_request_failed", ...describeGraphError(err) };
 }
 
-async function scheduleFollowUpAfterDelivery(input: {
+async function deliverGuideFromInbound(input: {
   conversationId: string;
+  resourceId: string;
+  igUserId: string;
   threadId: string;
-  inboundMessageId: string;
-  inboundAt: Date;
-  deliveredAt: Date | null;
-}): Promise<void> {
-  if (!env.AI_FOLLOW_UPS_ENABLED) return;
-
-  if (!input.deliveredAt) {
-    logger.error(
-      {
-        errorCode: "follow_up_completion_timestamp_missing",
-        conversationId: input.conversationId,
-        threadId: input.threadId,
-        inboundMessageId: input.inboundMessageId,
-      },
-      "Failed to schedule engagement follow-up after guide delivery",
-    );
-    return;
-  }
-
-  try {
-    await scheduleEngagementFollowUp({ ...input, deliveredAt: input.deliveredAt });
-  } catch {
-    // The guide is already delivered and completion is recorded. Follow-up
-    // queueing is best-effort and must never make that successful path look
-    // failed (or leak a database/backend error that could contain private text).
-    logger.error(
-      {
-        errorCode: "follow_up_schedule_failed",
-        conversationId: input.conversationId,
-        threadId: input.threadId,
-        inboundMessageId: input.inboundMessageId,
-      },
-      "Failed to schedule engagement follow-up after guide delivery",
-    );
-  }
+  triggerId: string;
+  triggeredAt: Date;
+  followerAtTrigger: boolean | null;
+  triggerKind: "inbound_reply" | "explicit_redelivery";
+  redeliveryIntro?: string;
+}): Promise<GuideDeliveryResult> {
+  return deliverGuideForTrigger({
+    conversationId: input.conversationId,
+    resourceId: input.resourceId,
+    igUserId: input.igUserId,
+    threadId: input.threadId,
+    triggerKind: input.triggerKind,
+    triggerId: input.triggerId,
+    triggeredAt: input.triggeredAt,
+    sendWindowExpiresAt: new Date(input.triggeredAt.getTime() + STANDARD_DM_WINDOW_MS),
+    followerAtTrigger: input.followerAtTrigger,
+    ...(input.redeliveryIntro ? { redeliveryIntro: input.redeliveryIntro } : {}),
+  });
 }
 
 /**
@@ -346,68 +333,45 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     const alreadyCompleted = await hasCompletedKeyword(senderId, keyword.id);
     if (profile.isFollower === true || alreadyCompleted) {
       try {
-        if (alreadyCompleted) {
-          await sendTrackedText({
-            recipientIgUserId: senderId,
-            text: REDELIVERY_INTRO,
-            source: "keyword_automation",
-          });
-        }
-        await sendSequence({
+        const result = await deliverGuideFromInbound({
+          conversationId: convo.id,
+          resourceId: keyword.resource.id,
           igUserId: senderId,
-          messages: keyword.resource.messages,
-          source: "guide_automation",
-        });
-        const completed = await markCompleted(convo.id);
-        await scheduleFollowUpAfterDelivery({
-          conversationId: convo.id,
           threadId: inbound.threadId,
-          inboundMessageId: inbound.messageId,
-          inboundAt: parseProviderTimestamp(entry.timestamp),
-          deliveredAt: completed.completedAt,
-        });
-        await markThreadResolved({
-          threadId: inbound.threadId,
-          inboundMessageId: inbound.messageId,
-        });
-        await logEvent("sequence_completed", {
-          conversationId: convo.id,
-          followerAtDelivery: profile.isFollower,
-          source: "dm_instant",
-          redelivery: alreadyCompleted,
+          triggerId: inbound.messageId,
+          triggeredAt: observedAt,
+          followerAtTrigger: profile.isFollower,
+          triggerKind: alreadyCompleted ? "explicit_redelivery" : "inbound_reply",
+          ...(alreadyCompleted ? { redeliveryIntro: REDELIVERY_INTRO } : {}),
         });
 
-        // Same follow-aware sign-off as the gated path; best-effort.
-        try {
-          const closing = profile.isFollower ? FOLLOWER_THANKS : FOLLOW_NUDGE;
-          await sendTrackedText({
-            recipientIgUserId: senderId,
-            text: closing,
-            source: "guide_automation",
-          });
-          await logEvent("follow_nudge_sent", {
-            conversationId: convo.id,
-            isFollower: profile.isFollower,
-            variant: profile.isFollower ? "thanks" : "nudge",
-          });
-        } catch (err) {
-          logger.warn(
-            { ...graphFailureMetadata(err), conversationId: convo.id },
-            "Follow-aware closing message failed (guide already delivered)",
-          );
+        if (result === "completed") {
+          // Same follow-aware sign-off as the gated path; best-effort. A worker
+          // completion never returns here, so it cannot duplicate this nudge.
+          try {
+            const closing = profile.isFollower ? FOLLOWER_THANKS : FOLLOW_NUDGE;
+            await sendTrackedText({
+              recipientIgUserId: senderId,
+              text: closing,
+              source: "guide_automation",
+            });
+            await logEvent("follow_nudge_sent", {
+              conversationId: convo.id,
+              isFollower: profile.isFollower,
+              variant: profile.isFollower ? "thanks" : "nudge",
+            });
+          } catch (err) {
+            logger.warn(
+              { ...graphFailureMetadata(err), conversationId: convo.id },
+              "Follow-aware closing message failed (guide already delivered)",
+            );
+          }
         }
       } catch (err) {
-        // Conversation stays awaiting_done, so any follow-up reply from the user
-        // re-attempts delivery via the open-gate branch below.
         logger.error(
           { ...graphFailureMetadata(err), conversationId: convo.id },
-          "Instant DM sequence failed",
+          "Guide delivery could not be started",
         );
-        await logEvent("sequence_failed", {
-          conversationId: convo.id,
-          source: "dm_instant",
-          ...graphFailureMetadata(err),
-        });
       }
       return;
     }
@@ -463,43 +427,22 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
         "Open-gate reply for an already-delivered keyword — redelivering",
       );
       try {
-        await sendTrackedText({
-          recipientIgUserId: senderId,
-          text: REDELIVERY_INTRO,
-          source: "keyword_automation",
-        });
-        await sendSequence({
+        await deliverGuideFromInbound({
+          conversationId: convo.id,
+          resourceId: convo.keyword.resource.id,
           igUserId: senderId,
-          messages: convo.keyword.resource.messages,
-          source: "guide_automation",
-        });
-        const completed = await markCompleted(convo.id);
-        await scheduleFollowUpAfterDelivery({
-          conversationId: convo.id,
           threadId: inbound.threadId,
-          inboundMessageId: inbound.messageId,
-          inboundAt: parseProviderTimestamp(entry.timestamp),
-          deliveredAt: completed.completedAt,
-        });
-        await markThreadResolved({
-          threadId: inbound.threadId,
-          inboundMessageId: inbound.messageId,
-        });
-        await logEvent("sequence_completed", {
-          conversationId: convo.id,
-          followerAtDelivery: profile.isFollower,
-          redelivery: true,
+          triggerId: inbound.messageId,
+          triggeredAt: observedAt,
+          followerAtTrigger: profile.isFollower,
+          triggerKind: "explicit_redelivery",
+          redeliveryIntro: REDELIVERY_INTRO,
         });
       } catch (err) {
         logger.error(
           { ...graphFailureMetadata(err), conversationId: convo.id },
-          "Redelivery failed",
+          "Guide delivery could not be started",
         );
-        await logEvent("sequence_failed", {
-          conversationId: convo.id,
-          redelivery: true,
-          ...graphFailureMetadata(err),
-        });
       }
       return;
     }
@@ -559,58 +502,44 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     });
 
     try {
-      await sendSequence({
+      const result = await deliverGuideFromInbound({
+        conversationId: convo.id,
+        resourceId: convo.keyword.resource.id,
         igUserId: senderId,
-        messages: convo.keyword.resource.messages,
-        source: "guide_automation",
-      });
-      const completed = await markCompleted(convo.id);
-      await scheduleFollowUpAfterDelivery({
-        conversationId: convo.id,
         threadId: inbound.threadId,
-        inboundMessageId: inbound.messageId,
-        inboundAt: parseProviderTimestamp(entry.timestamp),
-        deliveredAt: completed.completedAt,
-      });
-      await markThreadResolved({
-        threadId: inbound.threadId,
-        inboundMessageId: inbound.messageId,
-      });
-      await logEvent("sequence_completed", {
-        conversationId: convo.id,
-        followerAtDelivery: profile.isFollower,
+        triggerId: inbound.messageId,
+        triggeredAt: observedAt,
+        followerAtTrigger: profile.isFollower,
+        triggerKind: "inbound_reply",
       });
 
-      // Follow-aware closing nudge (hybrid): guide already delivered above; this
-      // only tailors the sign-off. Non-follower OR unknown → ask for the follow.
-      // Best-effort — a failure here must not undo the completed delivery.
-      try {
-        const closing = profile.isFollower ? FOLLOWER_THANKS : FOLLOW_NUDGE;
-        await sendTrackedText({
-          recipientIgUserId: senderId,
-          text: closing,
-          source: "guide_automation",
-        });
-        await logEvent("follow_nudge_sent", {
-          conversationId: convo.id,
-          isFollower: profile.isFollower,
-          variant: profile.isFollower ? "thanks" : "nudge",
-        });
-      } catch (err) {
-        logger.warn(
-          { ...graphFailureMetadata(err), conversationId: convo.id },
-          "Follow-aware closing message failed (guide already delivered)",
-        );
+      if (result === "completed") {
+        // Follow-aware closing nudge (hybrid): guide already delivered above;
+        // this only tailors the sign-off and is never sent for deferred work.
+        try {
+          const closing = profile.isFollower ? FOLLOWER_THANKS : FOLLOW_NUDGE;
+          await sendTrackedText({
+            recipientIgUserId: senderId,
+            text: closing,
+            source: "guide_automation",
+          });
+          await logEvent("follow_nudge_sent", {
+            conversationId: convo.id,
+            isFollower: profile.isFollower,
+            variant: profile.isFollower ? "thanks" : "nudge",
+          });
+        } catch (err) {
+          logger.warn(
+            { ...graphFailureMetadata(err), conversationId: convo.id },
+            "Follow-aware closing message failed (guide already delivered)",
+          );
+        }
       }
     } catch (err) {
       logger.error(
         { ...graphFailureMetadata(err), conversationId: convo.id },
-        "Sequence failed",
+        "Guide delivery could not be started",
       );
-      await logEvent("sequence_failed", {
-        conversationId: convo.id,
-        ...graphFailureMetadata(err),
-      });
     }
     return;
   }

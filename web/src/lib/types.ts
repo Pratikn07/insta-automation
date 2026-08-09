@@ -7,6 +7,7 @@ export interface Resource {
   description: string | null;
   createdAt: string;
   _count?: { messages: number; keywords: number };
+  invalidMessageCount?: number;
 }
 
 export interface ResourceMessage {
@@ -546,6 +547,25 @@ export interface DmThreadRow {
   lastOutboundAt: string | null;
   latestMessage: Omit<DmMessage, "id" | "mediaUrl"> | null;
   draft: ReplyDraft | null;
+  deliveryReviewCount: number;
+}
+
+export interface GuideDeliveryReviewUnit {
+  id: string;
+  position: number;
+  kind: "text" | "image" | "file";
+  status: "pending" | "sending" | "sent" | "failed" | "uncertain";
+}
+
+export interface GuideDeliveryReview {
+  id: string;
+  status: "needs_review" | "failed";
+  confirmedUnits: number;
+  totalUnits: number;
+  sendWindowExpiresAt: string;
+  sendWindowOpen: boolean;
+  failureCode: string | null;
+  units: GuideDeliveryReviewUnit[];
 }
 
 export interface DmThreadDetail {
@@ -558,6 +578,7 @@ export interface DmThreadDetail {
   lastMessageAt: string;
   messages: DmMessage[];
   draft: ReplyDraft | null;
+  deliveryReviews: GuideDeliveryReview[];
 }
 
 // --- AI advisor ---------------------------------------------------------------

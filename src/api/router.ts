@@ -14,6 +14,7 @@ import { aiRouter } from "./ai.routes.js";
 import { dmThreadsRouter } from "./dmThreads.routes.js";
 import { recoveryRemindersRouter } from "./recoveryReminders.routes.js";
 import { historicalRecoveryRouter } from "./historicalRecovery.routes.js";
+import { guideDeliveriesRouter } from "./guideDeliveries.routes.js";
 import { logger } from "../lib/logger.js";
 
 export const apiRouter = Router();
@@ -35,6 +36,7 @@ apiRouter.use("/users", usersRouter);
 apiRouter.use("/insights", insightsRouter);
 apiRouter.use("/ai", aiRouter);
 apiRouter.use("/dm-threads", dmThreadsRouter);
+apiRouter.use("/guide-deliveries", guideDeliveriesRouter);
 apiRouter.use("/recovery-reminders", recoveryRemindersRouter);
 // Separate mount from /recovery-reminders on purpose (§40): the historical lens
 // answers a different question, and mixing the two would let an owner approve 985

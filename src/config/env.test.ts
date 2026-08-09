@@ -11,6 +11,40 @@ const baseEnv = {
   SUPABASE_SERVICE_KEY: "mock_service_key",
 };
 
+describe("env configuration schema for guide delivery", () => {
+  it("uses the safe worker policy defaults", () => {
+    expect(envSchema.parse(baseEnv)).toMatchObject({
+      GUIDE_DELIVERY_BATCH_SIZE: 10,
+      GUIDE_DELIVERY_LEASE_MS: 300_000,
+      GUIDE_DELIVERY_MAX_ATTEMPTS: 3,
+      GUIDE_DELIVERY_RETRY_BASE_MS: 60_000,
+      GUIDE_DELIVERY_WORKER_INTERVAL_MS: 60_000,
+    });
+  });
+
+  it.each([
+    ["GUIDE_DELIVERY_BATCH_SIZE", "0"],
+    ["GUIDE_DELIVERY_BATCH_SIZE", "51"],
+    ["GUIDE_DELIVERY_LEASE_MS", "59999"],
+    ["GUIDE_DELIVERY_MAX_ATTEMPTS", "0"],
+    ["GUIDE_DELIVERY_MAX_ATTEMPTS", "11"],
+    ["GUIDE_DELIVERY_RETRY_BASE_MS", "9999"],
+    ["GUIDE_DELIVERY_WORKER_INTERVAL_MS", "9999"],
+  ])("rejects unsafe %s=%s", (name, value) => {
+    expect(envSchema.safeParse({ ...baseEnv, [name]: value }).success).toBe(false);
+  });
+
+  it.each([
+    ["GUIDE_DELIVERY_BATCH_SIZE", "50", 50],
+    ["GUIDE_DELIVERY_LEASE_MS", "60000", 60_000],
+    ["GUIDE_DELIVERY_MAX_ATTEMPTS", "10", 10],
+    ["GUIDE_DELIVERY_RETRY_BASE_MS", "10000", 10_000],
+    ["GUIDE_DELIVERY_WORKER_INTERVAL_MS", "10000", 10_000],
+  ])("coerces the valid %s boundary", (name, value, expected) => {
+    expect(envSchema.parse({ ...baseEnv, [name]: value })[name]).toBe(expected);
+  });
+});
+
 describe("env configuration schema for DM recovery", () => {
   it("parses default DM recovery configuration correctly", () => {
     const parsed = envSchema.parse(baseEnv);

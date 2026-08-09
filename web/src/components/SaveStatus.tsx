@@ -16,7 +16,13 @@ import { cn } from "@/lib/utils";
  * Using useMutationState (not local state) means new step rows are covered
  * automatically — no prop-drilling a save callback into each one.
  */
-export function SaveStatus({ sequenceId }: { sequenceId: string }) {
+export function SaveStatus({
+  sequenceId,
+  needsAttention = false,
+}: {
+  sequenceId: string;
+  needsAttention?: boolean;
+}) {
   const states = useMutationState({
     filters: { mutationKey: ["sequence-save", sequenceId] },
     select: (m) => ({ status: m.state.status, submittedAt: m.state.submittedAt }),
@@ -32,8 +38,10 @@ export function SaveStatus({ sequenceId }: { sequenceId: string }) {
   // Nothing has happened yet this session — stay silent rather than claim "saved".
   const hasActivity = states.length > 0;
 
-  const state: "saving" | "error" | "saved" | "idle" = saving
+  const state: "saving" | "attention" | "error" | "saved" | "idle" = saving
     ? "saving"
+    : needsAttention
+      ? "attention"
     : errored
       ? "error"
       : hasActivity
@@ -42,6 +50,12 @@ export function SaveStatus({ sequenceId }: { sequenceId: string }) {
 
   const config = {
     saving: { icon: Loader2, label: "Saving…", cls: "text-muted-foreground", spin: true },
+    attention: {
+      icon: CircleAlert,
+      label: "Needs attention — message too long",
+      cls: "text-destructive",
+      spin: false,
+    },
     saved: { icon: Check, label: "All changes saved", cls: "text-muted-foreground", spin: false },
     error: { icon: CircleAlert, label: "Couldn't save — retry", cls: "text-destructive", spin: false },
     idle: { icon: Check, label: "", cls: "text-muted-foreground", spin: false },

@@ -15,6 +15,7 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "seed": "tsx scripts/seed-keywords.ts",
+    "audit:guide-message-lengths": "tsx scripts/audit-guide-message-lengths.ts",
     "test": "vitest run"
   },
   "dependencies": {

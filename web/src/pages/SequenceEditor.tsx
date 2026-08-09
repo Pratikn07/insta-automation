@@ -29,7 +29,7 @@ import {
 import { useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { toast } from "sonner";
-import { api, ApiError } from "@/lib/api";
+import { api, apiErrorCode, ApiError } from "@/lib/api";
 import type { MessageType, Resource, ResourceMessage } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -42,6 +42,13 @@ import { MediaUpload } from "@/components/MediaUpload";
 import { PhoneMockup } from "@/components/PhoneMockup";
 import { SaveStatus } from "@/components/SaveStatus";
 import { cn } from "@/lib/utils";
+import {
+  countInstagramCodeUnits,
+  GUIDE_MESSAGE_LIMIT_GUIDANCE,
+  INSTAGRAM_GUIDE_TEXT_LIMIT,
+  INSTAGRAM_GUIDE_WARNING_AT,
+  MESSAGE_BODY_TOO_LONG_ERROR,
+} from "@shared/guideMessagePolicy";
 
 const STEP_TYPES: { value: MessageType; label: string; icon: typeof TypeIcon }[] = [
   { value: "text", label: "Text", icon: TypeIcon },
@@ -125,6 +132,10 @@ function SequenceEditorForm({
   // All editing mutations share this key so <SaveStatus> can reflect their
   // combined state as one "Saving… / All changes saved" indicator.
   const saveKey = ["sequence-save", id];
+  const needsAttention = items.some(
+    (message) =>
+      countInstagramCodeUnits(message.body ?? "") > INSTAGRAM_GUIDE_TEXT_LIMIT,
+  );
 
   const renameMutation = useMutation({
     mutationKey: saveKey,
@@ -228,7 +239,7 @@ function SequenceEditorForm({
               className="border-transparent bg-transparent px-0 text-xl font-semibold tracking-tight shadow-none focus-visible:ring-0"
               placeholder="Sequence name"
             />
-            {id && <SaveStatus sequenceId={id} />}
+            {id && <SaveStatus sequenceId={id} needsAttention={needsAttention} />}
           </div>
           <Textarea
             value={description}
@@ -349,6 +360,11 @@ function SortableStep({
   };
   const qc = useQueryClient();
   const savedBody = useRef(step.body);
+  const [serverBodyTooLong, setServerBodyTooLong] = useState(false);
+  const body = step.body ?? "";
+  const codeUnits = countInstagramCodeUnits(body);
+  const overLimit = codeUnits > INSTAGRAM_GUIDE_TEXT_LIMIT;
+  const warning = codeUnits >= INSTAGRAM_GUIDE_WARNING_AT && !overLimit;
 
   const patchMutation = useMutation({
     mutationKey: ["sequence-save", step.resourceId],
@@ -361,8 +377,13 @@ function SortableStep({
       if (data.body !== undefined) savedBody.current = data.body ?? null;
       qc.invalidateQueries({ queryKey: ["resource-messages", step.resourceId] });
     },
-    onError: (err) =>
-      toast.error(err instanceof ApiError ? err.message : "Update failed"),
+    onError: (err) => {
+      if (apiErrorCode(err) === MESSAGE_BODY_TOO_LONG_ERROR) {
+        setServerBodyTooLong(true);
+        return;
+      }
+      toast.error(err instanceof ApiError ? err.message : "Update failed");
+    },
   });
 
   const Icon =
@@ -420,11 +441,15 @@ function SortableStep({
                   {step.type === "text" ? "Message" : "Caption (optional)"}
                 </Label>
                 <Textarea
-                  value={step.body ?? ""}
-                  onChange={(e) => onChange({ ...step, body: e.target.value })}
+                  value={body}
+                  aria-invalid={overLimit}
+                  onChange={(e) => {
+                    setServerBodyTooLong(false);
+                    onChange({ ...step, body: e.target.value });
+                  }}
                   onBlur={() => {
-                    const value = step.body ?? "";
-                    const next = value.trim() ? value : null;
+                    if (overLimit) return;
+                    const next = body.trim() ? body : null;
                     if (next !== savedBody.current) patchMutation.mutate({ body: next });
                   }}
                   rows={step.type === "text" ? 3 : 2}
@@ -434,6 +459,20 @@ function SortableStep({
                       : "Optional caption sent with the file."
                   }
                 />
+                <div className="flex items-center justify-between gap-3 text-xs">
+                  <span
+                    className={cn(
+                      "text-muted-foreground",
+                      warning && "text-amber-600",
+                      overLimit && "text-destructive",
+                    )}
+                  >
+                    {codeUnits.toLocaleString()} / {INSTAGRAM_GUIDE_TEXT_LIMIT.toLocaleString()}
+                  </span>
+                  {overLimit || serverBodyTooLong ? (
+                    <span className="text-destructive">{GUIDE_MESSAGE_LIMIT_GUIDANCE}</span>
+                  ) : null}
+                </div>
               </div>
             </div>
           </CardContent>

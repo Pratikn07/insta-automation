@@ -17,6 +17,11 @@ export type PublicReplyFailure =
   | "permanent"
   | "uncertain";
 
+export type DirectMessageSendDisposition =
+  | "definite_transient"
+  | "definite_permanent"
+  | "uncertain";
+
 export function parseGraphSignatures(value: string): ReadonlySet<string> {
   if (!value || typeof value !== "string") return new Set();
 
@@ -60,6 +65,58 @@ const NEVER_DELIVERED_TRANSPORT: ReadonlySet<string> = new Set([
   "ENOTFOUND",
   "EAI_AGAIN",
 ]);
+
+/**
+ * Classify a standard direct-message send without exposing a provider error.
+ *
+ * Only response shapes proving rejection, or transports proving the request
+ * never reached Meta, authorize an automatic retry. Every response-less
+ * timeout/reset/cancellation remains ambiguous because Meta may have accepted
+ * the message before the connection failed.
+ */
+export function classifyDirectMessageSendFailure(
+  metadata: GraphErrorMetadata,
+): DirectMessageSendDisposition {
+  if (isRateLimit(metadata)) return "definite_transient";
+
+  if (
+    metadata.httpStatus === 401 ||
+    metadata.httpStatus === 403 ||
+    metadata.graphCode === 10 ||
+    metadata.graphCode === 102 ||
+    metadata.graphCode === 190 ||
+    metadata.graphCode === 200
+  ) {
+    return "definite_permanent";
+  }
+
+  if (metadata.category === "graph_transport") {
+    return metadata.transportCode !== null &&
+      NEVER_DELIVERED_TRANSPORT.has(metadata.transportCode)
+      ? "definite_transient"
+      : "uncertain";
+  }
+
+  if (
+    metadata.httpStatus === 502 ||
+    metadata.httpStatus === 503 ||
+    metadata.httpStatus === 504
+  ) {
+    return "definite_transient";
+  }
+
+  if (
+    metadata.category === "graph_response" &&
+    metadata.httpStatus !== null &&
+    metadata.httpStatus >= 400 &&
+    metadata.httpStatus < 500 &&
+    metadata.httpStatus !== 408
+  ) {
+    return "definite_permanent";
+  }
+
+  return "uncertain";
+}
 
 export function classifyPrivateGateFailure(
   metadata: GraphErrorMetadata,

@@ -112,6 +112,15 @@ export const envSchema = z.object({
     .default("Warm, practical, concise, and supportive. Never diagnose or shame a parent."),
   AI_DRAFT_INTERVAL_MS: z.coerce.number().int().min(5_000).default(15_000),
 
+  // --- Resumable guide delivery ---
+  // This worker is always on: an expired send claim may represent an ambiguous
+  // provider outcome and must be reconciled even when no new guides are sent.
+  GUIDE_DELIVERY_BATCH_SIZE: z.coerce.number().int().min(1).max(50).default(10),
+  GUIDE_DELIVERY_LEASE_MS: z.coerce.number().int().min(60_000).default(5 * 60_000),
+  GUIDE_DELIVERY_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
+  GUIDE_DELIVERY_RETRY_BASE_MS: z.coerce.number().int().min(10_000).default(60_000),
+  GUIDE_DELIVERY_WORKER_INTERVAL_MS: z.coerce.number().int().min(10_000).default(60_000),
+
   // --- DM Recovery Reminders ---
   DM_RECOVERY_ENABLED: booleanFlag(false),
   /**

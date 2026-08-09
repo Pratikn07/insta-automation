@@ -71,6 +71,7 @@ model Resource {
 
   messages ResourceMessage[]
   keywords Keyword[]
+  guideDeliveries GuideDelivery[]
 
   @@index([theme, ageMinMonths, ageMaxMonths])
   @@map("resources")
@@ -101,6 +102,7 @@ model ResourceMessage {
   altText    String?             @map("alt_text")
 
   resource Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  guideDeliveryUnits GuideDeliveryUnit[]
 
   @@unique([resourceId, order])
   @@map("resource_messages")
@@ -147,6 +149,7 @@ model Conversation {
   ownedIntents       JourneyIntent[]      @relation("IntentCanonicalConversation")
   journeyTriggers    JourneyTrigger[]
   recoveryCandidates RecoveryCandidate[]
+  guideDeliveries    GuideDelivery[]
 
   @@index([igUserId, state])
   @@index([state, createdAt])
@@ -520,6 +523,7 @@ model DmThread {
 
   messages DmMessage[]
   drafts   ReplyDraft[]
+  guideDeliveries GuideDelivery[]
 
   @@unique([igAccountId, igUserId])
   @@index([needsReply, lastInboundAt])
@@ -559,6 +563,130 @@ model DmMessage {
   @@index([direction, instagramTimestamp])
   @@index([direction, campaignHealthCapturedAt, campaignHealthNextAttemptAt])
   @@map("dm_message")
+}
+
+// ── Durable Guide Delivery ─────────────────────────────────────────────────
+
+enum GuideDeliveryTriggerKind {
+  inbound_reply
+  explicit_redelivery
+  follow_recovery
+
+  @@map("guide_delivery_trigger_kind")
+}
+
+enum GuideDeliveryStatus {
+  planned
+  sending
+  failed
+  needs_review
+  completed
+  cancelled
+
+  @@map("guide_delivery_status")
+}
+
+enum GuideDeliveryUnitOrigin {
+  resource_step
+  redelivery_intro
+
+  @@map("guide_delivery_unit_origin")
+}
+
+enum GuideDeliveryUnitKind {
+  text
+  image
+  file
+
+  @@map("guide_delivery_unit_kind")
+}
+
+enum GuideDeliveryUnitStatus {
+  pending
+  sending
+  sent
+  failed
+  uncertain
+
+  @@map("guide_delivery_unit_status")
+}
+
+enum GuideDeliveryFailureDisposition {
+  transient
+  permanent
+
+  @@map("guide_delivery_failure_disposition")
+}
+
+model GuideDelivery {
+  id                  String                   @id @default(uuid()) @db.Uuid
+  conversationId      String                   @map("conversation_id") @db.Uuid
+  resourceId          String                   @map("resource_id") @db.Uuid
+  threadId            String?                  @map("thread_id") @db.Uuid
+  triggerKind         GuideDeliveryTriggerKind @map("trigger_kind")
+  triggerId           String                   @map("trigger_id") @db.Uuid
+  triggeredAt         DateTime                 @map("triggered_at") @db.Timestamptz(3)
+  sendWindowExpiresAt DateTime                 @map("send_window_expires_at") @db.Timestamptz(3)
+  followerAtTrigger   Boolean?                 @map("follower_at_trigger")
+  status              GuideDeliveryStatus      @default(planned)
+  failureCode         String?                  @map("failure_code")
+  nextAttemptAt       DateTime?                @map("next_attempt_at") @db.Timestamptz(3)
+  claimToken          String?                  @unique(map: "guide_delivery_claim_token_key") @map("claim_token") @db.Uuid
+  claimedAt           DateTime?                @map("claimed_at") @db.Timestamptz(3)
+  claimExpiresAt      DateTime?                @map("claim_expires_at") @db.Timestamptz(3)
+  startedAt           DateTime?                @map("started_at") @db.Timestamptz(3)
+  completedAt         DateTime?                @map("completed_at") @db.Timestamptz(3)
+  cancelledAt         DateTime?                @map("cancelled_at") @db.Timestamptz(3)
+  createdAt           DateTime                 @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt           DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  conversation Conversation        @relation(fields: [conversationId], references: [id], onDelete: Restrict)
+  resource     Resource            @relation(fields: [resourceId], references: [id], onDelete: Restrict)
+  thread       DmThread?           @relation(fields: [threadId], references: [id], onDelete: SetNull)
+  units        GuideDeliveryUnit[]
+
+  @@unique([triggerKind, triggerId])
+  @@index([conversationId])
+  @@index([resourceId])
+  @@index([threadId])
+  @@map("guide_delivery")
+}
+
+model GuideDeliveryUnit {
+  id                     String                           @id @default(uuid()) @db.Uuid
+  deliveryId             String                           @map("delivery_id") @db.Uuid
+  resourceMessageId      String?                          @map("resource_message_id") @db.Uuid
+  position               Int
+  origin                 GuideDeliveryUnitOrigin
+  kind                   GuideDeliveryUnitKind
+  textSnapshot           String?                          @map("text_snapshot")
+  mediaUrlSnapshot       String?                          @map("media_url_snapshot")
+  contentFingerprint     String                           @map("content_fingerprint") @db.Char(64)
+  status                 GuideDeliveryUnitStatus          @default(pending)
+  failureDisposition     GuideDeliveryFailureDisposition? @map("failure_disposition")
+  providerMessageId      String?                          @map("provider_message_id")
+  attempts               Int                              @default(0)
+  sendingAt              DateTime?                        @map("sending_at") @db.Timestamptz(3)
+  sentAt                 DateTime?                        @map("sent_at") @db.Timestamptz(3)
+  ownerConfirmedAt       DateTime?                        @map("owner_confirmed_at") @db.Timestamptz(3)
+  ownerRetryAuthorizedAt DateTime?                        @map("owner_retry_authorized_at") @db.Timestamptz(3)
+  ownerRetryConsumedAt   DateTime?                        @map("owner_retry_consumed_at") @db.Timestamptz(3)
+  errorCategory          String?                          @map("error_category")
+  errorHttpStatus        Int?                             @map("error_http_status")
+  errorGraphCode         Int?                             @map("error_graph_code")
+  errorGraphSubcode      Int?                             @map("error_graph_subcode")
+  errorTraceId           String?                          @map("error_trace_id")
+  errorTransportCode     String?                          @map("error_transport_code")
+  createdAt              DateTime                         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt              DateTime                         @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  delivery        GuideDelivery    @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  resourceMessage ResourceMessage? @relation(fields: [resourceMessageId], references: [id], onDelete: SetNull)
+
+  @@unique([deliveryId, position])
+  @@index([resourceMessageId])
+  @@index([deliveryId, status, position])
+  @@map("guide_delivery_unit")
 }
 
 // One versioned AI suggestion for one inbound message.

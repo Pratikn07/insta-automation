@@ -1,0 +1,691 @@
+import { execFileSync } from "node:child_process";
+import path from "node:path";
+import { PrismaClient } from "@prisma/client";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+const databaseUrl = process.env.MIGRATION_TEST_DATABASE_URL;
+const describeWithDatabase = databaseUrl ? describe.sequential : describe.skip;
+const LOOPBACK_HOSTS = ["127.0.0.1", "localhost", "::1", "[::1]"];
+const WORKER_INDEX_NAMES = [
+  "guide_delivery_due_idx",
+  "guide_delivery_expired_claim_idx",
+  "guide_delivery_thread_review_idx",
+] as const;
+
+type IndexMetadata = {
+  included_columns: string[];
+  index_name: string;
+  is_unique: boolean;
+  is_valid: boolean;
+  key_columns: string[];
+  key_orders: string[];
+  predicate: string | null;
+  table_name: string;
+};
+
+let prisma: PrismaClient;
+
+function normalizeCatalogExpression(value: string | null): string | null {
+  if (value === null) return null;
+  return value
+    .replace(/"/g, "")
+    .replace(/::[a-z_][a-z0-9_]*/gi, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function findProtectedWorkerIndexDrift(diff: string): string[] {
+  return WORKER_INDEX_NAMES.filter((indexName) => {
+    const escapedName = indexName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const statement = new RegExp(
+      String.raw`\b(?:create\s+(?:unique\s+)?index\s+(?:if\s+not\s+exists\s+)?|drop\s+index\s+(?:if\s+exists\s+)?)(?:"${escapedName}"|${escapedName})(?=\s|\(|;|$)`,
+      "i",
+    );
+    return statement.test(diff);
+  });
+}
+
+async function loadIndexMetadata(): Promise<IndexMetadata[]> {
+  return prisma.$queryRaw<IndexMetadata[]>`
+    SELECT
+      ARRAY(
+        SELECT COALESCE(
+          a.attname,
+          pg_get_indexdef(index_catalog.indexrelid, included_column.ordinal::integer, true)
+        )
+        FROM unnest(index_catalog.indkey) WITH ORDINALITY AS included_column(attnum, ordinal)
+        LEFT JOIN pg_attribute a
+          ON a.attrelid = index_catalog.indrelid
+         AND a.attnum = included_column.attnum
+        WHERE included_column.ordinal > index_catalog.indnkeyatts
+        ORDER BY included_column.ordinal
+      ) AS included_columns,
+      index_row.relname AS index_name,
+      index_catalog.indisunique AS is_unique,
+      index_catalog.indisvalid AS is_valid,
+      ARRAY(
+        SELECT COALESCE(
+          a.attname,
+          pg_get_indexdef(index_catalog.indexrelid, key_column.ordinal::integer, true)
+        )
+        FROM unnest(index_catalog.indkey) WITH ORDINALITY AS key_column(attnum, ordinal)
+        LEFT JOIN pg_attribute a
+          ON a.attrelid = index_catalog.indrelid
+         AND a.attnum = key_column.attnum
+        WHERE key_column.ordinal <= index_catalog.indnkeyatts
+        ORDER BY key_column.ordinal
+      ) AS key_columns,
+      ARRAY(
+        SELECT CASE
+          WHEN (index_catalog.indoption[position - 1] & 1) = 1 THEN 'DESC'
+          ELSE 'ASC'
+        END
+        FROM generate_series(1, index_catalog.indnkeyatts) AS position
+      ) AS key_orders,
+      pg_get_expr(index_catalog.indpred, index_catalog.indrelid) AS predicate,
+      table_row.relname AS table_name
+    FROM pg_index index_catalog
+    JOIN pg_class table_row ON table_row.oid = index_catalog.indrelid
+    JOIN pg_class index_row ON index_row.oid = index_catalog.indexrelid
+    JOIN pg_namespace n ON n.oid = table_row.relnamespace
+    WHERE n.nspname = 'public'
+      AND table_row.relname IN ('guide_delivery', 'guide_delivery_unit')
+    ORDER BY table_row.relname, index_row.relname
+  `;
+}
+
+beforeAll(() => {
+  if (!databaseUrl) return;
+  const parsed = new URL(databaseUrl);
+  expect(LOOPBACK_HOSTS).toContain(parsed.hostname);
+  expect(process.env.DATABASE_URL).toBe(databaseUrl);
+  prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+});
+
+afterAll(async () => {
+  await prisma?.$disconnect();
+});
+
+describe("guide delivery worker-index diff guard", () => {
+  it.each([
+    [
+      "ordinary create",
+      'CREATE\n  INDEX "guide_delivery_due_idx" ON "guide_delivery" ("id");',
+      "guide_delivery_due_idx",
+    ],
+    [
+      "unique create",
+      'CREATE UNIQUE\n  INDEX "guide_delivery_expired_claim_idx" ON "guide_delivery" ("id");',
+      "guide_delivery_expired_claim_idx",
+    ],
+    [
+      "drop",
+      'DROP\n  INDEX "guide_delivery_thread_review_idx";',
+      "guide_delivery_thread_review_idx",
+    ],
+  ])("detects a protected %s statement across SQL whitespace", (_label, sql, indexName) => {
+    expect(findProtectedWorkerIndexDrift(sql)).toEqual([indexName]);
+  });
+});
+
+describeWithDatabase("guide delivery ledger migration", () => {
+  it("creates backend-only delivery tables", async () => {
+    const tables = await prisma.$queryRaw<
+      Array<{ relrowsecurity: boolean; table_name: string }>
+    >`
+      SELECT c.relrowsecurity, c.relname AS table_name
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public'
+        AND c.relname IN ('guide_delivery', 'guide_delivery_unit')
+      ORDER BY c.relname
+    `;
+    expect(tables).toEqual([
+      { relrowsecurity: true, table_name: "guide_delivery" },
+      { relrowsecurity: true, table_name: "guide_delivery_unit" },
+    ]);
+
+    const grants = await prisma.$queryRaw<Array<{ grantee: string; table_name: string }>>`
+      SELECT grantee, table_name
+      FROM information_schema.role_table_grants
+      WHERE table_schema = 'public'
+        AND table_name IN ('guide_delivery', 'guide_delivery_unit')
+        AND grantee IN ('anon', 'authenticated')
+    `;
+    expect(grants).toEqual([]);
+  });
+
+  it("uses exact unique identities and leading full indexes for every foreign key", async () => {
+    const indexes = await loadIndexMetadata();
+    const byName = new Map(indexes.map((index) => [index.index_name, index]));
+
+    expect(byName.get("guide_delivery_trigger_kind_trigger_id_key")).toMatchObject({
+      included_columns: [],
+      is_unique: true,
+      is_valid: true,
+      key_columns: ["trigger_kind", "trigger_id"],
+      key_orders: ["ASC", "ASC"],
+      predicate: null,
+      table_name: "guide_delivery",
+    });
+    expect(byName.get("guide_delivery_unit_delivery_id_position_key")).toMatchObject({
+      included_columns: [],
+      is_unique: true,
+      is_valid: true,
+      key_columns: ["delivery_id", "position"],
+      key_orders: ["ASC", "ASC"],
+      predicate: null,
+      table_name: "guide_delivery_unit",
+    });
+
+    const foreignKeys = await prisma.$queryRaw<
+      Array<{ constraint_name: string; source_columns: string[]; source_table: string }>
+    >`
+      SELECT
+        constraint_row.conname AS constraint_name,
+        ARRAY(
+          SELECT a.attname
+          FROM unnest(constraint_row.conkey) WITH ORDINALITY AS source_column(attnum, ordinal)
+          JOIN pg_attribute a
+            ON a.attrelid = constraint_row.conrelid
+           AND a.attnum = source_column.attnum
+          ORDER BY source_column.ordinal
+        ) AS source_columns,
+        source_table.relname AS source_table
+      FROM pg_constraint constraint_row
+      JOIN pg_class source_table ON source_table.oid = constraint_row.conrelid
+      JOIN pg_namespace n ON n.oid = source_table.relnamespace
+      WHERE constraint_row.contype = 'f'
+        AND n.nspname = 'public'
+        AND source_table.relname IN ('guide_delivery', 'guide_delivery_unit')
+      ORDER BY constraint_row.conname
+    `;
+
+    for (const foreignKey of foreignKeys) {
+      const hasLeadingFullIndex = indexes.some(
+        (index) =>
+          index.table_name === foreignKey.source_table &&
+          index.is_valid &&
+          index.predicate === null &&
+          foreignKey.source_columns.every(
+            (column, position) => index.key_columns[position] === column,
+          ),
+      );
+      expect(
+        hasLeadingFullIndex,
+        `${foreignKey.constraint_name} lacks a full index beginning with ${foreignKey.source_columns.join(", ")}`,
+      ).toBe(true);
+    }
+  });
+
+  it("binds every foreign key to the planned target and delete action", async () => {
+    const foreignKeys = await prisma.$queryRaw<
+      Array<{
+        constraint_name: string;
+        on_delete: string;
+        source_columns: string[];
+        source_table: string;
+        target_columns: string[];
+        target_table: string;
+      }>
+    >`
+      SELECT
+        constraint_row.conname AS constraint_name,
+        CASE constraint_row.confdeltype
+          WHEN 'r' THEN 'RESTRICT'
+          WHEN 'n' THEN 'SET NULL'
+          WHEN 'c' THEN 'CASCADE'
+          WHEN 'a' THEN 'NO ACTION'
+          ELSE constraint_row.confdeltype::text
+        END AS on_delete,
+        ARRAY(
+          SELECT a.attname
+          FROM unnest(constraint_row.conkey) WITH ORDINALITY AS source_column(attnum, ordinal)
+          JOIN pg_attribute a
+            ON a.attrelid = constraint_row.conrelid
+           AND a.attnum = source_column.attnum
+          ORDER BY source_column.ordinal
+        ) AS source_columns,
+        source_table.relname AS source_table,
+        ARRAY(
+          SELECT a.attname
+          FROM unnest(constraint_row.confkey) WITH ORDINALITY AS target_column(attnum, ordinal)
+          JOIN pg_attribute a
+            ON a.attrelid = constraint_row.confrelid
+           AND a.attnum = target_column.attnum
+          ORDER BY target_column.ordinal
+        ) AS target_columns,
+        target_table.relname AS target_table
+      FROM pg_constraint constraint_row
+      JOIN pg_class source_table ON source_table.oid = constraint_row.conrelid
+      JOIN pg_class target_table ON target_table.oid = constraint_row.confrelid
+      JOIN pg_namespace n ON n.oid = source_table.relnamespace
+      WHERE constraint_row.contype = 'f'
+        AND n.nspname = 'public'
+        AND source_table.relname IN ('guide_delivery', 'guide_delivery_unit')
+      ORDER BY constraint_row.conname
+    `;
+
+    expect(foreignKeys).toEqual([
+      {
+        constraint_name: "guide_delivery_conversation_id_fkey",
+        on_delete: "RESTRICT",
+        source_columns: ["conversation_id"],
+        source_table: "guide_delivery",
+        target_columns: ["id"],
+        target_table: "conversations",
+      },
+      {
+        constraint_name: "guide_delivery_resource_id_fkey",
+        on_delete: "RESTRICT",
+        source_columns: ["resource_id"],
+        source_table: "guide_delivery",
+        target_columns: ["id"],
+        target_table: "resources",
+      },
+      {
+        constraint_name: "guide_delivery_thread_id_fkey",
+        on_delete: "SET NULL",
+        source_columns: ["thread_id"],
+        source_table: "guide_delivery",
+        target_columns: ["id"],
+        target_table: "dm_thread",
+      },
+      {
+        constraint_name: "guide_delivery_unit_delivery_id_fkey",
+        on_delete: "CASCADE",
+        source_columns: ["delivery_id"],
+        source_table: "guide_delivery_unit",
+        target_columns: ["id"],
+        target_table: "guide_delivery",
+      },
+      {
+        constraint_name: "guide_delivery_unit_resource_message_id_fkey",
+        on_delete: "SET NULL",
+        source_columns: ["resource_message_id"],
+        source_table: "guide_delivery_unit",
+        target_columns: ["id"],
+        target_table: "resource_messages",
+      },
+    ]);
+  });
+
+  it("installs exact partial worker and review indexes", async () => {
+    const indexes = await loadIndexMetadata();
+    const byName = new Map(indexes.map((index) => [index.index_name, index]));
+
+    expect({
+      ...byName.get("guide_delivery_due_idx"),
+      predicate: normalizeCatalogExpression(byName.get("guide_delivery_due_idx")?.predicate ?? null),
+    }).toEqual({
+      included_columns: [],
+      index_name: "guide_delivery_due_idx",
+      is_unique: false,
+      is_valid: true,
+      key_columns: ["next_attempt_at", "created_at", "id"],
+      key_orders: ["ASC", "ASC", "ASC"],
+      predicate:
+        "((status = any (array['planned', 'failed'])) and (claim_token is null))",
+      table_name: "guide_delivery",
+    });
+    expect({
+      ...byName.get("guide_delivery_expired_claim_idx"),
+      predicate: normalizeCatalogExpression(
+        byName.get("guide_delivery_expired_claim_idx")?.predicate ?? null,
+      ),
+    }).toEqual({
+      included_columns: [],
+      index_name: "guide_delivery_expired_claim_idx",
+      is_unique: false,
+      is_valid: true,
+      key_columns: ["claim_expires_at", "id"],
+      key_orders: ["ASC", "ASC"],
+      predicate: "(claim_token is not null)",
+      table_name: "guide_delivery",
+    });
+    expect({
+      ...byName.get("guide_delivery_thread_review_idx"),
+      predicate: normalizeCatalogExpression(
+        byName.get("guide_delivery_thread_review_idx")?.predicate ?? null,
+      ),
+    }).toEqual({
+      included_columns: [],
+      index_name: "guide_delivery_thread_review_idx",
+      is_unique: false,
+      is_valid: true,
+      key_columns: ["thread_id", "created_at"],
+      key_orders: ["ASC", "DESC"],
+      predicate: "(status = 'needs_review')",
+      table_name: "guide_delivery",
+    });
+  });
+
+  it("enforces the exact delivery and unit check semantics", async () => {
+    const constraints = await prisma.$queryRaw<Array<{ conname: string; definition: string }>>`
+      SELECT conname, pg_get_constraintdef(oid) AS definition
+      FROM pg_constraint
+      WHERE conrelid IN (
+        'public.guide_delivery'::regclass,
+        'public.guide_delivery_unit'::regclass
+      )
+        AND contype = 'c'
+    `;
+    const byName = new Map(
+      constraints.map((row) => [row.conname, normalizeCatalogExpression(row.definition)]),
+    );
+
+    expect(byName.get("guide_delivery_send_window_order_check")).toBe(
+      "check ((send_window_expires_at > triggered_at))",
+    );
+    expect(byName.get("guide_delivery_claim_complete_check")).toBe(
+      "check ((((claim_token is null) and (claimed_at is null) and (claim_expires_at is null)) or ((claim_token is not null) and (claimed_at is not null) and (claim_expires_at is not null) and (claim_expires_at > claimed_at))))",
+    );
+    expect(byName.get("guide_delivery_terminal_timestamps_check")).toBe(
+      "check ((((status = 'completed') and (completed_at is not null) and (cancelled_at is null)) or ((status = 'cancelled') and (cancelled_at is not null) and (completed_at is null)) or ((status <> all (array['completed', 'cancelled'])) and (completed_at is null) and (cancelled_at is null))))",
+    );
+    expect(byName.get("guide_delivery_unit_payload_shape_check")).toBe(
+      "check ((((kind = 'text') and (text_snapshot is not null) and (media_url_snapshot is null)) or ((kind = any (array['image', 'file'])) and (text_snapshot is null) and (media_url_snapshot is not null))))",
+    );
+    expect(byName.get("guide_delivery_unit_attempts_check")).toBe(
+      "check ((attempts >= 0))",
+    );
+    expect(byName.get("guide_delivery_unit_state_timestamps_check")).toBe(
+      "check ((((status = 'pending') and (sending_at is null) and (sent_at is null) and (owner_confirmed_at is null)) or ((status = 'sending') and (sending_at is not null) and (sent_at is null) and (owner_confirmed_at is null)) or ((status = any (array['failed', 'uncertain'])) and (sending_at is not null) and (sent_at is null) and (owner_confirmed_at is null)) or ((status = 'sent') and (sending_at is not null) and (sent_at is not null))))",
+    );
+    expect(byName.get("guide_delivery_unit_sent_state_check")).toBe(
+      "check (((status <> 'sent') or (nullif(provider_message_id, '') is not null) or (owner_confirmed_at is not null)))",
+    );
+    expect(byName.get("guide_delivery_unit_owner_retry_order_check")).toBe(
+      "check (((owner_retry_consumed_at is null) or ((owner_retry_authorized_at is not null) and (owner_retry_consumed_at >= owner_retry_authorized_at))))",
+    );
+  });
+
+  it("uses the planned UUID, snapshot, and millisecond timestamp types", async () => {
+    const timestampColumns = await prisma.$queryRaw<
+      Array<{
+        column_default: string | null;
+        column_name: string;
+        datetime_precision: number | null;
+        is_nullable: string;
+        table_name: string;
+      }>
+    >`
+      SELECT table_name, column_name, datetime_precision, is_nullable, column_default
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name IN ('guide_delivery', 'guide_delivery_unit')
+        AND data_type = 'timestamp with time zone'
+      ORDER BY table_name, ordinal_position
+    `;
+    expect(timestampColumns).toEqual([
+      {
+        column_default: null,
+        column_name: "triggered_at",
+        datetime_precision: 3,
+        is_nullable: "NO",
+        table_name: "guide_delivery",
+      },
+      {
+        column_default: null,
+        column_name: "send_window_expires_at",
+        datetime_precision: 3,
+        is_nullable: "NO",
+        table_name: "guide_delivery",
+      },
+      {
+        column_default: null,
+        column_name: "next_attempt_at",
+        datetime_precision: 3,
+        is_nullable: "YES",
+        table_name: "guide_delivery",
+      },
+      {
+        column_default: null,
+        column_name: "claimed_at",
+        datetime_precision: 3,
+        is_nullable: "YES",
+        table_name: "guide_delivery",
+      },
+      {
+        column_default: null,
+        column_name: "claim_expires_at",
+        datetime_precision: 3,
+        is_nullable: "YES",
+        table_name: "guide_delivery",
+      },
+      {
+        column_default: null,
+        column_name: "started_at",
+        datetime_precision: 3,
+        is_nullable: "YES",
+        table_name: "guide_delivery",
+      },
+      {
+        column_default: null,
+        column_name: "completed_at",
+        datetime_precision: 3,
+        is_nullable: "YES",
+        table_name: "guide_delivery",
+      },
+      {
+        column_default: null,
+        column_name: "cancelled_at",
+        datetime_precision: 3,
+        is_nullable: "YES",
+        table_name: "guide_delivery",
+      },
+      {
+        column_default: "CURRENT_TIMESTAMP",
+        column_name: "created_at",
+        datetime_precision: 3,
+        is_nullable: "NO",
+        table_name: "guide_delivery",
+      },
+      {
+        column_default: "CURRENT_TIMESTAMP",
+        column_name: "updated_at",
+        datetime_precision: 3,
+        is_nullable: "NO",
+        table_name: "guide_delivery",
+      },
+      {
+        column_default: null,
+        column_name: "sending_at",
+        datetime_precision: 3,
+        is_nullable: "YES",
+        table_name: "guide_delivery_unit",
+      },
+      {
+        column_default: null,
+        column_name: "sent_at",
+        datetime_precision: 3,
+        is_nullable: "YES",
+        table_name: "guide_delivery_unit",
+      },
+      {
+        column_default: null,
+        column_name: "owner_confirmed_at",
+        datetime_precision: 3,
+        is_nullable: "YES",
+        table_name: "guide_delivery_unit",
+      },
+      {
+        column_default: null,
+        column_name: "owner_retry_authorized_at",
+        datetime_precision: 3,
+        is_nullable: "YES",
+        table_name: "guide_delivery_unit",
+      },
+      {
+        column_default: null,
+        column_name: "owner_retry_consumed_at",
+        datetime_precision: 3,
+        is_nullable: "YES",
+        table_name: "guide_delivery_unit",
+      },
+      {
+        column_default: "CURRENT_TIMESTAMP",
+        column_name: "created_at",
+        datetime_precision: 3,
+        is_nullable: "NO",
+        table_name: "guide_delivery_unit",
+      },
+      {
+        column_default: "CURRENT_TIMESTAMP",
+        column_name: "updated_at",
+        datetime_precision: 3,
+        is_nullable: "NO",
+        table_name: "guide_delivery_unit",
+      },
+    ]);
+
+    const typedColumns = await prisma.$queryRaw<
+      Array<{
+        character_maximum_length: number | null;
+        column_name: string;
+        data_type: string;
+        is_nullable: string;
+        table_name: string;
+      }>
+    >`
+      SELECT table_name, column_name, data_type, character_maximum_length, is_nullable
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND (
+          (table_name = 'guide_delivery' AND column_name IN (
+            'id', 'trigger_id', 'claim_token', 'follower_at_trigger'
+          ))
+          OR
+          (table_name = 'guide_delivery_unit' AND column_name IN (
+            'id', 'delivery_id', 'resource_message_id', 'text_snapshot',
+            'media_url_snapshot', 'content_fingerprint', 'attempts',
+            'error_http_status', 'error_graph_code', 'error_graph_subcode'
+          ))
+        )
+      ORDER BY table_name, ordinal_position
+    `;
+    expect(typedColumns).toEqual([
+      {
+        character_maximum_length: null,
+        column_name: "id",
+        data_type: "uuid",
+        is_nullable: "NO",
+        table_name: "guide_delivery",
+      },
+      {
+        character_maximum_length: null,
+        column_name: "trigger_id",
+        data_type: "uuid",
+        is_nullable: "NO",
+        table_name: "guide_delivery",
+      },
+      {
+        character_maximum_length: null,
+        column_name: "follower_at_trigger",
+        data_type: "boolean",
+        is_nullable: "YES",
+        table_name: "guide_delivery",
+      },
+      {
+        character_maximum_length: null,
+        column_name: "claim_token",
+        data_type: "uuid",
+        is_nullable: "YES",
+        table_name: "guide_delivery",
+      },
+      {
+        character_maximum_length: null,
+        column_name: "id",
+        data_type: "uuid",
+        is_nullable: "NO",
+        table_name: "guide_delivery_unit",
+      },
+      {
+        character_maximum_length: null,
+        column_name: "delivery_id",
+        data_type: "uuid",
+        is_nullable: "NO",
+        table_name: "guide_delivery_unit",
+      },
+      {
+        character_maximum_length: null,
+        column_name: "resource_message_id",
+        data_type: "uuid",
+        is_nullable: "YES",
+        table_name: "guide_delivery_unit",
+      },
+      {
+        character_maximum_length: null,
+        column_name: "text_snapshot",
+        data_type: "text",
+        is_nullable: "YES",
+        table_name: "guide_delivery_unit",
+      },
+      {
+        character_maximum_length: null,
+        column_name: "media_url_snapshot",
+        data_type: "text",
+        is_nullable: "YES",
+        table_name: "guide_delivery_unit",
+      },
+      {
+        character_maximum_length: 64,
+        column_name: "content_fingerprint",
+        data_type: "character",
+        is_nullable: "NO",
+        table_name: "guide_delivery_unit",
+      },
+      {
+        character_maximum_length: null,
+        column_name: "attempts",
+        data_type: "integer",
+        is_nullable: "NO",
+        table_name: "guide_delivery_unit",
+      },
+      {
+        character_maximum_length: null,
+        column_name: "error_http_status",
+        data_type: "integer",
+        is_nullable: "YES",
+        table_name: "guide_delivery_unit",
+      },
+      {
+        character_maximum_length: null,
+        column_name: "error_graph_code",
+        data_type: "integer",
+        is_nullable: "YES",
+        table_name: "guide_delivery_unit",
+      },
+      {
+        character_maximum_length: null,
+        column_name: "error_graph_subcode",
+        data_type: "integer",
+        is_nullable: "YES",
+        table_name: "guide_delivery_unit",
+      },
+    ]);
+  });
+
+  it("does not ask Prisma to replace partial worker indexes with full indexes", () => {
+    const diff = execFileSync(
+      path.resolve("node_modules/.bin/prisma"),
+      [
+        "migrate",
+        "diff",
+        "--from-url",
+        databaseUrl!,
+        "--to-schema-datamodel",
+        "prisma/schema.prisma",
+        "--script",
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: { ...process.env, DATABASE_URL: databaseUrl },
+      },
+    );
+
+    expect(findProtectedWorkerIndexDrift(diff)).toEqual([]);
+  });
+});

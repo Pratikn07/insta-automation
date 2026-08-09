@@ -8,6 +8,7 @@ import { Drawer } from "@/components/ui/drawer";
 import { IncomingBubble, OutgoingBubble } from "@/components/ChatBubbles";
 import { displayUser } from "@/lib/utils";
 import { ReplyDraftCard } from "./ReplyDraftCard";
+import { GuideDeliveryReviewCard } from "./GuideDeliveryReviewCard";
 import { draftActionErrorMessage, isStale, isVisibleDraft } from "./replyDraftView";
 
 /**
@@ -143,6 +144,10 @@ export function DmThreadDrawer({
               ),
             )}
           </div>
+
+          {thread.deliveryReviews.map((review) => (
+            <GuideDeliveryReviewCard key={review.id} threadId={thread.id} review={review} />
+          ))}
 
           {isVisibleDraft(draft) && draft && (
             <ReplyDraftCard
