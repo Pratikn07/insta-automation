@@ -13,8 +13,8 @@
 
 **Code-level verdict:** all five P0 findings are closed on branch
 `fix/remaining-p0-safety`. QA-01 and QA-03 landed earlier; this branch closes the three
-remaining items, QA-02, QA-04, and QA-05. The verified implementation revision is
-`1653208` plus its ancestors through `16b5128`.
+remaining items, QA-02, QA-04, and QA-05. The verified implementation and contract-test
+revision is `32ac52b` plus its ancestors through `16b5128`.
 
 This is not a production-launch verdict. This work did not deploy, apply a production
 migration, run reconciliation with `--write`, change a production flag, approve a live
