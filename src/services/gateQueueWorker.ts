@@ -13,6 +13,7 @@ import {
   scheduleSettingsBlockedRecovery,
   scheduleTrackingUnavailableRecovery,
 } from "./dmRecoveryService.js";
+import { conversationHistoryRole } from "./canonicalConversation.js";
 
 const BASE_BACKOFF_MS = 15 * 60 * 1000; // 15 min
 const MAX_BACKOFF_MS = 2 * 60 * 60 * 1000; // 2 h
@@ -151,7 +152,12 @@ export async function runGateQueueTick(): Promise<void> {
         // canonicalIntent carries the authoritative completion. A gate row belonging to
         // a reconciled ALIAS has its own state, and that state can say awaiting_done
         // while the person already received the guide through a sibling journey (QA-05).
-        include: { keyword: true, canonicalIntent: { select: { completedAt: true } } },
+        include: {
+          keyword: true,
+          canonicalIntent: {
+            select: { completedAt: true, canonicalConversationId: true },
+          },
+        },
       });
       const convoMap = new Map(convos.map((c) => [c.id, c]));
 
@@ -170,11 +176,18 @@ export async function runGateQueueTick(): Promise<void> {
         // case is the alias problem: after reconciliation a superseded conversation can
         // still read awaiting_done while the request it belongs to was satisfied
         // elsewhere, and delivering here would gate someone who has the guide.
+        const isAlias = conversationHistoryRole({
+          conversationId: convo.id,
+          canonicalIntentId: convo.canonicalIntentId,
+          canonicalConversationId: convo.canonicalIntent?.canonicalConversationId,
+        }) === "alias";
         const intentCompleted = convo.canonicalIntent?.completedAt != null;
-        if (convo.state === "completed" || intentCompleted) {
-          const reason = intentCompleted && convo.state !== "completed"
-            ? "intent_completed_elsewhere"
-            : "conversation_completed";
+        if (isAlias || convo.state === "completed" || intentCompleted) {
+          const reason = isAlias
+            ? "reconciled_alias"
+            : intentCompleted && convo.state !== "completed"
+              ? "intent_completed_elsewhere"
+              : "conversation_completed";
           await prisma.gateQueue.update({
             where: { id: row.id },
             data: { status: "abandoned", lastError: reason },

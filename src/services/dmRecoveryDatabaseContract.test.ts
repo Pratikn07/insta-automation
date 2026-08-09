@@ -141,10 +141,12 @@ describeWithLocalDatabase("dm recovery database contract", () => {
 
   it("enables RLS on both recovery tables", async () => {
     const rls = await prisma.$queryRaw<RlsRow[]>`
-      SELECT relname, relrowsecurity
-      FROM pg_class
-      WHERE relname IN ('dm_recovery_reminder', 'dm_recovery_control')
-      ORDER BY relname
+      SELECT c.relname, c.relrowsecurity
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public'
+        AND c.relname IN ('dm_recovery_reminder', 'dm_recovery_control')
+      ORDER BY c.relname
     `;
     expect(rls).toEqual([
       { relname: "dm_recovery_control", relrowsecurity: true },
@@ -156,7 +158,8 @@ describeWithLocalDatabase("dm recovery database contract", () => {
     const policies = await prisma.$queryRaw<PolicyRow[]>`
       SELECT policyname, tablename
       FROM pg_policies
-      WHERE tablename IN ('dm_recovery_reminder', 'dm_recovery_control')
+      WHERE schemaname = 'public'
+        AND tablename IN ('dm_recovery_reminder', 'dm_recovery_control')
     `;
     expect(policies).toEqual([]);
   });
@@ -200,7 +203,8 @@ describeWithLocalDatabase("dm recovery database contract", () => {
     const indexes = await prisma.$queryRaw<IndexRow[]>`
       SELECT indexname, indexdef
       FROM pg_indexes
-      WHERE tablename = 'dm_recovery_reminder'
+      WHERE schemaname = 'public'
+        AND tablename = 'dm_recovery_reminder'
         AND indexname = 'dm_recovery_reminder_ig_user_sending_key'
     `;
     expect(indexes).toHaveLength(1);
@@ -216,13 +220,23 @@ describeWithLocalDatabase("dm recovery database contract", () => {
 
     await expect(
       prisma.dmRecoveryReminder.create({
-        data: reminderData({ status: "sending", claimedAt, claimExpiresAt }),
+        data: reminderData({
+          status: "sending",
+          claimedAt,
+          claimExpiresAt,
+          claimToken: randomUUID(),
+        }),
       }),
     ).resolves.toMatchObject({ status: "sending" });
 
     await expect(
       prisma.dmRecoveryReminder.create({
-        data: reminderData({ status: "sending", claimedAt, claimExpiresAt }),
+        data: reminderData({
+          status: "sending",
+          claimedAt,
+          claimExpiresAt,
+          claimToken: randomUUID(),
+        }),
       }),
     ).rejects.toMatchObject({ code: "P2002" });
   });

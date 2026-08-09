@@ -90,6 +90,11 @@ export interface Conversation extends FollowFields {
   keyword: { id: string; keyword: string };
   username?: string | null;
   name?: string | null;
+  historyRole?: "unreconciled" | "canonical" | "alias";
+  canonicalOwner?: { id: string } | null;
+  canonicalConversationId?: string | null;
+  aliasCount?: number;
+  reconciliationReason?: string | null;
 }
 
 export interface ConversationCounts {

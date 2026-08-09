@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 
 /**
@@ -101,6 +102,39 @@ export type WindowWrite = {
   aliases: Array<{ id: string; state: string; reason: string }>;
 };
 
+async function countActiveAliasWork(
+  db: Prisma.TransactionClient,
+  aliasIds: string[],
+): Promise<number> {
+  if (aliasIds.length === 0) return 0;
+  const [activeGates, activeRecoveries, activeDrafts, activeCandidates] = await Promise.all([
+    db.gateQueue.count({ where: { conversationId: { in: aliasIds }, status: "sending" } }),
+    db.dmRecoveryReminder.count({
+      where: { conversationId: { in: aliasIds }, status: "sending" },
+    }),
+    db.replyDraft.count({
+      where: { sourceConversationId: { in: aliasIds }, status: "sending" },
+    }),
+    db.recoveryCandidate.count({
+      where: {
+        conversationId: { in: aliasIds },
+        outcome: "pending",
+        // A claim is already exclusive work, even before the worker stamps
+        // dispatchStartedAt. Repointing the conversation during that interval would
+        // let a valid reservation continue against an alias that no longer owns the
+        // journey. Pre-network claims are short lived, so decline this window and let
+        // the lease reconciler release it before a later reconciliation run.
+        claimToken: { not: null },
+      },
+    }),
+  ]);
+  return activeGates + activeRecoveries + activeDrafts + activeCandidates;
+}
+
+export async function hasActiveAliasWork(aliasIds: string[]): Promise<boolean> {
+  return (await countActiveAliasWork(prisma as Prisma.TransactionClient, aliasIds)) > 0;
+}
+
 /**
  * Write one reconciled window: its intent, and every conversation repointed at it.
  *
@@ -115,7 +149,10 @@ export type WindowWrite = {
 export async function applyReconciledWindow(
   w: WindowWrite,
   now = new Date(),
-): Promise<{ outcome: "written" | "skipped_live_intent"; intentId: string }> {
+): Promise<{
+  outcome: "written" | "skipped_live_intent" | "skipped_active_work";
+  intentId: string | null;
+}> {
   return prisma.$transaction(async (tx) => {
     // Match an existing intent by OVERLAP, not by the exact window key (QA-15).
     //
@@ -144,6 +181,14 @@ export async function applyReconciledWindow(
     // than silently skipped, so the run's output names every window it declined to touch.
     if (overlapping && overlapping.completedAt === null && overlapping.windowExpiresAt > now) {
       return { outcome: "skipped_live_intent" as const, intentId: overlapping.id };
+    }
+
+    const aliasIds = w.aliases.map((alias) => alias.id);
+    if ((await countActiveAliasWork(tx, aliasIds)) > 0) {
+      return {
+        outcome: "skipped_active_work" as const,
+        intentId: overlapping?.id ?? null,
+      };
     }
 
     const intent = overlapping
@@ -210,6 +255,30 @@ export async function applyReconciledWindow(
           reconciliationReason: `${alias.state}:${alias.reason}`,
           reconciledAt,
         },
+      });
+    }
+
+    if (aliasIds.length > 0) {
+      await tx.gateQueue.updateMany({
+        where: { conversationId: { in: aliasIds }, status: "pending" },
+        data: { status: "abandoned", lastError: "reconciled_alias" },
+      });
+      await tx.dmRecoveryReminder.updateMany({
+        where: { conversationId: { in: aliasIds }, status: "waiting" },
+        data: {
+          status: "suppressed",
+          suppressedAt: now,
+          suppressionReason: "reconciled_alias",
+        },
+      });
+      await tx.replyDraft.updateMany({
+        where: {
+          sourceConversationId: { in: aliasIds },
+          status: {
+            in: ["queued", "generating", "pending_approval", "generation_failed", "send_failed"],
+          },
+        },
+        data: { status: "superseded", errorCode: "reconciled_alias" },
       });
     }
 

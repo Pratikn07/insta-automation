@@ -27,11 +27,11 @@ model Keyword {
   createdAt      DateTime  @default(now()) @map("created_at")
   updatedAt      DateTime  @updatedAt @map("updated_at")
 
-  resource           Resource             @relation(fields: [resourceId], references: [id])
-  conversations      Conversation[]
-  recoveryReminders  DmRecoveryReminder[]
-  journeyIntents     JourneyIntent[]
-  recoveryCandidates RecoveryCandidate[]
+  resource            Resource                     @relation(fields: [resourceId], references: [id])
+  conversations       Conversation[]
+  recoveryReminders   DmRecoveryReminder[]
+  journeyIntents      JourneyIntent[]
+  recoveryCandidates  RecoveryCandidate[]
   selectionExclusions RecoverySelectionExclusion[]
 
   @@unique([keyword, mediaId])
@@ -189,7 +189,8 @@ model IgUser {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  recoveryReminders DmRecoveryReminder[]
+  recoveryReminders        DmRecoveryReminder[]
+  publicRecoveryDispatches PublicRecoveryDispatch[]
 
   @@map("ig_users")
 }
@@ -686,6 +687,9 @@ model DmRecoveryReminder {
   suppressionReason        String?               @map("suppression_reason")
   claimedAt                DateTime?             @map("claimed_at") @db.Timestamptz(3)
   claimExpiresAt           DateTime?             @map("claim_expires_at") @db.Timestamptz(3)
+  /// Fences every authorization and finalizer. An expired worker cannot act on a
+  /// reminder after lease reconciliation hands ownership to somebody else.
+  claimToken               String?               @unique(map: "dm_recovery_reminder_claim_token_key") @map("claim_token") @db.Uuid
   nextAttemptAt            DateTime?             @map("next_attempt_at") @db.Timestamptz(3)
   attempts                 Int                   @default(0)
   lastAttemptAt            DateTime?             @map("last_attempt_at") @db.Timestamptz(3)
@@ -726,6 +730,55 @@ model DmRecoveryControl {
   updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   @@map("dm_recovery_control")
+}
+
+enum PublicRecoverySourceKind {
+  prospective
+  historical
+
+  @@map("public_recovery_source_kind")
+}
+
+enum PublicRecoveryDispatchState {
+  reserved
+  dispatch_started
+  sent
+  uncertain
+  released
+
+  @@map("public_recovery_dispatch_state")
+}
+
+/// One authority for every public recovery attempt, irrespective of which feature
+/// selected it. Feature source rows remain evidence; this ledger owns person
+/// exclusivity, cooldown, global capacity, and dispatch fencing.
+model PublicRecoveryDispatch {
+  id                String                      @id @default(uuid()) @db.Uuid
+  reservationToken  String                      @unique(map: "public_recovery_dispatch_reservation_token_key") @map("reservation_token") @db.Uuid
+  igUserId          String                      @map("ig_user_id")
+  sourceKind        PublicRecoverySourceKind    @map("source_kind")
+  sourceId          String                      @map("source_id") @db.Uuid
+  attemptNumber     Int                         @map("attempt_number")
+  campaignId        String?                     @map("campaign_id") @db.Uuid
+  state             PublicRecoveryDispatchState
+  reservedAt        DateTime                    @map("reserved_at") @db.Timestamptz(3)
+  leaseExpiresAt    DateTime                    @map("lease_expires_at") @db.Timestamptz(3)
+  dispatchStartedAt DateTime?                   @map("dispatch_started_at") @db.Timestamptz(3)
+  sentAt            DateTime?                   @map("sent_at") @db.Timestamptz(3)
+  releasedAt        DateTime?                   @map("released_at") @db.Timestamptz(3)
+  providerReplyId   String?                     @map("provider_reply_id")
+  terminalReason    String?                     @map("terminal_reason")
+  createdAt         DateTime                    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  igUser   IgUser            @relation(fields: [igUserId], references: [id], onDelete: Restrict)
+  campaign RecoveryCampaign? @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+
+  @@unique([sourceKind, sourceId, attemptNumber], map: "public_recovery_dispatch_source_attempt_key")
+  @@index([state, reservedAt], map: "public_recovery_dispatch_capacity_idx")
+  @@index([igUserId, dispatchStartedAt], map: "public_recovery_dispatch_person_cooldown_idx")
+  @@index([campaignId, state, reservedAt], map: "public_recovery_dispatch_campaign_capacity_idx")
+  @@map("public_recovery_dispatch")
 }
 
 /// One row per comment webhook we have acted on.
@@ -790,9 +843,9 @@ model JourneyIntent {
   createdAt               DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt               DateTime               @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  keyword               Keyword             @relation(fields: [keywordId], references: [id], onDelete: Restrict)
-  canonicalConversation Conversation?       @relation("IntentCanonicalConversation", fields: [canonicalConversationId], references: [id], onDelete: SetNull)
-  aliasConversations    Conversation[]      @relation("ConversationCanonicalIntent")
+  keyword               Keyword                      @relation(fields: [keywordId], references: [id], onDelete: Restrict)
+  canonicalConversation Conversation?                @relation("IntentCanonicalConversation", fields: [canonicalConversationId], references: [id], onDelete: SetNull)
+  aliasConversations    Conversation[]               @relation("ConversationCanonicalIntent")
   triggers              JourneyTrigger[]
   recoveryCandidates    RecoveryCandidate[]
   selectionExclusions   RecoverySelectionExclusion[]
@@ -907,8 +960,9 @@ model RecoveryCampaign {
   createdAt        DateTime              @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt        DateTime              @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  candidates RecoveryCandidate[]
-  exclusions RecoverySelectionExclusion[]
+  candidates               RecoveryCandidate[]
+  exclusions               RecoverySelectionExclusion[]
+  publicRecoveryDispatches PublicRecoveryDispatch[]
 
   @@index([state])
   @@map("recovery_campaign")

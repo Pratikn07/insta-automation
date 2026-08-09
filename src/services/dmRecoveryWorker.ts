@@ -1,15 +1,13 @@
 import { env } from "../config/env.js";
-import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
 import { logEvent, describeGraphError } from "./eventLogger.js";
 import {
   listDueRecoveryIds,
   claimRecovery,
   authorizeClaimForSend,
-  markRecoverySent,
-  markRecoveryRetryable,
-  markRecoveryFailed,
-  markRecoveryUncertain,
+  startProspectiveDispatch,
+  finalizeProspectiveDispatch,
+  reconcileExpiredProspectiveLeases,
   releaseOrSuppressClaim,
 } from "./dmRecoveryRepository.js";
 import { evaluateRecoveryHealth, openRecoveryCircuit } from "./dmRecoveryHealth.js";
@@ -83,15 +81,7 @@ async function runTickBody(): Promise<DmRecoveryTickResult> {
   };
 
   // 1. Reconcile expired sending leases → send_uncertain
-  await prisma.dmRecoveryReminder.updateMany({
-    where: { status: "sending", claimExpiresAt: { lte: now } },
-    data: {
-      status: "send_uncertain",
-      lastErrorCategory: "stale_lease",
-      claimedAt: null,
-      claimExpiresAt: null,
-    },
-  });
+  await reconcileExpiredProspectiveLeases(now);
 
   // 2. Evaluate health. The module gathers its own observations: the worker
   // used to hand it hardcoded zeros for the sample inputs, which made the
@@ -119,7 +109,7 @@ async function runTickBody(): Promise<DmRecoveryTickResult> {
     const claimed = await claimRecovery(id, now, leaseUntil);
     if (!claimed) continue;
 
-    const decision = await authorizeClaimForSend(id, now);
+    const decision = await authorizeClaimForSend(id, claimed.claimToken, now);
 
     // Only an explicit send decision may reach Meta. Written as a positive
     // check so any decision kind added later defaults to NOT posting a public
@@ -129,7 +119,7 @@ async function runTickBody(): Promise<DmRecoveryTickResult> {
       decision.kind !== "send_no_confirmed_read_reminder" &&
       decision.kind !== "send_settings_fallback"
     ) {
-      await releaseOrSuppressClaim(id, decision, now);
+      await releaseOrSuppressClaim(id, decision, now, claimed.claimToken);
       if (decision.kind === "pause") {
         result.skipped = decision.reason;
         break; // Stop the batch: the circuit or the hourly cap closed.
@@ -153,6 +143,30 @@ async function runTickBody(): Promise<DmRecoveryTickResult> {
     // stale value granted an extra public send and halved the first backoff.
     const attemptNumber = claimed.attempts + 1;
 
+    const dispatchStarted = await startProspectiveDispatch({
+      reminderId: id,
+      claimToken: claimed.claimToken,
+      dispatchId: decision.dispatchId,
+      reservationToken: decision.reservationToken,
+      now: new Date(),
+    });
+    if (!dispatchStarted) {
+      await finalizeProspectiveDispatch({
+        reminderId: id,
+        claimToken: claimed.claimToken,
+        dispatchId: decision.dispatchId,
+        reservationToken: decision.reservationToken,
+        outcome: {
+          kind: "released",
+          at: new Date(),
+          reason: "dispatch_start_rejected",
+          sourceStatus: "waiting",
+        },
+      });
+      result.deferred++;
+      continue;
+    }
+
     let reply: { replyId: string | null } | null = null;
     let sendError: unknown = null;
     try {
@@ -166,9 +180,18 @@ async function runTickBody(): Promise<DmRecoveryTickResult> {
       const category = classifyPublicReplyFailure(meta);
 
       if (category === "open_circuit") {
-        await markRecoveryRetryable(id, {
-          category: "auth_or_permission",
-          nextAttemptAt: new Date(now.getTime() + env.DM_RECOVERY_RETRY_BASE_MS),
+        await finalizeProspectiveDispatch({
+          reminderId: id,
+          claimToken: claimed.claimToken,
+          dispatchId: decision.dispatchId,
+          reservationToken: decision.reservationToken,
+          outcome: {
+            kind: "released",
+            at: new Date(),
+            reason: "auth_or_permission",
+            sourceStatus: "waiting",
+            nextAttemptAt: new Date(now.getTime() + env.DM_RECOVERY_RETRY_BASE_MS),
+          },
         });
         await openRecoveryCircuit("auth_or_permission", now);
         result.failed++;
@@ -178,15 +201,35 @@ async function runTickBody(): Promise<DmRecoveryTickResult> {
       if (category === "safe_retry") {
         let committed: boolean;
         if (attemptNumber >= env.DM_RECOVERY_MAX_ATTEMPTS) {
-          committed = await markRecoveryFailed(id, { category: "rate_limit_exhausted" });
+          committed = await finalizeProspectiveDispatch({
+            reminderId: id,
+            claimToken: claimed.claimToken,
+            dispatchId: decision.dispatchId,
+            reservationToken: decision.reservationToken,
+            outcome: {
+              kind: "released",
+              at: new Date(),
+              reason: "rate_limit_exhausted",
+              sourceStatus: "send_failed",
+            },
+          });
         } else {
           const backoffMs =
             env.DM_RECOVERY_RETRY_BASE_MS *
             Math.pow(2, attemptNumber - 1) *
             (0.8 + Math.random() * 0.4);
-          committed = await markRecoveryRetryable(id, {
-            category: "rate_limit",
-            nextAttemptAt: new Date(now.getTime() + backoffMs),
+          committed = await finalizeProspectiveDispatch({
+            reminderId: id,
+            claimToken: claimed.claimToken,
+            dispatchId: decision.dispatchId,
+            reservationToken: decision.reservationToken,
+            outcome: {
+              kind: "released",
+              at: new Date(),
+              reason: "rate_limit",
+              sourceStatus: "waiting",
+              nextAttemptAt: new Date(now.getTime() + backoffMs),
+            },
           });
         }
         if (committed) result.failed++;
@@ -199,7 +242,18 @@ async function runTickBody(): Promise<DmRecoveryTickResult> {
 
       if (category === "permanent") {
         const errCat = meta.graphCode ? `code_${meta.graphCode}` : "permanent";
-        if (!(await markRecoveryFailed(id, { category: errCat }))) {
+        if (!(await finalizeProspectiveDispatch({
+          reminderId: id,
+          claimToken: claimed.claimToken,
+          dispatchId: decision.dispatchId,
+          reservationToken: decision.reservationToken,
+          outcome: {
+            kind: "released",
+            at: new Date(),
+            reason: errCat,
+            sourceStatus: "send_failed",
+          },
+        }))) {
           await logEvent("dm_recovery_finalize_failed", {
             ...recoveryEventFields(claimed, attemptNumber),
             stage: "permanent",
@@ -217,7 +271,13 @@ async function runTickBody(): Promise<DmRecoveryTickResult> {
       // Timeout, reset, or anything unrecognised: the send may have landed, so
       // it is never retried automatically.
       const errCat = meta.category ?? "unknown";
-      if (!(await markRecoveryUncertain(id, { category: errCat }))) {
+      if (!(await finalizeProspectiveDispatch({
+        reminderId: id,
+        claimToken: claimed.claimToken,
+        dispatchId: decision.dispatchId,
+        reservationToken: decision.reservationToken,
+        outcome: { kind: "uncertain", reason: errCat },
+      }))) {
         await logEvent("dm_recovery_finalize_failed", {
           ...recoveryEventFields(claimed, attemptNumber),
           stage: "uncertain",
@@ -239,7 +299,13 @@ async function runTickBody(): Promise<DmRecoveryTickResult> {
     try {
       if (reply!.replyId) {
         const sentAt = new Date();
-        const persisted = await markRecoverySent(id, { replyId: reply!.replyId, sentAt });
+        const persisted = await finalizeProspectiveDispatch({
+          reminderId: id,
+          claimToken: claimed.claimToken,
+          dispatchId: decision.dispatchId,
+          reservationToken: decision.reservationToken,
+          outcome: { kind: "sent", at: sentAt, providerReplyId: reply!.replyId },
+        });
         if (!persisted) {
           // Meta posted but the row did not move. Reporting a send here would
           // put the metrics and the table permanently out of step; the lease
@@ -264,7 +330,13 @@ async function runTickBody(): Promise<DmRecoveryTickResult> {
           });
         }
       } else {
-        if (!(await markRecoveryUncertain(id, { category: "success_without_id" }))) {
+        if (!(await finalizeProspectiveDispatch({
+          reminderId: id,
+          claimToken: claimed.claimToken,
+          dispatchId: decision.dispatchId,
+          reservationToken: decision.reservationToken,
+          outcome: { kind: "uncertain", reason: "success_without_id" },
+        }))) {
           await logEvent("dm_recovery_finalize_failed", {
             ...recoveryEventFields(claimed, attemptNumber),
             stage: "success_without_id",

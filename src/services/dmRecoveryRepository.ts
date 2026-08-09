@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { DmRecoveryReminder, Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
@@ -11,11 +12,24 @@ import {
   type RecoveryDecision,
   type RecoveryPolicyInput,
 } from "./dmRecoveryPolicy.js";
+import {
+  finalizePublicRecoveryDispatch,
+  reservePublicRecoveryDispatch,
+  startPublicRecoveryDispatch,
+} from "./publicRecoveryDispatchRepository.js";
+import { resolveCanonicalConversation } from "./canonicalConversation.js";
 
-export type ClaimedRecovery = DmRecoveryReminder;
+export type ClaimedRecovery = DmRecoveryReminder & { claimToken: string };
+
+type AuthorizedRecoverySend = {
+  kind: "send_no_confirmed_read_reminder" | "send_settings_fallback";
+  dispatchId: string;
+  reservationToken: string;
+};
 
 export type FinalRecoveryCheck =
-  | RecoveryDecision
+  | Exclude<RecoveryDecision, SendDecision>
+  | AuthorizedRecoverySend
   | { kind: "pause"; reason: "circuit_open" | "hourly_cap" }
   /** Hand the row back to `waiting` without judging the person. */
   | { kind: "release"; reason: string };
@@ -36,6 +50,7 @@ type PolicyContext = {
   hasNewerEligibleCandidate: boolean;
   audienceOrigin: Origin;
   audienceOriginConfidence: "high" | "low";
+  isAlias: boolean;
 };
 
 /**
@@ -50,6 +65,7 @@ async function loadPolicyContext(
   row: DmRecoveryReminder,
   now: Date,
 ): Promise<PolicyContext> {
+  const canonical = await resolveCanonicalConversation(tx, row.conversationId);
   const convo = await tx.conversation.findUnique({
     where: { id: row.conversationId },
     select: { state: true, completedAt: true, igUserId: true, keywordId: true, canonicalIntentId: true },
@@ -77,54 +93,27 @@ async function loadPolicyContext(
 
   const cooldownHours = env.DM_RECOVERY_COOLDOWN_HOURS ?? COOLDOWN_HOURS_FALLBACK;
   const cooldownSince = new Date(now.getTime() - cooldownHours * 60 * 60 * 1000);
-
-  // A confirmed send starts the cooldown, and so does an outcome-uncertain
-  // attempt: we cannot prove that one did not reach the person.
-  const recentAttempt = await tx.dmRecoveryReminder.findFirst({
-    where: {
-      igUserId: row.igUserId,
-      id: { not: row.id },
-      OR: [
-        // Strictly inside the window: a reminder exactly the cooldown old is
-        // eligible again, which is what "a rolling 24 hours" means.
-        { sentAt: { gt: cooldownSince } },
-        {
-          lastAttemptAt: { gt: cooldownSince },
-          status: { in: ["sending", "send_uncertain"] },
-        },
-      ],
-    },
-    select: { id: true },
-  });
-
-  // The same cooldown, applied across the OTHER recovery system (QA-04).
-  //
-  // This path previously read only its own table, so it could not see that a
-  // historical campaign had already posted publicly on the same person's comment.
-  // Measured at the time: 23 people had a waiting prospective reminder AND sat in the
-  // historical eligible pool, so the two systems could each post days apart while each
-  // saw no contact in the table it knew about.
-  //
-  // The historical rule is 30 days rather than 24 hours, and the stricter window wins:
-  // a historical reminder inside 30 days blocks a prospective one, which is the more
-  // conservative of the two.
-  //
-  // `send_uncertain` counts, for the same reason it does above — we cannot prove that
-  // attempt did not reach the person.
   const historicalCooldownSince = new Date(
     now.getTime() - HISTORICAL_COOLDOWN_DAYS * 24 * 60 * 60 * 1000,
   );
-  const recentHistoricalAttempt = await tx.recoveryCandidate.findFirst({
+  const recentAttempt = await tx.publicRecoveryDispatch.findFirst({
     where: {
       igUserId: row.igUserId,
       OR: [
-        { outcome: "sent", sentAt: { gt: historicalCooldownSince } },
         {
-          outcome: "send_uncertain",
-          lastAttemptAt: { gt: historicalCooldownSince },
+          state: { in: ["reserved", "dispatch_started"] },
         },
-        // Claimed and in flight right now: it may post within seconds.
-        { outcome: "pending", claimToken: { not: null } },
+        {
+          sourceKind: "historical",
+          state: { in: ["sent", "uncertain"] },
+          dispatchStartedAt: { gt: historicalCooldownSince },
+        },
+        {
+          sourceKind: "prospective",
+          sourceId: { not: row.id },
+          state: { in: ["sent", "uncertain"] },
+          dispatchStartedAt: { gt: cooldownSince },
+        },
       ],
     },
     select: { id: true },
@@ -184,10 +173,11 @@ async function loadPolicyContext(
     conversationCompletedAt: earliest(ownCompletedAt, journeyCompletedAt),
     // Either system counts. The flag means "this person was publicly contacted
     // recently", not "this table has a row".
-    hasRecentSentReminderForPerson: Boolean(recentAttempt) || Boolean(recentHistoricalAttempt),
+    hasRecentSentReminderForPerson: Boolean(recentAttempt),
     hasNewerEligibleCandidate: Boolean(newerCandidate),
     audienceOrigin: origin.origin,
     audienceOriginConfidence: origin.confidence,
+    isAlias: canonical?.role === "alias",
   };
 }
 
@@ -303,7 +293,12 @@ function toPolicyInput(
   };
 }
 
-function isSendDecision(decision: RecoveryDecision): boolean {
+type SendDecision = Extract<
+  RecoveryDecision,
+  { kind: "send_no_confirmed_read_reminder" | "send_settings_fallback" }
+>;
+
+function isSendDecision(decision: RecoveryDecision): decision is SendDecision {
   return (
     decision.kind === "send_no_confirmed_read_reminder" ||
     decision.kind === "send_settings_fallback"
@@ -378,6 +373,7 @@ export async function claimRecovery(
     // survives a rollback as a claim that never happened, and the extra
     // round-trip holds the serializable lock open for longer.
     const pendingEvents: Array<[string, Record<string, unknown>]> = [];
+    const claimToken = randomUUID();
     try {
       const claimed = await prisma.$transaction(
         async (tx) => {
@@ -404,7 +400,9 @@ export async function claimRecovery(
           }
 
           const ctx = await loadPolicyContext(tx, candidate, now);
-          const decision = decideRecovery(toPolicyInput(candidate, ctx));
+          const decision: RecoveryDecision = ctx.isAlias
+            ? { kind: "suppress", reason: "reconciled_alias" }
+            : decideRecovery(toPolicyInput(candidate, ctx));
 
           if (!isSendDecision(decision)) {
             await persistNonSendDecision(tx, id, decision, now);
@@ -427,6 +425,7 @@ export async function claimRecovery(
             where: {
               id,
               status: "waiting",
+              claimToken: null,
               eligibleAt: { lte: now },
               OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
             },
@@ -434,13 +433,14 @@ export async function claimRecovery(
               status: "sending",
               claimedAt: now,
               claimExpiresAt: leaseUntil,
+              claimToken,
             },
           });
 
           if (result.count === 0) return null;
 
-          const claimedRow = await tx.dmRecoveryReminder.findUnique({
-            where: { id },
+          const claimedRow = await tx.dmRecoveryReminder.findFirst({
+            where: { id, claimToken },
           });
 
           if (claimedRow) {
@@ -450,7 +450,7 @@ export async function claimRecovery(
             ]);
           }
 
-          return claimedRow;
+          return claimedRow as ClaimedRecovery | null;
         },
         { isolationLevel: "Serializable" },
       );
@@ -475,37 +475,34 @@ export async function claimRecovery(
  */
 export async function authorizeClaimForSend(
   id: string,
+  claimToken: string,
   now: Date,
 ): Promise<FinalRecoveryCheck> {
   try {
     return await prisma.$transaction(async (tx) => {
-      // Circuit state and hourly capacity are process-wide. Locking the
-      // singleton serialises those reads across workers, so two processes
-      // cannot both observe spare capacity and both send.
+      const sourceHint = await tx.dmRecoveryReminder.findUnique({
+        where: { id },
+        select: { igUserId: true },
+      });
+      if (!sourceHint) return { kind: "release", reason: "stale_claim" };
+
       await tx.$queryRaw`SELECT "id" FROM "dm_recovery_control" WHERE "id" = 1 FOR UPDATE`;
+      await tx.$queryRaw`SELECT "id" FROM "ig_users" WHERE "id" = ${sourceHint.igUserId} FOR UPDATE`;
+      await tx.$queryRaw`SELECT "id" FROM "dm_recovery_reminder" WHERE "id" = ${id}::uuid FOR UPDATE`;
 
       const control = await tx.dmRecoveryControl.findUnique({ where: { id: 1 } });
       if (control?.circuitOpen) {
         return { kind: "pause", reason: "circuit_open" };
       }
 
-      const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
-      const hourlyCount = await tx.dmRecoveryReminder.count({
-        where: {
-          OR: [
-            { sentAt: { gte: oneHourAgo } },
-            // A claim in flight, and an uncertain outcome that may well have
-            // posted — both still consume capacity.
-            { lastAttemptAt: { gte: oneHourAgo }, status: { in: ["sending", "send_uncertain"] } },
-          ],
-        },
-      });
-      if (hourlyCount >= (env.DM_RECOVERY_HOURLY_CAP ?? 30)) {
-        return { kind: "pause", reason: "hourly_cap" };
-      }
-
       const row = await tx.dmRecoveryReminder.findUnique({ where: { id } });
-      if (!row || row.status !== "sending" || !row.claimExpiresAt || row.claimExpiresAt <= now) {
+      if (
+        !row ||
+        row.status !== "sending" ||
+        row.claimToken !== claimToken ||
+        !row.claimExpiresAt ||
+        row.claimExpiresAt <= now
+      ) {
         return { kind: "release", reason: "stale_claim" };
       }
 
@@ -514,21 +511,46 @@ export async function authorizeClaimForSend(
       // before a public comment is posted. The row is `sending` because we hold
       // the claim; the policy is asked whether that claim may still proceed.
       const ctx = await loadPolicyContext(tx, row, now);
-      const decision = decideRecovery(toPolicyInput(row, ctx, "waiting"));
+      const decision: RecoveryDecision = ctx.isAlias
+        ? { kind: "suppress", reason: "reconciled_alias" }
+        : decideRecovery(toPolicyInput(row, ctx, "waiting"));
 
       if (!isSendDecision(decision)) {
-        await persistNonSendDecision(tx, id, decision, now);
         return decision;
       }
 
-      // Durable reservation: stamping the attempt inside this transaction is
-      // what stops another process overrunning the hourly cap.
-      await tx.dmRecoveryReminder.update({
-        where: { id },
+      const reservation = await reservePublicRecoveryDispatch(tx, {
+        sourceKind: "prospective",
+        sourceId: row.id,
+        attemptNumber: row.attempts + 1,
+        igUserId: row.igUserId,
+        campaignId: null,
+        now,
+        leaseExpiresAt: row.claimExpiresAt,
+        prospectiveCooldownHours: env.DM_RECOVERY_COOLDOWN_HOURS ?? COOLDOWN_HOURS_FALLBACK,
+        globalHourlyCap: env.DM_RECOVERY_HOURLY_CAP ?? 30,
+      });
+      if (reservation.kind === "blocked") {
+        if (reservation.reason === "global_hourly_cap_reached") {
+          return { kind: "pause", reason: "hourly_cap" };
+        }
+        if (reservation.reason === "person_cooldown") {
+          return { kind: "suppress", reason: "person_cooldown" };
+        }
+        return { kind: "release", reason: reservation.reason };
+      }
+
+      const sourceUpdated = await tx.dmRecoveryReminder.updateMany({
+        where: { id, status: "sending", claimToken },
         data: { lastAttemptAt: now, attempts: row.attempts + 1 },
       });
+      if (sourceUpdated.count !== 1) throw new Error("prospective source moved during reservation");
 
-      return decision;
+      return {
+        kind: decision.kind,
+        dispatchId: reservation.dispatchId,
+        reservationToken: reservation.reservationToken,
+      };
     });
   } catch (err) {
     recordRecoveryDatabaseFailure();
@@ -537,106 +559,185 @@ export async function authorizeClaimForSend(
   }
 }
 
-/**
- * Mark a sending recovery as sent upon Meta confirmation.
- */
-export async function markRecoverySent(
-  id: string,
-  input: { replyId: string; sentAt: Date },
-): Promise<boolean> {
-  // Without an id from Meta the send is unconfirmed. Recording it as `sent`
-  // would claim delivery we cannot prove and start the person's 24h cooldown.
-  if (!input.replyId?.trim()) return false;
-
-  try {
-    const res = await prisma.dmRecoveryReminder.updateMany({
-      where: { id, status: "sending" },
-      data: {
-        status: "sent",
-        publicReplyId: input.replyId,
-        sentAt: input.sentAt,
-        claimedAt: null,
-        claimExpiresAt: null,
-      },
+export async function startProspectiveDispatch(input: {
+  reminderId: string;
+  claimToken: string;
+  dispatchId: string;
+  reservationToken: string;
+  now: Date;
+}): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
+    const sourceHint = await tx.dmRecoveryReminder.findUnique({
+      where: { id: input.reminderId },
+      select: { igUserId: true },
     });
-    return res.count > 0;
-  } catch {
-    recordRecoveryDatabaseFailure();
-    return false;
-  }
+    if (!sourceHint) return false;
+    await tx.$queryRaw`SELECT "id" FROM "dm_recovery_control" WHERE "id" = 1 FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "ig_users" WHERE "id" = ${sourceHint.igUserId} FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "dm_recovery_reminder" WHERE "id" = ${input.reminderId}::uuid FOR UPDATE`;
+
+    const source = await tx.dmRecoveryReminder.findUnique({ where: { id: input.reminderId } });
+    if (
+      !source ||
+      source.status !== "sending" ||
+      source.claimToken !== input.claimToken ||
+      !source.claimExpiresAt ||
+      source.claimExpiresAt <= input.now
+    ) {
+      return false;
+    }
+    return startPublicRecoveryDispatch(tx, input);
+  });
 }
 
-/**
- * Mark a sending recovery as retryable.
- */
-export async function markRecoveryRetryable(
-  id: string,
-  input: { category: string; nextAttemptAt: Date },
-): Promise<boolean> {
-  try {
-    const res = await prisma.dmRecoveryReminder.updateMany({
-      where: { id, status: "sending" },
-      data: {
-        status: "waiting",
-        lastErrorCategory: input.category,
-        nextAttemptAt: input.nextAttemptAt,
-        claimedAt: null,
-        claimExpiresAt: null,
-      },
+export async function finalizeProspectiveDispatch(input: {
+  reminderId: string;
+  claimToken: string;
+  dispatchId: string;
+  reservationToken: string;
+  outcome:
+    | { kind: "sent"; at: Date; providerReplyId: string }
+    | { kind: "uncertain"; reason: string }
+    | {
+        kind: "released";
+        at: Date;
+        reason: string;
+        sourceStatus: "waiting" | "send_failed" | "suppressed";
+        nextAttemptAt?: Date;
+      };
+}): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
+    const sourceHint = await tx.dmRecoveryReminder.findUnique({
+      where: { id: input.reminderId },
+      select: { igUserId: true },
     });
-    return res.count > 0;
-  } catch {
-    recordRecoveryDatabaseFailure();
-    return false;
-  }
+    if (!sourceHint) return false;
+    await tx.$queryRaw`SELECT "id" FROM "dm_recovery_control" WHERE "id" = 1 FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "ig_users" WHERE "id" = ${sourceHint.igUserId} FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "dm_recovery_reminder" WHERE "id" = ${input.reminderId}::uuid FOR UPDATE`;
+
+    const source = await tx.dmRecoveryReminder.findUnique({ where: { id: input.reminderId } });
+    if (!source || source.status !== "sending" || source.claimToken !== input.claimToken) {
+      return false;
+    }
+    if (
+      !(await finalizePublicRecoveryDispatch(tx, {
+        ...(input.outcome.kind === "released"
+          ? {
+              kind: "released" as const,
+              at: input.outcome.at,
+              reason: input.outcome.reason,
+            }
+          : input.outcome),
+        dispatchId: input.dispatchId,
+        reservationToken: input.reservationToken,
+      }))
+    ) {
+      return false;
+    }
+
+    const common = { claimedAt: null, claimExpiresAt: null, claimToken: null };
+    const result = await tx.dmRecoveryReminder.updateMany({
+      where: { id: input.reminderId, status: "sending", claimToken: input.claimToken },
+      data:
+        input.outcome.kind === "sent"
+          ? {
+              ...common,
+              status: "sent",
+              publicReplyId: input.outcome.providerReplyId,
+              sentAt: input.outcome.at,
+            }
+          : input.outcome.kind === "uncertain"
+            ? { ...common, status: "send_uncertain", lastErrorCategory: input.outcome.reason }
+            : {
+                ...common,
+                status: input.outcome.sourceStatus,
+                lastErrorCategory: input.outcome.reason,
+                nextAttemptAt: input.outcome.nextAttemptAt,
+                ...(input.outcome.sourceStatus === "suppressed"
+                  ? {
+                      suppressedAt: input.outcome.at,
+                      suppressionReason: input.outcome.reason,
+                    }
+                  : {}),
+              },
+    });
+    return result.count === 1;
+  });
 }
 
-/**
- * Mark a sending recovery as failed permanently.
- */
-export async function markRecoveryFailed(
-  id: string,
-  input: { category: string },
-): Promise<boolean> {
-  try {
-    const res = await prisma.dmRecoveryReminder.updateMany({
-      where: { id, status: "sending" },
-      data: {
-        status: "send_failed",
-        lastErrorCategory: input.category,
-        claimedAt: null,
-        claimExpiresAt: null,
+export async function reconcileExpiredProspectiveLeases(
+  now: Date,
+): Promise<{ released: number; uncertain: number }> {
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "dm_recovery_control" WHERE "id" = 1 FOR UPDATE`;
+    const rows = await tx.dmRecoveryReminder.findMany({
+      where: {
+        status: "sending",
+        claimToken: { not: null },
+        claimExpiresAt: { lte: now },
       },
+      orderBy: [{ igUserId: "asc" }, { id: "asc" }],
     });
-    return res.count > 0;
-  } catch {
-    recordRecoveryDatabaseFailure();
-    return false;
-  }
-}
-
-/**
- * Mark a sending recovery as send_uncertain.
- */
-export async function markRecoveryUncertain(
-  id: string,
-  input: { category: string },
-): Promise<boolean> {
-  try {
-    const res = await prisma.dmRecoveryReminder.updateMany({
-      where: { id, status: "sending" },
-      data: {
-        status: "send_uncertain",
-        lastErrorCategory: input.category,
-        claimedAt: null,
-        claimExpiresAt: null,
-      },
-    });
-    return res.count > 0;
-  } catch {
-    recordRecoveryDatabaseFailure();
-    return false;
-  }
+    let released = 0;
+    let uncertain = 0;
+    for (const row of rows) {
+      await tx.$queryRaw`SELECT "id" FROM "ig_users" WHERE "id" = ${row.igUserId} FOR UPDATE`;
+      await tx.$queryRaw`SELECT "id" FROM "dm_recovery_reminder" WHERE "id" = ${row.id}::uuid FOR UPDATE`;
+      const ledger = await tx.publicRecoveryDispatch.findFirst({
+        where: {
+          sourceKind: "prospective",
+          sourceId: row.id,
+          attemptNumber: row.attempts,
+          state: { in: ["reserved", "dispatch_started"] },
+        },
+      });
+      const mayHaveDispatched = ledger?.state === "dispatch_started";
+      if (ledger) {
+        await finalizePublicRecoveryDispatch(
+          tx,
+          mayHaveDispatched
+            ? {
+                kind: "uncertain",
+                dispatchId: ledger.id,
+                reservationToken: ledger.reservationToken,
+                reason: "dispatch_lease_expired",
+              }
+            : {
+                kind: "released",
+                dispatchId: ledger.id,
+                reservationToken: ledger.reservationToken,
+                at: now,
+                reason: "dispatch_lease_expired",
+              },
+        );
+      }
+      const updated = await tx.dmRecoveryReminder.updateMany({
+        where: { id: row.id, status: "sending", claimToken: row.claimToken },
+        data: mayHaveDispatched
+          ? {
+              status: "send_uncertain",
+              lastErrorCategory: "dispatch_lease_expired",
+              claimedAt: null,
+              claimExpiresAt: null,
+              claimToken: null,
+            }
+          : {
+              status: "waiting",
+              lastErrorCategory: "dispatch_lease_expired",
+              nextAttemptAt: new Date(now.getTime() + 5 * 60 * 1000),
+              claimedAt: null,
+              claimExpiresAt: null,
+              claimToken: null,
+            },
+      });
+      if (updated.count === 1) {
+        if (mayHaveDispatched) uncertain++;
+        else released++;
+      }
+    }
+    return { released, uncertain };
+  });
 }
 
 /**
@@ -646,6 +747,7 @@ export async function releaseOrSuppressClaim(
   id: string,
   decision: FinalRecoveryCheck,
   now: Date,
+  claimToken?: string,
 ): Promise<boolean> {
   // Every non-send outcome must move the row out of `sending`. A row left
   // claimed is reconciled to send_uncertain once its lease expires, which sends
@@ -658,16 +760,17 @@ export async function releaseOrSuppressClaim(
           suppressedAt: now,
           claimedAt: null,
           claimExpiresAt: null,
+          claimToken: null,
         }
       : decision.kind === "holdout"
-        ? { status: "control" as const, claimedAt: null, claimExpiresAt: null }
+        ? { status: "control" as const, claimedAt: null, claimExpiresAt: null, claimToken: null }
         : // pause, release and wait all hand the row back untouched: the person
           // has not been judged, only deferred.
-          { status: "waiting" as const, claimedAt: null, claimExpiresAt: null };
+          { status: "waiting" as const, claimedAt: null, claimExpiresAt: null, claimToken: null };
 
   try {
     const res = await prisma.dmRecoveryReminder.updateMany({
-      where: { id, status: "sending" },
+      where: { id, status: "sending", ...(claimToken ? { claimToken } : {}) },
       data,
     });
     return res.count > 0;

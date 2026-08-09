@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const findFirst = vi.fn();
+const conversationFindUnique = vi.fn();
+const conversationFindMany = vi.fn();
 const suppressRecoveriesForCompletionSafely = vi.fn();
 const markIntentCompleted = vi.fn();
 vi.mock("../lib/prisma.js", () => ({
@@ -23,6 +25,7 @@ describe("findLatestIncompleteConversation", () => {
 
     expect(findFirst).toHaveBeenCalledWith({
       where: {
+        OR: [{ ownedIntents: { some: {} } }, { canonicalIntentId: null }],
         igUserId: "user-1",
         state: { in: ["awaiting_done", "expired"] },
       },
@@ -67,18 +70,37 @@ describe("hasCompletedKeyword", () => {
 describe("markCompleted", () => {
   const conversationUpdate = vi.fn();
   const gateQueueUpdateMany = vi.fn();
+  const recoveryUpdateMany = vi.fn();
 
   beforeEach(async () => {
     findFirst.mockReset();
     conversationUpdate.mockReset();
     gateQueueUpdateMany.mockReset();
+    recoveryUpdateMany.mockReset();
+    conversationFindUnique.mockReset().mockResolvedValue({
+      id: "convo-1",
+      igUserId: "ig-1",
+      keywordId: "kw-1",
+      state: "awaiting_done",
+      completedAt: null,
+      canonicalIntentId: null,
+      canonicalIntent: null,
+    });
+    conversationFindMany.mockReset().mockResolvedValue([{ id: "convo-1" }]);
+    recoveryUpdateMany.mockResolvedValue({ count: 0 });
+    markIntentCompleted.mockReset();
     suppressRecoveriesForCompletionSafely.mockReset();
 
     const { prisma } = await import("../lib/prisma.js");
     (prisma as any).$transaction = vi.fn(async (fn: Function) =>
       fn({
-        conversation: { update: conversationUpdate },
+        conversation: {
+          update: conversationUpdate,
+          findUnique: conversationFindUnique,
+          findMany: conversationFindMany,
+        },
         gateQueue: { updateMany: gateQueueUpdateMany },
+        dmRecoveryReminder: { updateMany: recoveryUpdateMany },
       }),
     );
   });
@@ -98,8 +120,8 @@ describe("markCompleted", () => {
       data: expect.objectContaining({ state: "completed", completedAt: expect.any(Date) }),
     });
     expect(gateQueueUpdateMany).toHaveBeenCalledWith({
-      where: { conversationId: "convo-1", status: "pending" },
-      data: { status: "abandoned", lastError: "conversation_completed" },
+      where: { conversationId: { in: ["convo-1"] }, status: "pending" },
+      data: { status: "abandoned", lastError: "intent_completed" },
     });
     expect(suppressRecoveriesForCompletionSafely).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -132,8 +154,8 @@ describe("markCompleted", () => {
       data: expect.objectContaining({ state: "completed" }),
     });
     expect(gateQueueUpdateMany).toHaveBeenCalledWith({
-      where: { conversationId: "convo-1", status: "pending" },
-      data: { status: "abandoned", lastError: "conversation_completed" },
+      where: { conversationId: { in: ["convo-1"] }, status: "pending" },
+      data: { status: "abandoned", lastError: "intent_completed" },
     });
   });
 
@@ -150,8 +172,13 @@ describe("markCompleted", () => {
     (prisma as any).$transaction = vi.fn(async (fn: Function) => {
       txOpen = true;
       const result = await fn({
-        conversation: { update: conversationUpdate },
+        conversation: {
+          update: conversationUpdate,
+          findUnique: conversationFindUnique,
+          findMany: conversationFindMany,
+        },
         gateQueue: { updateMany: gateQueueUpdateMany },
+        dmRecoveryReminder: { updateMany: recoveryUpdateMany },
       });
       txOpen = false;
       return result;
@@ -163,5 +190,60 @@ describe("markCompleted", () => {
     await markCompleted("convo-1");
 
     expect(suppressRecoveriesForCompletionSafely).toHaveBeenCalledTimes(1);
+  });
+
+  it("completes the canonical owner when invoked through an alias", async () => {
+    conversationFindUnique.mockResolvedValue({
+      id: "alias-1",
+      igUserId: "ig-1",
+      keywordId: "kw-1",
+      state: "awaiting_done",
+      completedAt: null,
+      canonicalIntentId: "intent-1",
+      canonicalIntent: {
+        id: "intent-1",
+        canonicalConversationId: "canonical-1",
+        completedAt: null,
+      },
+    });
+    conversationFindMany.mockResolvedValue([{ id: "alias-1" }, { id: "canonical-1" }]);
+    conversationUpdate
+      .mockResolvedValueOnce({
+        id: "alias-1",
+        igUserId: "ig-1",
+        keywordId: "kw-1",
+        state: "completed",
+      })
+      .mockResolvedValueOnce({
+        id: "canonical-1",
+        igUserId: "ig-1",
+        keywordId: "kw-1",
+        state: "completed",
+      });
+
+    await markCompleted("alias-1");
+
+    expect(conversationUpdate).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ where: { id: "canonical-1" } }),
+    );
+    expect(gateQueueUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { conversationId: { in: ["alias-1", "canonical-1"] }, status: "pending" },
+      }),
+    );
+    expect(recoveryUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          conversationId: { in: ["alias-1", "canonical-1"] },
+          status: "waiting",
+        },
+      }),
+    );
+    expect(markIntentCompleted).toHaveBeenCalledWith(
+      expect.anything(),
+      "canonical-1",
+      expect.any(Date),
+    );
   });
 });

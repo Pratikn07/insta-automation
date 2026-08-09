@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { prisma } from "../lib/prisma.js";
+import {
+  finalizePublicRecoveryDispatch,
+  reservePublicRecoveryDispatch,
+  startPublicRecoveryDispatch,
+  type DispatchReservation,
+} from "./publicRecoveryDispatchRepository.js";
+import { resolveCanonicalConversation } from "./canonicalConversation.js";
 
 /**
  * Claim and finalise historical recovery candidates.
@@ -95,15 +102,15 @@ export async function claimCandidate(
   // matched the SAME row and overwrote the first lease — verified against real
   // Postgres: two claims, both succeeded, both would have posted publicly.
   //
-  // An expired lease is reclaimable: `reconcileExpiredCandidateLeases` normally moves
-  // those to send_uncertain first, but a row whose lease lapsed between that sweep and
-  // this call must not be stranded.
+  // Lease reconciliation is the only code allowed to retire an expired token. Letting
+  // this update overwrite it meant the stale worker and replacement worker could both
+  // reach authorization with different tokens for the same source.
   const claimed = await prisma.recoveryCandidate.updateMany({
     where: {
       id,
       outcome: "pending",
       arm: "treatment",
-      OR: [{ claimToken: null }, { claimExpiresAt: { lte: now } }],
+      claimToken: null,
     },
     data: {
       claimedAt: now,
@@ -140,6 +147,176 @@ export async function claimCandidate(
   return { ...rest, selectedAt: createdAt, claimToken: token };
 }
 
+export type HistoricalDispatchInput = {
+  candidateId: string;
+  claimToken: string;
+  now: Date;
+  hourlyCap: number;
+  dailyCap: number;
+  globalHourlyCap: number;
+  prospectiveCooldownHours: number;
+};
+
+/** Final, token-fenced historical reservation under the shared lock order. */
+export async function reserveHistoricalDispatch(
+  input: HistoricalDispatchInput,
+): Promise<DispatchReservation> {
+  return prisma.$transaction(async (tx) => {
+    const sourceHint = await tx.recoveryCandidate.findUnique({
+      where: { id: input.candidateId },
+      select: { igUserId: true },
+    });
+    if (!sourceHint) return { kind: "blocked", reason: "stale_claim" };
+
+    await tx.$queryRaw`SELECT "id" FROM "dm_recovery_control" WHERE "id" = 1 FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "ig_users" WHERE "id" = ${sourceHint.igUserId} FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "recovery_candidate" WHERE "id" = ${input.candidateId}::uuid FOR UPDATE`;
+
+    const control = await tx.dmRecoveryControl.findUnique({ where: { id: 1 } });
+    if (control?.circuitOpen) return { kind: "blocked", reason: "circuit_open" };
+
+    const source = await tx.recoveryCandidate.findUnique({
+      where: { id: input.candidateId },
+      include: { campaign: { select: { state: true } } },
+    });
+    if (
+      !source ||
+      source.outcome !== "pending" ||
+      source.arm !== "treatment" ||
+      source.campaign.state !== "running" ||
+      source.claimToken !== input.claimToken ||
+      !source.claimExpiresAt ||
+      source.claimExpiresAt <= input.now
+    ) {
+      return { kind: "blocked", reason: "stale_claim" };
+    }
+    if (source.conversationId) {
+      const canonical = await resolveCanonicalConversation(tx, source.conversationId);
+      if (
+        !canonical ||
+        canonical.role === "alias" ||
+        canonical.canonicalIntentId !== source.intentId
+      ) {
+        return { kind: "blocked", reason: "reconciled_alias" };
+      }
+    }
+
+    return reservePublicRecoveryDispatch(tx, {
+      sourceKind: "historical",
+      sourceId: source.id,
+      attemptNumber: source.attempts,
+      igUserId: source.igUserId,
+      campaignId: source.campaignId,
+      now: input.now,
+      leaseExpiresAt: source.claimExpiresAt,
+      prospectiveCooldownHours: input.prospectiveCooldownHours,
+      globalHourlyCap: input.globalHourlyCap,
+      campaignHourlyCap: input.hourlyCap,
+      campaignDailyCap: input.dailyCap,
+    });
+  });
+}
+
+export async function startHistoricalDispatch(input: {
+  candidateId: string;
+  claimToken: string;
+  dispatchId: string;
+  reservationToken: string;
+  now: Date;
+}): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
+    const sourceHint = await tx.recoveryCandidate.findUnique({
+      where: { id: input.candidateId },
+      select: { igUserId: true },
+    });
+    if (!sourceHint) return false;
+    await tx.$queryRaw`SELECT "id" FROM "dm_recovery_control" WHERE "id" = 1 FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "ig_users" WHERE "id" = ${sourceHint.igUserId} FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "recovery_candidate" WHERE "id" = ${input.candidateId}::uuid FOR UPDATE`;
+
+    const source = await tx.recoveryCandidate.findUnique({ where: { id: input.candidateId } });
+    if (
+      !source ||
+      source.outcome !== "pending" ||
+      source.claimToken !== input.claimToken ||
+      !source.claimExpiresAt ||
+      source.claimExpiresAt <= input.now
+    ) {
+      return false;
+    }
+    const started = await startPublicRecoveryDispatch(tx, input);
+    if (!started) return false;
+    const stamped = await tx.recoveryCandidate.updateMany({
+      where: { id: input.candidateId, outcome: "pending", claimToken: input.claimToken },
+      data: { dispatchStartedAt: input.now, lastAttemptAt: input.now },
+    });
+    return stamped.count === 1;
+  });
+}
+
+export async function finalizeHistoricalDispatch(input: {
+  candidateId: string;
+  claimToken: string;
+  dispatchId: string;
+  reservationToken: string;
+  outcome:
+    | { kind: "sent"; at: Date; providerReplyId: string }
+    | { kind: "uncertain"; reason: string }
+    | { kind: "released"; at: Date; reason: string; nextAttemptAt?: Date }
+    | { kind: "failed"; at: Date; reason: string };
+}): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
+    const sourceHint = await tx.recoveryCandidate.findUnique({
+      where: { id: input.candidateId },
+      select: { igUserId: true },
+    });
+    if (!sourceHint) return false;
+    await tx.$queryRaw`SELECT "id" FROM "dm_recovery_control" WHERE "id" = 1 FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "ig_users" WHERE "id" = ${sourceHint.igUserId} FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "recovery_candidate" WHERE "id" = ${input.candidateId}::uuid FOR UPDATE`;
+
+    const source = await tx.recoveryCandidate.findUnique({ where: { id: input.candidateId } });
+    if (!source || source.outcome !== "pending" || source.claimToken !== input.claimToken) {
+      return false;
+    }
+
+    const ledgerOutcome =
+      input.outcome.kind === "failed"
+        ? {
+            kind: "released" as const,
+            dispatchId: input.dispatchId,
+            reservationToken: input.reservationToken,
+            at: input.outcome.at,
+            reason: input.outcome.reason,
+          }
+        : { ...input.outcome, dispatchId: input.dispatchId, reservationToken: input.reservationToken };
+    if (!(await finalizePublicRecoveryDispatch(tx, ledgerOutcome))) return false;
+
+    const common = { claimedAt: null, claimExpiresAt: null, claimToken: null };
+    const result = await tx.recoveryCandidate.updateMany({
+      where: { id: input.candidateId, outcome: "pending", claimToken: input.claimToken },
+      data:
+        input.outcome.kind === "sent"
+          ? {
+              ...common,
+              outcome: "sent",
+              sentAt: input.outcome.at,
+              publicReplyId: input.outcome.providerReplyId,
+            }
+          : input.outcome.kind === "uncertain"
+            ? { ...common, outcome: "send_uncertain", suppressionReason: input.outcome.reason }
+            : input.outcome.kind === "failed"
+              ? { ...common, outcome: "send_failed", suppressionReason: input.outcome.reason }
+              : {
+                  ...common,
+                  dispatchStartedAt: null,
+                  nextAttemptAt: input.outcome.nextAttemptAt,
+                },
+    });
+    return result.count === 1;
+  });
+}
+
 /**
  * Reconcile leases that expired mid-send.
  *
@@ -160,37 +337,77 @@ export async function claimCandidate(
 export async function reconcileExpiredCandidateLeases(
   now: Date,
 ): Promise<{ uncertain: number; released: number }> {
-  const expired = {
-    outcome: "pending" as const,
-    claimedAt: { not: null },
-    claimExpiresAt: { lte: now },
-  };
-
-  const [uncertain, released] = await prisma.$transaction([
-    prisma.recoveryCandidate.updateMany({
-      where: { ...expired, dispatchStartedAt: { not: null } },
-      data: {
-        outcome: "send_uncertain",
-        suppressionReason: "stale_lease",
-        claimedAt: null,
-        claimExpiresAt: null,
-        // Must be cleared, or the partial unique index keeps the row claimed forever.
-        claimToken: null,
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "dm_recovery_control" WHERE "id" = 1 FOR UPDATE`;
+    const rows = await tx.recoveryCandidate.findMany({
+      where: {
+        outcome: "pending",
+        claimToken: { not: null },
+        claimExpiresAt: { lte: now },
       },
-    }),
-    prisma.recoveryCandidate.updateMany({
-      where: { ...expired, dispatchStartedAt: null },
-      data: {
-        claimedAt: null,
-        claimExpiresAt: null,
-        claimToken: null,
-        // Backed off so a repeatedly-dying worker does not spin on the same row.
-        nextAttemptAt: new Date(now.getTime() + 5 * 60 * 1000),
-      },
-    }),
-  ]);
+      orderBy: [{ igUserId: "asc" }, { id: "asc" }],
+    });
+    let uncertain = 0;
+    let released = 0;
 
-  return { uncertain: uncertain.count, released: released.count };
+    for (const row of rows) {
+      await tx.$queryRaw`SELECT "id" FROM "ig_users" WHERE "id" = ${row.igUserId} FOR UPDATE`;
+      await tx.$queryRaw`SELECT "id" FROM "recovery_candidate" WHERE "id" = ${row.id}::uuid FOR UPDATE`;
+      const ledger = await tx.publicRecoveryDispatch.findFirst({
+        where: {
+          sourceKind: "historical",
+          sourceId: row.id,
+          attemptNumber: row.attempts,
+          state: { in: ["reserved", "dispatch_started"] },
+        },
+      });
+      const mayHaveDispatched =
+        ledger?.state === "dispatch_started" || row.dispatchStartedAt !== null;
+
+      if (ledger) {
+        await finalizePublicRecoveryDispatch(
+          tx,
+          mayHaveDispatched
+            ? {
+                kind: "uncertain",
+                dispatchId: ledger.id,
+                reservationToken: ledger.reservationToken,
+                reason: "dispatch_lease_expired",
+              }
+            : {
+                kind: "released",
+                dispatchId: ledger.id,
+                reservationToken: ledger.reservationToken,
+                at: now,
+                reason: "dispatch_lease_expired",
+              },
+        );
+      }
+
+      const updated = await tx.recoveryCandidate.updateMany({
+        where: { id: row.id, outcome: "pending", claimToken: row.claimToken },
+        data: mayHaveDispatched
+          ? {
+              outcome: "send_uncertain",
+              suppressionReason: "dispatch_lease_expired",
+              claimedAt: null,
+              claimExpiresAt: null,
+              claimToken: null,
+            }
+          : {
+              claimedAt: null,
+              claimExpiresAt: null,
+              claimToken: null,
+              nextAttemptAt: new Date(now.getTime() + 5 * 60 * 1000),
+            },
+      });
+      if (updated.count === 1) {
+        if (mayHaveDispatched) uncertain++;
+        else released++;
+      }
+    }
+    return { uncertain, released };
+  });
 }
 
 /**
@@ -208,13 +425,9 @@ export async function reconcileExpiredCandidateLeases(
  * never retried, counted against the cap, and reported to the operator as a public
  * comment that might exist.
  *
- * Clearing it is correct, not just constraint-appeasing. Release is only reachable from
- * two places: before the reservation, where nothing was stamped and this is a no-op; and
- * after a `safe_retry` send failure, which `classifyPublicReplyFailure` raises for rate
- * limiting alone — Meta rejects those before creating anything, so the row provably did
- * not post and is genuinely no longer dispatching. Every path where a comment MAY exist
- * finalises the row instead (`markCandidateUncertain` / `markCandidateFailed`) and keeps
- * its stamp as the audit trail.
+ * Clearing it is correct, not just constraint-appeasing. Release is only reachable before
+ * a ledger reservation or after a proven-safe ledger release. Every path where a comment
+ * may exist goes through `finalizeHistoricalDispatch` and keeps its dispatch audit trail.
  */
 export async function releaseCandidateClaim(
   id: string,
@@ -229,33 +442,6 @@ export async function releaseCandidateClaim(
       claimToken: null,
       dispatchStartedAt: null,
       ...(nextAttemptAt ? { nextAttemptAt } : {}),
-    },
-  });
-  return count === 1;
-}
-
-/**
- * Record a confirmed send.
- *
- * `publicReplyId` is required by chk_candidate_sent_has_reply_id: without Meta's
- * id there is no evidence the comment posted, and this feature posts publicly under
- * the account's own name. Returns false if the row moved underneath us.
- */
-export async function markCandidateSent(
-  id: string,
-  claimToken: string,
-  input: { publicReplyId: string; sentAt: Date },
-): Promise<boolean> {
-  const { count } = await prisma.recoveryCandidate.updateMany({
-    // Token required: a stale claimant must not be able to finalise the winner's row.
-    where: { id, outcome: "pending", claimToken },
-    data: {
-      outcome: "sent",
-      publicReplyId: input.publicReplyId,
-      sentAt: input.sentAt,
-      claimedAt: null,
-      claimExpiresAt: null,
-      claimToken: null,
     },
   });
   return count === 1;
@@ -309,139 +495,18 @@ export async function markCandidateFailed(
  *
  * `reviewedAt` stays null so the dashboard can surface it as needing attention.
  */
-export async function markCandidateUncertain(
-  id: string,
-  claimToken: string,
-  reason: string,
-): Promise<boolean> {
-  const { count } = await prisma.recoveryCandidate.updateMany({
-    where: { id, outcome: "pending", claimToken },
-    data: {
-      outcome: "send_uncertain",
-      suppressionReason: reason,
-      claimedAt: null,
-      claimExpiresAt: null,
-      claimToken: null,
-    },
-  });
-  return count === 1;
-}
-
 /**
- * How many public recoveries this campaign has sent in the trailing hour.
- *
- * Counted from `sentAt` on confirmed sends only, so a failed attempt does not
- * consume the cap — but an uncertain one is NOT counted either, which is a
- * deliberate under-count: an uncertain row may have posted, so treating it as sent
- * would be safer. Left as-is because the hourly cap is a rate limit, not a safety
- * boundary, and the per-person guards are what prevent double contact.
+ * How much shared-ledger capacity this campaign has consumed since `since`.
+ * This is advisory data for the early recheck; the reservation transaction repeats the
+ * same decision under locks. Released work consumes no capacity, while reservations,
+ * started work, confirmed sends, and uncertain sends all do.
  */
 export async function countCandidatesSentSince(campaignId: string, since: Date): Promise<number> {
-  return prisma.recoveryCandidate.count({
+  return prisma.publicRecoveryDispatch.count({
     where: {
       campaignId,
-      // `send_uncertain` counts. The comment may be live on Instagram, so excluding it
-      // let an unknown number of real public comments escape the cap (QA-08).
-      // Same definition the reservation uses, so the advisory count in the recheck and
-      // the authoritative count under the lock cannot disagree.
-      ...consumedSince(since),
+      state: { in: ["reserved", "dispatch_started", "sent", "uncertain"] },
+      reservedAt: { gt: since },
     },
   });
-}
-
-/**
- * Reserve one send slot against the campaign's caps AND the shared global cap (QA-08).
- *
- * The worker previously read the hour and day counts, then posted, with nothing holding
- * the gap. Two workers could each read "2 of 3 this hour" and both post, and the
- * historical caps were per-campaign only — so two running campaigns, or historical plus
- * prospective, could each stay inside their own limit while the account posted far more
- * public comments than any single number suggested.
- *
- * `dm_recovery_control` row 1 is locked FOR UPDATE, which is the same row and the same
- * lock the prospective path already takes. That makes the two systems serialise against
- * each other rather than merely counting each other.
- *
- * `send_uncertain` and in-flight claims consume capacity: an uncertain post may be live
- * on Instagram, so excluding it would let real comments escape the cap. The caller's own
- * claim is excluded by id, because it would otherwise count itself.
- *
- * Returns the reason a slot was refused, or null when the send may proceed.
- */
-export async function reserveSendCapacity(input: {
-  candidateId: string;
-  campaignId: string;
-  now: Date;
-  hourlyCap: number;
-  dailyCap: number;
-  globalHourlyCap: number;
-}): Promise<null | "hourly_cap_reached" | "daily_cap_reached" | "global_hourly_cap_reached"> {
-  const hourAgo = new Date(input.now.getTime() - 60 * 60 * 1000);
-  const dayAgo = new Date(input.now.getTime() - 24 * 60 * 60 * 1000);
-
-  return prisma.$transaction(async (tx) => {
-    // The serialisation point, shared with the prospective worker.
-    await tx.$queryRaw`SELECT "id" FROM "dm_recovery_control" WHERE "id" = 1 FOR UPDATE`;
-
-    const [thisHour, today, prospectiveThisHour] = await Promise.all([
-      tx.recoveryCandidate.count({
-        where: { campaignId: input.campaignId, id: { not: input.candidateId }, ...consumedSince(hourAgo) },
-      }),
-      tx.recoveryCandidate.count({
-        where: { campaignId: input.campaignId, id: { not: input.candidateId }, ...consumedSince(dayAgo) },
-      }),
-      // Global: EVERY historical campaign plus the prospective feature. One account
-      // posts all of these under one name, so the ceiling has to be one number.
-      Promise.all([
-        tx.recoveryCandidate.count({
-          where: { id: { not: input.candidateId }, ...consumedSince(hourAgo) },
-        }),
-        tx.dmRecoveryReminder.count({
-          where: {
-            OR: [
-              { sentAt: { gte: hourAgo } },
-              { lastAttemptAt: { gte: hourAgo }, status: { in: ["sending", "send_uncertain"] } },
-            ],
-          },
-        }),
-      ]).then(([historical, prospective]) => historical + prospective),
-    ]);
-
-    if (today >= input.dailyCap) return "daily_cap_reached";
-    if (thisHour >= input.hourlyCap) return "hourly_cap_reached";
-    if (prospectiveThisHour >= input.globalHourlyCap) return "global_hourly_cap_reached";
-
-    // Stamping dispatchStartedAt inside the lock is what makes the reservation real: the
-    // next worker's count sees this row as in-flight and cannot reuse the slot. It also
-    // marks the point after which a failure may mean a comment exists — before this, a
-    // claimed row is provably pre-network and safe to release (QA-10).
-    await tx.recoveryCandidate.updateMany({
-      where: { id: input.candidateId },
-      data: { dispatchStartedAt: input.now, lastAttemptAt: input.now },
-    });
-
-    return null;
-  });
-}
-
-/**
- * Rows that have consumed a send slot since `since`.
- *
- * Keyed on `dispatchStartedAt`, NOT on holding a claim. A claim means "a worker is
- * preparing this row"; only dispatch means "a public comment may exist". Counting claims
- * deadlocked the cap: two workers each holding a claim counted the other as in-flight, so
- * with a cap of 1 neither could reserve the last slot and the campaign stalled — verified
- * against real Postgres before this fix.
- *
- * `send_uncertain` is included even without a dispatch timestamp, because a row parked by
- * lease reconciliation may have posted before the process died.
- */
-function consumedSince(since: Date) {
-  return {
-    OR: [
-      { outcome: "sent" as const, sentAt: { gte: since } },
-      { outcome: "send_uncertain" as const, lastAttemptAt: { gte: since } },
-      { outcome: "pending" as const, dispatchStartedAt: { gte: since } },
-    ],
-  };
 }

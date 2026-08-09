@@ -133,15 +133,19 @@ describeWithLocalDatabase("journey intent database contract", () => {
   // expose them to anon.
   it("enables RLS on both tables with no permissive policies", async () => {
     const rls = await prisma.$queryRaw<{ relname: string; relrowsecurity: boolean }[]>`
-      SELECT relname, relrowsecurity FROM pg_class
-      WHERE relname IN ('journey_intent', 'journey_trigger')
+      SELECT c.relname, c.relrowsecurity
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public'
+        AND c.relname IN ('journey_intent', 'journey_trigger')
     `;
     expect(rls).toHaveLength(2);
     for (const row of rls) expect(row.relrowsecurity).toBe(true);
 
     const policies = await prisma.$queryRaw<{ count: bigint }[]>`
       SELECT COUNT(*)::bigint AS count FROM pg_policies
-      WHERE tablename IN ('journey_intent', 'journey_trigger')
+      WHERE schemaname = 'public'
+        AND tablename IN ('journey_intent', 'journey_trigger')
     `;
     expect(Number(policies[0]!.count)).toBe(0);
   });
@@ -149,7 +153,8 @@ describeWithLocalDatabase("journey intent database contract", () => {
   it("stores every intent timestamp with a time zone", async () => {
     const cols = await prisma.$queryRaw<{ column_name: string; data_type: string }[]>`
       SELECT column_name, data_type FROM information_schema.columns
-      WHERE table_name = 'journey_intent'
+      WHERE table_schema = 'public'
+        AND table_name = 'journey_intent'
         AND column_name IN ('window_started_at', 'last_trigger_at', 'window_expires_at', 'completed_at')
     `;
     expect(cols).toHaveLength(4);

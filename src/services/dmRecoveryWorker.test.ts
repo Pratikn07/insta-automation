@@ -3,10 +3,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const listDueRecoveryIds = vi.fn();
 const claimRecovery = vi.fn();
 const authorizeClaimForSend = vi.fn();
-const markRecoverySent = vi.fn();
-const markRecoveryRetryable = vi.fn();
-const markRecoveryFailed = vi.fn();
-const markRecoveryUncertain = vi.fn();
+const startProspectiveDispatch = vi.fn();
+const finalizeProspectiveDispatch = vi.fn();
+const reconcileExpiredProspectiveLeases = vi.fn();
 const releaseOrSuppressClaim = vi.fn();
 const evaluateRecoveryHealth = vi.fn();
 const openRecoveryCircuit = vi.fn();
@@ -19,10 +18,9 @@ vi.mock("./dmRecoveryRepository.js", () => ({
   listDueRecoveryIds,
   claimRecovery,
   authorizeClaimForSend,
-  markRecoverySent,
-  markRecoveryRetryable,
-  markRecoveryFailed,
-  markRecoveryUncertain,
+  startProspectiveDispatch,
+  finalizeProspectiveDispatch,
+  reconcileExpiredProspectiveLeases,
   releaseOrSuppressClaim,
 }));
 
@@ -62,6 +60,12 @@ vi.mock("../config/env.js", () => ({ env: envMock }));
 
 const { runDmRecoveryTick } = await import("./dmRecoveryWorker.js");
 
+const SEND_DECISION = {
+  kind: "send_no_confirmed_read_reminder",
+  dispatchId: "dispatch-1",
+  reservationToken: "reservation-1",
+};
+
 function claimedRow(overrides: Record<string, unknown> = {}) {
   return {
     id: "rec-1",
@@ -76,6 +80,7 @@ function claimedRow(overrides: Record<string, unknown> = {}) {
     status: "sending",
     cohort: "treatment",
     attempts: 1,
+    claimToken: "claim-1",
     eligibleAt: new Date("2026-08-06T10:00:00Z"),
     ...overrides,
   };
@@ -85,10 +90,9 @@ beforeEach(() => {
   listDueRecoveryIds.mockReset();
   claimRecovery.mockReset();
   authorizeClaimForSend.mockReset();
-  markRecoverySent.mockReset();
-  markRecoveryRetryable.mockReset();
-  markRecoveryFailed.mockReset();
-  markRecoveryUncertain.mockReset();
+  startProspectiveDispatch.mockReset();
+  finalizeProspectiveDispatch.mockReset();
+  reconcileExpiredProspectiveLeases.mockReset();
   releaseOrSuppressClaim.mockReset();
   evaluateRecoveryHealth.mockReset();
   openRecoveryCircuit.mockReset();
@@ -100,11 +104,9 @@ beforeEach(() => {
   updateMany.mockResolvedValue({ count: 0 });
   count.mockResolvedValue(0);
   evaluateRecoveryHealth.mockResolvedValue({ circuitOpen: false });
-  // Every finalizer reports whether the durable write happened.
-  markRecoverySent.mockResolvedValue(true);
-  markRecoveryRetryable.mockResolvedValue(true);
-  markRecoveryFailed.mockResolvedValue(true);
-  markRecoveryUncertain.mockResolvedValue(true);
+  startProspectiveDispatch.mockResolvedValue(true);
+  finalizeProspectiveDispatch.mockResolvedValue(true);
+  reconcileExpiredProspectiveLeases.mockResolvedValue({ released: 0, uncertain: 0 });
   releaseOrSuppressClaim.mockResolvedValue(true);
   envMock.DM_RECOVERY_ENABLED = true;
 });
@@ -128,7 +130,7 @@ describe("runDmRecoveryTick", () => {
   it("posts exact snapshotted copy and confirms reply ID on success", async () => {
     listDueRecoveryIds.mockResolvedValue(["rec-1"]);
     claimRecovery.mockResolvedValue(claimedRow());
-    authorizeClaimForSend.mockResolvedValue({ kind: "send_no_confirmed_read_reminder" });
+    authorizeClaimForSend.mockResolvedValue(SEND_DECISION);
     replyToComment.mockResolvedValue({ replyId: "pub-reply-1" });
 
     const res = await runDmRecoveryTick();
@@ -137,10 +139,18 @@ describe("runDmRecoveryTick", () => {
       "comment-1",
       "I sent your guide 💛 Check your DMs/Requests.",
     );
-    expect(markRecoverySent).toHaveBeenCalledWith("rec-1", {
-      replyId: "pub-reply-1",
-      sentAt: expect.any(Date),
-    });
+    expect(startProspectiveDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ reminderId: "rec-1", claimToken: "claim-1" }),
+    );
+    expect(finalizeProspectiveDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reminderId: "rec-1",
+        outcome: expect.objectContaining({
+          kind: "sent",
+          providerReplyId: "pub-reply-1",
+        }),
+      }),
+    );
     expect(res).toMatchObject({ examined: 1, sent: 1, failed: 0 });
   });
 
@@ -161,8 +171,13 @@ describe("runDmRecoveryTick", () => {
     await runDmRecoveryTick();
 
     expect(replyToComment).not.toHaveBeenCalled();
-    expect(markRecoverySent).not.toHaveBeenCalled();
-    expect(releaseOrSuppressClaim).toHaveBeenCalledWith("rec-1", decision, expect.any(Date));
+    expect(finalizeProspectiveDispatch).not.toHaveBeenCalled();
+    expect(releaseOrSuppressClaim).toHaveBeenCalledWith(
+      "rec-1",
+      decision,
+      expect.any(Date),
+      "claim-1",
+    );
   });
 
   it("stops and returns circuit_open when health check fails", async () => {
@@ -187,7 +202,7 @@ describe("runDmRecoveryTick pacing and reentrancy", () => {
   it("claims at most one batch from a large backlog", async () => {
     listDueRecoveryIds.mockResolvedValue(["r1", "r2", "r3", "r4", "r5"]);
     claimRecovery.mockImplementation(async (id: string) => claimedRow({ id }));
-    authorizeClaimForSend.mockResolvedValue({ kind: "send_no_confirmed_read_reminder" });
+    authorizeClaimForSend.mockResolvedValue(SEND_DECISION);
     replyToComment.mockResolvedValue({ replyId: "pub" });
 
     const res = await runDmRecoveryTick();
@@ -205,7 +220,7 @@ describe("runDmRecoveryTick pacing and reentrancy", () => {
       Array.from({ length: 15 }, (_, i) => `rec-${i}`),
     );
     claimRecovery.mockImplementation(async (id: string) => claimedRow({ id }));
-    authorizeClaimForSend.mockResolvedValue({ kind: "send_no_confirmed_read_reminder" });
+    authorizeClaimForSend.mockResolvedValue(SEND_DECISION);
     replyToComment.mockResolvedValue({ replyId: "pub" });
 
     const res = await runDmRecoveryTick();
@@ -217,14 +232,14 @@ describe("runDmRecoveryTick pacing and reentrancy", () => {
   // A finalizer returning false means the durable write did not happen, so
   // counting the outcome would make the metrics disagree with the table.
   it.each([
-    ["a permanent failure", () => graphError(400, 100), () => markRecoveryFailed],
-    ["an uncertain outcome", () => graphError(500, 2), () => markRecoveryUncertain],
-  ])("does not count %s that failed to persist", async (_l, mkErr, getFn) => {
+    ["a permanent failure", () => graphError(400, 100)],
+    ["an uncertain outcome", () => graphError(500, 2)],
+  ])("does not count %s that failed to persist", async (_l, mkErr) => {
     listDueRecoveryIds.mockResolvedValue(["rec-1"]);
     claimRecovery.mockResolvedValue(claimedRow());
-    authorizeClaimForSend.mockResolvedValue({ kind: "send_no_confirmed_read_reminder" });
+    authorizeClaimForSend.mockResolvedValue(SEND_DECISION);
     replyToComment.mockRejectedValue(mkErr());
-    getFn().mockResolvedValue(false);
+    finalizeProspectiveDispatch.mockResolvedValue(false);
 
     const res = await runDmRecoveryTick();
 
@@ -253,7 +268,7 @@ describe("runDmRecoveryTick pacing and reentrancy", () => {
   it("keeps processing later records after one fails", async () => {
     listDueRecoveryIds.mockResolvedValue(["r1", "r2"]);
     claimRecovery.mockImplementation(async (id: string) => claimedRow({ id }));
-    authorizeClaimForSend.mockResolvedValue({ kind: "send_no_confirmed_read_reminder" });
+    authorizeClaimForSend.mockResolvedValue(SEND_DECISION);
     replyToComment
       .mockRejectedValueOnce(graphError(400, 100))
       .mockResolvedValueOnce({ replyId: "pub-2" });
@@ -282,28 +297,30 @@ describe("runDmRecoveryTick public outcome matrix", () => {
   beforeEach(() => {
     listDueRecoveryIds.mockResolvedValue(["rec-1"]);
     claimRecovery.mockResolvedValue(claimedRow());
-    authorizeClaimForSend.mockResolvedValue({ kind: "send_no_confirmed_read_reminder" });
+    authorizeClaimForSend.mockResolvedValue(SEND_DECISION);
   });
 
   it("treats a 2xx without an id as uncertain, never as sent", async () => {
     replyToComment.mockResolvedValue({ replyId: null });
     await runDmRecoveryTick();
-    expect(markRecoveryUncertain).toHaveBeenCalledOnce();
-    expect(markRecoverySent).not.toHaveBeenCalled();
+    expect(finalizeProspectiveDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: { kind: "uncertain", reason: "success_without_id" } }),
+    );
   });
 
   it.each([
-    ["a deleted comment", () => graphError(400, 100), "markRecoveryFailed"],
-    ["a rate limit", () => graphError(429, 4), "markRecoveryRetryable"],
-  ])("handles %s with exactly one finalizer", async (_l, mkErr, finalizer) => {
+    ["a deleted comment", () => graphError(400, 100), "send_failed"],
+    ["a rate limit", () => graphError(429, 4), "waiting"],
+  ])("handles %s with exactly one finalizer", async (_l, mkErr, sourceStatus) => {
     replyToComment.mockRejectedValue(mkErr());
     await runDmRecoveryTick();
 
-    const all = { markRecoveryFailed, markRecoveryRetryable, markRecoveryUncertain };
-    for (const [name, fn] of Object.entries(all)) {
-      if (name === finalizer) expect(fn).toHaveBeenCalledOnce();
-      else expect(fn).not.toHaveBeenCalled();
-    }
+    expect(finalizeProspectiveDispatch).toHaveBeenCalledOnce();
+    expect(finalizeProspectiveDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: expect.objectContaining({ kind: "released", sourceStatus }),
+      }),
+    );
   });
 
   it("opens the circuit and stops the batch on an auth failure", async () => {
@@ -327,10 +344,15 @@ describe("runDmRecoveryTick public outcome matrix", () => {
 
     await runDmRecoveryTick();
 
-    expect(markRecoveryFailed).toHaveBeenCalledWith("rec-1", {
-      category: "rate_limit_exhausted",
-    });
-    expect(markRecoveryRetryable).not.toHaveBeenCalled();
+    expect(finalizeProspectiveDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: expect.objectContaining({
+          kind: "released",
+          reason: "rate_limit_exhausted",
+          sourceStatus: "send_failed",
+        }),
+      }),
+    );
   });
 
   it("never schedules a retry sooner than the configured base delay", async () => {
@@ -340,7 +362,7 @@ describe("runDmRecoveryTick public outcome matrix", () => {
     const before = Date.now();
     await runDmRecoveryTick();
 
-    const { nextAttemptAt } = markRecoveryRetryable.mock.calls[0]![1];
+    const { nextAttemptAt } = finalizeProspectiveDispatch.mock.calls[0]![0].outcome;
     const delay = nextAttemptAt.getTime() - before;
     expect(delay).toBeGreaterThanOrEqual(300000 * 0.8);
   });
@@ -349,13 +371,12 @@ describe("runDmRecoveryTick public outcome matrix", () => {
   // must never be classified as a send outcome or produce a second attempt.
   it("does not retry when persistence fails after Meta accepted", async () => {
     replyToComment.mockResolvedValue({ replyId: "pub-1" });
-    markRecoverySent.mockRejectedValue(new Error("database unavailable"));
+    finalizeProspectiveDispatch.mockRejectedValue(new Error("database unavailable"));
 
     await runDmRecoveryTick();
 
     expect(replyToComment).toHaveBeenCalledOnce();
-    expect(markRecoveryRetryable).not.toHaveBeenCalled();
-    expect(markRecoveryFailed).not.toHaveBeenCalled();
+    expect(finalizeProspectiveDispatch).toHaveBeenCalledOnce();
     expect(logEvent).toHaveBeenCalledWith(
       "dm_recovery_finalize_failed",
       expect.objectContaining({ id: "rec-1" }),
@@ -364,7 +385,7 @@ describe("runDmRecoveryTick public outcome matrix", () => {
 
   it("does not report a send when the durable write did not happen", async () => {
     replyToComment.mockResolvedValue({ replyId: "pub-1" });
-    markRecoverySent.mockResolvedValue(false);
+    finalizeProspectiveDispatch.mockResolvedValue(false);
 
     const res = await runDmRecoveryTick();
 
