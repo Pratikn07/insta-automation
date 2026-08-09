@@ -15,7 +15,7 @@ export type GeminiOriginVerdict = {
 // auditable evidence but make the verdict an honest abstention. Word boundaries
 // prevent fragments inside unrelated words from triggering the downgrade.
 const CONTRADICTORY_WESTERN_EVIDENCE = [
-  /\bgeneric\b/i,
+  /\bgeneric\s+(?:handle|username|account)\b/i,
   /\bno\s+(?:(?:strong|clear|recognizable|distinctive)\s+)?(?:(?:name|username)\s+)?cue\b/i,
   /\bnothing\s+to\s+go\s+on\b/i,
 ];

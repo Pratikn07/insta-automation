@@ -6,17 +6,34 @@ import {
 } from "./historicalRecoveryOriginPolicy.js";
 
 describe("normalizeGeminiVerdict", () => {
-  it("downgrades contradictory generic/no-cue Western evidence to unknown", () => {
+  it.each(["generic handle", "no cue", "no strong cue"])(
+    "downgrades contradictory evidence %p to unknown",
+    (evidence) => {
+      expect(normalizeGeminiVerdict({
+        id: "u1",
+        origin: "us_western",
+        confidence: "low",
+        evidence,
+      })).toEqual({
+        id: "u1",
+        origin: "unknown",
+        confidence: "low",
+        evidence,
+      });
+    },
+  );
+
+  it("preserves a positive Western cue alongside a generic first name", () => {
     expect(normalizeGeminiVerdict({
       id: "u1",
       origin: "us_western",
       confidence: "low",
-      evidence: "generic handle, no strong cue",
+      evidence: "generic first name, distinctive Western surname Robbins",
     })).toEqual({
       id: "u1",
-      origin: "unknown",
+      origin: "us_western",
       confidence: "low",
-      evidence: "generic handle, no strong cue",
+      evidence: "generic first name, distinctive Western surname Robbins",
     });
   });
 
