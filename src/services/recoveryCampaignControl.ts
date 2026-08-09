@@ -14,7 +14,12 @@ import { logEvent } from "./eventLogger.js";
  */
 
 export type CampaignTransition =
-  | { ok: true; state: string }
+  | {
+      ok: true;
+      state: string;
+      cancelledCandidates?: number;
+      inFlightCandidates?: number;
+    }
   | { ok: false; reason: string };
 
 /**
@@ -183,17 +188,116 @@ export async function cancelCampaign(
   now = new Date(),
 ): Promise<CampaignTransition> {
   const result = await prisma.$transaction(async (tx) => {
-    const { count } = await tx.recoveryCampaign.updateMany({
-      where: { id: campaignId, state: { in: ["draft", "awaiting_approval", "running", "paused"] } },
+    await tx.dmRecoveryControl.upsert({
+      where: { id: 1 },
+      create: { id: 1 },
+      update: {},
+    });
+    await tx.$queryRaw`SELECT "id" FROM "dm_recovery_control" WHERE "id" = 1 FOR UPDATE`;
+
+    // Match the dispatch lock order in set form: control, people, candidate sources,
+    // then campaign. Ordering makes cancellation deterministic even for a large cohort.
+    await tx.$queryRaw`
+      SELECT u."id"
+      FROM "ig_users" u
+      JOIN "recovery_candidate" c ON c."ig_user_id" = u."id"
+      WHERE c."campaign_id" = ${campaignId}::uuid
+        AND c."outcome" = 'pending'
+      ORDER BY u."id"
+      FOR UPDATE OF u
+    `;
+    await tx.$queryRaw`
+      SELECT c."id"
+      FROM "recovery_candidate" c
+      WHERE c."campaign_id" = ${campaignId}::uuid
+        AND c."outcome" = 'pending'
+      ORDER BY c."ig_user_id", c."id"
+      FOR UPDATE OF c
+    `;
+    await tx.$queryRaw`
+      SELECT "id" FROM "recovery_campaign" WHERE "id" = ${campaignId}::uuid FOR UPDATE
+    `;
+
+    const campaign = await tx.recoveryCampaign.findUnique({
+      where: { id: campaignId },
+      select: { state: true },
+    });
+    if (
+      !campaign ||
+      !["draft", "awaiting_approval", "running", "paused"].includes(campaign.state)
+    ) {
+      return { moved: false, cancelledCandidates: 0, inFlightCandidates: 0 };
+    }
+
+    const pending = await tx.recoveryCandidate.findMany({
+      where: { campaignId, outcome: "pending" },
+      select: { id: true, dispatchStartedAt: true },
+      orderBy: [{ igUserId: "asc" }, { id: "asc" }],
+    });
+    const activeDispatches = pending.length
+      ? await tx.publicRecoveryDispatch.findMany({
+          where: {
+            sourceKind: "historical",
+            sourceId: { in: pending.map((candidate) => candidate.id) },
+            state: { in: ["reserved", "dispatch_started"] },
+          },
+          select: { sourceId: true, state: true },
+        })
+      : [];
+    const dispatchState = new Map(
+      activeDispatches.map((dispatch) => [dispatch.sourceId, dispatch.state]),
+    );
+    const inFlight = pending.filter(
+      (candidate) =>
+        candidate.dispatchStartedAt !== null || dispatchState.get(candidate.id) === "dispatch_started",
+    );
+    const inFlightIds = new Set(inFlight.map((candidate) => candidate.id));
+    const safeToCancel = pending.filter(
+      (candidate) => !inFlightIds.has(candidate.id),
+    );
+    const safeIds = safeToCancel.map((candidate) => candidate.id);
+
+    if (safeIds.length > 0) {
+      await tx.publicRecoveryDispatch.updateMany({
+        where: {
+          sourceKind: "historical",
+          sourceId: { in: safeIds },
+          state: "reserved",
+        },
+        data: {
+          state: "released",
+          releasedAt: now,
+          terminalReason: "campaign_cancelled_before_dispatch",
+        },
+      });
+    }
+
+    const cancelled = safeIds.length
+      ? await tx.recoveryCandidate.updateMany({
+          where: {
+            id: { in: safeIds },
+            outcome: "pending",
+            dispatchStartedAt: null,
+          },
+          data: {
+            outcome: "cancelled",
+            suppressionReason: reason,
+            claimedAt: null,
+            claimExpiresAt: null,
+            claimToken: null,
+          },
+        })
+      : { count: 0 };
+
+    await tx.recoveryCampaign.update({
+      where: { id: campaignId },
       data: { state: "cancelled", endedAt: now, pauseReason: reason },
     });
-    if (count === 0) return { moved: false, cancelledCandidates: 0 };
-
-    const candidates = await tx.recoveryCandidate.updateMany({
-      where: { campaignId, outcome: "pending" },
-      data: { outcome: "cancelled", suppressionReason: reason },
-    });
-    return { moved: true, cancelledCandidates: candidates.count };
+    return {
+      moved: true,
+      cancelledCandidates: cancelled.count,
+      inFlightCandidates: inFlight.length,
+    };
   });
 
   if (!result.moved) {
@@ -208,8 +312,14 @@ export async function cancelCampaign(
     campaignId,
     reason,
     cancelledCandidates: result.cancelledCandidates,
+    inFlightCandidates: result.inFlightCandidates,
   });
-  return { ok: true, state: "cancelled" };
+  return {
+    ok: true,
+    state: "cancelled",
+    cancelledCandidates: result.cancelledCandidates,
+    inFlightCandidates: result.inFlightCandidates,
+  };
 }
 
 /**

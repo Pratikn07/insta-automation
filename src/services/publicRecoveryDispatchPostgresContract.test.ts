@@ -290,13 +290,13 @@ describeWithDatabase("public recovery dispatch concurrency", () => {
       dispatchId: reservation.dispatchId,
       reservationToken: randomUUID(),
       now,
-    })).resolves.toBe(false);
+    })).resolves.toEqual({ kind: "blocked", reason: "reservation_not_active" });
     await expect(historical.startHistoricalDispatch({
       candidateId: candidate.id,
       claimToken: claim!.claimToken,
       ...reservation,
       now,
-    })).resolves.toBe(true);
+    })).resolves.toEqual({ kind: "started" });
     await expect(historical.finalizeHistoricalDispatch({
       candidateId: candidate.id,
       claimToken: claim!.claimToken,

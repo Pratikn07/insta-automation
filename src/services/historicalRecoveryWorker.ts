@@ -20,6 +20,7 @@ import {
   countCandidatesSentSince,
   reserveHistoricalDispatch,
   startHistoricalDispatch,
+  releaseHistoricalReservation,
   finalizeHistoricalDispatch,
 } from "./historicalRecoveryRepository.js";
 
@@ -296,22 +297,27 @@ async function runTickBody(): Promise<HistoricalTickResult> {
     // campaign Meta is throttling is worth a health reading.
     campaignsToEvaluate.add(claimed.campaignId);
 
-    const dispatchStarted = await startHistoricalDispatch({
+    const dispatchStart = await startHistoricalDispatch({
       candidateId: id,
       claimToken: claimed.claimToken,
       dispatchId: reservation.dispatchId,
       reservationToken: reservation.reservationToken,
       now: new Date(),
     });
-    if (!dispatchStarted) {
-      await finalizeHistoricalDispatch({
+    if (dispatchStart.kind !== "started") {
+      await releaseHistoricalReservation({
         candidateId: id,
         claimToken: claimed.claimToken,
         dispatchId: reservation.dispatchId,
         reservationToken: reservation.reservationToken,
-        outcome: { kind: "released", at: new Date(), reason: "dispatch_start_rejected" },
+        at: new Date(),
+        reason: `dispatch_start_rejected:${dispatchStart.reason}`,
       });
       result.deferred++;
+      if (dispatchStart.reason === "circuit_open") {
+        result.skipped = "circuit_open";
+        break;
+      }
       continue;
     }
 

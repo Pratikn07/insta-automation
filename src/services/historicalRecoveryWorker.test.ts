@@ -9,6 +9,7 @@ const markCandidateSuppressed = vi.fn();
 const markCandidateFailed = vi.fn();
 const reserveHistoricalDispatch = vi.fn();
 const startHistoricalDispatch = vi.fn();
+const releaseHistoricalReservation = vi.fn();
 const finalizeHistoricalDispatch = vi.fn();
 const countCandidatesSentSince = vi.fn();
 const replyToComment = vi.fn();
@@ -43,6 +44,7 @@ vi.mock("./historicalRecoveryRepository.js", () => ({
   markCandidateFailed,
   reserveHistoricalDispatch,
   startHistoricalDispatch,
+  releaseHistoricalReservation,
   finalizeHistoricalDispatch,
   countCandidatesSentSince,
 }));
@@ -119,7 +121,8 @@ beforeEach(() => {
   for (const fn of [
     listDueCandidateIds, claimCandidate, reconcileExpiredCandidateLeases,
     releaseCandidateClaim, markCandidateSuppressed, markCandidateFailed,
-    reserveHistoricalDispatch, startHistoricalDispatch, finalizeHistoricalDispatch,
+    reserveHistoricalDispatch, startHistoricalDispatch, releaseHistoricalReservation,
+    finalizeHistoricalDispatch,
     countCandidatesSentSince,
     replyToComment, fetchComment, evaluateRecoveryHealth, openRecoveryCircuit,
     logEvent, describeGraphError, classifyPublicReplyFailure,
@@ -145,7 +148,8 @@ beforeEach(() => {
     dispatchId: "dispatch-1",
     reservationToken: "reservation-1",
   });
-  startHistoricalDispatch.mockResolvedValue(true);
+  startHistoricalDispatch.mockResolvedValue({ kind: "started" });
+  releaseHistoricalReservation.mockResolvedValue(true);
   finalizeHistoricalDispatch.mockResolvedValue(true);
   completeCampaignIfDrained.mockResolvedValue(false);
   // Healthy by default, so existing cases test what they were written for.
@@ -180,6 +184,24 @@ describe("runHistoricalRecoveryTick — the send path", () => {
       }),
     );
     expect(result.sent).toBe(1);
+  });
+
+  it("does not call Meta when final dispatch authorization is blocked", async () => {
+    startHistoricalDispatch.mockResolvedValue({
+      kind: "blocked",
+      reason: "campaign_not_running",
+    });
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(releaseHistoricalReservation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        candidateId: "cand-1",
+        reason: "dispatch_start_rejected:campaign_not_running",
+      }),
+    );
+    expect(result.deferred).toBe(1);
   });
 });
 

@@ -155,6 +155,49 @@ export async function startPublicRecoveryDispatch(
   return result.count === 1;
 }
 
+/**
+ * Release a reservation only while it is provably pre-network.
+ *
+ * `finalizePublicRecoveryDispatch({ kind: "released" })` also handles a provider
+ * rejection after dispatch start. Pause/cancel must use this narrower operation: once
+ * the ledger says `dispatch_started`, only a truthful provider outcome or uncertainty
+ * may terminalize it.
+ */
+export async function releaseReservedPublicRecoveryDispatch(
+  tx: Prisma.TransactionClient,
+  input: {
+    dispatchId: string;
+    reservationToken: string;
+    at: Date;
+    reason: string;
+  },
+): Promise<boolean> {
+  if (!input.reason.trim()) return false;
+  const result = await tx.publicRecoveryDispatch.updateMany({
+    where: {
+      id: input.dispatchId,
+      reservationToken: input.reservationToken,
+      state: "reserved",
+    },
+    data: {
+      state: "released",
+      releasedAt: input.at,
+      terminalReason: input.reason,
+    },
+  });
+  if (result.count === 1) return true;
+
+  const existing = await tx.publicRecoveryDispatch.findFirst({
+    where: {
+      id: input.dispatchId,
+      reservationToken: input.reservationToken,
+      state: "released",
+    },
+    select: { id: true },
+  });
+  return existing !== null;
+}
+
 export async function finalizePublicRecoveryDispatch(
   tx: Prisma.TransactionClient,
   input:

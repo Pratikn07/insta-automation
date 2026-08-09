@@ -4,7 +4,12 @@ const campaignUpdateMany = vi.fn();
 const campaignFindUnique = vi.fn();
 const campaignUpdate = vi.fn();
 const candidateUpdateMany = vi.fn();
+const candidateFindMany = vi.fn();
 const candidateCount = vi.fn();
+const controlUpsert = vi.fn();
+const dispatchFindMany = vi.fn();
+const dispatchUpdateMany = vi.fn();
+const queryRaw = vi.fn();
 const logEvent = vi.fn();
 
 vi.mock("../lib/prisma.js", () => ({
@@ -14,11 +19,25 @@ vi.mock("../lib/prisma.js", () => ({
       findUnique: campaignFindUnique,
       update: campaignUpdate,
     },
-    recoveryCandidate: { updateMany: candidateUpdateMany, count: candidateCount },
+    recoveryCandidate: {
+      updateMany: candidateUpdateMany,
+      findMany: candidateFindMany,
+      count: candidateCount,
+    },
     $transaction: async (fn: (tx: unknown) => unknown) =>
       fn({
-        recoveryCampaign: { updateMany: campaignUpdateMany },
-        recoveryCandidate: { updateMany: candidateUpdateMany },
+        recoveryCampaign: {
+          updateMany: campaignUpdateMany,
+          update: campaignUpdate,
+          findUnique: campaignFindUnique,
+        },
+        recoveryCandidate: { updateMany: candidateUpdateMany, findMany: candidateFindMany },
+        dmRecoveryControl: { upsert: controlUpsert },
+        publicRecoveryDispatch: {
+          findMany: dispatchFindMany,
+          updateMany: dispatchUpdateMany,
+        },
+        $queryRaw: queryRaw,
       }),
   },
 }));
@@ -36,11 +55,18 @@ const {
 beforeEach(() => {
   for (const fn of [
     campaignUpdateMany, campaignFindUnique, campaignUpdate,
-    candidateUpdateMany, candidateCount, logEvent,
+    candidateUpdateMany, candidateFindMany, candidateCount, controlUpsert,
+    dispatchFindMany, dispatchUpdateMany, queryRaw, logEvent,
   ]) {
     fn.mockReset();
   }
   logEvent.mockResolvedValue(undefined);
+  queryRaw.mockResolvedValue([]);
+  controlUpsert.mockResolvedValue({ id: 1 });
+  candidateFindMany.mockResolvedValue([]);
+  dispatchFindMany.mockResolvedValue([]);
+  dispatchUpdateMany.mockResolvedValue({ count: 0 });
+  campaignUpdate.mockResolvedValue({});
 });
 
 describe("approveCampaign", () => {
@@ -201,22 +227,39 @@ describe("resumeCampaign", () => {
 
 describe("cancelCampaign", () => {
   it("cancels the campaign and abandons pending candidates together", async () => {
-    campaignUpdateMany.mockResolvedValue({ count: 1 });
+    campaignFindUnique.mockResolvedValue({ state: "running" });
+    candidateFindMany.mockResolvedValue(
+      Array.from({ length: 42 }, (_, index) => ({
+        id: `candidate-${index}`,
+        dispatchStartedAt: null,
+      })),
+    );
     candidateUpdateMany.mockResolvedValue({ count: 42 });
 
     const result = await cancelCampaign("camp-1", "owner stopped it");
 
-    expect(result).toEqual({ ok: true, state: "cancelled" });
-    expect(candidateUpdateMany).toHaveBeenCalledWith({
-      where: { campaignId: "camp-1", outcome: "pending" },
-      data: { outcome: "cancelled", suppressionReason: "owner stopped it" },
+    expect(result).toEqual({
+      ok: true,
+      state: "cancelled",
+      cancelledCandidates: 42,
+      inFlightCandidates: 0,
     });
+    expect(candidateUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ outcome: "pending", dispatchStartedAt: null }),
+        data: expect.objectContaining({
+          outcome: "cancelled",
+          suppressionReason: "owner stopped it",
+        }),
+      }),
+    );
   });
 
   // Those comments are live on Instagram. Rewriting them to cancelled would make the
   // record false.
   it("touches only pending candidates, never sent ones", async () => {
-    campaignUpdateMany.mockResolvedValue({ count: 1 });
+    campaignFindUnique.mockResolvedValue({ state: "running" });
+    candidateFindMany.mockResolvedValue([{ id: "pending-1", dispatchStartedAt: null }]);
     candidateUpdateMany.mockResolvedValue({ count: 0 });
 
     await cancelCampaign("camp-1", "stop");
@@ -226,7 +269,13 @@ describe("cancelCampaign", () => {
   });
 
   it("reports how many candidates were abandoned", async () => {
-    campaignUpdateMany.mockResolvedValue({ count: 1 });
+    campaignFindUnique.mockResolvedValue({ state: "running" });
+    candidateFindMany.mockResolvedValue(
+      Array.from({ length: 7 }, (_, index) => ({
+        id: `candidate-${index}`,
+        dispatchStartedAt: null,
+      })),
+    );
     candidateUpdateMany.mockResolvedValue({ count: 7 });
 
     await cancelCampaign("camp-1", "stop");
@@ -235,11 +284,11 @@ describe("cancelCampaign", () => {
       campaignId: "camp-1",
       reason: "stop",
       cancelledCandidates: 7,
+      inFlightCandidates: 0,
     });
   });
 
   it("refuses to cancel an already-completed campaign", async () => {
-    campaignUpdateMany.mockResolvedValue({ count: 0 });
     campaignFindUnique.mockResolvedValue({ state: "completed" });
 
     expect(await cancelCampaign("camp-1", "x")).toEqual({

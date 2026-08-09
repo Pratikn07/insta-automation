@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { prisma } from "../lib/prisma.js";
 import {
   finalizePublicRecoveryDispatch,
+  releaseReservedPublicRecoveryDispatch,
   reservePublicRecoveryDispatch,
   startPublicRecoveryDispatch,
   type DispatchReservation,
@@ -223,6 +224,74 @@ export async function startHistoricalDispatch(input: {
   dispatchId: string;
   reservationToken: string;
   now: Date;
+}): Promise<StartHistoricalDispatchResult> {
+  return prisma.$transaction(async (tx) => {
+    const sourceHint = await tx.recoveryCandidate.findUnique({
+      where: { id: input.candidateId },
+      select: { igUserId: true },
+    });
+    if (!sourceHint) return { kind: "blocked", reason: "stale_claim" };
+    await tx.$queryRaw`SELECT "id" FROM "dm_recovery_control" WHERE "id" = 1 FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "ig_users" WHERE "id" = ${sourceHint.igUserId} FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "recovery_candidate" WHERE "id" = ${input.candidateId}::uuid FOR UPDATE`;
+
+    const control = await tx.dmRecoveryControl.findUnique({ where: { id: 1 } });
+    if (control?.circuitOpen) return { kind: "blocked", reason: "circuit_open" };
+
+    const source = await tx.recoveryCandidate.findUnique({ where: { id: input.candidateId } });
+    if (
+      !source ||
+      source.outcome !== "pending" ||
+      source.arm !== "treatment" ||
+      source.claimToken !== input.claimToken ||
+      !source.claimExpiresAt ||
+      source.claimExpiresAt <= input.now
+    ) {
+      return { kind: "blocked", reason: "stale_claim" };
+    }
+
+    await tx.$queryRaw`SELECT "id" FROM "recovery_campaign" WHERE "id" = ${source.campaignId}::uuid FOR UPDATE`;
+    const campaign = await tx.recoveryCampaign.findUnique({
+      where: { id: source.campaignId },
+      select: { state: true },
+    });
+    if (campaign?.state !== "running") {
+      return { kind: "blocked", reason: "campaign_not_running" };
+    }
+
+    const started = await startPublicRecoveryDispatch(tx, input);
+    if (!started) return { kind: "blocked", reason: "reservation_not_active" };
+    const stamped = await tx.recoveryCandidate.updateMany({
+      where: { id: input.candidateId, outcome: "pending", claimToken: input.claimToken },
+      data: { dispatchStartedAt: input.now, lastAttemptAt: input.now },
+    });
+    if (stamped.count !== 1) {
+      throw new Error("historical_dispatch_source_stamp_failed");
+    }
+    return { kind: "started" };
+  });
+}
+
+export type HistoricalDispatchStartBlockReason =
+  | "stale_claim"
+  | "campaign_not_running"
+  | "circuit_open"
+  | "batch_not_active"
+  | "campaign_batch_exhausted"
+  | "reservation_not_active";
+
+export type StartHistoricalDispatchResult =
+  | { kind: "started" }
+  | { kind: "blocked"; reason: HistoricalDispatchStartBlockReason };
+
+export async function releaseHistoricalReservation(input: {
+  candidateId: string;
+  claimToken: string;
+  dispatchId: string;
+  reservationToken: string;
+  at: Date;
+  reason: string;
+  nextAttemptAt?: Date;
 }): Promise<boolean> {
   return prisma.$transaction(async (tx) => {
     const sourceHint = await tx.recoveryCandidate.findUnique({
@@ -234,23 +303,24 @@ export async function startHistoricalDispatch(input: {
     await tx.$queryRaw`SELECT "id" FROM "ig_users" WHERE "id" = ${sourceHint.igUserId} FOR UPDATE`;
     await tx.$queryRaw`SELECT "id" FROM "recovery_candidate" WHERE "id" = ${input.candidateId}::uuid FOR UPDATE`;
 
-    const source = await tx.recoveryCandidate.findUnique({ where: { id: input.candidateId } });
-    if (
-      !source ||
-      source.outcome !== "pending" ||
-      source.claimToken !== input.claimToken ||
-      !source.claimExpiresAt ||
-      source.claimExpiresAt <= input.now
-    ) {
-      return false;
-    }
-    const started = await startPublicRecoveryDispatch(tx, input);
-    if (!started) return false;
-    const stamped = await tx.recoveryCandidate.updateMany({
-      where: { id: input.candidateId, outcome: "pending", claimToken: input.claimToken },
-      data: { dispatchStartedAt: input.now, lastAttemptAt: input.now },
+    const released = await releaseReservedPublicRecoveryDispatch(tx, input);
+    if (!released) return false;
+
+    await tx.recoveryCandidate.updateMany({
+      where: {
+        id: input.candidateId,
+        outcome: "pending",
+        claimToken: input.claimToken,
+        dispatchStartedAt: null,
+      },
+      data: {
+        claimedAt: null,
+        claimExpiresAt: null,
+        claimToken: null,
+        nextAttemptAt: input.nextAttemptAt,
+      },
     });
-    return stamped.count === 1;
+    return true;
   });
 }
 
