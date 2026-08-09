@@ -23,6 +23,19 @@ const childLogger = {
 const scheduleAcceptedGateRecovery = vi.fn();
 const scheduleSettingsBlockedRecovery = vi.fn();
 const scheduleTrackingUnavailableRecovery = vi.fn();
+const resolveActiveSettingsBlockedVerification = vi.fn();
+
+const VERIFIED_SETTINGS_EVIDENCE = {
+  verificationId: "10000000-0000-4000-8000-000000000017",
+  verificationVersion: "settings-proof-2026-08-08-v1",
+  graphCode: 10,
+  graphSubcode: 12345,
+  classifiedAt: new Date("2026-08-08T12:00:00Z"),
+  verifiedAt: new Date("2026-08-08T10:00:00Z"),
+  validUntil: new Date("2026-09-08T10:00:00Z"),
+  evidenceReference: "meta-sandbox/settings-proof-2026-08-08-v1",
+  evidenceSha256: "a".repeat(64),
+};
 
 vi.mock("../services/keywordService.js", () => ({
   extractCandidates,
@@ -57,6 +70,11 @@ vi.mock("../services/dmRecoveryService.js", () => ({
   scheduleAcceptedGateRecovery,
   scheduleSettingsBlockedRecovery,
   scheduleTrackingUnavailableRecovery,
+}));
+vi.mock("../services/settingsBlockedVerificationService.js", () => ({
+  resolveActiveSettingsBlockedVerification,
+  settingsBlockedVerificationRejectionReason: (error: { reason?: string }) =>
+    error?.reason ?? "verification_missing",
 }));
 
 const { handleComment } = await import("./commentHandler.js");
@@ -113,6 +131,7 @@ beforeEach(() => {
     scheduleAcceptedGateRecovery,
     scheduleSettingsBlockedRecovery,
     scheduleTrackingUnavailableRecovery,
+    resolveActiveSettingsBlockedVerification,
     claimComment,
     ...Object.values(childLogger),
   ]) {
@@ -152,6 +171,7 @@ beforeEach(() => {
   scheduleAcceptedGateRecovery.mockResolvedValue({ id: "rec-1", status: "waiting" });
   scheduleSettingsBlockedRecovery.mockResolvedValue({ id: "rec-2", status: "waiting" });
   scheduleTrackingUnavailableRecovery.mockResolvedValue({ id: "rec-3", status: "tracking_unavailable" });
+  resolveActiveSettingsBlockedVerification.mockResolvedValue(VERIFIED_SETTINGS_EVIDENCE);
 });
 
 describe("handleComment Graph failure privacy", () => {
@@ -266,9 +286,35 @@ describe("handleComment Recovery Scheduling (Task 6)", () => {
         keywordSnapshot: "SLEEP",
         commentId: "comment-1",
         mediaId: "media-1",
+        verification: VERIFIED_SETTINGS_EVIDENCE,
       }),
     );
     expect(enqueueGate).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the allowlisted signature has no active verification", async () => {
+    sendTrackedPrivateReply.mockRejectedValue(graphFailure(10, 12345));
+    resolveActiveSettingsBlockedVerification.mockRejectedValue(
+      Object.assign(new Error("missing"), { reason: "verification_missing" }),
+    );
+
+    await handleComment({
+      id: "comment-1",
+      text: "sleep",
+      from: { id: "ig-user-1", username: "parent" },
+      media: { id: "media-1" },
+    });
+
+    expect(scheduleSettingsBlockedRecovery).not.toHaveBeenCalled();
+    expect(enqueueGate).not.toHaveBeenCalled();
+    expect(logEvent).toHaveBeenCalledWith(
+      "dm_recovery_verification_rejected",
+      expect.objectContaining({
+        conversationId: "conversation-1",
+        commentId: "comment-1",
+        reason: "verification_missing",
+      }),
+    );
   });
 });
 

@@ -22,6 +22,10 @@ import {
   scheduleSettingsBlockedRecovery,
   scheduleTrackingUnavailableRecovery,
 } from "../services/dmRecoveryService.js";
+import {
+  resolveActiveSettingsBlockedVerification,
+  settingsBlockedVerificationRejectionReason,
+} from "../services/settingsBlockedVerificationService.js";
 
 /**
  * Human-readable scope for a media-attached keyword, from the webhook's
@@ -254,6 +258,18 @@ export async function handleComment(comment: CommentValue): Promise<void> {
       ...metadata,
     });
     if (classification === "settings_blocked") {
+      let verification;
+      try {
+        verification = await resolveActiveSettingsBlockedVerification(metadata);
+      } catch (verificationError) {
+        await logEvent("dm_recovery_verification_rejected", {
+          conversationId: convo.id,
+          commentId: comment.id,
+          triggerKind: "settings_blocked",
+          reason: settingsBlockedVerificationRejectionReason(verificationError),
+        });
+        return;
+      }
       try {
         await scheduleSettingsBlockedRecovery({
           conversationId: convo.id,
@@ -262,7 +278,7 @@ export async function handleComment(comment: CommentValue): Promise<void> {
           keywordSnapshot: keyword.keyword,
           commentId: comment.id,
           mediaId: comment.media?.id ?? null,
-          rejectedAt: new Date(),
+          verification,
         });
       } catch {
         await logEvent("dm_recovery_schedule_failed", {

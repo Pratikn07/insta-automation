@@ -13,6 +13,10 @@ import {
   scheduleSettingsBlockedRecovery,
   scheduleTrackingUnavailableRecovery,
 } from "./dmRecoveryService.js";
+import {
+  resolveActiveSettingsBlockedVerification,
+  settingsBlockedVerificationRejectionReason,
+} from "./settingsBlockedVerificationService.js";
 import { conversationHistoryRole } from "./canonicalConversation.js";
 
 const BASE_BACKOFF_MS = 15 * 60 * 1000; // 15 min
@@ -259,6 +263,18 @@ export async function runGateQueueTick(): Promise<void> {
               where: { id: row.id },
               data: { status: "abandoned", attempts, lastError: "settings_blocked" },
             });
+            let verification;
+            try {
+              verification = await resolveActiveSettingsBlockedVerification(metadata);
+            } catch (verificationError) {
+              await logEvent("dm_recovery_verification_rejected", {
+                conversationId: row.conversationId,
+                commentId: row.commentId,
+                triggerKind: "settings_blocked",
+                reason: settingsBlockedVerificationRejectionReason(verificationError),
+              });
+              continue;
+            }
             try {
               await scheduleSettingsBlockedRecovery({
                 conversationId: row.conversationId,
@@ -267,7 +283,7 @@ export async function runGateQueueTick(): Promise<void> {
                 keywordSnapshot: convo.keyword.keyword,
                 commentId: row.commentId,
                 mediaId: row.mediaId,
-                rejectedAt: new Date(),
+                verification,
               });
             } catch {
               await logEvent("dm_recovery_schedule_failed", {

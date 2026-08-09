@@ -705,6 +705,17 @@ model DmRecoveryReminder {
   publicReplyId            String?               @map("public_reply_id")
   sentAt                   DateTime?             @map("sent_at") @db.Timestamptz(3)
   lastErrorCategory        String?               @map("last_error_category")
+  /// QA-17 evidence is frozen when a settings-blocked reminder is created.
+  /// Rows that pre-date the registry are explicitly marked legacy; new rows
+  /// cannot use that escape hatch.
+  settingsEvidenceLegacy       Boolean                      @default(false) @map("settings_evidence_legacy")
+  settingsVerificationId       String?                      @map("settings_verification_id") @db.Uuid
+  settingsVerificationVersion  String?                      @map("settings_verification_version")
+  settingsGraphCode            Int?                         @map("settings_graph_code")
+  settingsGraphSubcode         Int?                         @map("settings_graph_subcode")
+  settingsClassifiedAt         DateTime?                    @map("settings_classified_at") @db.Timestamptz(3)
+  settingsEvidenceReference    String?                      @map("settings_evidence_reference")
+  settingsEvidenceSha256       String?                      @map("settings_evidence_sha256") @db.Char(64)
   // Frozen at creation. `ig_users.inferred_origin` is mutable — retired when the
   // name changes, rewritten by the enrichment worker — so the live value cannot
   // reconstruct which population a row belonged to. Control rows especially:
@@ -720,13 +731,44 @@ model DmRecoveryReminder {
   igUser        IgUser       @relation(fields: [igUserId], references: [id], onDelete: Cascade)
   keyword       Keyword      @relation(fields: [keywordId], references: [id], onDelete: Restrict)
   gateDmMessage DmMessage?   @relation(fields: [gateDmMessageId], references: [id], onDelete: SetNull)
+  settingsVerification SettingsBlockedVerification? @relation(fields: [settingsVerificationId, settingsVerificationVersion, settingsGraphCode, settingsGraphSubcode], references: [id, version, graphCode, graphSubcode], onDelete: Restrict, map: "dm_recovery_reminder_settings_verification_identity_fkey")
 
   @@index([status, eligibleAt, nextAttemptAt])
   @@index([igUserId, sentAt])
   @@index([igUserId, keywordId, status])
   @@index([cohort, eligibleAt])
   @@index([audienceOrigin, audienceOriginConfidence])
+  @@index([settingsVerificationId, triggerKind, status], map: "dm_recovery_reminder_settings_verification_id_trigger_kind_stat")
   @@map("dm_recovery_reminder")
+}
+
+/// Controlled Meta verification evidence for the settings-specific public
+/// fallback. Provider payloads, tokens and message text never belong here.
+model SettingsBlockedVerification {
+  id                       String    @id @default(uuid()) @db.Uuid
+  version                  String    @unique
+  graphCode                Int       @map("graph_code")
+  graphSubcode             Int       @map("graph_subcode")
+  semanticCategory         String    @map("semantic_category")
+  verifiedAt               DateTime  @map("verified_at") @db.Timestamptz(3)
+  validUntil               DateTime  @map("valid_until") @db.Timestamptz(3)
+  verifierIdentity         String    @map("verifier_identity")
+  controlledAccountContext String    @map("controlled_account_context")
+  apiVersion               String    @map("api_version")
+  evidenceReference        String    @map("evidence_reference")
+  evidenceSha256           String    @map("evidence_sha256") @db.Char(64)
+  active                   Boolean   @default(false)
+  retiredAt                DateTime? @map("retired_at") @db.Timestamptz(3)
+  retirementReason         String?   @map("retirement_reason")
+  createdAt                DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  reminders DmRecoveryReminder[]
+
+  @@unique([graphCode, graphSubcode, version], map: "settings_blocked_verification_graph_code_graph_subcode_version_")
+  @@unique([id, version, graphCode, graphSubcode], map: "settings_blocked_verification_identity_key")
+  @@index([graphCode, graphSubcode, active, validUntil], map: "settings_blocked_verification_signature_active_valid_idx")
+  @@map("settings_blocked_verification")
 }
 
 model DmRecoveryControl {

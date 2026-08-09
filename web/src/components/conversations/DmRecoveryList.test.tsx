@@ -10,6 +10,8 @@ const list = vi.fn();
 const counts = vi.fn();
 const metrics = vi.fn();
 const apiGet = vi.fn();
+const settingsVerifications = vi.fn();
+const activateSettingsVerification = vi.fn();
 
 vi.mock("../../lib/api", () => ({
   // The keyword filter's options come from the generic client, not recoveryApi.
@@ -18,6 +20,8 @@ vi.mock("../../lib/api", () => ({
     list: (...a: unknown[]) => list(...a),
     counts: () => counts(),
     metrics: () => metrics(),
+    settingsVerifications: () => settingsVerifications(),
+    activateSettingsVerification: (id: string) => activateSettingsVerification(id),
   },
 }));
 
@@ -47,6 +51,7 @@ function row(overrides: Partial<RecoveryReminderRow> = {}): RecoveryReminderRow 
     lastErrorCategory: null,
     reviewedAt: null,
     createdAt: "2026-08-05T23:00:00.000Z",
+    settingsEvidence: null,
     ...overrides,
   };
 }
@@ -103,6 +108,13 @@ const METRICS = {
     failed: 1,
     settingsClassifierMatches: 4,
   },
+  settingsEvidence: {
+    current: 1,
+    stale: 1,
+    retired: 0,
+    missing: 1,
+    byVerification: [],
+  },
 };
 
 function renderList() {
@@ -126,6 +138,8 @@ beforeEach(() => {
     { id: "kw-2", keyword: "CALM" },
   ]);
   metrics.mockReset().mockResolvedValue(METRICS);
+  settingsVerifications.mockReset().mockResolvedValue({ records: [] });
+  activateSettingsVerification.mockReset().mockResolvedValue(undefined);
 });
 
 describe("DmRecoveryList", () => {
@@ -172,6 +186,86 @@ describe("DmRecoveryList", () => {
     list.mockRejectedValue(new Error("boom"));
     renderList();
     expect(await screen.findByRole("button", { name: /Try again/i })).toBeInTheDocument();
+  });
+
+  it("shows current and invalid settings evidence totals", async () => {
+    renderList();
+    expect(await screen.findByText("1 current · 2 invalid settings evidence")).toBeInTheDocument();
+  });
+
+  it("labels a stale settings reminder in the row", async () => {
+    list.mockResolvedValue({
+      rows: [
+        row({
+          triggerKind: "settings_blocked",
+          cohort: "not_applicable",
+          settingsEvidence: {
+            status: "stale",
+            verificationId: "10000000-0000-4000-8000-000000000017",
+            version: "settings-proof-v1",
+            graphCode: 10,
+            graphSubcode: 12345,
+            classifiedAt: "2026-08-06T09:00:00Z",
+            verifiedAt: "2026-08-06T08:00:00Z",
+            validUntil: "2026-08-07T08:00:00Z",
+            apiVersion: "v23.0",
+            evidenceReference: "safe/ref",
+            evidenceSha256: "a".repeat(64),
+          },
+        }),
+      ],
+      nextCursor: null,
+    });
+
+    renderList();
+    expect(await screen.findByText("Evidence stale")).toBeInTheDocument();
+  });
+
+  it("offers activation only for a valid inactive registry record", async () => {
+    settingsVerifications.mockResolvedValue({
+      records: [
+        {
+          id: "10000000-0000-4000-8000-000000000017",
+          version: "ready-v1",
+          graphCode: 10,
+          graphSubcode: 12345,
+          status: "inactive",
+          verifiedAt: "2026-08-06T08:00:00Z",
+          validUntil: "2099-08-06T08:00:00Z",
+          apiVersion: "v23.0",
+          evidenceReference: "safe/ready",
+          evidenceSha256: "a".repeat(64),
+          active: false,
+          retiredAt: null,
+          retirementReason: null,
+        },
+        {
+          id: "20000000-0000-4000-8000-000000000017",
+          version: "stale-v1",
+          graphCode: 10,
+          graphSubcode: 99999,
+          status: "stale",
+          verifiedAt: "2026-01-01T00:00:00Z",
+          validUntil: "2026-01-02T00:00:00Z",
+          apiVersion: "v23.0",
+          evidenceReference: "safe/stale",
+          evidenceSha256: "b".repeat(64),
+          active: false,
+          retiredAt: null,
+          retirementReason: null,
+        },
+      ],
+    });
+
+    renderList();
+    const activate = await screen.findByRole("button", { name: "Activate ready-v1" });
+    expect(screen.queryByRole("button", { name: "Activate stale-v1" })).not.toBeInTheDocument();
+    await userEvent.click(activate);
+    await waitFor(() =>
+      expect(activateSettingsVerification).toHaveBeenCalledWith(
+        "10000000-0000-4000-8000-000000000017",
+      ),
+    );
   });
 
   it("pages with the cursor", async () => {

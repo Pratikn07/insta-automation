@@ -10,17 +10,33 @@ const count = vi.fn();
 const getIgUsers = vi.fn();
 const getRecoveryHealthSnapshot = vi.fn();
 const logEvent = vi.fn();
+const verificationFindMany = vi.fn();
+const activateSettingsBlockedVerification = vi.fn();
+const retireSettingsBlockedVerification = vi.fn();
 
 const eventFindFirst = vi.fn();
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
     dmRecoveryReminder: { findMany, findUnique, updateMany, groupBy, count },
+    settingsBlockedVerification: { findMany: verificationFindMany },
     eventLog: { findFirst: eventFindFirst },
   },
 }));
 vi.mock("../services/igUserService.js", () => ({ getIgUsers }));
 vi.mock("../services/dmRecoveryHealth.js", () => ({ getRecoveryHealthSnapshot }));
 vi.mock("../services/eventLogger.js", () => ({ logEvent }));
+vi.mock("../services/settingsBlockedVerificationAdminService.js", () => {
+  class SettingsBlockedVerificationAdminError extends Error {
+    constructor(public reason: string) {
+      super(reason);
+    }
+  }
+  return {
+    SettingsBlockedVerificationAdminError,
+    activateSettingsBlockedVerification,
+    retireSettingsBlockedVerification,
+  };
+});
 vi.mock("../lib/logger.js", () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
@@ -65,12 +81,21 @@ function row(overrides: Record<string, unknown> = {}) {
     lastErrorCategory: null,
     reviewedAt: null,
     createdAt: new Date("2026-08-05T23:00:00.000Z"),
+    settingsEvidenceLegacy: false,
+    settingsVerificationId: null,
+    settingsVerificationVersion: null,
+    settingsGraphCode: null,
+    settingsGraphSubcode: null,
+    settingsClassifiedAt: null,
+    settingsEvidenceReference: null,
+    settingsEvidenceSha256: null,
+    settingsVerification: null,
     ...overrides,
   };
 }
 
 beforeEach(() => {
-  for (const fn of [findMany, findUnique, updateMany, groupBy, count, getIgUsers, getRecoveryHealthSnapshot, logEvent, eventFindFirst]) {
+  for (const fn of [findMany, findUnique, updateMany, groupBy, count, getIgUsers, getRecoveryHealthSnapshot, logEvent, eventFindFirst, verificationFindMany, activateSettingsBlockedVerification, retireSettingsBlockedVerification]) {
     fn.mockReset();
   }
   findMany.mockResolvedValue([]);
@@ -79,7 +104,87 @@ beforeEach(() => {
   getIgUsers.mockResolvedValue({});
   getRecoveryHealthSnapshot.mockResolvedValue({ circuitOpen: false });
   eventFindFirst.mockResolvedValue(null);
+  verificationFindMany.mockResolvedValue([]);
+  activateSettingsBlockedVerification.mockResolvedValue(undefined);
+  retireSettingsBlockedVerification.mockResolvedValue(undefined);
   envMock.DM_RECOVERY_WESTERN_ONLY = true;
+});
+
+describe("settings verification activation controls", () => {
+  it("lists only sanitized registry fields with an activation status", async () => {
+    verificationFindMany.mockResolvedValue([
+      {
+        id: "10000000-0000-4000-8000-000000000017",
+        version: "settings-proof-v1",
+        graphCode: 10,
+        graphSubcode: 12345,
+        semanticCategory: "settings_blocked",
+        verifiedAt: new Date("2026-08-06T08:00:00Z"),
+        validUntil: new Date("2099-08-06T08:00:00Z"),
+        apiVersion: "v23.0",
+        evidenceReference: "meta-sandbox/settings-proof-v1",
+        evidenceSha256: "a".repeat(64),
+        active: false,
+        retiredAt: null,
+        retirementReason: null,
+        verifierIdentity: "PRIVATE-VERIFIER-SENTINEL",
+        controlledAccountContext: "PRIVATE-ACCOUNT-SENTINEL",
+      },
+    ]);
+
+    const res = await request(makeApp()).get(
+      "/api/recovery-reminders/settings-verifications",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.records[0]).toMatchObject({
+      version: "settings-proof-v1",
+      status: "inactive",
+      graphCode: 10,
+      graphSubcode: 12345,
+    });
+    expect(JSON.stringify(res.body)).not.toContain("PRIVATE-VERIFIER-SENTINEL");
+    expect(JSON.stringify(res.body)).not.toContain("PRIVATE-ACCOUNT-SENTINEL");
+  });
+
+  it("activates a valid record and writes a safe audit event", async () => {
+    const id = "10000000-0000-4000-8000-000000000017";
+    const res = await request(makeApp()).post(
+      `/api/recovery-reminders/settings-verifications/${id}/activate`,
+    );
+
+    expect(res.status).toBe(204);
+    expect(activateSettingsBlockedVerification).toHaveBeenCalledWith(id, null);
+    expect(logEvent).toHaveBeenCalledWith("settings_blocked_verification_activated", {
+      verificationId: id,
+      actor: null,
+    });
+  });
+
+  it("blocks stale activation", async () => {
+    const { SettingsBlockedVerificationAdminError } = await import(
+      "../services/settingsBlockedVerificationAdminService.js"
+    );
+    activateSettingsBlockedVerification.mockRejectedValue(
+      new SettingsBlockedVerificationAdminError("verification_stale"),
+    );
+
+    const res = await request(makeApp()).post(
+      "/api/recovery-reminders/settings-verifications/10000000-0000-4000-8000-000000000017/activate",
+    );
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({ error: "verification_stale" });
+  });
+
+  it("requires a bounded reason when retiring", async () => {
+    const res = await request(makeApp())
+      .post(
+        "/api/recovery-reminders/settings-verifications/10000000-0000-4000-8000-000000000017/retire",
+      )
+      .send({ reason: "" });
+    expect(res.status).toBe(400);
+    expect(retireSettingsBlockedVerification).not.toHaveBeenCalled();
+  });
 });
 
 describe("viewWhere", () => {
@@ -145,7 +250,106 @@ describe("GET /", () => {
       lastErrorCategory: null,
       reviewedAt: null,
       createdAt: "2026-08-05T23:00:00.000Z",
+      settingsEvidence: null,
     });
+  });
+
+  it("returns only sanitized immutable evidence for a current settings signature", async () => {
+    findMany.mockResolvedValue([
+      row({
+        triggerKind: "settings_blocked",
+        cohort: "not_applicable",
+        settingsVerificationId: "10000000-0000-4000-8000-000000000017",
+        settingsVerificationVersion: "settings-proof-v1",
+        settingsGraphCode: 10,
+        settingsGraphSubcode: 12345,
+        settingsClassifiedAt: new Date("2026-08-06T09:00:00Z"),
+        settingsEvidenceReference: "meta-sandbox/settings-proof-v1",
+        settingsEvidenceSha256: "a".repeat(64),
+        settingsVerification: {
+          active: true,
+          retiredAt: null,
+          verifiedAt: new Date("2026-08-06T08:00:00Z"),
+          validUntil: new Date("2099-08-06T08:00:00Z"),
+          apiVersion: "v23.0",
+          verifierIdentity: "PRIVATE-VERIFIER-SENTINEL",
+          controlledAccountContext: "PRIVATE-ACCOUNT-SENTINEL",
+        },
+      }),
+    ]);
+
+    const res = await request(makeApp()).get("/api/recovery-reminders");
+
+    expect(res.body.rows[0].settingsEvidence).toEqual({
+      status: "current",
+      verificationId: "10000000-0000-4000-8000-000000000017",
+      version: "settings-proof-v1",
+      graphCode: 10,
+      graphSubcode: 12345,
+      classifiedAt: "2026-08-06T09:00:00.000Z",
+      verifiedAt: "2026-08-06T08:00:00.000Z",
+      validUntil: "2099-08-06T08:00:00.000Z",
+      apiVersion: "v23.0",
+      evidenceReference: "meta-sandbox/settings-proof-v1",
+      evidenceSha256: "a".repeat(64),
+    });
+    expect(JSON.stringify(res.body)).not.toContain("PRIVATE-VERIFIER-SENTINEL");
+    expect(JSON.stringify(res.body)).not.toContain("PRIVATE-ACCOUNT-SENTINEL");
+  });
+
+  it.each([
+    [
+      {
+        settingsEvidenceLegacy: true,
+        settingsVerification: null,
+      },
+      "missing",
+    ],
+    [
+      {
+        settingsVerificationId: "10000000-0000-4000-8000-000000000017",
+        settingsVerificationVersion: "v1",
+        settingsGraphCode: 10,
+        settingsGraphSubcode: 12345,
+        settingsClassifiedAt: new Date(),
+        settingsEvidenceReference: "safe/ref",
+        settingsEvidenceSha256: "a".repeat(64),
+        settingsVerification: {
+          active: false,
+          retiredAt: new Date(),
+          verifiedAt: new Date("2026-08-01T00:00:00Z"),
+          validUntil: new Date("2099-01-01T00:00:00Z"),
+          apiVersion: "v23.0",
+        },
+      },
+      "retired",
+    ],
+    [
+      {
+        settingsVerificationId: "10000000-0000-4000-8000-000000000017",
+        settingsVerificationVersion: "v1",
+        settingsGraphCode: 10,
+        settingsGraphSubcode: 12345,
+        settingsClassifiedAt: new Date(),
+        settingsEvidenceReference: "safe/ref",
+        settingsEvidenceSha256: "a".repeat(64),
+        settingsVerification: {
+          active: true,
+          retiredAt: null,
+          verifiedAt: new Date("2026-01-01T00:00:00Z"),
+          validUntil: new Date("2026-01-02T00:00:00Z"),
+          apiVersion: "v23.0",
+        },
+      },
+      "stale",
+    ],
+  ])("labels settings evidence as %s", async (evidence, expectedStatus) => {
+    findMany.mockResolvedValue([
+      row({ triggerKind: "settings_blocked", cohort: "not_applicable", ...evidence }),
+    ]);
+
+    const res = await request(makeApp()).get("/api/recovery-reminders");
+    expect(res.body.rows[0].settingsEvidence.status).toBe(expectedStatus);
   });
 
   // publicReplyText is the message we would post; it is not the owner's to read
@@ -379,6 +583,54 @@ describe("GET /metrics", () => {
     getRecoveryHealthSnapshot.mockResolvedValue({ circuitOpen: true, reason: "hourly_cap" });
     const res = await request(makeApp()).get("/api/recovery-reminders/metrics");
     expect(res.body.health).toEqual({ circuitOpen: true, reason: "hourly_cap" });
+  });
+
+  it("aggregates settings evidence by safe version, signature, age, status, and outcome", async () => {
+    const settings = row({
+      igUserId: "ig-settings",
+      triggerKind: "settings_blocked",
+      status: "sent",
+      cohort: "not_applicable",
+      settingsVerificationId: "10000000-0000-4000-8000-000000000017",
+      settingsVerificationVersion: "settings-proof-v1",
+      settingsGraphCode: 10,
+      settingsGraphSubcode: 12345,
+      settingsClassifiedAt: new Date("2026-08-06T09:00:00Z"),
+      settingsEvidenceReference: "meta-sandbox/settings-proof-v1",
+      settingsEvidenceSha256: "a".repeat(64),
+      settingsVerification: {
+        active: true,
+        retiredAt: null,
+        verifiedAt: new Date("2026-08-06T08:00:00Z"),
+        validUntil: new Date("2099-08-06T08:00:00Z"),
+        apiVersion: "v23.0",
+      },
+    });
+    findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([settings]);
+
+    const res = await request(makeApp()).get("/api/recovery-reminders/metrics");
+
+    expect(res.body.settingsEvidence).toMatchObject({
+      current: 1,
+      stale: 0,
+      retired: 0,
+      missing: 0,
+      byVerification: [
+        expect.objectContaining({
+          version: "settings-proof-v1",
+          graphCode: 10,
+          graphSubcode: 12345,
+          evidenceStatus: "current",
+          count: 1,
+          people: 1,
+          byReminderStatus: { sent: 1 },
+        }),
+      ],
+    });
   });
 
   // `.env.example` ships the window empty until the experiment starts, so this

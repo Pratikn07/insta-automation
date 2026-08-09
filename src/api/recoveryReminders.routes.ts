@@ -6,6 +6,11 @@ import { getIgUsers } from "../services/igUserService.js";
 import { logEvent } from "../services/eventLogger.js";
 import { getRecoveryHealthSnapshot } from "../services/dmRecoveryHealth.js";
 import { env } from "../config/env.js";
+import {
+  SettingsBlockedVerificationAdminError,
+  activateSettingsBlockedVerification,
+  retireSettingsBlockedVerification,
+} from "../services/settingsBlockedVerificationAdminService.js";
 
 /**
  * Read models and owner actions for the DM recovery lens.
@@ -75,6 +80,23 @@ const ROW_SELECT = {
   lastErrorCategory: true,
   reviewedAt: true,
   createdAt: true,
+  settingsEvidenceLegacy: true,
+  settingsVerificationId: true,
+  settingsVerificationVersion: true,
+  settingsGraphCode: true,
+  settingsGraphSubcode: true,
+  settingsClassifiedAt: true,
+  settingsEvidenceReference: true,
+  settingsEvidenceSha256: true,
+  settingsVerification: {
+    select: {
+      active: true,
+      retiredAt: true,
+      verifiedAt: true,
+      validUntil: true,
+      apiVersion: true,
+    },
+  },
   keyword: { select: { id: true, keyword: true, mediaPermalink: true, mediaCaption: true } },
 } as const;
 
@@ -98,9 +120,72 @@ function iso(value: Date | null): string | null {
   return value ? value.toISOString() : null;
 }
 
+type SettingsEvidenceSource = {
+  triggerKind: string;
+  settingsEvidenceLegacy: boolean;
+  settingsVerificationId: string | null;
+  settingsVerificationVersion: string | null;
+  settingsGraphCode: number | null;
+  settingsGraphSubcode: number | null;
+  settingsClassifiedAt: Date | null;
+  settingsEvidenceReference: string | null;
+  settingsEvidenceSha256: string | null;
+  settingsVerification: {
+    active: boolean;
+    retiredAt: Date | null;
+    verifiedAt: Date;
+    validUntil: Date;
+    apiVersion: string;
+  } | null;
+};
+
+type SettingsEvidenceStatus = "current" | "stale" | "retired" | "missing";
+
+function settingsEvidenceStatus(row: SettingsEvidenceSource, now: Date): SettingsEvidenceStatus {
+  if (
+    row.settingsEvidenceLegacy ||
+    !row.settingsVerificationId ||
+    !row.settingsVerificationVersion ||
+    row.settingsGraphCode === null ||
+    row.settingsGraphSubcode === null ||
+    !row.settingsClassifiedAt ||
+    !row.settingsEvidenceReference ||
+    !row.settingsEvidenceSha256 ||
+    !row.settingsVerification
+  ) {
+    return "missing";
+  }
+  if (!row.settingsVerification.active || row.settingsVerification.retiredAt) return "retired";
+  if (row.settingsVerification.validUntil.getTime() <= now.getTime()) return "stale";
+  return "current";
+}
+
+function serializeSettingsEvidence(
+  row: SettingsEvidenceSource,
+  now: Date,
+): Record<string, unknown> | null {
+  if (row.triggerKind !== "settings_blocked") return null;
+  const status = settingsEvidenceStatus(row, now);
+  const registry = row.settingsVerification;
+  return {
+    status,
+    verificationId: row.settingsVerificationId,
+    version: row.settingsVerificationVersion,
+    graphCode: row.settingsGraphCode,
+    graphSubcode: row.settingsGraphSubcode,
+    classifiedAt: iso(row.settingsClassifiedAt),
+    verifiedAt: iso(registry?.verifiedAt ?? null),
+    validUntil: iso(registry?.validUntil ?? null),
+    apiVersion: registry?.apiVersion ?? null,
+    evidenceReference: row.settingsEvidenceReference,
+    evidenceSha256: row.settingsEvidenceSha256,
+  };
+}
+
 function serializeRow(
   row: SelectedRow,
   people: Record<string, { username: string | null; name: string | null }>,
+  now = new Date(),
 ): Record<string, unknown> {
   const person = people[row.igUserId];
   return {
@@ -130,8 +215,110 @@ function serializeRow(
     lastErrorCategory: row.lastErrorCategory,
     reviewedAt: iso(row.reviewedAt),
     createdAt: row.createdAt.toISOString(),
+    settingsEvidence: serializeSettingsEvidence(row, now),
   };
 }
+
+const verificationIdSchema = z.string().uuid();
+const retirementBodySchema = z.object({ reason: z.string().trim().min(3).max(200) });
+
+function verificationAdminError(
+  error: unknown,
+  res: import("express").Response,
+): void {
+  if (error instanceof SettingsBlockedVerificationAdminError) {
+    const status = error.reason === "verification_missing" ? 404 : 409;
+    res.status(status).json({ error: error.reason });
+    return;
+  }
+  res.status(500).json({ error: "verification_admin_failed" });
+}
+
+// Registered before /:id so the literal path cannot be captured as a reminder id.
+recoveryRemindersRouter.get("/settings-verifications", async (_req, res) => {
+  const now = new Date();
+  const records = await prisma.settingsBlockedVerification.findMany({
+    select: {
+      id: true,
+      version: true,
+      graphCode: true,
+      graphSubcode: true,
+      semanticCategory: true,
+      verifiedAt: true,
+      validUntil: true,
+      apiVersion: true,
+      evidenceReference: true,
+      evidenceSha256: true,
+      active: true,
+      retiredAt: true,
+      retirementReason: true,
+    },
+    orderBy: [{ verifiedAt: "desc" }, { id: "asc" }],
+  });
+
+  res.json({
+    records: records.map((record) => ({
+      id: record.id,
+      version: record.version,
+      graphCode: record.graphCode,
+      graphSubcode: record.graphSubcode,
+      semanticCategory: record.semanticCategory,
+      verifiedAt: record.verifiedAt.toISOString(),
+      validUntil: record.validUntil.toISOString(),
+      apiVersion: record.apiVersion,
+      evidenceReference: record.evidenceReference,
+      evidenceSha256: record.evidenceSha256,
+      active: record.active,
+      retiredAt: iso(record.retiredAt),
+      retirementReason: record.retirementReason,
+      status: record.retiredAt
+        ? "retired"
+        : record.validUntil.getTime() <= now.getTime()
+          ? "stale"
+          : record.active
+            ? "current"
+            : "inactive",
+    })),
+  });
+});
+
+recoveryRemindersRouter.post("/settings-verifications/:id/activate", async (req, res) => {
+  const parsed = verificationIdSchema.safeParse(req.params.id);
+  if (!parsed.success) return void res.status(400).json({ error: "invalid_verification_id" });
+  try {
+    await activateSettingsBlockedVerification(parsed.data, req.adminEmail ?? null);
+    await logEvent("settings_blocked_verification_activated", {
+      verificationId: parsed.data,
+      actor: req.adminEmail ?? null,
+    });
+    res.status(204).end();
+  } catch (error) {
+    verificationAdminError(error, res);
+  }
+});
+
+recoveryRemindersRouter.post("/settings-verifications/:id/retire", async (req, res) => {
+  const id = verificationIdSchema.safeParse(req.params.id);
+  const body = retirementBodySchema.safeParse(req.body);
+  if (!id.success || !body.success) {
+    return void res.status(400).json({ error: "invalid_retirement_request" });
+  }
+  try {
+    await retireSettingsBlockedVerification(
+      id.data,
+      body.data.reason,
+      req.adminEmail ?? null,
+    );
+    await logEvent("settings_blocked_verification_retired", {
+      verificationId: id.data,
+      actor: req.adminEmail ?? null,
+      reason: body.data.reason,
+    });
+    res.status(204).end();
+  } catch (error) {
+    verificationAdminError(error, res);
+  }
+});
 
 // Both literals are registered before /:id, or Express captures them as ids.
 recoveryRemindersRouter.get("/metrics", metricsHandler);
@@ -188,7 +375,7 @@ recoveryRemindersRouter.get("/", async (req, res) => {
     : {};
 
   res.json({
-    rows: page.map((row) => serializeRow(row, people)),
+    rows: page.map((row) => serializeRow(row, people, now)),
     nextCursor,
     asOf: now.toISOString(),
   });
@@ -410,6 +597,23 @@ const METRICS_SELECT = {
   suppressionReason: true,
   lastErrorCategory: true,
   audienceOrigin: true,
+  settingsEvidenceLegacy: true,
+  settingsVerificationId: true,
+  settingsVerificationVersion: true,
+  settingsGraphCode: true,
+  settingsGraphSubcode: true,
+  settingsClassifiedAt: true,
+  settingsEvidenceReference: true,
+  settingsEvidenceSha256: true,
+  settingsVerification: {
+    select: {
+      active: true,
+      retiredAt: true,
+      verifiedAt: true,
+      validUntil: true,
+      apiVersion: true,
+    },
+  },
   keyword: { select: { keyword: true } },
   conversation: { select: { completedAt: true } },
 } as const;
@@ -578,6 +782,59 @@ async function metricsHandler(_req: import("express").Request, res: import("expr
     (r) => r.seenAt && r.repliedAt && r.seenAt <= r.repliedAt,
   ).length;
 
+  const settingsRows = await prisma.dmRecoveryReminder.findMany({
+    where: { triggerKind: "settings_blocked" },
+    select: METRICS_SELECT,
+  });
+  const settingsNow = new Date();
+  const settingsStatusCounts: Record<SettingsEvidenceStatus, number> = {
+    current: 0,
+    stale: 0,
+    retired: 0,
+    missing: 0,
+  };
+  const settingsGroups = new Map<
+    string,
+    {
+      version: string | null;
+      graphCode: number | null;
+      graphSubcode: number | null;
+      evidenceStatus: SettingsEvidenceStatus;
+      ageDays: number | null;
+      count: number;
+      people: Set<string>;
+      byReminderStatus: Record<string, number>;
+    }
+  >();
+  for (const row of settingsRows) {
+    const evidenceStatus = settingsEvidenceStatus(row, settingsNow);
+    settingsStatusCounts[evidenceStatus]++;
+    const verifiedAt = row.settingsVerification?.verifiedAt ?? null;
+    const ageDays = verifiedAt
+      ? Math.max(0, Math.floor((settingsNow.getTime() - verifiedAt.getTime()) / DAY_MS))
+      : null;
+    const key = JSON.stringify([
+      row.settingsVerificationVersion,
+      row.settingsGraphCode,
+      row.settingsGraphSubcode,
+      evidenceStatus,
+    ]);
+    const entry = settingsGroups.get(key) ?? {
+      version: row.settingsVerificationVersion,
+      graphCode: row.settingsGraphCode,
+      graphSubcode: row.settingsGraphSubcode,
+      evidenceStatus,
+      ageDays,
+      count: 0,
+      people: new Set<string>(),
+      byReminderStatus: {},
+    };
+    entry.count++;
+    entry.people.add(row.igUserId);
+    entry.byReminderStatus[row.status] = (entry.byReminderStatus[row.status] ?? 0) + 1;
+    settingsGroups.set(key, entry);
+  }
+
   const [uncertain, failed, cooldownSuppressions, staleLeases, settingsClassifierMatches, duplicateAttempts] =
     await Promise.all([
       prisma.dmRecoveryReminder.count({ where: { status: "send_uncertain" } }),
@@ -628,6 +885,13 @@ async function metricsHandler(_req: import("express").Request, res: import("expr
       staleLeases,
       failed,
       settingsClassifierMatches,
+    },
+    settingsEvidence: {
+      ...settingsStatusCounts,
+      byVerification: [...settingsGroups.values()].map(({ people, ...entry }) => ({
+        ...entry,
+        people: people.size,
+      })),
     },
     health: await getRecoveryHealthSnapshot(new Date()),
   });
