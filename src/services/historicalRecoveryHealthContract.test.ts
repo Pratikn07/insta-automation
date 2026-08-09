@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { CURRENT_ORIGIN_METHOD } from "./historicalRecoveryOriginPolicy.js";
 
 // QA-13. The shared circuit reads only dm_recovery_reminder, so a historical campaign
 // could be failing on real people's public comments while it stayed closed.
@@ -19,6 +20,7 @@ const describeWithLocalDatabase = databaseUrl ? describe.sequential : describe.s
 let prisma: PrismaClient;
 let health: typeof import("./historicalRecoveryHealth.js");
 let control: typeof import("./recoveryCampaignControl.js");
+let snapshots: typeof import("./historicalRecoverySnapshot.js");
 
 type Fixture = { resourceId: string; keywordId: string; igUserId: string };
 let fx: Fixture;
@@ -34,6 +36,7 @@ beforeAll(async () => {
   prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
   health = await import("./historicalRecoveryHealth.js");
   control = await import("./recoveryCampaignControl.js");
+  snapshots = await import("./historicalRecoverySnapshot.js");
 
   fx = {
     resourceId: randomUUID(),
@@ -101,10 +104,75 @@ async function runningCampaign(): Promise<string> {
 }
 
 async function sealCampaignForResume(campaignId: string): Promise<void> {
-  await prisma.recoveryCampaign.update({
-    where: { id: campaignId },
-    data: { selectionFingerprint: `hlth-fingerprint-${randomUUID()}` },
+  const campaign = await prisma.recoveryCampaign.findUniqueOrThrow({ where: { id: campaignId } });
+  const rows = await prisma.recoveryCandidate.findMany({
+    where: { campaignId },
+    orderBy: [{ selectionPosition: "asc" }, { id: "asc" }],
+    include: { sources: { orderBy: [{ position: "asc" }, { id: "asc" }] } },
   });
+  const exclusions = await prisma.recoverySelectionExclusion.findMany({
+    where: { campaignId },
+    orderBy: [{ intentId: "asc" }, { id: "asc" }],
+  });
+  const configuration = {
+    phase: campaign.phase,
+    selectionVersion: campaign.selectionVersion,
+    sourceDataCutoff: campaign.sourceDataCutoff.toISOString(),
+    commentFrom: campaign.commentFrom?.toISOString() ?? null,
+    commentTo: campaign.commentTo?.toISOString() ?? null,
+    selectionLimit: campaign.selectionLimit,
+    westernOnly: campaign.westernOnly!,
+    holdoutPercent: campaign.holdoutPercent,
+    copyVersion: campaign.copyVersion,
+    eligibilityPolicyVersion: campaign.eligibilityPolicyVersion!,
+    inboundWindowHours: campaign.inboundWindowHours,
+    completionWindowHours: campaign.completionWindowHours,
+  };
+  const inclusions = rows.map((row) => ({
+    position: row.selectionPosition!,
+    intentId: row.intentId,
+    igUserId: row.igUserId,
+    conversationId: row.conversationId,
+    keywordId: row.keywordId,
+    commentId: row.commentId,
+    mediaId: row.mediaId,
+    commentAt: row.commentAt.toISOString(),
+    keywordSnapshot: row.keywordSnapshot,
+    publicReplyText: row.publicReplyText,
+    evidence: row.evidence,
+    audienceOrigin: row.audienceOrigin,
+    audienceOriginMethod: row.audienceOriginMethod,
+    audienceOriginConfidence: row.audienceOriginConfidence,
+    arm: row.arm,
+    sourceChoiceReason: row.sourceChoiceReason!,
+    sources: row.sources.map((source) => ({
+      position: source.position,
+      commentId: source.commentId,
+      mediaId: source.mediaId,
+      receivedAt: source.receivedAt.toISOString(),
+      choiceReason: source.choiceReason,
+    })),
+  }));
+  const snapshotExclusions = exclusions.map(({ intentId, igUserId, keywordId, reason }) => ({
+    intentId,
+    igUserId,
+    keywordId,
+    reason,
+  }));
+  const sealed = await prisma.recoveryCampaign.updateMany({
+    where: { id: campaignId, selectionFingerprint: null },
+    data: {
+      candidateCount: rows.length,
+      excludedCount: snapshotExclusions.length,
+      selectionFingerprint: snapshots.buildSelectionFingerprint(configuration),
+      decisionHash: snapshots.buildSelectionDecisionHash(
+        configuration,
+        inclusions,
+        snapshotExclusions,
+      ),
+    },
+  });
+  expect(sealed.count).toBe(1);
 }
 
 /** `count` candidates in the given terminal state. */
@@ -117,7 +185,14 @@ async function candidates(
   for (let i = 0; i < count; i++) {
     const igUserId = `${fx.igUserId}-${randomUUID()}`;
     people.push(igUserId);
-    await prisma.igUser.create({ data: { id: igUserId } });
+    await prisma.igUser.create({
+      data: {
+        id: igUserId,
+        inferredOrigin: "us_western",
+        originConfidence: "high",
+        originMethod: CURRENT_ORIGIN_METHOD,
+      },
+    });
     const intent = await prisma.journeyIntent.create({
       data: {
         igUserId,
@@ -127,18 +202,25 @@ async function candidates(
         windowExpiresAt: new Date(T0.getTime() + 48 * 3600_000),
       },
     });
-    await prisma.recoveryCandidate.create({
+    const selectionPosition = await prisma.recoveryCandidate.count({ where: { campaignId } });
+    const commentId = `hlth-c-${randomUUID()}`;
+    const row = await prisma.recoveryCandidate.create({
       data: {
         campaignId,
         campaignPhase: "unknown_read_pilot",
         intentId: intent.id,
         igUserId,
         keywordId: fx.keywordId,
-        commentId: `hlth-c-${randomUUID()}`,
+        commentId,
         commentAt: T0,
         keywordSnapshot: "SLEEP",
         publicReplyText: "t",
         evidence: "gate_sent_no_read",
+        audienceOrigin: "us_western",
+        audienceOriginConfidence: "high",
+        audienceOriginMethod: CURRENT_ORIGIN_METHOD,
+        selectionPosition,
+        sourceChoiceReason: "newest_eligible_comment",
         arm: "treatment",
         eligibleAt: T0,
         outcome: spec.outcome,
@@ -151,6 +233,15 @@ async function candidates(
             }
           : {}),
         ...(spec.outcome === "send_uncertain" ? { lastAttemptAt: new Date(T0.getTime() + 3600_000) } : {}),
+      },
+    });
+    await prisma.recoveryCandidateSource.create({
+      data: {
+        candidateId: row.id,
+        position: 0,
+        commentId,
+        receivedAt: T0,
+        choiceReason: "newest_eligible_comment",
       },
     });
   }
@@ -392,6 +483,7 @@ describeWithLocalDatabase("an automatic pause latches", () => {
   // click. Latching everything would make the distinction useless.
   it("still resumes an ordinary owner pause without ceremony", async () => {
     const campaignId = await runningCampaign();
+    await candidates(campaignId, 1, { outcome: "sent" });
     await sealCampaignForResume(campaignId);
     await control.pauseCampaign(campaignId, "lunch", T0);
 

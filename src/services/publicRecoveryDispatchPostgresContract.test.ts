@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { CURRENT_ORIGIN_METHOD } from "./historicalRecoveryOriginPolicy.js";
 
 const databaseUrl = process.env.MIGRATION_TEST_DATABASE_URL;
 const describeWithDatabase = databaseUrl ? describe.sequential : describe.skip;
@@ -17,7 +18,14 @@ let intentSequence = 0;
 
 async function createPerson(): Promise<string> {
   const id = `${prefix}-${randomUUID()}`;
-  await db.igUser.create({ data: { id } });
+  await db.igUser.create({
+    data: {
+      id,
+      inferredOrigin: "us_western",
+      originConfidence: "high",
+      originMethod: CURRENT_ORIGIN_METHOD,
+    },
+  });
   return id;
 }
 
@@ -72,6 +80,9 @@ async function createCandidate(igUserId: string, requestedCampaignId?: string) {
       keywordSnapshot: "SLEEP",
       publicReplyText: "contract",
       evidence: "gate_sent_no_read",
+      audienceOrigin: "us_western",
+      audienceOriginConfidence: "high",
+      audienceOriginMethod: CURRENT_ORIGIN_METHOD,
       arm: "treatment",
       eligibleAt: now,
       sources: {

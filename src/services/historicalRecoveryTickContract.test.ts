@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { CURRENT_ORIGIN_METHOD } from "./historicalRecoveryOriginPolicy.js";
 
 const databaseUrl = process.env.MIGRATION_TEST_DATABASE_URL;
 const describeWithDatabase = databaseUrl ? describe.sequential : describe.skip;
@@ -57,7 +58,14 @@ async function createCampaign(batchSize: number): Promise<string> {
 
 async function createCandidate(campaignId: string): Promise<string> {
   const igUserId = `${prefix}-${randomUUID()}`;
-  await db.igUser.create({ data: { id: igUserId } });
+  await db.igUser.create({
+    data: {
+      id: igUserId,
+      inferredOrigin: "us_western",
+      originConfidence: "high",
+      originMethod: CURRENT_ORIGIN_METHOD,
+    },
+  });
   const intent = await db.journeyIntent.create({
     data: {
       igUserId,
@@ -80,6 +88,9 @@ async function createCandidate(campaignId: string): Promise<string> {
       keywordSnapshot: "SLEEP",
       publicReplyText: "contract",
       evidence: "gate_sent_no_read",
+      audienceOrigin: "us_western",
+      audienceOriginConfidence: "high",
+      audienceOriginMethod: CURRENT_ORIGIN_METHOD,
       arm: "treatment",
       eligibleAt: T0,
       sources: {
