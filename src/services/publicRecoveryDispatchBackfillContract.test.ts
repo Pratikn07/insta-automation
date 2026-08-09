@@ -163,12 +163,12 @@ async function seedProductionShapedFixture(client: InstanceType<typeof pg.Client
       last_error_category, claimed_at, claim_expires_at, cancelled_at,
       suppressed_at, suppression_reason
     ) VALUES
-      ('30000000-0000-4000-8000-000000000001', '${prospective[0][0]}', 'prospective-sent', '${ids.keyword}', 'P0', 'v1', 'reply', 'p-sent', 'settings_blocked', 'sent', 'treatment', '2026-07-01T00:00:00Z', 1, '2026-07-02T00:00:00Z', 'provider-p-sent', '2026-07-02T00:00:01Z', NULL, NULL, NULL, NULL, NULL, NULL),
-      ('30000000-0000-4000-8000-000000000002', '${prospective[1][0]}', 'prospective-uncertain', '${ids.keyword}', 'P0', 'v1', 'reply', 'p-uncertain', 'settings_blocked', 'send_uncertain', 'treatment', '2026-07-01T00:00:00Z', 2, '2026-07-03T00:00:00Z', NULL, NULL, 'timeout', NULL, NULL, NULL, NULL, NULL),
-      ('30000000-0000-4000-8000-000000000003', '${prospective[2][0]}', 'prospective-retryable', '${ids.keyword}', 'P0', 'v1', 'reply', 'p-retryable', 'settings_blocked', 'send_failed', 'treatment', '2026-07-01T00:00:00Z', 2, '2026-07-03T00:00:00Z', NULL, NULL, 'rate_limit', NULL, NULL, NULL, NULL, NULL),
-      ('30000000-0000-4000-8000-000000000004', '${prospective[3][0]}', 'prospective-active', '${ids.keyword}', 'P0', 'v1', 'reply', 'p-active', 'settings_blocked', 'sending', 'treatment', '2026-07-01T00:00:00Z', 1, '2026-07-04T00:00:00Z', NULL, NULL, NULL, '2026-07-04T00:00:00Z', '2026-07-04T00:15:00Z', NULL, NULL, NULL),
-      ('30000000-0000-4000-8000-000000000005', '${prospective[4][0]}', 'prospective-cancelled', '${ids.keyword}', 'P0', 'v1', 'reply', 'p-cancelled', 'settings_blocked', 'cancelled', 'treatment', '2026-07-01T00:00:00Z', 0, NULL, NULL, NULL, NULL, NULL, NULL, '2026-07-05T00:00:00Z', NULL, NULL),
-      ('30000000-0000-4000-8000-000000000006', '${prospective[5][0]}', 'prospective-alias', '${ids.keyword}', 'P0', 'v1', 'reply', 'p-alias', 'settings_blocked', 'suppressed', 'treatment', '2026-07-01T00:00:00Z', 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-07-05T00:00:00Z', 'reconciled_alias');
+      ('30000000-0000-4000-8000-000000000001', '${prospective[0][0]}', 'prospective-sent', '${ids.keyword}', 'P0', 'v1', 'reply', 'p-sent', 'no_confirmed_read', 'sent', 'treatment', '2026-07-01T00:00:00Z', 1, '2026-07-02T00:00:00Z', 'provider-p-sent', '2026-07-02T00:00:01Z', NULL, NULL, NULL, NULL, NULL, NULL),
+      ('30000000-0000-4000-8000-000000000002', '${prospective[1][0]}', 'prospective-uncertain', '${ids.keyword}', 'P0', 'v1', 'reply', 'p-uncertain', 'no_confirmed_read', 'send_uncertain', 'treatment', '2026-07-01T00:00:00Z', 2, '2026-07-03T00:00:00Z', NULL, NULL, 'timeout', NULL, NULL, NULL, NULL, NULL),
+      ('30000000-0000-4000-8000-000000000003', '${prospective[2][0]}', 'prospective-retryable', '${ids.keyword}', 'P0', 'v1', 'reply', 'p-retryable', 'no_confirmed_read', 'send_failed', 'treatment', '2026-07-01T00:00:00Z', 2, '2026-07-03T00:00:00Z', NULL, NULL, 'rate_limit', NULL, NULL, NULL, NULL, NULL),
+      ('30000000-0000-4000-8000-000000000004', '${prospective[3][0]}', 'prospective-active', '${ids.keyword}', 'P0', 'v1', 'reply', 'p-active', 'no_confirmed_read', 'sending', 'treatment', '2026-07-01T00:00:00Z', 1, '2026-07-04T00:00:00Z', NULL, NULL, NULL, '2026-07-04T00:00:00Z', '2026-07-04T00:15:00Z', NULL, NULL, NULL),
+      ('30000000-0000-4000-8000-000000000005', '${prospective[4][0]}', 'prospective-cancelled', '${ids.keyword}', 'P0', 'v1', 'reply', 'p-cancelled', 'no_confirmed_read', 'cancelled', 'treatment', '2026-07-01T00:00:00Z', 0, NULL, NULL, NULL, NULL, NULL, NULL, '2026-07-05T00:00:00Z', NULL, NULL),
+      ('30000000-0000-4000-8000-000000000006', '${prospective[5][0]}', 'prospective-alias', '${ids.keyword}', 'P0', 'v1', 'reply', 'p-alias', 'no_confirmed_read', 'suppressed', 'treatment', '2026-07-01T00:00:00Z', 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-07-05T00:00:00Z', 'reconciled_alias');
   `);
 
   const historical = [
@@ -220,7 +220,7 @@ async function seedCollisionFixture(client: InstanceType<typeof pg.Client>): Pro
       cohort, eligible_at, attempts, last_attempt_at, claimed_at, claim_expires_at
     ) VALUES (
       '80000000-0000-4000-8000-000000000004', '${prospectiveConversation}', '${person}',
-      '${ids.keyword}', 'P0', 'v1', 'reply', 'collision-p', 'settings_blocked',
+      '${ids.keyword}', 'P0', 'v1', 'reply', 'collision-p', 'no_confirmed_read',
       'sending', 'treatment', '2026-07-01T00:00:00Z', 1,
       '2026-07-04T00:00:00Z', '2026-07-04T00:00:00Z', '2026-07-04T00:15:00Z'
     );

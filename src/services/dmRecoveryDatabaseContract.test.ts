@@ -272,6 +272,7 @@ describeWithLocalDatabase("dm recovery database contract", () => {
       "seen_at",
       "seen_received_at",
       "sent_at",
+      "settings_classified_at",
       "suppressed_at",
       "updated_at",
     ];

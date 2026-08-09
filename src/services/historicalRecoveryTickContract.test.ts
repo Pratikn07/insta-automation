@@ -45,6 +45,7 @@ async function createCampaign(batchSize: number): Promise<string> {
       batchSize,
       hourlyCap: 100,
       dailyCap: 100,
+      westernOnly: false,
       state: "running",
       approvedBy: "contract",
       approvedAt: T0,

@@ -54,13 +54,14 @@ beforeAll(async () => {
 
 async function wipe(): Promise<void> {
   await prisma.publicRecoveryDispatch.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
-  await prisma.recoveryCandidate.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
   await prisma.recoveryCampaignBatchRun.deleteMany({
     where: { campaign: { selectionVersion: { startsWith: "hlth-" } } },
   });
   await prisma.recoveryCampaignHealthObservation.deleteMany({
     where: { campaign: { selectionVersion: { startsWith: "hlth-" } } },
   });
+  // Delete the parent so PostgreSQL cascades through sealed manifest rows. Direct
+  // candidate deletion is intentionally rejected once a campaign is approved.
   await prisma.recoveryCampaign.deleteMany({ where: { selectionVersion: { startsWith: "hlth-" } } });
   await prisma.journeyIntent.deleteMany({ where: { igUserId: { startsWith: fx.igUserId } } });
   await prisma.igUser.deleteMany({ where: { id: { startsWith: fx.igUserId } } });
@@ -87,6 +88,9 @@ async function runningCampaign(): Promise<string> {
       selectionVersion: `hlth-${randomUUID()}`,
       sourceDataCutoff: T0,
       copyVersion: "recovery-v2",
+      decisionHash: "a".repeat(64),
+      eligibilityPolicyVersion: "health-contract-v1",
+      westernOnly: false,
       state: "running",
       approvedBy: "owner",
       approvedAt: T0,
@@ -94,6 +98,13 @@ async function runningCampaign(): Promise<string> {
     },
   });
   return row.id;
+}
+
+async function sealCampaignForResume(campaignId: string): Promise<void> {
+  await prisma.recoveryCampaign.update({
+    where: { id: campaignId },
+    data: { selectionFingerprint: `hlth-fingerprint-${randomUUID()}` },
+  });
 }
 
 /** `count` candidates in the given terminal state. */
@@ -337,6 +348,7 @@ describeWithLocalDatabase("an automatic pause latches", () => {
     const campaignId = await runningCampaign();
     await candidates(campaignId, 5, { outcome: "sent" });
     await candidates(campaignId, 5, { outcome: "send_failed" });
+    await sealCampaignForResume(campaignId);
     await health.evaluateCampaignHealth(campaignId, T0);
     return campaignId;
   }
@@ -380,6 +392,7 @@ describeWithLocalDatabase("an automatic pause latches", () => {
   // click. Latching everything would make the distinction useless.
   it("still resumes an ordinary owner pause without ceremony", async () => {
     const campaignId = await runningCampaign();
+    await sealCampaignForResume(campaignId);
     await control.pauseCampaign(campaignId, "lunch", T0);
 
     const result = await control.resumeCampaign(campaignId);
