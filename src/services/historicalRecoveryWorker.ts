@@ -423,6 +423,7 @@ async function runLeasedTickBody(
       result.deferred++;
       if (
         dispatchStart.reason === "circuit_open" ||
+        dispatchStart.reason === "campaign_health_capture_pending" ||
         dispatchStart.reason === "batch_not_active"
       ) {
         result.skipped = dispatchStart.reason;

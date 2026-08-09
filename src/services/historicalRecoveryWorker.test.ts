@@ -232,6 +232,19 @@ describe("runHistoricalRecoveryTick — the send path", () => {
     );
     expect(result.deferred).toBe(1);
   });
+
+  it("stops the tick when final authorization sees pending inbound health capture", async () => {
+    startHistoricalDispatch.mockResolvedValue({
+      kind: "blocked",
+      reason: "campaign_health_capture_pending",
+    });
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(releaseHistoricalReservation).toHaveBeenCalled();
+    expect(result.skipped).toBe("campaign_health_capture_pending");
+  });
 });
 
 describe("runHistoricalRecoveryTick — the stop switches", () => {

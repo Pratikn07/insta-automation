@@ -11,6 +11,7 @@ let historical: typeof import("./historicalRecoveryRepository.js");
 let campaigns: typeof import("./recoveryCampaignControl.js");
 let ticks: typeof import("./historicalRecoveryTickRepository.js");
 let observations: typeof import("./campaignHealthObservation.js");
+let dmThreads: typeof import("./dmThreadService.js");
 const prefix = `dispatch-interleaving-${randomUUID()}`;
 const resourceId = randomUUID();
 const keywordId = randomUUID();
@@ -18,6 +19,7 @@ const keywordId = randomUUID();
 type ReservedScenario = {
   campaignId: string;
   candidateId: string;
+  igUserId: string;
   claimToken: string;
   batchRunId: string;
   dispatchId: string;
@@ -92,6 +94,7 @@ async function reserveScenario(): Promise<ReservedScenario> {
   return {
     campaignId,
     candidateId: candidate.id,
+    igUserId,
     claimToken: claim.claimToken,
     batchRunId: batch.id,
     dispatchId: reservation.dispatchId,
@@ -112,6 +115,7 @@ beforeAll(async () => {
   campaigns = await import("./recoveryCampaignControl.js");
   ticks = await import("./historicalRecoveryTickRepository.js");
   observations = await import("./campaignHealthObservation.js");
+  dmThreads = await import("./dmThreadService.js");
   await db.resource.create({ data: { id: resourceId, name: prefix } });
   await db.keyword.create({
     data: {
@@ -126,6 +130,8 @@ beforeAll(async () => {
 
 afterEach(async () => {
   if (!db) return;
+  await db.dmMessage.deleteMany({ where: { thread: { igUserId: { startsWith: prefix } } } });
+  await db.dmThread.deleteMany({ where: { igUserId: { startsWith: prefix } } });
   await db.publicRecoveryDispatch.deleteMany({ where: { igUserId: { startsWith: prefix } } });
   await db.recoveryCandidate.deleteMany({ where: { igUserId: { startsWith: prefix } } });
   await db.recoveryCampaignBatchRun.deleteMany({
@@ -257,6 +263,73 @@ describeWithDatabase("historical dispatch state interleavings", () => {
       kind: "blocked",
       reason: "circuit_open",
     });
+  });
+
+  it("blocks final dispatch authorization while an inbound health capture is pending", async () => {
+    const scenario = await reserveScenario();
+    const held = await holdControlLock();
+    const inboundPromise = dmThreads.recordInboundMessage({
+      igAccountId: "contract-account",
+      igUserId: scenario.igUserId,
+      instagramMessageId: `pending-${randomUUID()}`,
+      text: "STOP",
+      messageType: "text",
+      mediaUrl: null,
+      instagramTimestamp: scenario.now,
+    });
+    await waitForBlockedControlQueries(1);
+    const startPromise = historical.startHistoricalDispatch(scenario);
+    await waitForBlockedControlQueries(2);
+    held.release();
+
+    const [inbound, start] = await within(Promise.all([inboundPromise, startPromise]));
+    await held.done;
+
+    expect(inbound).toMatchObject({ duplicate: false });
+    expect(start).toEqual({
+      kind: "blocked",
+      reason: "campaign_health_capture_pending",
+    });
+    expect(
+      await db.publicRecoveryDispatch.findUnique({
+        where: { id: scenario.dispatchId },
+        select: { state: true },
+      }),
+    ).toEqual({ state: "reserved" });
+  });
+
+  it("blocks final authorization after a new inbound was classified and marked captured", async () => {
+    const scenario = await reserveScenario();
+    const instagramMessageId = `captured-${randomUUID()}`;
+    const inbound = await dmThreads.recordInboundMessage({
+      igAccountId: "contract-account",
+      igUserId: scenario.igUserId,
+      instagramMessageId,
+      text: "hello",
+      messageType: "text",
+      mediaUrl: null,
+      instagramTimestamp: scenario.now,
+    });
+    await expect(observations.recordInboundCampaignHealthSignals({
+      igUserId: scenario.igUserId,
+      instagramMessageId,
+      text: "hello",
+      observedAt: scenario.now,
+    })).resolves.toEqual({ recorded: 0 });
+    await expect(
+      observations.markInboundCampaignHealthCaptured(inbound.messageId, scenario.now),
+    ).resolves.toBe(true);
+
+    await expect(historical.startHistoricalDispatch(scenario)).resolves.toEqual({
+      kind: "blocked",
+      reason: "inbound_since_selection",
+    });
+    expect(
+      await db.publicRecoveryDispatch.findUnique({
+        where: { id: scenario.dispatchId },
+        select: { state: true },
+      }),
+    ).toEqual({ state: "reserved" });
   });
 
   it("serializes a durable health stop against final dispatch authorization", async () => {

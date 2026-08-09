@@ -246,6 +246,21 @@ export async function startHistoricalDispatch(input: {
     const control = await tx.dmRecoveryControl.findUnique({ where: { id: 1 } });
     if (control?.circuitOpen) return { kind: "blocked", reason: "circuit_open" };
 
+    // Inbound persistence shares the control lock above. Therefore a committed inbound
+    // safety-inbox row cannot appear between this check and dispatch start: either it
+    // committed first and blocks here, or this dispatch is already explicitly in flight.
+    const pendingHealthCapture = await tx.dmMessage.findFirst({
+      where: {
+        direction: "inbound",
+        instagramMessageId: { not: null },
+        campaignHealthCapturedAt: null,
+      },
+      select: { id: true },
+    });
+    if (pendingHealthCapture) {
+      return { kind: "blocked", reason: "campaign_health_capture_pending" };
+    }
+
     const source = await tx.recoveryCandidate.findUnique({ where: { id: input.candidateId } });
     if (
       !source ||
@@ -256,6 +271,23 @@ export async function startHistoricalDispatch(input: {
       source.claimExpiresAt <= input.now
     ) {
       return { kind: "blocked", reason: "stale_claim" };
+    }
+
+    // The advisory recheck happens before reservation. Re-read its most important
+    // person-level fact under the same control/person locks as final authorization.
+    // recordInboundMessage also takes the control lock, so no inbound can commit
+    // between this query and the dispatch-start transition. Captured rows count too:
+    // capture means classification finished, not that the recovery premise survived.
+    const inboundSinceSelection = await tx.dmMessage.findFirst({
+      where: {
+        thread: { igUserId: source.igUserId },
+        direction: "inbound",
+        createdAt: { gte: source.createdAt },
+      },
+      select: { id: true },
+    });
+    if (inboundSinceSelection) {
+      return { kind: "blocked", reason: "inbound_since_selection" };
     }
 
     await tx.$queryRaw`SELECT "id" FROM "recovery_campaign" WHERE "id" = ${source.campaignId}::uuid FOR UPDATE`;
@@ -326,6 +358,8 @@ export type HistoricalDispatchStartBlockReason =
   | "stale_claim"
   | "campaign_not_running"
   | "circuit_open"
+  | "campaign_health_capture_pending"
+  | "inbound_since_selection"
   | "batch_not_active"
   | "campaign_batch_exhausted"
   | "reservation_not_active";

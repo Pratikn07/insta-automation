@@ -158,6 +158,71 @@ describeWithDatabase("campaign health observations", () => {
       .toMatchObject({ kind: "opt_out", sourceKey: "inbound:mid-opt-out-1", safeDetail: null });
   });
 
+  it("treats a dispatch-started historical attempt as safety-relevant", async () => {
+    const campaignId = await campaign();
+    const observedAt = new Date("2026-08-08T20:00:00Z");
+    const startedAt = new Date(observedAt.getTime() - 1_000);
+    await db.publicRecoveryDispatch.create({
+      data: {
+        reservationToken: randomUUID(),
+        igUserId,
+        sourceKind: "historical",
+        sourceId: randomUUID(),
+        attemptNumber: 1,
+        campaignId,
+        state: "dispatch_started",
+        reservedAt: startedAt,
+        leaseExpiresAt: new Date(observedAt.getTime() + 60_000),
+        dispatchStartedAt: startedAt,
+      },
+    });
+
+    await expect(observations.recordInboundCampaignHealthSignals({
+      igUserId,
+      instagramMessageId: `mid-in-flight-${randomUUID()}`,
+      text: "STOP",
+      observedAt,
+    })).resolves.toEqual({ recorded: 1 });
+    expect(
+      await db.recoveryCampaign.findUnique({
+        where: { id: campaignId },
+        select: { state: true, pauseReason: true },
+      }),
+    ).toEqual({ state: "paused", pauseReason: "auto:opt_out" });
+  });
+
+  it("attributes an inbound safety signal to a reserved historical attempt", async () => {
+    const campaignId = await campaign();
+    const observedAt = new Date("2026-08-08T20:00:00Z");
+    const reservedAt = new Date(observedAt.getTime() - 1_000);
+    await db.publicRecoveryDispatch.create({
+      data: {
+        reservationToken: randomUUID(),
+        igUserId,
+        sourceKind: "historical",
+        sourceId: randomUUID(),
+        attemptNumber: 1,
+        campaignId,
+        state: "reserved",
+        reservedAt,
+        leaseExpiresAt: new Date(observedAt.getTime() + 60_000),
+      },
+    });
+
+    await expect(observations.recordInboundCampaignHealthSignals({
+      igUserId,
+      instagramMessageId: `mid-reserved-${randomUUID()}`,
+      text: "STOP",
+      observedAt,
+    })).resolves.toEqual({ recorded: 1 });
+    expect(
+      await db.recoveryCampaign.findUnique({
+        where: { id: campaignId },
+        select: { state: true, pauseReason: true },
+      }),
+    ).toEqual({ state: "paused", pauseReason: "auto:opt_out" });
+  });
+
   it("does not create evidence from a message that only contains an opt-out substring", async () => {
     await expect(observations.recordInboundCampaignHealthSignals({
       igUserId,

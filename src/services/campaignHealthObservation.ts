@@ -138,8 +138,19 @@ export async function recordInboundCampaignHealthSignals(input: {
       igUserId: input.igUserId,
       sourceKind: "historical",
       campaignId: { not: null },
-      state: { in: ["sent", "uncertain"] },
-      dispatchStartedAt: { gt: cutoff, lte: input.observedAt },
+      // Reserved work has no dispatchStartedAt by definition. Attribute against the
+      // timestamp that makes each state true so an opt-out in the reserve/start gap
+      // cannot be classified as unrelated and then marked captured.
+      OR: [
+        {
+          state: "reserved",
+          reservedAt: { gt: cutoff, lte: input.observedAt },
+        },
+        {
+          state: { in: ["dispatch_started", "sent", "uncertain"] },
+          dispatchStartedAt: { gt: cutoff, lte: input.observedAt },
+        },
+      ],
     },
     select: { campaignId: true },
     distinct: ["campaignId"],
