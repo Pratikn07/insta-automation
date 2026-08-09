@@ -30,7 +30,10 @@ type ReservedScenario = {
   lease: Date;
 };
 
-async function reserveScenario(input: { selectionCutoff?: Date } = {}): Promise<ReservedScenario> {
+async function reserveScenario(input: {
+  selectionCutoff?: Date;
+  westernOnly?: boolean;
+} = {}): Promise<ReservedScenario> {
   const campaignId = randomUUID();
   const igUserId = `${prefix}-${randomUUID()}`;
   const now = new Date();
@@ -54,11 +57,9 @@ async function reserveScenario(input: { selectionCutoff?: Date } = {}): Promise<
       sourceDataCutoff: selectionCutoff,
       copyVersion: "contract-v1",
       decisionHash: `hash-${campaignId}`,
+      westernOnly: input.westernOnly ?? true,
       candidateCount: 1,
-      state: "running",
-      approvedBy: "contract@example.com",
-      approvedAt: now,
-      startedAt: now,
+      state: "draft",
     },
   });
   const candidate = await db.recoveryCandidate.create({
@@ -85,6 +86,15 @@ async function reserveScenario(input: { selectionCutoff?: Date } = {}): Promise<
       },
     },
     include: { sources: true },
+  });
+  await db.recoveryCampaign.update({
+    where: { id: campaignId },
+    data: {
+      state: "running",
+      approvedBy: "contract@example.com",
+      approvedAt: now,
+      startedAt: now,
+    },
   });
   const claim = await historical.claimCandidate(candidate.id, now, lease);
   if (!claim) throw new Error("expected candidate claim");
@@ -168,6 +178,7 @@ afterEach(async () => {
       historicalTickExpiresAt: null,
     },
   });
+  await db.keyword.update({ where: { id: keywordId }, data: { active: true } });
 });
 
 afterAll(async () => {
@@ -300,6 +311,68 @@ describeWithDatabase("historical dispatch state interleavings", () => {
       kind: "blocked",
       reason: "circuit_open",
     });
+  });
+
+  it("enforces the approved western-only policy when the current flag becomes permissive", async () => {
+    const scenario = await reserveScenario();
+    await db.igUser.update({
+      where: { id: scenario.igUserId },
+      data: { inferredOrigin: "south_asian", originConfidence: "high" },
+    });
+
+    await expect(historical.startHistoricalDispatch({
+      ...scenario,
+      currentWesternOnly: false,
+    })).resolves.toEqual({ kind: "suppressed", reason: "audience_out_of_market" });
+  });
+
+  it("enforces a stricter current western-only setting than the approved policy", async () => {
+    const scenario = await reserveScenario({ westernOnly: false });
+    await db.igUser.update({
+      where: { id: scenario.igUserId },
+      data: { inferredOrigin: "south_asian", originConfidence: "high" },
+    });
+
+    await expect(historical.startHistoricalDispatch({
+      ...scenario,
+      currentWesternOnly: true,
+    })).resolves.toEqual({ kind: "suppressed", reason: "audience_out_of_market" });
+  });
+
+  it("rechecks a concurrent origin downgrade under the final person lock", async () => {
+    const scenario = await reserveScenario();
+    const held = await holdControlLock();
+    const start = historical.startHistoricalDispatch({
+      ...scenario,
+      currentWesternOnly: true,
+    });
+    await waitForBlockedControlQueries(1);
+    await db.igUser.update({
+      where: { id: scenario.igUserId },
+      data: { inferredOrigin: "south_asian", originConfidence: "high" },
+    });
+    held.release();
+
+    await expect(within(start)).resolves.toEqual({
+      kind: "suppressed",
+      reason: "audience_out_of_market",
+    });
+    await held.done;
+  });
+
+  it("rechecks keyword deactivation inside final authorization", async () => {
+    const scenario = await reserveScenario();
+    const held = await holdControlLock();
+    const start = historical.startHistoricalDispatch(scenario);
+    await waitForBlockedControlQueries(1);
+    await db.keyword.update({ where: { id: keywordId }, data: { active: false } });
+    held.release();
+
+    await expect(within(start)).resolves.toEqual({
+      kind: "suppressed",
+      reason: "keyword_inactive",
+    });
+    await held.done;
   });
 
   it("blocks final dispatch authorization while an inbound health capture is pending", async () => {

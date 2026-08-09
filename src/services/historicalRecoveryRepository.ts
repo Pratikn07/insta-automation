@@ -238,6 +238,8 @@ export async function startHistoricalDispatch(input: {
   dispatchId: string;
   reservationToken: string;
   commentId: string;
+  /** Current process policy; final authorization applies the stricter snapshot/live rule. */
+  currentWesternOnly?: boolean;
   now: Date;
 }): Promise<StartHistoricalDispatchResult> {
   return prisma.$transaction(async (tx) => {
@@ -313,10 +315,64 @@ export async function startHistoricalDispatch(input: {
     await tx.$queryRaw`SELECT "id" FROM "recovery_campaign" WHERE "id" = ${source.campaignId}::uuid FOR UPDATE`;
     const campaign = await tx.recoveryCampaign.findUnique({
       where: { id: source.campaignId },
-      select: { state: true },
+      select: { state: true, westernOnly: true },
     });
     if (campaign?.state !== "running") {
       return { kind: "blocked", reason: "campaign_not_running" };
+    }
+    if (campaign.westernOnly === null) {
+      return { kind: "blocked", reason: "campaign_policy_incomplete" };
+    }
+
+    // Keyword edits and origin enrichment take ordinary row locks. Taking the same
+    // locks before these reads makes the final decision linearizable: an earlier update
+    // is visible here, while a later one waits until dispatch has been explicitly
+    // stamped as started.
+    await tx.$queryRaw`SELECT "id" FROM "keywords" WHERE "id" = ${source.keywordId}::uuid FOR UPDATE`;
+    const [person, keyword] = await Promise.all([
+      tx.igUser.findUnique({
+        where: { id: source.igUserId },
+        select: { inferredOrigin: true },
+      }),
+      tx.keyword.findUnique({
+        where: { id: source.keywordId },
+        select: { active: true },
+      }),
+    ]);
+    const suppressBeforeStart = async (
+      reason: HistoricalDispatchStartSuppressionReason,
+    ): Promise<StartHistoricalDispatchResult> => {
+      const released = await releaseReservedPublicRecoveryDispatch(tx, {
+        dispatchId: input.dispatchId,
+        reservationToken: input.reservationToken,
+        at: input.now,
+        reason: `dispatch_start_suppressed:${reason}`,
+      });
+      if (!released) return { kind: "blocked", reason: "reservation_not_active" };
+      const suppressed = await tx.recoveryCandidate.updateMany({
+        where: {
+          id: source.id,
+          outcome: "pending",
+          claimToken: input.claimToken,
+          dispatchStartedAt: null,
+        },
+        data: {
+          outcome: "suppressed",
+          suppressionReason: reason,
+          claimedAt: null,
+          claimExpiresAt: null,
+          claimToken: null,
+        },
+      });
+      if (suppressed.count !== 1) {
+        throw new Error("historical_dispatch_final_suppression_failed");
+      }
+      return { kind: "suppressed", reason };
+    };
+    if (!keyword?.active) return suppressBeforeStart("keyword_inactive");
+    const effectiveWesternOnly = campaign.westernOnly || (input.currentWesternOnly ?? true);
+    if (effectiveWesternOnly && person?.inferredOrigin === "south_asian") {
+      return suppressBeforeStart("audience_out_of_market");
     }
 
     await tx.$queryRaw`
@@ -385,12 +441,18 @@ export type HistoricalDispatchStartBlockReason =
   | "campaign_health_capture_pending"
   | "inbound_since_selection"
   | "source_not_approved"
+  | "campaign_policy_incomplete"
   | "batch_not_active"
   | "campaign_batch_exhausted"
   | "reservation_not_active";
 
+export type HistoricalDispatchStartSuppressionReason =
+  | "audience_out_of_market"
+  | "keyword_inactive";
+
 export type StartHistoricalDispatchResult =
   | { kind: "started" }
+  | { kind: "suppressed"; reason: HistoricalDispatchStartSuppressionReason }
   | { kind: "blocked"; reason: HistoricalDispatchStartBlockReason };
 
 export async function releaseHistoricalReservation(input: {

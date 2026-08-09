@@ -250,6 +250,19 @@ describe("runHistoricalRecoveryTick — the send path", () => {
     expect(result.deferred).toBe(1);
   });
 
+  it("records a final locked eligibility suppression without calling Meta", async () => {
+    startHistoricalDispatch.mockResolvedValue({
+      kind: "suppressed",
+      reason: "keyword_inactive",
+    });
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(releaseHistoricalReservation).not.toHaveBeenCalled();
+    expect(result.suppressed).toBe(1);
+  });
+
   it("stops the tick when final authorization sees pending inbound health capture", async () => {
     startHistoricalDispatch.mockResolvedValue({
       kind: "blocked",

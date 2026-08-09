@@ -300,7 +300,9 @@ async function runLeasedTickBody(
       completedSinceSelection: facts.completedCount > 0,
       contactedSinceSelection: facts.priorRecoveryCount > 0,
       audienceOrigin: facts.audienceOrigin,
-      westernOnly: env.DM_RECOVERY_WESTERN_ONLY,
+      // Never relax the policy the owner approved. A stricter current emergency
+      // setting applies immediately; a legacy/null snapshot is withheld at final start.
+      westernOnly: facts.approvedWesternOnly === true || env.DM_RECOVERY_WESTERN_ONLY,
       campaignRunning: facts.campaignState === "running",
       sentThisHour: facts.sentThisHour,
       hourlyCap: facts.hourlyCap,
@@ -416,9 +418,22 @@ async function runLeasedTickBody(
       dispatchId: reservation.dispatchId,
       reservationToken: reservation.reservationToken,
       commentId: facts.sourceCommentId!,
+      currentWesternOnly: env.DM_RECOVERY_WESTERN_ONLY,
       now: new Date(),
     });
-    if (dispatchStart.kind !== "started") {
+    if (dispatchStart.kind === "suppressed") {
+      result.suppressed++;
+      await logEvent("historical_recovery_suppressed", {
+        candidateId: id,
+        campaignId: claimed.campaignId,
+        igUserId: claimed.igUserId,
+        reason: dispatchStart.reason,
+        boundary: "final_locked_authorization",
+      });
+      await observeTerminalOutcome(claimed.campaignId);
+      continue;
+    }
+    if (dispatchStart.kind === "blocked") {
       await releaseHistoricalReservation({
         candidateId: id,
         claimToken: claimed.claimToken,
@@ -431,7 +446,8 @@ async function runLeasedTickBody(
       if (
         dispatchStart.reason === "circuit_open" ||
         dispatchStart.reason === "campaign_health_capture_pending" ||
-        dispatchStart.reason === "batch_not_active"
+        dispatchStart.reason === "batch_not_active" ||
+        dispatchStart.reason === "campaign_policy_incomplete"
       ) {
         result.skipped = dispatchStart.reason;
         break;
@@ -691,6 +707,7 @@ type PreDispatchFacts = {
   hourlyCap: number;
   dailyCap: number;
   audienceOrigin: string | null;
+  approvedWesternOnly: boolean | null;
   inboundCount: number;
   completedCount: number;
   priorRecoveryCount: number;
@@ -710,7 +727,7 @@ async function gatherPreDispatchFacts(
   const [campaign, person, recentContact, sourceResolution, capacity] = await Promise.all([
     prisma.recoveryCampaign.findUnique({
       where: { id: claimed.campaignId },
-      select: { state: true, hourlyCap: true, dailyCap: true },
+      select: { state: true, hourlyCap: true, dailyCap: true, westernOnly: true },
     }),
     prisma.igUser.findUnique({
       where: { id: claimed.igUserId },
@@ -779,6 +796,7 @@ async function gatherPreDispatchFacts(
     hourlyCap: campaign?.hourlyCap ?? 3,
     dailyCap: campaign?.dailyCap ?? 10,
     audienceOrigin: person?.inferredOrigin ?? null,
+    approvedWesternOnly: campaign?.westernOnly ?? null,
     inboundCount,
     completedCount,
     priorRecoveryCount,
