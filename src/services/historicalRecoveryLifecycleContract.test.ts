@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { CURRENT_ORIGIN_METHOD } from "./historicalRecoveryOriginPolicy.js";
 
 // QA-12. Three gaps that together made the campaign unmeasurable and unfinishable:
 //
@@ -146,6 +147,9 @@ async function candidate(
       keywordSnapshot: "SLEEP",
       publicReplyText: "t",
       evidence: "gate_sent_no_read",
+      audienceOrigin: "us_western",
+      audienceOriginMethod: CURRENT_ORIGIN_METHOD,
+      audienceOriginConfidence: "high",
       selectionPosition,
       sourceChoiceReason: "newest_eligible_comment",
       arm: opts.arm,
@@ -214,6 +218,7 @@ async function sealSnapshot(campaignId: string): Promise<void> {
     publicReplyText: row.publicReplyText,
     evidence: row.evidence,
     audienceOrigin: row.audienceOrigin,
+    audienceOriginMethod: row.audienceOriginMethod,
     audienceOriginConfidence: row.audienceOriginConfidence,
     arm: row.arm,
     sourceChoiceReason: row.sourceChoiceReason!,

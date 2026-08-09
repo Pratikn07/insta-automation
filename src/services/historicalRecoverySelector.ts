@@ -58,6 +58,7 @@ type SelectionRow = {
   supersededByNewerJourney: boolean;
   audienceOrigin: string | null;
   audienceOriginConfidence: string | null;
+  audienceOriginMethod: string | null;
   sources: Array<{
     commentId: string;
     mediaId: string | null;
@@ -79,6 +80,8 @@ export type SelectionReport = {
   eligible: number;
   eligiblePeople: number;
   byEvidence: Record<string, number>;
+  /** Selected candidates by non-sensitive origin provenance. */
+  originBreakdown: Record<string, number>;
   excludedByReason: Record<string, number>;
 };
 
@@ -211,7 +214,8 @@ async function loadRows(cutoff: Date): Promise<SelectionRow[]> {
                  AND ji2."completed_at" IS NULL) AS "supersededByNewerJourney",
 
       u."inferred_origin"   AS "audienceOrigin",
-      u."origin_confidence" AS "audienceOriginConfidence"
+      u."origin_confidence" AS "audienceOriginConfidence",
+      u."origin_method"     AS "audienceOriginMethod"
 
     FROM "journey_intent" ji
     JOIN "conversations" c ON c."id" = ji."canonical_conversation_id"
@@ -329,6 +333,8 @@ export async function selectHistoricalCandidates(input: {
       supersededByNewerJourney: row.supersededByNewerJourney,
       keywordActive: row.keywordActive,
       audienceOrigin: row.audienceOrigin,
+      audienceOriginConfidence: row.audienceOriginConfidence,
+      audienceOriginMethod: row.audienceOriginMethod,
       westernOnly: input.westernOnly,
     };
     return { row, facts, decision: decideEligibility(facts) };
@@ -497,6 +503,7 @@ export async function selectHistoricalCandidates(input: {
       publicReplyText: recoveryCopyFor(entry.evidence, row.keywordSnapshot),
       evidence: entry.evidence,
       audienceOrigin: row.audienceOrigin,
+      audienceOriginMethod: row.audienceOriginMethod,
       audienceOriginConfidence: row.audienceOriginConfidence,
       arm: arms.get(row.intentId)!,
       sourceChoiceReason: "newest_eligible_comment",
@@ -518,6 +525,16 @@ export async function selectHistoricalCandidates(input: {
     byEvidence[entry.evidence] = (byEvidence[entry.evidence] ?? 0) + 1;
   }
 
+  const originBreakdown: Record<string, number> = {};
+  for (const entry of selected) {
+    const row = byIntent.get(entry.facts.intentId)!.row;
+    const method = row.audienceOriginMethod?.trim() || "missing";
+    const origin = row.audienceOrigin?.trim() || "missing";
+    const confidence = row.audienceOriginConfidence?.trim() || "missing";
+    const key = `${method}/${origin}/${confidence}`;
+    originBreakdown[key] = (originBreakdown[key] ?? 0) + 1;
+  }
+
   const report: SelectionReport = {
     campaignId: null,
     selectionFingerprint,
@@ -527,6 +544,7 @@ export async function selectHistoricalCandidates(input: {
     eligible: selected.length,
     eligiblePeople: new Set(selected.map((e) => e.facts.igUserId)).size,
     byEvidence,
+    originBreakdown,
     excludedByReason: Object.fromEntries(excludedByReason),
   };
 
@@ -593,6 +611,7 @@ export async function selectHistoricalCandidates(input: {
         evidence: inclusion.evidence,
         selectionPosition: inclusion.position,
         audienceOrigin: inclusion.audienceOrigin,
+        audienceOriginMethod: inclusion.audienceOriginMethod,
         audienceOriginConfidence: inclusion.audienceOriginConfidence,
         arm: inclusion.arm,
         eligibleAt: cutoff,

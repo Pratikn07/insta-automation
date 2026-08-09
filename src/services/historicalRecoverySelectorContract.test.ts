@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { CURRENT_ORIGIN_METHOD } from "./historicalRecoveryOriginPolicy.js";
 
 // QA-11. Four defects in the selector's evidence, all measured against production first:
 //
@@ -123,13 +124,21 @@ async function seedEligible(opts: {
   triggers: Array<{ at: Date; kind?: string; commentId?: string }>;
   person?: string;
   keywordId?: string;
+  origin?: "us_western" | "south_asian" | "other" | "unknown";
+  originConfidence?: "high" | "low";
+  originMethod?: string | null;
 }): Promise<{ intentId: string; igUserId: string; commentIds: string[] }> {
   const igUserId = opts.person ?? `${fx.igUserId}-${randomUUID()}`;
   const keywordId = opts.keywordId ?? fx.keywordId;
 
   await prisma.igUser.upsert({
     where: { id: igUserId },
-    create: { id: igUserId, inferredOrigin: "us_western", originConfidence: "high" },
+    create: {
+      id: igUserId,
+      inferredOrigin: opts.origin ?? "us_western",
+      originConfidence: opts.originConfidence ?? "high",
+      originMethod: opts.originMethod === undefined ? CURRENT_ORIGIN_METHOD : opts.originMethod,
+    },
     update: {},
   });
 
@@ -210,9 +219,88 @@ async function selectAndRead() {
   });
   return prisma.recoveryCandidate.findMany({
     where: { igUserId: { startsWith: fx.igUserId } },
-    select: { commentId: true, keywordId: true, igUserId: true },
+    select: {
+      commentId: true,
+      keywordId: true,
+      igUserId: true,
+      audienceOrigin: true,
+      audienceOriginConfidence: true,
+      audienceOriginMethod: true,
+    },
   });
 }
+
+describeWithLocalDatabase("selector requires the current Gemini origin method", () => {
+  it("persists only current Gemini Western users and reports the complete origin matrix", async () => {
+    const westernHigh = await seedEligible({
+      triggers: [{ at: COMMENT_AT }],
+      originConfidence: "high",
+    });
+    const westernLow = await seedEligible({
+      triggers: [{ at: COMMENT_AT }],
+      originConfidence: "low",
+    });
+    await seedEligible({
+      triggers: [{ at: COMMENT_AT }],
+      origin: "south_asian",
+      originConfidence: "high",
+    });
+    await seedEligible({
+      triggers: [{ at: COMMENT_AT }],
+      origin: "south_asian",
+      originConfidence: "low",
+    });
+    await seedEligible({ triggers: [{ at: COMMENT_AT }], origin: "other" });
+    await seedEligible({ triggers: [{ at: COMMENT_AT }], origin: "unknown", originConfidence: "low" });
+    await seedEligible({ triggers: [{ at: COMMENT_AT }], originMethod: "name" });
+    await seedEligible({ triggers: [{ at: COMMENT_AT }], originMethod: null });
+
+    const report = await selector.selectHistoricalCandidates({
+      phase: "unknown_read_pilot",
+      selectionVersion: `sel-test-${randomUUID()}`,
+      copyVersion: "recovery-v2",
+      westernOnly: false,
+      holdoutPercent: 0,
+      persist: true,
+      now: NOW,
+    });
+    const candidates = await prisma.recoveryCandidate.findMany({
+      where: { campaignId: report.campaignId! },
+      select: {
+        igUserId: true,
+        audienceOrigin: true,
+        audienceOriginConfidence: true,
+        audienceOriginMethod: true,
+      },
+    });
+
+    expect(candidates).toEqual(expect.arrayContaining([
+      {
+        igUserId: westernHigh.igUserId,
+        audienceOrigin: "us_western",
+        audienceOriginConfidence: "high",
+        audienceOriginMethod: CURRENT_ORIGIN_METHOD,
+      },
+      {
+        igUserId: westernLow.igUserId,
+        audienceOrigin: "us_western",
+        audienceOriginConfidence: "low",
+        audienceOriginMethod: CURRENT_ORIGIN_METHOD,
+      },
+    ]));
+    expect(candidates).toHaveLength(2);
+    expect(report.excludedByReason).toMatchObject({
+      audience_south_asian: 2,
+      audience_other: 1,
+      audience_unknown: 1,
+      origin_not_current_gemini: 2,
+    });
+    expect(report.originBreakdown).toEqual({
+      [`${CURRENT_ORIGIN_METHOD}/us_western/high`]: 1,
+      [`${CURRENT_ORIGIN_METHOD}/us_western/low`]: 1,
+    });
+  });
+});
 
 describeWithLocalDatabase("selector picks the newest available comment", () => {
   // THE defect. Replying to the oldest ask targets the comment likeliest to have been

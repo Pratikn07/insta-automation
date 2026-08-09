@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { CURRENT_ORIGIN_METHOD } from "./historicalRecoveryOriginPolicy.js";
 
 const campaignUpdateMany = vi.fn();
 const campaignFindUnique = vi.fn();
@@ -154,6 +155,44 @@ describe("approveCampaign", () => {
     });
     expect(candidateUpdateMany).not.toHaveBeenCalled();
     expect(campaignUpdate).not.toHaveBeenCalled();
+  });
+
+  it("reconstructs the stored candidate origin method for snapshot verification", async () => {
+    candidateUpdateMany.mockResolvedValue({ count: 0 });
+    candidateFindMany.mockResolvedValue([{
+      selectionPosition: 0,
+      intentId: "intent-1",
+      igUserId: "person-1",
+      conversationId: "conversation-1",
+      keywordId: "keyword-1",
+      commentId: "comment-1",
+      mediaId: null,
+      commentAt: new Date("2026-08-09T00:00:00.000Z"),
+      keywordSnapshot: "SLEEP",
+      publicReplyText: "Please DM SLEEP",
+      evidence: "gate_sent_no_read",
+      audienceOrigin: "us_western",
+      audienceOriginMethod: CURRENT_ORIGIN_METHOD,
+      audienceOriginConfidence: "high",
+      arm: "treatment",
+      sourceChoiceReason: "newest_eligible_comment",
+      sources: [{
+        position: 0,
+        commentId: "comment-1",
+        mediaId: null,
+        receivedAt: new Date("2026-08-09T00:00:00.000Z"),
+        choiceReason: "newest_eligible_comment",
+      }],
+    }]);
+
+    await expect(approveCampaign("camp-1", "pratik")).resolves.toEqual({
+      ok: true,
+      state: "running",
+    });
+
+    expect(verifyStoredSelectionSnapshot).toHaveBeenCalledWith(expect.objectContaining({
+      inclusions: [expect.objectContaining({ audienceOriginMethod: CURRENT_ORIGIN_METHOD })],
+    }));
   });
 
   it("logs the approval for the audit trail", async () => {

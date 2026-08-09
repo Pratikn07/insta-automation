@@ -59,15 +59,13 @@ const PHASE = requirePhase(phaseRaw);
 const limitArg = process.argv.indexOf("--limit");
 const LIMIT = limitArg >= 0 ? Number(process.argv[limitArg + 1]) : undefined;
 
-// This flag changes the pool by ~30% (680 of 1,665 eligible rows are excluded by
-// it), so reading the wrong value silently produces a campaign targeting the wrong
-// people. The local default is false while production is true, and a script run
-// from a laptop picks up the local value — so require it explicitly rather than
-// letting an unset variable decide who gets contacted.
+// Frozen on the campaign for compatibility and audit. Historical recovery now also
+// requires the current Gemini origin gate regardless of this legacy setting, but
+// requiring it keeps old automation invocations and reviewed configuration explicit.
 if (process.env.DM_RECOVERY_WESTERN_ONLY === undefined) {
   console.error(
-    "DM_RECOVERY_WESTERN_ONLY is not set. It must match production, which decides\n" +
-      "whether out-of-market people are excluded. Check with:\n" +
+    "DM_RECOVERY_WESTERN_ONLY is not set. It is frozen on the campaign for audit.\n" +
+      "Check production with:\n" +
       "  railway variables --service api | grep WESTERN_ONLY\n" +
       "then re-run with e.g. DM_RECOVERY_WESTERN_ONLY=true",
   );
@@ -84,8 +82,8 @@ async function main() {
     phase: PHASE,
     selectionVersion: "v1-canonical-intents",
     copyVersion: COPY_VERSION,
-    // Read the live flag rather than assuming: the filter must match what the
-    // prospective feature is actually doing today.
+    // Freeze the legacy setting for compatibility/audit. It does not bypass the
+    // current-Gemini origin gate required by historical recovery.
     westernOnly: env.DM_RECOVERY_WESTERN_ONLY,
     commentTo: new Date(now.getTime() - MIN_AGE_DAYS * 24 * 60 * 60 * 1000),
     limit: LIMIT,
@@ -107,12 +105,18 @@ async function main() {
   // one that was reviewed.
   console.log(`  decision hash     : ${report.decisionHash}`);
   console.log(`  phase             : ${PHASE}`);
-  console.log(`  westernOnly       : ${env.DM_RECOVERY_WESTERN_ONLY}`);
+  console.log(`  westernOnly (frozen): ${env.DM_RECOVERY_WESTERN_ONLY}`);
   console.log(`  min comment age   : ${MIN_AGE_DAYS} days`);
   console.log(`  intents examined  : ${report.rawIntents}`);
   console.log(`  ELIGIBLE          : ${report.eligible}  (${report.eligiblePeople} people)`);
   for (const [evidence, count] of Object.entries(report.byEvidence)) {
     console.log(`    ${evidence.padEnd(24)} ${count}`);
+  }
+  console.log("  selected origin provenance:");
+  for (const [origin, count] of Object.entries(report.originBreakdown).sort(
+    ([left], [right]) => left.localeCompare(right),
+  )) {
+    console.log(`    ${origin.padEnd(28)} ${count}`);
   }
   console.log("  excluded:");
   for (const [reason, count] of Object.entries(report.excludedByReason).sort(
