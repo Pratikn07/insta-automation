@@ -15,7 +15,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import {
   ArrowLeft,
@@ -23,10 +23,11 @@ import {
   GripVertical,
   Image as ImageIcon,
   Plus,
+  Save as SaveIcon,
   Trash2,
   Type as TypeIcon,
 } from "lucide-react";
-import { useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { api, apiErrorCode, ApiError } from "@/lib/api";
@@ -41,6 +42,7 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { MediaUpload } from "@/components/MediaUpload";
 import { PhoneMockup } from "@/components/PhoneMockup";
 import { SaveStatus } from "@/components/SaveStatus";
+import { useUnsavedChangesGuard } from "@/hooks/useUnsavedChangesGuard";
 import { cn } from "@/lib/utils";
 import {
   countInstagramCodeUnits,
@@ -55,6 +57,18 @@ const STEP_TYPES: { value: MessageType; label: string; icon: typeof TypeIcon }[]
   { value: "image", label: "Image", icon: ImageIcon },
   { value: "pdf", label: "PDF", icon: FileText },
 ];
+
+type TextSaveTarget =
+  | { kind: "resource"; name: string; description: string }
+  | { kind: "message"; id: string; body: string | null };
+
+type TextSaveResult =
+  | { target: TextSaveTarget; ok: true }
+  | { target: TextSaveTarget; ok: false; error: unknown };
+
+function normalizeMessageBody(body: string | null) {
+  return body?.trim() ? body : null;
+}
 
 export function SequenceEditor() {
   const { id } = useParams<{ id: string }>();
@@ -121,6 +135,19 @@ function SequenceEditorForm({
   const [name, setName] = useState(resource.name);
   const [description, setDescription] = useState(resource.description ?? "");
   const [items, setItems] = useState<ResourceMessage[]>(initialMessages);
+  const [savedResource, setSavedResource] = useState({
+    name: resource.name,
+    description: resource.description ?? "",
+  });
+  const [savedBodies, setSavedBodies] = useState<Record<string, string | null>>(() =>
+    Object.fromEntries(
+      initialMessages.map((message) => [message.id, normalizeMessageBody(message.body)]),
+    ),
+  );
+  const [serverBodyTooLongIds, setServerBodyTooLongIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [saveFailed, setSaveFailed] = useState(false);
 
   const [confirmDelete, setConfirmDelete] = useState<ResourceMessage | null>(null);
 
@@ -132,25 +159,129 @@ function SequenceEditorForm({
   // All editing mutations share this key so <SaveStatus> can reflect their
   // combined state as one "Saving… / All changes saved" indicator.
   const saveKey = ["sequence-save", id];
-  const needsAttention = items.some(
+  const saving = useIsMutating({ mutationKey: saveKey }) > 0;
+  const dirtyResource =
+    name !== savedResource.name || description !== savedResource.description;
+  const dirtyMessages = items.filter(
     (message) =>
-      countInstagramCodeUnits(message.body ?? "") > INSTAGRAM_GUIDE_TEXT_LIMIT,
+      normalizeMessageBody(message.body) !== (savedBodies[message.id] ?? null),
   );
+  const dirty = dirtyResource || dirtyMessages.length > 0;
+  const needsAttention =
+    serverBodyTooLongIds.size > 0 ||
+    items.some(
+      (message) =>
+        countInstagramCodeUnits(message.body ?? "") > INSTAGRAM_GUIDE_TEXT_LIMIT,
+    );
+  const canSave = dirty && !saving && !needsAttention && name.trim().length > 0;
 
-  const renameMutation = useMutation({
+  const textSaveMutation = useMutation({
     mutationKey: saveKey,
-    mutationFn: () =>
-      api<Resource>(`/resources/${id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ name, description: description || null }),
-      }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["resource", id] });
-      qc.invalidateQueries({ queryKey: ["resources"] });
+    mutationFn: (targets: TextSaveTarget[]) =>
+      Promise.all(
+        targets.map(async (target): Promise<TextSaveResult> => {
+          try {
+            if (target.kind === "resource") {
+              await api<Resource>(`/resources/${id}`, {
+                method: "PATCH",
+                body: JSON.stringify({
+                  name: target.name,
+                  description: target.description || null,
+                }),
+              });
+            } else {
+              await api<ResourceMessage>(`/messages/${target.id}`, {
+                method: "PATCH",
+                body: JSON.stringify({ body: target.body }),
+              });
+            }
+            return { target, ok: true };
+          } catch (error) {
+            return { target, ok: false, error };
+          }
+        }),
+      ),
+    onSuccess: (results) => {
+      const successfulMessages: Extract<TextSaveTarget, { kind: "message" }>[] = [];
+      const failedResults: Extract<TextSaveResult, { ok: false }>[] = [];
+      let successfulResource: Extract<TextSaveTarget, { kind: "resource" }> | null = null;
+
+      for (const result of results) {
+        if (!result.ok) {
+          failedResults.push(result);
+          continue;
+        }
+        if (result.target.kind === "resource") successfulResource = result.target;
+        else successfulMessages.push(result.target);
+      }
+
+      if (successfulResource) {
+        setSavedResource({
+          name: successfulResource.name,
+          description: successfulResource.description,
+        });
+        qc.invalidateQueries({ queryKey: ["resource", id] });
+        qc.invalidateQueries({ queryKey: ["resources"] });
+      }
+      if (successfulMessages.length > 0) {
+        setSavedBodies((current) => {
+          const next = { ...current };
+          for (const target of successfulMessages) next[target.id] = target.body;
+          return next;
+        });
+        qc.invalidateQueries({ queryKey: ["resource-messages", id] });
+      }
+
+      const bodyTooLongIds = new Set<string>();
+      for (const result of failedResults) {
+        if (
+          result.target.kind === "message" &&
+          apiErrorCode(result.error) === MESSAGE_BODY_TOO_LONG_ERROR
+        ) {
+          bodyTooLongIds.add(result.target.id);
+        }
+      }
+      setServerBodyTooLongIds(bodyTooLongIds);
+      setSaveFailed(failedResults.length > 0);
+
+      const toastFailure = failedResults.find(
+        (result) => apiErrorCode(result.error) !== MESSAGE_BODY_TOO_LONG_ERROR,
+      );
+      if (toastFailure) {
+        toast.error(
+          toastFailure.error instanceof ApiError ? toastFailure.error.message : "Save failed",
+        );
+      }
     },
-    onError: (err) =>
-      toast.error(err instanceof ApiError ? err.message : "Save failed"),
   });
+
+  const saveDrafts = useCallback(() => {
+    if (!canSave) return;
+    const targets: TextSaveTarget[] = [];
+    if (dirtyResource) targets.push({ kind: "resource", name, description });
+    for (const message of dirtyMessages) {
+      targets.push({
+        kind: "message",
+        id: message.id,
+        body: normalizeMessageBody(message.body),
+      });
+    }
+    setSaveFailed(false);
+    setServerBodyTooLongIds(new Set());
+    textSaveMutation.mutate(targets);
+  }, [canSave, description, dirtyMessages, dirtyResource, name, textSaveMutation]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() !== "s" || (!event.metaKey && !event.ctrlKey)) return;
+      event.preventDefault();
+      saveDrafts();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [saveDrafts]);
+
+  const blocker = useUnsavedChangesGuard(dirty || saving);
 
   const reorderMutation = useMutation({
     mutationKey: saveKey,
@@ -181,6 +312,10 @@ function SequenceEditorForm({
       }),
     onSuccess: (next) => {
       setItems((current) => [...current, next].sort((a, b) => a.order - b.order));
+      setSavedBodies((current) => ({
+        ...current,
+        [next.id]: normalizeMessageBody(next.body),
+      }));
       qc.invalidateQueries({ queryKey: ["resource-messages", id] });
       qc.invalidateQueries({ queryKey: ["resources"] });
       qc.invalidateQueries({ queryKey: ["resource", id] });
@@ -194,6 +329,16 @@ function SequenceEditorForm({
     mutationFn: (mid: string) => api(`/messages/${mid}`, { method: "DELETE" }),
     onSuccess: (_result, mid) => {
       setItems((current) => current.filter((message) => message.id !== mid));
+      setSavedBodies((current) => {
+        const next = { ...current };
+        delete next[mid];
+        return next;
+      });
+      setServerBodyTooLongIds((current) => {
+        const next = new Set(current);
+        next.delete(mid);
+        return next;
+      });
       qc.invalidateQueries({ queryKey: ["resource-messages", id] });
       qc.invalidateQueries({ queryKey: ["resources"] });
       qc.invalidateQueries({ queryKey: ["resource", id] });
@@ -226,28 +371,31 @@ function SequenceEditorForm({
           <div className="flex items-center justify-between gap-3">
             <Input
               value={name}
-              onChange={(e) => setName(e.target.value)}
-              onBlur={() => {
-                if (
-                  name.trim() &&
-                  (name !== resource.name ||
-                    (description || null) !== (resource.description ?? null))
-                ) {
-                  renameMutation.mutate();
-                }
+              onChange={(e) => {
+                setSaveFailed(false);
+                setName(e.target.value);
               }}
               className="border-transparent bg-transparent px-0 text-xl font-semibold tracking-tight shadow-none focus-visible:ring-0"
               placeholder="Sequence name"
             />
-            {id && <SaveStatus sequenceId={id} needsAttention={needsAttention} />}
+            <div className="flex shrink-0 items-center gap-3">
+              <SaveStatus
+                sequenceId={id}
+                dirty={dirty}
+                needsAttention={needsAttention}
+                saveFailed={saveFailed}
+              />
+              <Button size="sm" onClick={saveDrafts} disabled={!canSave}>
+                <SaveIcon className="size-3.5" />
+                Save changes
+              </Button>
+            </div>
           </div>
           <Textarea
             value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            onBlur={() => {
-              if ((description || null) !== (resource.description ?? null)) {
-                renameMutation.mutate();
-              }
+            onChange={(e) => {
+              setSaveFailed(false);
+              setDescription(e.target.value);
             }}
             rows={1}
             placeholder="Internal note — what this sequence is for."
@@ -303,7 +451,15 @@ function SequenceEditorForm({
                       key={m.id}
                       step={m}
                       index={i}
+                      serverBodyTooLong={serverBodyTooLongIds.has(m.id)}
                       onChange={(next) => {
+                        setSaveFailed(false);
+                        setServerBodyTooLongIds((current) => {
+                          if (!current.has(next.id)) return current;
+                          const updated = new Set(current);
+                          updated.delete(next.id);
+                          return updated;
+                        });
                         setItems((prev) => prev.map((p) => (p.id === next.id ? next : p)));
                       }}
                       onDelete={() => setConfirmDelete(m)}
@@ -336,6 +492,19 @@ function SequenceEditorForm({
         onCancel={() => setConfirmDelete(null)}
         onConfirm={() => confirmDelete && deleteMutation.mutate(confirmDelete.id)}
       />
+      <ConfirmDialog
+        open={blocker.state === "blocked"}
+        title="Discard unsaved changes?"
+        description="Your latest sequence edits have not finished saving."
+        confirmLabel="Leave without saving"
+        destructive
+        onCancel={() => {
+          if (blocker.state === "blocked") blocker.reset();
+        }}
+        onConfirm={() => {
+          if (blocker.state === "blocked") blocker.proceed();
+        }}
+      />
     </div>
   );
 }
@@ -343,11 +512,13 @@ function SequenceEditorForm({
 function SortableStep({
   step,
   index,
+  serverBodyTooLong,
   onChange,
   onDelete,
 }: {
   step: ResourceMessage;
   index: number;
+  serverBodyTooLong: boolean;
   onChange: (next: ResourceMessage) => void;
   onDelete: () => void;
 }) {
@@ -359,8 +530,6 @@ function SortableStep({
     transition,
   };
   const qc = useQueryClient();
-  const savedBody = useRef(step.body);
-  const [serverBodyTooLong, setServerBodyTooLong] = useState(false);
   const body = step.body ?? "";
   const codeUnits = countInstagramCodeUnits(body);
   const overLimit = codeUnits > INSTAGRAM_GUIDE_TEXT_LIMIT;
@@ -368,22 +537,16 @@ function SortableStep({
 
   const patchMutation = useMutation({
     mutationKey: ["sequence-save", step.resourceId],
-    mutationFn: (data: Partial<Pick<ResourceMessage, "body" | "mediaUrl">>) =>
+    mutationFn: (data: Pick<ResourceMessage, "mediaUrl">) =>
       api<ResourceMessage>(`/messages/${step.id}`, {
         method: "PATCH",
         body: JSON.stringify(data),
       }),
-    onSuccess: (_next, data) => {
-      if (data.body !== undefined) savedBody.current = data.body ?? null;
+    onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["resource-messages", step.resourceId] });
     },
-    onError: (err) => {
-      if (apiErrorCode(err) === MESSAGE_BODY_TOO_LONG_ERROR) {
-        setServerBodyTooLong(true);
-        return;
-      }
-      toast.error(err instanceof ApiError ? err.message : "Update failed");
-    },
+    onError: (err) =>
+      toast.error(err instanceof ApiError ? err.message : "Update failed"),
   });
 
   const Icon =
@@ -443,15 +606,7 @@ function SortableStep({
                 <Textarea
                   value={body}
                   aria-invalid={overLimit}
-                  onChange={(e) => {
-                    setServerBodyTooLong(false);
-                    onChange({ ...step, body: e.target.value });
-                  }}
-                  onBlur={() => {
-                    if (overLimit) return;
-                    const next = body.trim() ? body : null;
-                    if (next !== savedBody.current) patchMutation.mutate({ body: next });
-                  }}
+                  onChange={(e) => onChange({ ...step, body: e.target.value })}
                   rows={step.type === "text" ? 3 : 2}
                   placeholder={
                     step.type === "text"

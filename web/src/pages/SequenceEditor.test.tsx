@@ -3,7 +3,7 @@ import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResourceMessage } from "@/lib/types";
 
@@ -25,14 +25,17 @@ const { ApiError } = await import("@/lib/api");
 
 function renderEditor() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const router = createMemoryRouter(
+    [
+      { path: "/sequences/:id", element: <SequenceEditor /> },
+      { path: "/sequences", element: <p>Sequences page</p> },
+    ],
+    { initialEntries: ["/sequences/resource-1"] },
+  );
   render(
-    <MemoryRouter initialEntries={["/sequences/resource-1"]}>
-      <QueryClientProvider client={client}>
-        <Routes>
-          <Route path="/sequences/:id" element={<SequenceEditor />} />
-        </Routes>
-      </QueryClientProvider>
-    </MemoryRouter>,
+    <QueryClientProvider client={client}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
   );
   return client;
 }
@@ -41,6 +44,8 @@ let resourceReads = 0;
 let messageReads = 0;
 let serverMessages: ResourceMessage[];
 let rejectBodyPatch = false;
+let rejectBodyPatchWithGenericError = false;
+let bodyPatchPromise: Promise<ResourceMessage> | null = null;
 
 function message(overrides: Partial<ResourceMessage> = {}): ResourceMessage {
   return {
@@ -64,6 +69,22 @@ function messagePatchCalls() {
   return api.mock.calls.filter(([path]) => path === "/messages/message-1");
 }
 
+function resourcePatchCalls() {
+  return api.mock.calls.filter(
+    ([path, options]) =>
+      path === "/resources/resource-1" &&
+      (options as { method?: string } | undefined)?.method === "PATCH",
+  );
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
 function setBody(value: string) {
   fireEvent.change(bodyTextarea(), { target: { value } });
 }
@@ -73,8 +94,18 @@ beforeEach(() => {
   messageReads = 0;
   serverMessages = [message()];
   rejectBodyPatch = false;
-  api.mockReset().mockImplementation((path: string) => {
+  rejectBodyPatchWithGenericError = false;
+  bodyPatchPromise = null;
+  api.mockReset().mockImplementation((path: string, options?: { method?: string }) => {
     if (path === "/resources/resource-1") {
+      if (options?.method === "PATCH") {
+        return Promise.resolve({
+          id: "resource-1",
+          name: "Updated sequence",
+          description: "Original description",
+          createdAt: "2026-08-08T00:00:00.000Z",
+        });
+      }
       resourceReads += 1;
       return Promise.resolve({
         id: "resource-1",
@@ -93,6 +124,12 @@ beforeEach(() => {
       );
     }
     if (path === "/messages/message-1") {
+      if (bodyPatchPromise) return bodyPatchPromise;
+      if (rejectBodyPatchWithGenericError) {
+        return Promise.reject(
+          new ApiError(500, { error: "internal_error" }, "Save unavailable"),
+        );
+      }
       if (rejectBodyPatch) {
         return Promise.reject(
           new ApiError(
@@ -142,6 +179,135 @@ describe("SequenceEditor local drafts", () => {
   });
 });
 
+describe("SequenceEditor explicit saving", () => {
+  it("starts clean and marks edited text unsaved without saving on blur", async () => {
+    renderEditor();
+    await screen.findByPlaceholderText("What you want them to read.");
+
+    expect(screen.getByText("All changes saved")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+
+    setBody("Draft body");
+    fireEvent.blur(bodyTextarea());
+
+    expect(messagePatchCalls()).toHaveLength(0);
+    expect(await screen.findByText("Unsaved changes")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
+  });
+
+  it("saves only dirty resource and message text when requested", async () => {
+    const user = userEvent.setup();
+    renderEditor();
+    const name = await screen.findByPlaceholderText("Sequence name");
+
+    await user.clear(name);
+    await user.type(name, "Updated sequence");
+    setBody("Updated message");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(resourcePatchCalls()).toHaveLength(1));
+    await waitFor(() => expect(messagePatchCalls()).toHaveLength(1));
+    expect(JSON.parse(resourcePatchCalls()[0][1].body)).toEqual({
+      name: "Updated sequence",
+      description: "Original description",
+    });
+    expect(JSON.parse(messagePatchCalls()[0][1].body)).toEqual({ body: "Updated message" });
+    expect(await screen.findByText("All changes saved")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+  });
+
+  it("keeps failed fields dirty and retries only those fields", async () => {
+    const user = userEvent.setup();
+    rejectBodyPatchWithGenericError = true;
+    renderEditor();
+    const name = await screen.findByPlaceholderText("Sequence name");
+
+    await user.clear(name);
+    await user.type(name, "Updated sequence");
+    setBody("Updated message");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    expect(await screen.findByText("Couldn't save — retry")).toBeInTheDocument();
+    expect(resourcePatchCalls()).toHaveLength(1);
+    rejectBodyPatchWithGenericError = false;
+
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    expect(await screen.findByText("All changes saved")).toBeInTheDocument();
+    expect(resourcePatchCalls()).toHaveLength(1);
+    expect(messagePatchCalls()).toHaveLength(2);
+  });
+
+  it("keeps newer typing dirty when an older save snapshot finishes", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<ResourceMessage>();
+    bodyPatchPromise = pending.promise;
+    renderEditor();
+    await screen.findByPlaceholderText("What you want them to read.");
+
+    setBody("Submitted snapshot");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    expect(await screen.findByText("Saving…")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+
+    setBody("Newer local draft");
+    pending.resolve(message({ body: "Submitted snapshot" }));
+
+    expect(await screen.findByText("Unsaved changes")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
+  });
+
+  it.each([
+    ["Meta", { metaKey: true }],
+    ["Control", { ctrlKey: true }],
+  ])("saves with %s+S", async (_label, modifier) => {
+    renderEditor();
+    await screen.findByPlaceholderText("What you want them to read.");
+    setBody("Shortcut draft");
+    const event = new KeyboardEvent("keydown", {
+      key: "s",
+      bubbles: true,
+      cancelable: true,
+      ...modifier,
+    });
+
+    window.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    await waitFor(() => expect(messagePatchCalls()).toHaveLength(1));
+    expect(JSON.parse(messagePatchCalls()[0][1].body)).toEqual({ body: "Shortcut draft" });
+  });
+
+  it("disables save for a blank sequence name", async () => {
+    const user = userEvent.setup();
+    renderEditor();
+    const name = await screen.findByPlaceholderText("Sequence name");
+
+    await user.clear(name);
+
+    expect(await screen.findByText("Unsaved changes")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+  });
+
+  it("asks before leaving with an unsaved draft", async () => {
+    const user = userEvent.setup();
+    renderEditor();
+    await screen.findByPlaceholderText("What you want them to read.");
+    setBody("Unsaved body");
+
+    await user.click(screen.getByRole("link", { name: "Back" }));
+
+    expect(screen.getByRole("dialog")).toHaveTextContent("Discard unsaved changes?");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(bodyTextarea()).toHaveValue("Unsaved body");
+
+    await user.click(screen.getByRole("link", { name: "Back" }));
+    await user.click(screen.getByRole("button", { name: "Leave without saving" }));
+
+    expect(await screen.findByText("Sequences page")).toBeInTheDocument();
+  });
+});
+
 describe("SequenceEditor Instagram guide message limits", () => {
   it("shows a normal counter below the warning threshold", async () => {
     renderEditor();
@@ -163,12 +329,13 @@ describe("SequenceEditor Instagram guide message limits", () => {
     expect(bodyTextarea()).toHaveAttribute("aria-invalid", "false");
   });
 
-  it("saves a complete 1,000-unit message on blur", async () => {
+  it("saves a complete 1,000-unit message when requested", async () => {
+    const user = userEvent.setup();
     renderEditor();
     await screen.findByPlaceholderText("What you want them to read.");
 
     setBody("x".repeat(1000));
-    fireEvent.blur(bodyTextarea());
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
 
     await waitFor(() => expect(messagePatchCalls()).toHaveLength(1));
     expect(JSON.parse(messagePatchCalls()[0][1].body)).toEqual({ body: "x".repeat(1000) });
@@ -196,7 +363,8 @@ describe("SequenceEditor Instagram guide message limits", () => {
         "Instagram allows 1,000 characters per message. Shorten this message or add another Text step.",
       ),
     ).toBeInTheDocument();
-    expect(screen.getByText("Needs attention — message too long")).toBeInTheDocument();
+    expect(await screen.findByText("Needs attention — message too long")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
     expect(screen.queryByText("All changes saved")).not.toBeInTheDocument();
   });
 
@@ -217,15 +385,17 @@ describe("SequenceEditor Instagram guide message limits", () => {
         "Instagram allows 1,000 characters per message. Shorten this message or add another Text step.",
       ),
     ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
     expect(messagePatchCalls()).toHaveLength(0);
   });
 
   it("accepts 500 emoji but rejects 501 emoji by Instagram code units", async () => {
+    const user = userEvent.setup();
     renderEditor();
     await screen.findByPlaceholderText("What you want them to read.");
 
     setBody("😀".repeat(500));
-    fireEvent.blur(bodyTextarea());
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(messagePatchCalls()).toHaveLength(1));
     expect(screen.getByText("1,000 / 1,000")).toBeInTheDocument();
 
@@ -240,13 +410,14 @@ describe("SequenceEditor Instagram guide message limits", () => {
   });
 
   it("shows server-side message length failures inline without replacing the draft", async () => {
+    const user = userEvent.setup();
     rejectBodyPatch = true;
     renderEditor();
     await screen.findByPlaceholderText("What you want them to read.");
     const body = "x".repeat(1000);
 
     setBody(body);
-    fireEvent.blur(bodyTextarea());
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
 
     await screen.findByText(
       "Instagram allows 1,000 characters per message. Shorten this message or add another Text step.",
