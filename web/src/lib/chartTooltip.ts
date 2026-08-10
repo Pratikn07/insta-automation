@@ -6,7 +6,8 @@ import { formatSignedCount, type ChartRegion } from "./followerFlow";
 // focused. Pure: no DOM, no React, no Date.now().
 
 export interface TooltipRow {
-  region: ChartRegion;
+  // Region name in region mode, ISO country code in country mode.
+  key: string;
   value: number;
   valueLabel: string;
 }
@@ -42,6 +43,21 @@ export function shownSpikeDays(points: FollowerDailyAddsPoint[]): string[] {
 
 // Same order the bars stack in, so the tooltip reads top-to-bottom like the bar.
 const REGION_ORDER: ChartRegion[] = ["us", "southAsian", "anglosphere", "other"];
+
+/**
+ * How to read the hovered point's rows: the four regions by default, or an
+ * explicit country stack. Mirrors StackSpec in followerFlow.ts so the tooltip
+ * and the bars can never disagree about what a segment is.
+ */
+export interface TooltipStack {
+  keys: string[];
+  valueOf: (point: FollowerDailyAddsPoint, key: string) => number;
+}
+
+const REGION_TOOLTIP_STACK: TooltipStack = {
+  keys: REGION_ORDER,
+  valueOf: (p, key) => p[key as ChartRegion] ?? 0,
+};
 
 const GAP_NOTES: Partial<Record<FollowerDailyAddsPoint["basis"], string>> = {
   pending: "Waiting for Meta to refresh",
@@ -91,6 +107,7 @@ function rangeLabel(fromDay: string, toDay: string): string {
 export function tooltipModel(
   point: FollowerDailyAddsPoint,
   panelDays: readonly string[] = [],
+  stack: TooltipStack = REGION_TOOLTIP_STACK,
 ): TooltipModel {
   const heading =
     point.spanDays !== null && point.spanDays > 1
@@ -109,10 +126,10 @@ export function tooltipModel(
   }
 
   const rows: TooltipRow[] = [];
-  for (const region of REGION_ORDER) {
-    const value = point[region];
-    if (value === null || value === 0) continue;
-    rows.push({ region, value, valueLabel: formatSignedCount(value) });
+  for (const key of stack.keys) {
+    const value = stack.valueOf(point, key);
+    if (value === 0) continue;
+    rows.push({ key, value, valueLabel: formatSignedCount(value) });
   }
 
   const notes: string[] = [];

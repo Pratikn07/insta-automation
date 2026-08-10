@@ -61,6 +61,10 @@ export interface FollowerDailyAddsPoint {
   other: number | null;
   total: number | null; // sum of the four region deltas
   unattributed: number | null; // rank-boundary churn residual
+  // Per-country deltas behind the region roll-up, for the chart's country mode.
+  // Covers only countries present on BOTH sides of the diff (see AnchorDiff);
+  // Σ byCountry === total. Null on gap days, like every other measured field.
+  byCountry: Record<string, number> | null;
   reportedTotalDelta: number | null; // diff of Meta's totalCounted (= total + unattributed)
   spanDays: number | null; // calendar days this diff covers (>1 absorbs gaps)
   stale: boolean;
@@ -120,6 +124,12 @@ export interface AnchorDiff {
   total: number;
   unattributed: number;
   reportedTotalDelta: number | null;
+  // Per-country deltas over the SAME key intersection the regions use. A country
+  // that entered or left Meta's reported set has no entry at all — its value is
+  // unknown, and lives in `unattributed` like the region path. Never zero-filled:
+  // reading an absent prior as 0 would render a country's entire cumulative
+  // count as a single day's gain.
+  byCountry: Record<string, number>;
 }
 
 /**
@@ -128,6 +138,7 @@ export interface AnchorDiff {
  */
 export function diffAnchors(prev: AnchorSnapshot, cur: AnchorSnapshot): AnchorDiff {
   const sums: Record<FollowerRegion, number> = { us: 0, southAsian: 0, anglosphere: 0, other: 0 };
+  const byCountry: Record<string, number> = {};
   let entered = 0;
   let exited = 0;
 
@@ -136,7 +147,9 @@ export function diffAnchors(prev: AnchorSnapshot, cur: AnchorSnapshot): AnchorDi
     if (prevVal === undefined) {
       entered += curVal;
     } else {
-      sums[regionOf(country)] += curVal - prevVal;
+      const delta = curVal - prevVal;
+      sums[regionOf(country)] += delta;
+      byCountry[country] = delta;
     }
   }
   for (const [country, prevVal] of Object.entries(prev.counts)) {
@@ -149,7 +162,7 @@ export function diffAnchors(prev: AnchorSnapshot, cur: AnchorSnapshot): AnchorDi
       ? cur.totalCounted - prev.totalCounted
       : null;
 
-  return { ...sums, total, unattributed: entered - exited, reportedTotalDelta };
+  return { ...sums, total, unattributed: entered - exited, reportedTotalDelta, byCountry };
 }
 
 function calendarDaysBetween(fromDay: string, toDay: string): number {
@@ -168,6 +181,7 @@ function nullPoint(day: string, basis: DailyAddsBasis, capturedAt: Date | null):
     other: null,
     total: null,
     unattributed: null,
+    byCountry: null,
     reportedTotalDelta: null,
     spanDays: null,
     stale: basis === "stale" || basis === "pending",
@@ -224,6 +238,7 @@ export function buildDailyPoints(anchors: AnchorSnapshot[]): FollowerDailyAddsPo
       other: diff.other,
       total: diff.total,
       unattributed: diff.unattributed,
+      byCountry: diff.byCountry,
       reportedTotalDelta: diff.reportedTotalDelta,
       spanDays,
       stale: false,

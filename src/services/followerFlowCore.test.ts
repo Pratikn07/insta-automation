@@ -62,6 +62,35 @@ describe("diffAnchors", () => {
     const d = diffAnchors(prev, cur);
     expect(d.reportedTotalDelta).toBe(d.total + d.unattributed);
   });
+
+  it("records a per-country delta for every shared key, signs preserved", () => {
+    const prev = anchor("2026-07-01", { US: 100, IN: 50, GB: 20, ZA: 30, AE: 5 });
+    const cur = anchor("2026-07-02", { US: 112, IN: 55, GB: 24, ZA: 36, AE: 4 });
+    const d = diffAnchors(prev, cur);
+    expect(d.byCountry).toEqual({ US: 12, IN: 5, GB: 4, ZA: 6, AE: -1 });
+  });
+
+  it("omits a country that entered or left the reported set — never zero-filled", () => {
+    // The real failure this guards: HK and BR each entered Meta's top-45 on 3
+    // separate days in the 14 to 2026-08-09. Diffing an absent prior as 0 would
+    // render each country's entire cumulative count as one day's gain.
+    const prev = anchor("2026-07-01", { US: 10, LK: 4 });
+    const cur = anchor("2026-07-02", { US: 12, HK: 9 });
+    const d = diffAnchors(prev, cur);
+    expect(d.byCountry).toEqual({ US: 2 });
+    expect(d.byCountry.HK).toBeUndefined(); // entered — unknown, not +9
+    expect(d.byCountry.LK).toBeUndefined(); // exited — unknown, not -4
+    expect(d.unattributed).toBe(5);
+  });
+
+  it("keeps byCountry reconciled: sum + unattributed === reportedTotalDelta", () => {
+    const prev = anchor("2026-07-01", { US: 100, IN: 50, ZA: 30, LK: 4 });
+    const cur = anchor("2026-07-02", { US: 110, IN: 52, ZA: 37, BR: 7 });
+    const d = diffAnchors(prev, cur);
+    const summed = Object.values(d.byCountry).reduce((s, v) => s + v, 0);
+    expect(summed).toBe(d.total);
+    expect(summed + d.unattributed).toBe(d.reportedTotalDelta);
+  });
 });
 
 describe("buildDailyPoints", () => {
@@ -125,6 +154,27 @@ describe("buildDailyPoints", () => {
 
   it("returns empty for no anchors", () => {
     expect(buildDailyPoints([])).toEqual([]);
+  });
+
+  it("carries byCountry on measured points and null on gap days", () => {
+    const pts = buildDailyPoints([
+      anchor("2026-07-01", { US: 100, ZA: 20 }),
+      anchor("2026-07-02", { US: 110, ZA: 26 }),
+    ]);
+    expect(pts[0]!.byCountry).toBeNull(); // no_prior_day
+    expect(pts[1]!.byCountry).toEqual({ US: 10, ZA: 6 });
+  });
+
+  it("gives a multi-day-span point the country deltas covering its whole span", () => {
+    // Jul 21 byte-identical to Jul 20, so Jul 22 carries both days per country.
+    const pts = buildDailyPoints([
+      anchor("2026-07-19", { US: 1000, ZA: 100 }),
+      anchor("2026-07-20", { US: 1100, ZA: 110 }),
+      anchor("2026-07-21", { US: 1100, ZA: 110 }),
+      anchor("2026-07-22", { US: 1268, ZA: 125 }),
+    ]);
+    expect(pts[2]!.byCountry).toBeNull(); // stale — its adds live in the next bar
+    expect(pts[3]).toMatchObject({ spanDays: 2, byCountry: { US: 168, ZA: 15 } });
   });
 });
 

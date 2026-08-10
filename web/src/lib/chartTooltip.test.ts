@@ -31,7 +31,7 @@ describe("tooltipModel", () => {
     const m = tooltipModel(point({ us: 41, southAsian: 6, anglosphere: 13, other: -1 }));
     expect(m.heading).toBe("Jul 24");
     expect(m.totalLabel).toBe("+59 net");
-    expect(m.rows.map((r) => r.region)).toEqual(["us", "southAsian", "anglosphere", "other"]);
+    expect(m.rows.map((r) => r.key)).toEqual(["us", "southAsian", "anglosphere", "other"]);
     expect(m.rows.map((r) => r.valueLabel)).toEqual(["+41", "+6", "+13", "−1"]);
     expect(m.notes).toEqual([]);
     expect(m.emptyLabel).toBeNull();
@@ -39,7 +39,7 @@ describe("tooltipModel", () => {
 
   it("omits zero-value regions rather than printing a row of zeros", () => {
     const m = tooltipModel(point({ us: 20, southAsian: 0, anglosphere: 4, other: 0 }));
-    expect(m.rows.map((r) => r.region)).toEqual(["us", "anglosphere"]);
+    expect(m.rows.map((r) => r.key)).toEqual(["us", "anglosphere"]);
   });
 
   it("says so when a measured day nets to nothing across every region", () => {
