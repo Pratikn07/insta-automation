@@ -1,6 +1,12 @@
 import { useRef, useState } from "react";
 import type { FollowerDailyAddsPoint } from "@/lib/types";
-import { chartGeometry, formatSignedCount, type ChartRegion } from "@/lib/followerFlow";
+import {
+  REGION_STACK,
+  chartGeometry,
+  formatSignedCount,
+  type ChartRegion,
+  type StackSpec,
+} from "@/lib/followerFlow";
 import { hitTestDay, shownSpikeDays, tooltipModel } from "@/lib/chartTooltip";
 import { preventChartDayPointerFocus } from "@/lib/chartPointerInteraction";
 import { cn } from "@/lib/utils";
@@ -11,6 +17,14 @@ interface DailyAddsChartProps {
   className?: string;
   selectedDay?: string | null;
   onDaySelect?: (day: string) => void;
+  // What the bars stack. Defaults to the four regions; country mode passes its
+  // own stack plus matching colors/labels. The component stays a renderer — it
+  // never decides which series exist.
+  stack?: StackSpec;
+  colorOf?: (key: string) => string;
+  labelOf?: (key: string) => string;
+  // Names the series in the accessible summary and the <title>.
+  seriesNoun?: string;
 }
 
 // Region fills, hardcoded rather than themed. No <defs> at all — nothing here
@@ -56,6 +70,10 @@ export function DailyAddsChart({
   className,
   selectedDay = null,
   onDaySelect,
+  stack = REGION_STACK,
+  colorOf = (key) => REGION_COLORS[key as ChartRegion] ?? "rgb(148 163 184)",
+  labelOf = (key) => REGION_LABELS[key as ChartRegion] ?? key,
+  seriesNoun = "region",
 }: DailyAddsChartProps) {
   // Hooks must run unconditionally, so they sit above the early return below.
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -87,7 +105,7 @@ export function DailyAddsChart({
     );
   }
 
-  const geo = chartGeometry(points, WIDTH, HEIGHT, GUTTER_LEFT);
+  const geo = chartGeometry(points, WIDTH, HEIGHT, GUTTER_LEFT, stack);
   const first = points[0]!.day;
   const last = points[points.length - 1]!.day;
 
@@ -147,7 +165,10 @@ export function DailyAddsChart({
         viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
         className="w-full"
       >
-        <title>Daily net follower adds by region</title>
+        {/* ONE child, not text + expression: React 19 treats <title> as a
+            special hoistable element and silently drops multiple children,
+            which rendered this as an empty <title></title>. */}
+        <title>{`Daily net follower adds by ${seriesNoun}`}</title>
 
         {/* Gridlines first so they sit behind the bars. Zero keeps a stronger
             stroke — signed bars are read against it. */}
@@ -233,12 +254,12 @@ export function DailyAddsChart({
               />
               {bar.segments.map((seg) => (
                 <rect
-                  key={seg.region}
+                  key={seg.key}
                   x={bar.x}
                   y={seg.y}
                   width={bar.width}
                   height={Math.max(seg.height, 0.5)}
-                  fill={REGION_COLORS[seg.region]}
+                  fill={colorOf(seg.key)}
                 />
               ))}
               {(bar.slots > 1 || bar.provisional) && bar.segments.length > 0 && (
@@ -289,7 +310,9 @@ export function DailyAddsChart({
 
       {hover && hoveredPoint && (
         <ChartTooltip
-          model={tooltipModel(hoveredPoint, panelSpikeDays)}
+          model={tooltipModel(hoveredPoint, panelSpikeDays, stack)}
+          colorOf={colorOf}
+          labelOf={labelOf}
           x={hover.x}
           y={hover.y}
           containerWidth={hover.containerWidth}

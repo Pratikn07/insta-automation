@@ -416,6 +416,13 @@ export interface FollowerDailyAddsPoint {
   other: number | null;
   total: number | null;
   unattributed: number | null; // Meta top-45 rank-churn residual, not a region
+  // Per-country deltas behind the region roll-up, for the chart's country mode.
+  // Contains ONLY countries Meta reported on both sides of the diff, so a country
+  // crossing the top-45 cutoff is absent rather than zero — its movement is
+  // unknown and lives in `unattributed`. Σ byCountry === total.
+  // Optional: a browser may be talking to a server deployed before this field
+  // existed, in which case country mode is unavailable rather than empty.
+  byCountry?: Record<string, number> | null;
   reportedTotalDelta: number | null;
   spanDays: number | null; // calendar days this diff covers (>1 absorbs gaps)
   stale: boolean;

@@ -12,13 +12,30 @@ export interface ChartTooltipProps {
   y: number;
   containerWidth: number;
   actionHint?: string;
+  // Resolve a row key to its swatch/label. Defaults to the four regions, so
+  // country mode supplies its own without this component knowing either scheme.
+  colorOf?: (key: string) => string;
+  labelOf?: (key: string) => string;
 }
+
+const regionColor = (key: string) =>
+  REGION_COLORS[key as keyof typeof REGION_COLORS] ?? "rgb(148 163 184)";
+const regionLabel = (key: string) =>
+  REGION_LABELS[key as keyof typeof REGION_LABELS] ?? key;
 
 const CURSOR_GAP = 12;
 const CARD_WIDTH = 200;
 const FLIP_ABOVE_BELOW_AT = 90;
 
-export function ChartTooltip({ model, x, y, containerWidth, actionHint }: ChartTooltipProps) {
+export function ChartTooltip({
+  model,
+  x,
+  y,
+  containerWidth,
+  actionHint,
+  colorOf = regionColor,
+  labelOf = regionLabel,
+}: ChartTooltipProps) {
   // Flip near the right edge so the card never runs off the panel.
   const flipHorizontal = x + CURSOR_GAP + CARD_WIDTH > containerWidth;
   const flipVertical = y < FLIP_ABOVE_BELOW_AT;
@@ -53,14 +70,12 @@ export function ChartTooltip({ model, x, y, containerWidth, actionHint }: ChartT
       {(model.rows.length > 0 || model.emptyLabel) && (
         <div className="mt-2 space-y-1 border-t border-white/10 pt-2">
           {model.rows.map((row) => (
-            <div key={row.region} className="flex items-center gap-2 text-[11px]">
+            <div key={row.key} className="flex items-center gap-2 text-[11px]">
               <span
                 className="size-2 shrink-0 rounded-full"
-                style={{ backgroundColor: REGION_COLORS[row.region] }}
+                style={{ backgroundColor: colorOf(row.key) }}
               />
-              <span className="flex-1 truncate text-muted-foreground">
-                {REGION_LABELS[row.region]}
-              </span>
+              <span className="flex-1 truncate text-muted-foreground">{labelOf(row.key)}</span>
               <span className="font-semibold tabular-nums text-foreground">{row.valueLabel}</span>
             </div>
           ))}

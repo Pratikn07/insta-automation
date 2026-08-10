@@ -7,9 +7,9 @@ const model: TooltipModel = {
   heading: "Jul 24",
   totalLabel: "+59 net",
   rows: [
-    { region: "us", value: 41, valueLabel: "+41" },
-    { region: "anglosphere", value: 13, valueLabel: "+13" },
-    { region: "other", value: -1, valueLabel: "−1" },
+    { key: "us", value: 41, valueLabel: "+41" },
+    { key: "anglosphere", value: 13, valueLabel: "+13" },
+    { key: "other", value: -1, valueLabel: "−1" },
   ],
   notes: [],
   emptyLabel: null,

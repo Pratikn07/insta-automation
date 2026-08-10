@@ -7,6 +7,7 @@ import {
   formatSignedCount,
   ratePerDay,
   summarizeFollowerFlow,
+  summarizeFollowerFlowForRange,
   summarizeUsWeekOverWeek,
 } from "./followerFlow";
 import { describeFreshness } from "./homeDashboard";
@@ -96,6 +97,57 @@ describe("ratePerDay", () => {
   });
 });
 
+describe("summarizeFollowerFlowForRange", () => {
+  it("sums the WHOLE range, not a trailing 7 days", () => {
+    const range = series(...Array.from({ length: 10 }, () => point({ us: 10 })));
+    const summary = summarizeFollowerFlowForRange(range, [], 0)!;
+    expect(summary.windowSums.us).toBe(100); // all 10 days, not 70
+    expect(summary.windowSums.coveredDays).toBe(10);
+  });
+
+  it("compares against the preceding range and reads accelerating", () => {
+    const prior = series(...Array.from({ length: 7 }, () => point({ us: 10 })));
+    const range = series(...Array.from({ length: 7 }, () => point({ us: 40 })));
+    const summary = summarizeFollowerFlowForRange(range, prior, 7)!;
+    expect(summary.trend).toBe("accelerating");
+    expect(summary.trendComparable).toBe(true);
+  });
+
+  it("reads slowing when the range is well below its predecessor", () => {
+    const prior = series(...Array.from({ length: 7 }, () => point({ us: 40 })));
+    const range = series(...Array.from({ length: 7 }, () => point({ us: 5 })));
+    expect(summarizeFollowerFlowForRange(range, prior, 7)!.trend).toBe("slowing");
+  });
+
+  it("withholds the comparison when the predecessor is only partly covered", () => {
+    // The real case: a 30-day range on a 41-day account leaves 11 prior days.
+    const prior = series(...Array.from({ length: 3 }, () => point({ us: 10 })));
+    const range = series(...Array.from({ length: 7 }, () => point({ us: 40 })));
+    const summary = summarizeFollowerFlowForRange(range, prior, 7)!;
+    expect(summary.trendComparable).toBe(false);
+    expect(summary.avgPerDay28).toBeNull();
+  });
+
+  it("withholds the comparison when there is no predecessor at all", () => {
+    const range = series(...Array.from({ length: 7 }, () => point({ us: 10 })));
+    expect(summarizeFollowerFlowForRange(range, [], 7)!.trendComparable).toBe(false);
+  });
+
+  it("divides by covered days, so a span-2 catch-up is not double-counted", () => {
+    const range = series(
+      point({ us: 10 }),
+      point({ us: 100, total: 100, spanDays: 2, basis: "multi_day_span" }),
+    );
+    const summary = summarizeFollowerFlowForRange(range, [], 0)!;
+    expect(summary.windowSums.coveredDays).toBe(3); // 1 + 2
+    expect(summary.avgPerDay7).toBeCloseTo(110 / 3, 1);
+  });
+
+  it("returns null with fewer than 2 measured days", () => {
+    expect(summarizeFollowerFlowForRange(series(point()), [], 0)).toBeNull();
+  });
+});
+
 describe("summarizeFollowerFlow", () => {
   it("returns null with fewer than 2 measured days", () => {
     dayCounter = 0;
@@ -123,8 +175,8 @@ describe("summarizeFollowerFlow", () => {
     const summary = summarizeFollowerFlow(pts)!;
     expect(summary.staleDays).toBe(2);
     expect(summary.measuredDays).toBe(2);
-    expect(summary.window7.us).toBe(80);
-    expect(summary.window7.usSharePct).toBe(62); // 80 of 130
+    expect(summary.windowSums.us).toBe(80);
+    expect(summary.windowSums.usSharePct).toBe(62); // 80 of 130
   });
 
   it("keeps the headline rate on the same 7-day basis as the region legend", () => {
@@ -143,12 +195,12 @@ describe("summarizeFollowerFlow", () => {
     // 637 adds over 7 covered days = 91/day. Dropping the two provisional days
     // leaves 542/5 = 108 — a headline the legend printed beside it never agrees
     // with, so the panel contradicts itself on screen.
-    expect(summary.window7.total).toBe(637);
-    expect(summary.window7.coveredDays).toBe(7);
-    expect(summary.window7.provisionalDays).toBe(2); // disclosed, not dropped
+    expect(summary.windowSums.total).toBe(637);
+    expect(summary.windowSums.coveredDays).toBe(7);
+    expect(summary.windowSums.provisionalDays).toBe(2); // disclosed, not dropped
     expect(summary.avgPerDay7).toBe(91);
     expect(summary.avgPerDay7!).toBeCloseTo(
-      summary.window7.total / summary.window7.coveredDays,
+      summary.windowSums.total / summary.windowSums.coveredDays,
       1,
     );
   });
@@ -178,9 +230,9 @@ describe("summarizeFollowerFlow", () => {
       point({ us: 50, total: 50, unattributed: -1, spanDays: 1 }),
     );
     const summary = summarizeFollowerFlow(pts)!;
-    expect(summary.window7.unattributed).toBe(3); // 4 + (−1), never folded into a region
-    expect(summary.window7.us).toBe(80);
-    expect(summary.window7.total).toBe(80); // regions only; unattributed stays out
+    expect(summary.windowSums.unattributed).toBe(3); // 4 + (−1), never folded into a region
+    expect(summary.windowSums.us).toBe(80);
+    expect(summary.windowSums.total).toBe(80); // regions only; unattributed stays out
   });
 });
 
@@ -253,8 +305,8 @@ describe("chartGeometry", () => {
     dayCounter = 0;
     const geo = chartGeometry(series(point({ us: 30, other: -6, total: 24 })));
     const bar = geo.bars[0]!;
-    const up = bar.segments.find((s) => s.region === "us")!;
-    const down = bar.segments.find((s) => s.region === "other")!;
+    const up = bar.segments.find((s) => s.key === "us")!;
+    const down = bar.segments.find((s) => s.key === "other")!;
     expect(up.y + up.height).toBeCloseTo(geo.zeroY, 0);
     expect(down.y).toBe(geo.zeroY);
   });

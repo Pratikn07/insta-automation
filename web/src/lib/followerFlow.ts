@@ -102,11 +102,19 @@ export interface FollowerFlowSummary {
   avgPerDay7: number | null;
   avgPerDay28: number | null;
   trend: FlowTrend;
+  // False when there was no honest baseline to compare against — the UI must
+  // HIDE the badge rather than render `trend` (which falls back to "steady" and
+  // would read as a real finding). Always true on the trailing/unfiltered path.
+  trendComparable: boolean;
   bestDay: BestDay | null;
   latestMeasuredDay: string | null;
   measuredDays: number;
   staleDays: number;
-  window7: RegionWindowSums;
+  // Region sums for the window the panel is showing: the trailing 7 days on the
+  // unfiltered path, the whole selected range under an explicit filter. Named
+  // for what it is rather than a fixed 7, so the legend beside it can't drift
+  // from the window it claims to describe.
+  windowSums: RegionWindowSums;
 }
 
 const TREND_RATIO = 0.15;
@@ -151,11 +159,71 @@ export function summarizeFollowerFlow(
     avgPerDay7,
     avgPerDay28,
     trend,
+    trendComparable: true,
     bestDay,
     latestMeasuredDay: measured[measured.length - 1]?.day ?? null,
     measuredDays: measured.length,
     staleDays: points.filter((p) => p.basis === "stale" || p.basis === "pending").length,
-    window7: sumRegions(points, 7),
+    windowSums: sumRegions(points, 7),
+  };
+}
+
+/**
+ * The same summary for an explicitly selected date range.
+ *
+ * Differences from the trailing path, both forced by the filter:
+ * - Sums and the rate cover the WHOLE selected range, not a fixed 7 days, so the
+ *   legend describes the bars actually on screen.
+ * - The trend compares the range against the equal-length range immediately
+ *   before it. A fixed 7-vs-28 comparison is meaningless once the user picks the
+ *   window — a 30-day selection would be judged against a 28-day slice of itself.
+ *
+ * `expectedPriorDays` is how many days the preceding range *should* cover. When
+ * the prior points cover fewer (the account simply doesn't go back that far),
+ * `trendComparable` is false and the caller hides the badge. Comparing against a
+ * partial baseline makes a shorter history look like a collapse — the same
+ * reason summarizeUsWeekOverWeek withholds `lastWeek`.
+ */
+export function summarizeFollowerFlowForRange(
+  rangePoints: FollowerDailyAddsPoint[],
+  priorPoints: FollowerDailyAddsPoint[],
+  expectedPriorDays: number,
+): FollowerFlowSummary | null {
+  const measured = rangePoints.filter(isMeasured);
+  if (measured.length < 2) return null;
+
+  const windowSums = sumRegions(rangePoints, rangePoints.length);
+  const prior = sumRegions(priorPoints, priorPoints.length);
+
+  const rate = windowSums.coveredDays > 0 ? round(windowSums.total / windowSums.coveredDays) : null;
+  const priorComparable = prior.coveredDays >= expectedPriorDays && expectedPriorDays > 0;
+  const priorRate = priorComparable ? round(prior.total / prior.coveredDays) : null;
+
+  let trend: FlowTrend = "steady";
+  if (rate !== null && priorRate !== null) {
+    const band = Math.max(Math.abs(priorRate) * TREND_RATIO, 1);
+    if (rate - priorRate >= band) trend = "accelerating";
+    else if (rate - priorRate <= -band) trend = "slowing";
+  }
+
+  let bestDay: BestDay | null = null;
+  for (const p of measured) {
+    const perDay = p.total! / p.spanDays!;
+    if (!bestDay || perDay > bestDay.perDay) {
+      bestDay = { day: p.day, total: p.total!, spanDays: p.spanDays!, perDay: round(perDay) };
+    }
+  }
+
+  return {
+    avgPerDay7: rate,
+    avgPerDay28: priorRate,
+    trend,
+    trendComparable: priorRate !== null,
+    bestDay,
+    latestMeasuredDay: measured[measured.length - 1]?.day ?? null,
+    measuredDays: measured.length,
+    staleDays: rangePoints.filter((p) => p.basis === "stale" || p.basis === "pending").length,
+    windowSums,
   };
 }
 
@@ -263,8 +331,29 @@ export function describeStockVsFlow(
 export type ChartRegion = "us" | "southAsian" | "anglosphere" | "other";
 const STACK_ORDER: ChartRegion[] = ["us", "southAsian", "anglosphere", "other"];
 
+/**
+ * Which series a bar stacks, and how to read each one off a point.
+ *
+ * Parameterised so region mode and country mode share one geometry path. The
+ * default is the four regions, so every existing caller and test is unaffected —
+ * region output must stay byte-identical, and those tests are the guard.
+ */
+export interface StackSpec {
+  keys: string[];
+  valueOf: (point: FollowerDailyAddsPoint, key: string) => number;
+}
+
+export const REGION_STACK: StackSpec = {
+  keys: STACK_ORDER,
+  valueOf: (p, key) => p[key as ChartRegion] ?? 0,
+};
+
+// The country stack spec lives in followerCountry.ts, which owns OTHER_KEY and
+// the fold-up rule.
+
 export interface ChartSegment {
-  region: ChartRegion;
+  // Region name in region mode, ISO country code in country mode.
+  key: string;
   y: number;
   height: number;
 }
@@ -374,6 +463,7 @@ export function chartGeometry(
   width = 720,
   height = 220,
   gutterLeft = 0,
+  stack: StackSpec = REGION_STACK,
 ): ChartGeometry {
   const slots = Math.max(points.length, 1);
   // Only the x-axis shifts: the gutter is horizontal room for y labels.
@@ -388,8 +478,8 @@ export function chartGeometry(
     if (!isMeasured(p)) continue;
     let up = 0;
     let down = 0;
-    for (const region of STACK_ORDER) {
-      const v = p[region] ?? 0;
+    for (const key of stack.keys) {
+      const v = stack.valueOf(p, key);
       if (v > 0) up += v;
       else down += v;
     }
@@ -418,14 +508,14 @@ export function chartGeometry(
       let upCursor = 0;
       let downCursor = 0;
       const segments: ChartSegment[] = [];
-      for (const region of STACK_ORDER) {
-        const v = p[region] ?? 0;
+      for (const key of stack.keys) {
+        const v = stack.valueOf(p, key);
         if (v === 0) continue;
         if (v > 0) {
-          segments.push({ region, y: yOf(upCursor + v), height: round((v / spread) * plotHeight) });
+          segments.push({ key, y: yOf(upCursor + v), height: round((v / spread) * plotHeight) });
           upCursor += v;
         } else {
-          segments.push({ region, y: yOf(downCursor), height: round((-v / spread) * plotHeight) });
+          segments.push({ key, y: yOf(downCursor), height: round((-v / spread) * plotHeight) });
           downCursor += v;
         }
       }
