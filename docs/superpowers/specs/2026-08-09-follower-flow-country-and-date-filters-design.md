@@ -147,11 +147,28 @@ mute a country to fold it into `Other`.
 Ranking is scoped to the selected range on purpose: narrowing to a specific week surfaces a country
 that only mattered during that week.
 
-Two surfaces drive that selection, over **one shared `pinned`/`muted` state** so they cannot drift:
+**Selecting a country shows that country alone.** From the automatic view, clicking a country —
+whether on a legend chip or in the dropdown — narrows the chart to it, with **no `Other` band**:
+"select South Africa" has to mean South Africa, not South Africa beside a grey bar holding the other
+46. Clicking further countries adds them alongside; clicking a selected one removes it; emptying the
+selection returns to automatic rather than leaving an empty chart with no way back.
 
-1. **Legend chips** — click a country to fold it away.
+The earlier design had clicking *fold a country away*, which inverted the user's intent — with every
+top mover already on screen, the only thing a click could do was remove, so "select" read as "hide".
+
+Two surfaces drive this over **one shared `selected` state** so they cannot drift:
+
+1. **Legend chips** — click to narrow to that country, or to drop it from a selection.
 2. **A full dropdown** listing every reported country with its net adds over the range, for browsing
-   the tail.
+   the tail, plus a reset back to the automatic top movers.
+
+Only a real selection carries a tick in the dropdown. In the automatic view every top mover is on
+screen but none was *chosen*, and ticking them would make the next click read as "untick".
+
+**The y-axis rescales to the selection.** South Africa is a sliver of the total, so on the full
+stack's scale its daily shape is an unreadable strip; selected alone the axis drops from +600 to +15
+and its actual trend becomes visible. The trade-off accepted: bar heights are no longer comparable
+across different selections.
 
 **Only the overall top 8 countries can hold their own band** (see §5.5). The dropdown lists the rest
 with their real numbers but disables their toggle, rather than hiding them and implying Meta never
@@ -318,3 +335,7 @@ bands.
 11. In country mode, the named bands plus `Other` equal each day's total, and the tooltip rows
     reconcile to the net figure in its own header.
 12. The legend header names the window its numbers actually cover, in both modes.
+13. Clicking a country from the automatic view charts **only** that country, with no `Other` band,
+    and the y-axis rescales to it.
+14. Further clicks add countries rather than replacing; emptying the selection restores the
+    automatic top movers.

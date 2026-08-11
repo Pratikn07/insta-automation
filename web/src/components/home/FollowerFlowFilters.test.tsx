@@ -176,13 +176,75 @@ describe("Follower flow country mode", () => {
     expect(screen.getByText("Daily net adds by country")).toBeInTheDocument();
   });
 
-  it("hides a country when its legend chip is clicked", async () => {
+  it("shows ONLY that country when its legend chip is clicked", async () => {
     renderPanel(series(() => 10));
     await userEvent.click(screen.getByRole("button", { name: "countries" }));
     await userEvent.click(screen.getByRole("button", { name: /South Africa/ }));
 
-    expect(screen.queryByText("South Africa")).not.toBeInTheDocument();
-    expect(screen.getByText(/Other \(1 countries?\)/)).toBeInTheDocument();
+    // South Africa alone: no other country, and no grey Other band.
+    expect(screen.getByRole("button", { name: /South Africa/ })).toBeInTheDocument();
+    expect(screen.queryByText("United States")).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Other \(/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /1 selected/ })).toBeInTheDocument();
+  });
+
+  it("adds a second country rather than replacing the first", async () => {
+    renderPanel(series(() => 10));
+    await userEvent.click(screen.getByRole("button", { name: "countries" }));
+    await userEvent.click(screen.getByRole("button", { name: /South Africa/ }));
+    await userEvent.click(screen.getByRole("button", { name: /1 selected/ }));
+
+    const dialog = screen.getByRole("dialog", { name: "All reported countries" });
+    await userEvent.click(within(dialog).getByText("United States"));
+
+    expect(screen.getByRole("button", { name: /2 selected/ })).toBeInTheDocument();
+  });
+
+  it("returns to the automatic view when the last country is deselected", async () => {
+    renderPanel(series(() => 10));
+    await userEvent.click(screen.getByRole("button", { name: "countries" }));
+    await userEvent.click(screen.getByRole("button", { name: /South Africa/ }));
+    // Clicking the only selected chip empties the selection — which must fall
+    // back to the top movers, not leave an empty chart with no way out.
+    await userEvent.click(screen.getByRole("button", { name: /South Africa/ }));
+
+    // All four countries back, and the picker no longer reads as a selection.
+    expect(screen.getByText("United States")).toBeInTheDocument();
+    expect(screen.getByText("India")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /All countries/ })).toBeInTheDocument();
+  });
+
+  it("rescales the y-axis to the selection", async () => {
+    // ZA is a sliver of the total, so on the full stack's scale its daily shape
+    // is unreadable. Selecting it must bring the axis down to its own size.
+    renderPanel(series(() => 400));
+    await userEvent.click(screen.getByRole("button", { name: "countries" }));
+    const fullTop = [...document.querySelectorAll("text")]
+      .map((t) => Number(t.textContent?.replace(/[+,]/g, "")))
+      .filter((v) => Number.isFinite(v));
+
+    await userEvent.click(screen.getByRole("button", { name: /South Africa/ }));
+    const soloTop = [...document.querySelectorAll("text")]
+      .map((t) => Number(t.textContent?.replace(/[+,]/g, "")))
+      .filter((v) => Number.isFinite(v));
+
+    expect(Math.max(...soloTop)).toBeLessThan(Math.max(...fullTop));
+  });
+
+  it("resets to the top movers from the picker", async () => {
+    renderPanel(series(() => 10));
+    await userEvent.click(screen.getByRole("button", { name: "countries" }));
+    await userEvent.click(screen.getByRole("button", { name: /South Africa/ }));
+    await userEvent.click(screen.getByRole("button", { name: /1 selected/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Show top movers again" }));
+
+    // Back to automatic: the trigger stops reading as a selection, and the
+    // reset control itself is gone.
+    expect(screen.getByRole("button", { name: /All countries/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /selected/ })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Show top movers again" }),
+    ).not.toBeInTheDocument();
   });
 
   it("offers no country mode when the server sent no byCountry", () => {

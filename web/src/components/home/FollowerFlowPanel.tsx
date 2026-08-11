@@ -97,11 +97,23 @@ export function FollowerFlowPanel({
   const [preset, setPreset] = useState<RangePreset>("all");
   const [customRange, setCustomRange] = useState<DayRange | null>(null);
   const [mode, setMode] = useState<BreakdownMode>("regions");
-  const [pinned, setPinned] = useState<string[]>([]);
-  const [muted, setMuted] = useState<string[]>([]);
+  // null = let the chart pick the top movers. A non-empty array = show exactly
+  // these. Deliberately ONE piece of state, shared by the legend chips and the
+  // dropdown, so the two surfaces cannot disagree about what is on screen.
+  const [selected, setSelected] = useState<string[] | null>(null);
 
-  const toggle = (list: string[], code: string) =>
-    list.includes(code) ? list.filter((c) => c !== code) : [...list, code];
+  // Clicking a country from the automatic view narrows to it alone; clicking
+  // from an explicit selection adds or removes. Emptying the selection returns
+  // to automatic rather than leaving an empty chart with no way back.
+  function toggleCountry(code: string) {
+    setSelected((current) => {
+      if (current === null) return [code];
+      const next = current.includes(code)
+        ? current.filter((c) => c !== code)
+        : [...current, code];
+      return next.length === 0 ? null : next;
+    });
+  }
 
   if (isLoading) {
     return <Skeleton className="h-96 rounded-2xl" />;
@@ -168,7 +180,7 @@ export function FollowerFlowPanel({
   // the ones that survive.
   const countryColors = colorMapFor(points);
   const rankedInRange = rankCountries(rangePoints);
-  const countryStack = resolveCountryStack(rankedInRange, countryColors, { pinned, muted });
+  const countryStack = resolveCountryStack(rankedInRange, countryColors, { selected });
   const inCountryMode = mode === "countries" && hasCountryData;
 
   const filterBar = coverage && range && (
@@ -283,10 +295,9 @@ export function FollowerFlowPanel({
                     ranked={rankedInRange}
                     colors={countryColors}
                     shown={countryStack.keys}
-                    pinned={pinned}
-                    muted={muted}
-                    onTogglePin={(code) => setPinned((p) => toggle(p, code))}
-                    onToggleMute={(code) => setMuted((m) => toggle(m, code))}
+                    selected={selected}
+                    onToggle={toggleCountry}
+                    onReset={() => setSelected(null)}
                   />
                 )}
               </div>
@@ -297,14 +308,23 @@ export function FollowerFlowPanel({
             {inCountryMode
               ? countryStack.keys.map((code) => {
                   const entry = rankedInRange.find((r) => r.code === code);
+                  const isOnly = selected?.length === 1 && selected[0] === code;
                   return (
                     <button
                       key={code}
                       type="button"
-                      // Chips are the second surface over the same pinned/muted
-                      // state the dropdown writes, so the two cannot disagree.
-                      onClick={() => setMuted((m) => toggle(m, code))}
-                      title={`Hide ${countryLabel(code)}`}
+                      // The second surface over the same `selected` state the
+                      // dropdown writes, so the two cannot disagree. From the
+                      // automatic view a chip click narrows to that country;
+                      // from a selection it drops it back out.
+                      onClick={() => toggleCountry(code)}
+                      title={
+                        isOnly
+                          ? `Showing only ${countryLabel(code)} — click to go back`
+                          : selected
+                            ? `Remove ${countryLabel(code)}`
+                            : `Show only ${countryLabel(code)}`
+                      }
                       className="inline-flex items-center gap-1.5 rounded-md px-1 py-0.5 text-xs text-foreground transition hover:bg-white/10"
                     >
                       <span
@@ -338,7 +358,10 @@ export function FollowerFlowPanel({
               </span>
             )}
           </div>
-          {unattributed !== 0 && (
+          {/* Suppressed under an explicit selection: the residual describes the
+              whole window's total, and there is no total on screen to reconcile
+              it against when you have asked for two countries. */}
+          {unattributed !== 0 && !(inCountryMode && selected) && (
             <p className="mt-2 border-t border-white/5 pt-2 text-[11px] leading-relaxed text-muted-foreground">
               {formatSignedCount(unattributed)} more Meta counted but couldn't place —
               countries crossing its top-{stock.countriesReported} reporting cutoff.

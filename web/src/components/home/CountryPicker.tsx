@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Command } from "cmdk";
-import { Check, ChevronDown, Pin, Search } from "lucide-react";
+import { Check, ChevronDown, Search } from "lucide-react";
 import { formatSignedCount } from "@/lib/followerFlow";
 import { countryLabel, type CountryRank } from "@/lib/followerCountry";
 import { cn } from "@/lib/utils";
@@ -9,17 +9,18 @@ interface CountryPickerProps {
   ranked: CountryRank[];
   colors: Map<string, string>;
   shown: readonly string[];
-  pinned: readonly string[];
-  muted: readonly string[];
-  onTogglePin: (code: string) => void;
-  onToggleMute: (code: string) => void;
+  // null while the chart is picking the top movers automatically.
+  selected: readonly string[] | null;
+  onToggle: (code: string) => void;
+  onReset: () => void;
 }
 
 /**
- * The full list of reported countries, for browsing the tail.
+ * The full list of reported countries, for browsing the tail and picking what
+ * the chart shows.
  *
- * Shares `pinned`/`muted` with the legend chips rather than holding its own
- * selection — two surfaces over one state can't drift out of sync.
+ * Shares its `selected` state with the legend chips rather than holding its own
+ * — two surfaces over one state can't drift out of sync.
  *
  * Countries with no stable colour are listed with their numbers but cannot be
  * stacked: past the palette there is no hue left that isn't already another
@@ -30,10 +31,9 @@ export function CountryPicker({
   ranked,
   colors,
   shown,
-  pinned,
-  muted,
-  onTogglePin,
-  onToggleMute,
+  selected,
+  onToggle,
+  onReset,
 }: CountryPickerProps) {
   const [open, setOpen] = React.useState(false);
   const containerRef = React.useRef<HTMLDivElement | null>(null);
@@ -55,8 +55,7 @@ export function CountryPicker({
   }, [open]);
 
   const shownSet = new Set(shown);
-  const pinnedSet = new Set(pinned);
-  const mutedSet = new Set(muted);
+  const isExplicit = selected !== null && selected.length > 0;
 
   return (
     <div ref={containerRef} className="relative">
@@ -65,9 +64,16 @@ export function CountryPicker({
         aria-expanded={open}
         aria-haspopup="dialog"
         onClick={() => setOpen((v) => !v)}
-        className="inline-flex items-center gap-1.5 rounded-md border border-white/10 px-2.5 py-1 text-xs font-medium text-muted-foreground transition hover:bg-white/5 hover:text-foreground"
+        className={cn(
+          "inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition",
+          isExplicit
+            ? "border-sky-400/30 bg-sky-400/10 text-sky-200"
+            : "border-white/10 text-muted-foreground hover:bg-white/5 hover:text-foreground",
+        )}
       >
-        All countries ({ranked.length})
+        {isExplicit
+          ? `${selected!.length} selected`
+          : `All countries (${ranked.length})`}
         <ChevronDown className={cn("size-3.5 transition", open && "rotate-180")} />
       </button>
 
@@ -98,13 +104,13 @@ export function CountryPicker({
                   <Command.Item
                     key={entry.code}
                     value={`${entry.code} ${countryLabel(entry.code)}`}
+                    // From the automatic view, the first click SELECTS — the
+                    // chart narrows to that country alone. Clicking again from
+                    // an explicit selection adds or removes. "Select South
+                    // Africa" must not mean "remove South Africa", which is what
+                    // a plain toggle did when everything already showed.
                     onSelect={() => {
-                      if (!stackable) return;
-                      // Selecting toggles visibility: an unmuted hidden country
-                      // becomes pinned (forced in), a shown one becomes muted.
-                      if (isShown) onToggleMute(entry.code);
-                      else if (mutedSet.has(entry.code)) onToggleMute(entry.code);
-                      else onTogglePin(entry.code);
+                      if (stackable) onToggle(entry.code);
                     }}
                     className={cn(
                       "flex items-center gap-2 rounded-md px-2 py-1.5 text-xs",
@@ -118,22 +124,44 @@ export function CountryPicker({
                       style={{ backgroundColor: color ?? "rgb(148 163 184)" }}
                     />
                     <span className="flex-1 truncate">{countryLabel(entry.code)}</span>
-                    {pinnedSet.has(entry.code) && (
-                      <Pin className="size-3 shrink-0 text-sky-300" aria-label="Pinned" />
-                    )}
                     <span className="shrink-0 font-semibold tabular-nums text-muted-foreground">
                       {formatSignedCount(entry.net)}
                     </span>
-                    {isShown && <Check className="size-3 shrink-0 text-sky-300" />}
+                    {/* Only a real selection gets a tick. In the automatic view
+                        every top mover is on screen, but none of them was
+                        chosen — ticking them would make the next click read as
+                        "untick", which is the confusion this replaced. */}
+                    <Check
+                      className={cn(
+                        "size-3 shrink-0",
+                        isExplicit && isShown ? "text-sky-300" : "invisible",
+                      )}
+                    />
+                    <span className="sr-only">
+                      {isExplicit && isShown ? "selected" : "not selected"}
+                    </span>
                   </Command.Item>
                 );
               })}
             </Command.List>
           </Command>
-          <p className="border-t border-white/10 px-3 py-2 text-[10px] leading-relaxed text-muted-foreground">
-            Countries below the top {colors.size} fold into Other — Meta's reported set churns at
-            its cutoff, so their daily moves are mostly reporting noise.
-          </p>
+          <div className="border-t border-white/10 px-3 py-2">
+            {isExplicit ? (
+              <button
+                type="button"
+                onClick={onReset}
+                className="w-full rounded-md py-1 text-[11px] font-medium text-sky-300 transition hover:bg-white/5"
+              >
+                Show top movers again
+              </button>
+            ) : (
+              <p className="text-[10px] leading-relaxed text-muted-foreground">
+                Pick countries to chart them on their own. Those below the top {colors.size} fold
+                into Other — Meta's reported set churns at its cutoff, so their daily moves are
+                mostly reporting noise.
+              </p>
+            )}
+          </div>
         </div>
       )}
     </div>

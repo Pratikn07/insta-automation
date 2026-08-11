@@ -88,8 +88,11 @@ export function colorMapFor(allPoints: FollowerDailyAddsPoint[]): Map<string, st
 }
 
 export interface CountryStackOptions {
-  pinned?: readonly string[];
-  muted?: readonly string[];
+  // null = automatic: the top N movers in range, everything else folded into
+  // Other. A non-empty array = show EXACTLY these countries and nothing else,
+  // no Other band. "Select South Africa" has to mean South Africa alone, not
+  // South Africa beside a grey bar holding the other 51.
+  selected?: readonly string[] | null;
   topN?: number;
 }
 
@@ -105,34 +108,41 @@ export interface CountryStack {
 /**
  * Which countries get their own band for this range.
  *
- * Pinned countries are included regardless of rank (as long as they have a
- * colour); muted ones always fold. The remaining slots go to the top movers
- * WITHIN the supplied points, so narrowing the range can surface a country that
- * only mattered that week.
+ * Two modes:
+ * - **Explicit** (`selected` non-empty): exactly those countries, and NO Other.
+ *   The chart is answering "what did these do" — folding the remainder into a
+ *   grey band answers a question nobody asked, and at 46 countries that band
+ *   dwarfs the one country you picked.
+ * - **Automatic** (`selected` null/empty): the top N movers WITHIN the supplied
+ *   points, everything else folded. Range-scoped on purpose, so narrowing to a
+ *   week surfaces a country that only mattered that week.
+ *
+ * A country with no stable colour is never drawn as its own band — past the
+ * palette there is no hue left that isn't already another country's.
  */
 export function resolveCountryStack(
   ranked: CountryRank[],
   colors: Map<string, string>,
-  { pinned = [], muted = [], topN = DEFAULT_TOP_N }: CountryStackOptions = {},
+  { selected = null, topN = DEFAULT_TOP_N }: CountryStackOptions = {},
 ): CountryStack {
-  const mutedSet = new Set(muted);
-  const pinnedSet = new Set(pinned);
-  // A country with no stable colour cannot be drawn as its own band without
-  // reusing another country's hue, so it folds even when pinned.
-  const eligible = ranked.filter((r) => colors.has(r.code) && !mutedSet.has(r.code));
-
-  const chosen: string[] = [];
-  for (const entry of eligible) {
-    if (pinnedSet.has(entry.code)) chosen.push(entry.code);
-  }
-  for (const entry of eligible) {
-    if (chosen.length >= topN) break;
-    if (!pinnedSet.has(entry.code)) chosen.push(entry.code);
-  }
-
-  // Re-sort by movement so the stack reads biggest-first regardless of pin order.
   const byMovement = new Map(ranked.map((r) => [r.code, r.movement]));
-  chosen.sort((a, b) => (byMovement.get(b) ?? 0) - (byMovement.get(a) ?? 0) || a.localeCompare(b));
+  const byMovementDesc = (a: string, b: string) =>
+    (byMovement.get(b) ?? 0) - (byMovement.get(a) ?? 0) || a.localeCompare(b);
+
+  if (selected && selected.length > 0) {
+    return {
+      keys: selected.filter((code) => colors.has(code)).sort(byMovementDesc),
+      otherCount: 0,
+      otherNet: 0,
+      hasOther: false,
+    };
+  }
+
+  const chosen = ranked
+    .filter((r) => colors.has(r.code))
+    .slice(0, topN)
+    .map((r) => r.code)
+    .sort(byMovementDesc);
 
   const shown = new Set(chosen);
   const folded = ranked.filter((r) => !shown.has(r.code));

@@ -135,24 +135,34 @@ describe("resolveCountryStack", () => {
     expect(resolveCountryStack(ranked, colors, { topN: 6 }).keys).toContain("ZA");
   });
 
-  it("includes a pinned country ranked below the cut", () => {
-    const stack = resolveCountryStack(ranked, colors, { topN: 3, pinned: ["IE"] });
-    expect(stack.keys).toContain("IE");
-    expect(stack.keys).toHaveLength(3);
+  it("shows ONLY the selected country, with no Other band", () => {
+    // The whole point of an explicit selection: "select South Africa" must mean
+    // South Africa alone, not South Africa beside a grey bar holding the rest.
+    const stack = resolveCountryStack(ranked, colors, { selected: ["ZA"] });
+    expect(stack.keys).toEqual(["ZA"]);
+    expect(stack.hasOther).toBe(false);
+    expect(stack.otherCount).toBe(0);
+    expect(stack.otherNet).toBe(0);
   });
 
-  it("keeps stack order by movement regardless of pin order", () => {
-    const stack = resolveCountryStack(ranked, colors, { topN: 3, pinned: ["IE", "US"] });
-    expect(stack.keys.indexOf("US")).toBeLessThan(stack.keys.indexOf("IE"));
+  it("shows exactly a multi-country selection, biggest first", () => {
+    const stack = resolveCountryStack(ranked, colors, { selected: ["ZA", "US"] });
+    expect(stack.keys).toEqual(["US", "ZA"]); // US +633 outranks ZA +81
+    expect(stack.hasOther).toBe(false);
   });
 
-  it("folds a muted country into Other", () => {
-    const stack = resolveCountryStack(ranked, colors, { topN: 6, muted: ["US"] });
-    expect(stack.keys).not.toContain("US");
-    expect(stack.otherNet).toBeGreaterThan(600); // US's 633 landed in Other
+  it("honours a selection ranked far below the automatic cut", () => {
+    const stack = resolveCountryStack(ranked, colors, { selected: ["IE"] });
+    expect(stack.keys).toEqual(["IE"]);
   });
 
-  it("folds a country with no stable colour even when pinned", () => {
+  it("falls back to automatic for a null or empty selection", () => {
+    const auto = resolveCountryStack(ranked, colors, { topN: 6 });
+    expect(resolveCountryStack(ranked, colors, { selected: null, topN: 6 })).toEqual(auto);
+    expect(resolveCountryStack(ranked, colors, { selected: [], topN: 6 })).toEqual(auto);
+  });
+
+  it("drops a selected country that has no stable colour", () => {
     // Beyond the palette there is no hue left that isn't already another
     // country's, and cycling would make two countries share one colour.
     n = 0;
@@ -164,10 +174,9 @@ describe("resolveCountryStack", () => {
       ),
     ];
     const stack = resolveCountryStack(rankCountries(many), colorMapFor(many), {
-      topN: 6,
-      pinned: ["C11"],
+      selected: ["C11", "C00"],
     });
-    expect(stack.keys).not.toContain("C11");
+    expect(stack.keys).toEqual(["C00"]);
   });
 
   it("reports no Other when everything is shown", () => {
@@ -176,15 +185,6 @@ describe("resolveCountryStack", () => {
     const stack = resolveCountryStack(rankCountries(small), colorMapFor(small), { topN: 6 });
     expect(stack.hasOther).toBe(false);
     expect(stack.otherCount).toBe(0);
-  });
-
-  it("survives every country being muted", () => {
-    const stack = resolveCountryStack(ranked, colors, {
-      topN: 6,
-      muted: ["US", "IN", "GB", "AU", "CA", "ZA", "PK", "IE"],
-    });
-    expect(stack.keys).toEqual([]);
-    expect(stack.hasOther).toBe(true);
   });
 });
 
