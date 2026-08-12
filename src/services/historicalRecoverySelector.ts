@@ -107,6 +107,12 @@ export type SelectionReport = {
   eligiblePeople: number;
   /** Distinct people represented by one or more recorded exclusions. */
   excludedPeople: number;
+  /**
+   * Stable, non-free-text exclusion identities for a coordinating transaction.
+   * They are not operator CLI output; callers use them only to derive aggregate
+   * exclusion counts without losing zero-candidate selection decisions.
+   */
+  excludedIgUserIds?: string[];
   byEvidence: Record<string, number>;
   /** Selected candidates by non-sensitive origin provenance. */
   originBreakdown: Record<string, number>;
@@ -344,6 +350,8 @@ export async function selectHistoricalCandidates(input: {
   rolloutGroupHourlyCap?: number;
   inboundWindowHours?: number;
   completionWindowHours?: number;
+  /** Internal expanded-rollout detail; ordinary selector reports keep prior shape. */
+  includeExclusionIdentities?: boolean;
   persist: boolean;
   now?: Date;
   /**
@@ -634,6 +642,9 @@ export async function selectHistoricalCandidates(input: {
     originBreakdown[key] = (originBreakdown[key] ?? 0) + 1;
   }
 
+  const excludedIgUserIds = [...new Set(
+    [...exclusions.values()].map((exclusion) => exclusion.igUserId),
+  )].sort((left, right) => left.localeCompare(right));
   const report: SelectionReport = {
     campaignId: null,
     selectionFingerprint,
@@ -642,7 +653,8 @@ export async function selectHistoricalCandidates(input: {
     rawIntents: rows.length,
     eligible: selected.length,
     eligiblePeople: new Set(selected.map((e) => e.facts.igUserId)).size,
-    excludedPeople: new Set([...exclusions.values()].map((exclusion) => exclusion.igUserId)).size,
+    excludedPeople: excludedIgUserIds.length,
+    ...(input.includeExclusionIdentities ? { excludedIgUserIds } : {}),
     byEvidence,
     originBreakdown,
     excludedByReason: Object.fromEntries(excludedByReason),

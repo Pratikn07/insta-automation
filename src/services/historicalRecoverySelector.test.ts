@@ -56,7 +56,7 @@ function eligibleRow() {
   };
 }
 
-function select(rolloutGroupId: string) {
+function select(rolloutGroupId: string, includeExclusionIdentities = false) {
   return selectHistoricalCandidates({
     phase: "unknown_read_pilot",
     selectionVersion: "uuid-normalization-test",
@@ -67,6 +67,7 @@ function select(rolloutGroupId: string) {
     audienceSegment: "other",
     rolloutGroupId,
     rolloutGroupHourlyCap: 2,
+    ...(includeExclusionIdentities ? { includeExclusionIdentities: true } : {}),
     persist: true,
     now: NOW,
   });
@@ -114,5 +115,50 @@ describe("expanded rollout-group selection", () => {
     await expect(select("not-a-uuid")).rejects.toThrow("invalid_rollout_group_id");
     expect(queryRaw).not.toHaveBeenCalled();
     expect(campaignCreate).not.toHaveBeenCalled();
+  });
+
+  it("returns sorted exclusion identities even when they do not persist as candidates", async () => {
+    const other = eligibleRow();
+    const excludedZ = {
+      ...eligibleRow(),
+      intentId: "44444444-4444-4444-8444-444444444444",
+      igUserId: "person-z",
+      commentId: "comment-z",
+      audienceOrigin: "us_western",
+      audienceSegment: "western" as const,
+      sources: [{ ...eligibleRow().sources[0], commentId: "comment-z" }],
+    };
+    const excludedA = {
+      ...eligibleRow(),
+      intentId: "55555555-5555-4555-8555-555555555555",
+      igUserId: "person-a",
+      commentId: "comment-a",
+      audienceOrigin: "us_western",
+      audienceSegment: "western" as const,
+      sources: [{ ...eligibleRow().sources[0], commentId: "comment-a" }],
+    };
+    queryRaw.mockResolvedValue([other, excludedZ, excludedA]);
+
+    const report = await select(CANONICAL_GROUP_ID, true);
+
+    expect(report.excludedIgUserIds).toEqual(["person-a", "person-z"]);
+  });
+
+  it("keeps exclusion identities out of ordinary selector reports", async () => {
+    const other = eligibleRow();
+    const excluded = {
+      ...eligibleRow(),
+      intentId: "66666666-6666-4666-8666-666666666666",
+      igUserId: "person-excluded",
+      commentId: "comment-excluded",
+      audienceOrigin: "us_western",
+      audienceSegment: "western" as const,
+      sources: [{ ...eligibleRow().sources[0], commentId: "comment-excluded" }],
+    };
+    queryRaw.mockResolvedValue([other, excluded]);
+
+    const report = await select(CANONICAL_GROUP_ID);
+
+    expect(report.excludedIgUserIds).toBeUndefined();
   });
 });

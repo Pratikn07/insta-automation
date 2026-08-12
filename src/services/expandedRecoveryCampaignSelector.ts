@@ -24,6 +24,7 @@ export type SelectExpandedRecoveryCampaignsInput = Omit<
   | "dailyCap"
   | "eligibilityPolicyVersion"
   | "holdoutPercent"
+  | "includeExclusionIdentities"
   | "persist"
   | "rolloutGroupHourlyCap"
   | "rolloutGroupId"
@@ -80,6 +81,7 @@ export async function selectExpandedRecoveryCampaigns(
 
   return prisma.$transaction(async (transaction) => {
     const campaigns: ExpandedRecoveryCampaign[] = [];
+    const reports: SelectionReport[] = [];
     for (const segment of EXPANDED_SEGMENTS) {
       const report = await selectHistoricalCandidates({
         ...input,
@@ -87,12 +89,14 @@ export async function selectExpandedRecoveryCampaigns(
         eligibilityPolicyVersion: EXPANDED_AUDIENCE_ELIGIBILITY_POLICY_VERSION,
         holdoutPercent: 0,
         dailyCap: 1000,
+        includeExclusionIdentities: true,
         persist: true,
         rolloutGroupId,
         rolloutGroupHourlyCap: 10,
         now,
         transaction,
       });
+      reports.push(report);
       campaigns.push(toCampaign(segment, report));
     }
 
@@ -101,15 +105,15 @@ export async function selectExpandedRecoveryCampaigns(
       select: { igUserId: true },
     });
     assertNoPersistedRolloutDuplicates(persistedCandidates);
-    const persistedExclusions = await transaction.recoverySelectionExclusion.findMany({
-      where: { campaign: { rolloutGroupId } },
-      select: { igUserId: true },
-    });
+    const selectedIgUserIds = new Set(persistedCandidates.map((candidate) => candidate.igUserId));
+    const excludedIgUserIds = new Set(
+      reports.flatMap((report) => report.excludedIgUserIds ?? []),
+    );
 
     return {
       rolloutGroupId,
       campaigns,
-      excludedPeople: new Set(persistedExclusions.map((exclusion) => exclusion.igUserId)).size,
+      excludedPeople: [...excludedIgUserIds].filter((igUserId) => !selectedIgUserIds.has(igUserId)).length,
     };
   }, { isolationLevel: "Serializable", timeout: 60_000 });
 }
