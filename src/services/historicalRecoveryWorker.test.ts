@@ -896,6 +896,7 @@ describe("runHistoricalRecoveryTick — campaign pacing", () => {
   });
 
   it("defers without suppressing when the shared rollout group has no hourly capacity", async () => {
+    listDueCandidateIds.mockResolvedValue(["cand-1", "cand-2"]);
     reserveHistoricalDispatch.mockResolvedValue({
       kind: "blocked",
       reason: "rollout_group_hourly_cap_reached",
@@ -906,6 +907,7 @@ describe("runHistoricalRecoveryTick — campaign pacing", () => {
     expect(replyToComment).not.toHaveBeenCalled();
     expect(markCandidateSuppressed).not.toHaveBeenCalled();
     expect(releaseCandidateClaim).toHaveBeenCalledWith("cand-1", "token-1");
+    expect(claimCandidate.mock.calls.map(([candidateId]) => candidateId)).toEqual(["cand-1"]);
     expect(result).toMatchObject({
       deferred: 1,
       skipped: "rollout_group_hourly_cap_reached",

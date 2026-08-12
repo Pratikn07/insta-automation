@@ -10,6 +10,30 @@ import {
 import { resolveCanonicalConversation } from "./canonicalConversation.js";
 import { evaluateHistoricalOrigin } from "./historicalRecoveryOriginPolicy.js";
 
+type HistoricalReservationAfterLocksTestHook = () => void | Promise<void>;
+
+const isTestRuntime = process.env.NODE_ENV === "test";
+let historicalReservationAfterLocksTestHook:
+  | HistoricalReservationAfterLocksTestHook
+  | undefined;
+
+/**
+ * Integration-test synchronization only. It is a no-op outside the test runtime, so
+ * production reservation behavior cannot be changed by installing this hook.
+ */
+export function setHistoricalReservationAfterLocksTestHook(
+  hook: HistoricalReservationAfterLocksTestHook,
+): () => void {
+  if (!isTestRuntime) return () => undefined;
+  const previous = historicalReservationAfterLocksTestHook;
+  historicalReservationAfterLocksTestHook = hook;
+  return () => {
+    if (historicalReservationAfterLocksTestHook === hook) {
+      historicalReservationAfterLocksTestHook = previous;
+    }
+  };
+}
+
 /**
  * Claim and finalise historical recovery candidates.
  *
@@ -186,6 +210,17 @@ export async function reserveHistoricalDispatch(
     await tx.$queryRaw`SELECT "id" FROM "dm_recovery_control" WHERE "id" = 1 FOR UPDATE`;
     await tx.$queryRaw`SELECT "id" FROM "ig_users" WHERE "id" = ${sourceHint.igUserId} FOR UPDATE`;
     await tx.$queryRaw`SELECT "id" FROM "recovery_candidate" WHERE "id" = ${input.candidateId}::uuid FOR UPDATE`;
+    // Approval locks control then campaign before it reads manifest children. This
+    // reservation already owns the same control row, so locking the campaign here
+    // cannot invert that order; it freezes the group metadata for the count below.
+    await tx.$queryRaw`
+      SELECT campaign."id"
+      FROM "recovery_campaign" campaign
+      JOIN "recovery_candidate" candidate ON candidate."campaign_id" = campaign."id"
+      WHERE candidate."id" = ${input.candidateId}::uuid
+      FOR UPDATE OF campaign
+    `;
+    if (isTestRuntime) await historicalReservationAfterLocksTestHook?.();
 
     const control = await tx.dmRecoveryControl.findUnique({ where: { id: 1 } });
     if (control?.circuitOpen) return { kind: "blocked", reason: "circuit_open" };
