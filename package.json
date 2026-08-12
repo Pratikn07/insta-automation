@@ -15,6 +15,7 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "seed": "tsx scripts/seed-keywords.ts",
+    "recovery:select-expanded": "tsx scripts/select-expanded-historical-recovery.ts",
     "test": "vitest run"
   },
   "dependencies": {

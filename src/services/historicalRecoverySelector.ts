@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import {
   decideEligibility,
@@ -104,6 +105,8 @@ export type SelectionReport = {
   rawIntents: number;
   eligible: number;
   eligiblePeople: number;
+  /** Distinct people represented by one or more recorded exclusions. */
+  excludedPeople: number;
   byEvidence: Record<string, number>;
   /** Selected candidates by non-sensitive origin provenance. */
   originBreakdown: Record<string, number>;
@@ -117,8 +120,11 @@ export type SelectionReport = {
  * `cutoff` bounds every time-sensitive subquery, so re-running the same selection
  * version reproduces the same list even as new data arrives.
  */
-async function loadRows(cutoff: Date): Promise<SelectionRow[]> {
-  return prisma.$queryRaw<SelectionRow[]>`
+async function loadRows(
+  cutoff: Date,
+  database: Pick<Prisma.TransactionClient, "$queryRaw"> = prisma,
+): Promise<SelectionRow[]> {
+  return database.$queryRaw<SelectionRow[]>`
     SELECT
       ji."id"          AS "intentId",
       ji."ig_user_id"  AS "igUserId",
@@ -330,6 +336,7 @@ export async function selectHistoricalCandidates(input: {
   /** Cap the campaign to the first N candidates, oldest first (staged rollout). */
   limit?: number;
   holdoutPercent?: number;
+  dailyCap?: number;
   eligibilityPolicyVersion?: string;
   /** An exact current segment for a v4 expanded-audience campaign. */
   audienceSegment?: AudienceSegment;
@@ -339,6 +346,11 @@ export async function selectHistoricalCandidates(input: {
   completionWindowHours?: number;
   persist: boolean;
   now?: Date;
+  /**
+   * Lets a higher-level selection coordinate several draft campaigns atomically.
+   * Omit it to preserve the selector's existing one-campaign transaction.
+   */
+  transaction?: Prisma.TransactionClient;
 }): Promise<SelectionReport> {
   if (input.limit !== undefined && (!Number.isInteger(input.limit) || input.limit <= 0)) {
     throw new Error("invalid_selection_limit");
@@ -377,7 +389,7 @@ export async function selectHistoricalCandidates(input: {
     }
   }
   const cutoff = input.now ?? new Date();
-  const rows = await loadRows(cutoff);
+  const rows = await loadRows(cutoff, input.transaction ?? prisma);
 
   const decided = rows.map((row) => {
     const facts: EligibilityFacts = {
@@ -502,6 +514,10 @@ export async function selectHistoricalCandidates(input: {
   }
 
   const holdoutPercent = input.holdoutPercent ?? 50;
+  const dailyCap = input.dailyCap ?? 10;
+  if (!Number.isInteger(dailyCap) || dailyCap < 1 || dailyCap > 1000) {
+    throw new Error("invalid_daily_cap");
+  }
   const inboundWindowHours = input.inboundWindowHours ?? DEFAULT_INBOUND_WINDOW_HOURS;
   const completionWindowHours = input.completionWindowHours
     ?? DEFAULT_COMPLETION_WINDOW_HOURS;
@@ -626,6 +642,7 @@ export async function selectHistoricalCandidates(input: {
     rawIntents: rows.length,
     eligible: selected.length,
     eligiblePeople: new Set(selected.map((e) => e.facts.igUserId)).size,
+    excludedPeople: new Set([...exclusions.values()].map((exclusion) => exclusion.igUserId)).size,
     byEvidence,
     originBreakdown,
     excludedByReason: Object.fromEntries(excludedByReason),
@@ -648,7 +665,7 @@ export async function selectHistoricalCandidates(input: {
   const campaignId = randomUUID();
   const candidates = inclusions.map((inclusion) => ({ id: randomUUID(), inclusion }));
 
-  await prisma.$transaction(async (tx) => {
+  const persistSelection = async (tx: Prisma.TransactionClient) => {
     await tx.recoveryCampaign.create({
       data: {
         id: campaignId,
@@ -660,6 +677,7 @@ export async function selectHistoricalCandidates(input: {
         commentTo: input.commentTo ?? null,
         selectionLimit: input.limit ?? null,
         holdoutPercent,
+        dailyCap,
         candidateCount: inclusions.length,
         excludedCount: snapshotExclusions.length,
         selectionFingerprint,
@@ -718,7 +736,12 @@ export async function selectHistoricalCandidates(input: {
           choiceReason: source.choiceReason,
         }))),
     });
-  }, { isolationLevel: "Serializable" });
+  };
+  if (input.transaction) {
+    await persistSelection(input.transaction);
+  } else {
+    await prisma.$transaction(persistSelection, { isolationLevel: "Serializable" });
+  }
 
   report.campaignId = campaignId;
   return report;
