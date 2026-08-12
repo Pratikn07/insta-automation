@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import {
   finalizePublicRecoveryDispatch,
@@ -11,10 +12,17 @@ import { resolveCanonicalConversation } from "./canonicalConversation.js";
 import { evaluateHistoricalOrigin } from "./historicalRecoveryOriginPolicy.js";
 
 type HistoricalReservationAfterLocksTestHook = () => void | Promise<void>;
+type HistoricalReservationBeforeControlLockTestHook = (input: {
+  candidateId: string;
+  tx: Prisma.TransactionClient;
+}) => void | Promise<void>;
 
 const isTestRuntime = process.env.NODE_ENV === "test";
 let historicalReservationAfterLocksTestHook:
   | HistoricalReservationAfterLocksTestHook
+  | undefined;
+let historicalReservationBeforeControlLockTestHook:
+  | HistoricalReservationBeforeControlLockTestHook
   | undefined;
 
 /**
@@ -30,6 +38,20 @@ export function setHistoricalReservationAfterLocksTestHook(
   return () => {
     if (historicalReservationAfterLocksTestHook === hook) {
       historicalReservationAfterLocksTestHook = previous;
+    }
+  };
+}
+
+/** Test-only registration for identifying a reservation database session pre-lock. */
+export function setHistoricalReservationBeforeControlLockTestHook(
+  hook: HistoricalReservationBeforeControlLockTestHook,
+): () => void {
+  if (!isTestRuntime) return () => undefined;
+  const previous = historicalReservationBeforeControlLockTestHook;
+  historicalReservationBeforeControlLockTestHook = hook;
+  return () => {
+    if (historicalReservationBeforeControlLockTestHook === hook) {
+      historicalReservationBeforeControlLockTestHook = previous;
     }
   };
 }
@@ -207,6 +229,12 @@ export async function reserveHistoricalDispatch(
     });
     if (!sourceHint) return { kind: "blocked", reason: "stale_claim" };
 
+    if (isTestRuntime) {
+      await historicalReservationBeforeControlLockTestHook?.({
+        candidateId: input.candidateId,
+        tx,
+      });
+    }
     await tx.$queryRaw`SELECT "id" FROM "dm_recovery_control" WHERE "id" = 1 FOR UPDATE`;
     await tx.$queryRaw`SELECT "id" FROM "ig_users" WHERE "id" = ${sourceHint.igUserId} FOR UPDATE`;
     await tx.$queryRaw`SELECT "id" FROM "recovery_candidate" WHERE "id" = ${input.candidateId}::uuid FOR UPDATE`;

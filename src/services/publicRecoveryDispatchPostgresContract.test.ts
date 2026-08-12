@@ -2,7 +2,10 @@ import { randomUUID } from "node:crypto";
 import { PrismaClient, type Prisma } from "@prisma/client";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { CURRENT_ORIGIN_METHOD } from "./historicalRecoveryOriginPolicy.js";
-import { setHistoricalReservationAfterLocksTestHook } from "./historicalRecoveryRepository.js";
+import {
+  setHistoricalReservationAfterLocksTestHook,
+  setHistoricalReservationBeforeControlLockTestHook,
+} from "./historicalRecoveryRepository.js";
 
 const databaseUrl = process.env.MIGRATION_TEST_DATABASE_URL;
 const describeWithDatabase = databaseUrl ? describe.sequential : describe.skip;
@@ -18,10 +21,15 @@ let otherKeywordId: string;
 let intentSequence = 0;
 
 describe("historical dispatch test barrier", () => {
-  it("installs and clears the post-lock synchronization hook", () => {
-    const clear = setHistoricalReservationAfterLocksTestHook(async () => undefined);
-    expect(typeof clear).toBe("function");
-    clear();
+  it("installs and clears the synchronization hooks", () => {
+    const clearAfterLocks = setHistoricalReservationAfterLocksTestHook(async () => undefined);
+    const clearBeforeControl = setHistoricalReservationBeforeControlLockTestHook(
+      async () => undefined,
+    );
+    expect(typeof clearAfterLocks).toBe("function");
+    expect(typeof clearBeforeControl).toBe("function");
+    clearBeforeControl();
+    clearAfterLocks();
   });
 });
 
@@ -116,6 +124,31 @@ async function waitForQueryToWaitOnLock(marker: string): Promise<void> {
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(`expected ${marker} to wait on the campaign row lock`);
+}
+
+async function waitForReservationToWaitOnControlLock(pid: number): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const rows = await db.$queryRaw<Array<{
+      state: string;
+      wait_event_type: string | null;
+      query: string;
+    }>>`
+      SELECT state, wait_event_type, query
+      FROM pg_stat_activity
+      WHERE pid = ${pid}
+    `;
+    const row = rows[0];
+    if (
+      row?.state === "active" &&
+      row.wait_event_type === "Lock" &&
+      row.query.includes('dm_recovery_control')
+    ) {
+      return;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`reservation backend ${pid} did not wait on dm_recovery_control`);
 }
 
 async function openBatch(campaignId: string, now: Date): Promise<string> {
@@ -622,6 +655,14 @@ describeWithDatabase("public recovery dispatch concurrency", () => {
       releaseFirstControlLock();
     };
     let controlLockEntries = 0;
+    const secondReservationBackend = Promise.withResolvers<number>();
+    const resetBeforeControlLockHook = setHistoricalReservationBeforeControlLockTestHook(
+      async ({ candidateId, tx }) => {
+        if (candidateId !== second.id) return;
+        const rows = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+        secondReservationBackend.resolve(rows[0]!.pid);
+      },
+    );
     const resetTestHook = setHistoricalReservationAfterLocksTestHook(async () => {
       controlLockEntries++;
       if (controlLockEntries === 1) {
@@ -655,6 +696,7 @@ describeWithDatabase("public recovery dispatch concurrency", () => {
         globalDailyCap: 1_000,
         prospectiveCooldownHours: 24,
       });
+      await waitForReservationToWaitOnControlLock(await secondReservationBackend.promise);
       releaseControlLock();
       const results = await Promise.all([firstReservation, secondReservation]);
 
@@ -672,6 +714,7 @@ describeWithDatabase("public recovery dispatch concurrency", () => {
     } finally {
       releaseControlLock();
       resetTestHook();
+      resetBeforeControlLockHook();
     }
   });
 
