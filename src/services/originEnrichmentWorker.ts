@@ -196,6 +196,7 @@ async function tickBody(): Promise<OriginEnrichmentResult> {
         originConfidence: "low",
         originMethod: CURRENT_ORIGIN_METHOD,
         originEvidence: "no name or username to classify",
+        audienceSegment: "unknown_no_name",
         originCheckedAt: now,
       },
     })));
@@ -235,6 +236,7 @@ async function tickBody(): Promise<OriginEnrichmentResult> {
           originConfidence: v.confidence,
           originMethod: CURRENT_ORIGIN_METHOD,
           originEvidence: v.evidence,
+          audienceSegment: v.audienceSegment,
           originCheckedAt: now,
         },
       }] : [];

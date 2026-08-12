@@ -187,6 +187,7 @@ model IgUser {
   originMethod     String?   @map("origin_method") // classifier/prompt version, e.g. llm_v2
   originEvidence   String?   @map("origin_evidence") // the token/script/bio that drove it
   originCheckedAt  DateTime? @map("origin_checked_at")
+  audienceSegment  HistoricalAudienceSegment? @map("audience_segment")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -194,6 +195,7 @@ model IgUser {
   recoveryReminders        DmRecoveryReminder[]
   publicRecoveryDispatches PublicRecoveryDispatch[]
 
+  @@index([audienceSegment, originMethod])
   @@map("ig_users")
 }
 
@@ -1077,6 +1079,17 @@ enum RecoveryCampaignHealthKind {
   @@map("recovery_campaign_health_kind")
 }
 
+enum HistoricalAudienceSegment {
+  western
+  other
+  unknown_cue
+  unknown_generic
+  unknown_no_name
+  south_asian
+
+  @@map("historical_audience_segment")
+}
+
 /// One owner-approved historical recovery campaign.
 ///
 /// Selection is frozen at approval rather than re-run during the send: the
@@ -1114,6 +1127,9 @@ model RecoveryCampaign {
   /// the same cutoff and filters must agree; a different hash means the data moved.
   /// Null on campaigns created before the decision set was recorded.
   decisionHash             String?               @map("decision_hash")
+  audienceSegment          HistoricalAudienceSegment? @map("audience_segment")
+  rolloutGroupId           String?               @map("rollout_group_id") @db.Uuid
+  rolloutGroupHourlyCap    Int?                  @map("rollout_group_hourly_cap")
   approvedBy               String?               @map("approved_by")
   approvedAt               DateTime?             @map("approved_at") @db.Timestamptz(3)
   startedAt                DateTime?             @map("started_at") @db.Timestamptz(3)
@@ -1130,6 +1146,7 @@ model RecoveryCampaign {
   healthObservations       RecoveryCampaignHealthObservation[]
 
   @@index([state])
+  @@index([rolloutGroupId, state])
   @@map("recovery_campaign")
 }
 
@@ -1227,6 +1244,7 @@ model RecoveryCandidate {
   audienceOrigin           String?                  @map("audience_origin")
   audienceOriginMethod     String?                  @map("audience_origin_method")
   audienceOriginConfidence String?                  @map("audience_origin_confidence")
+  audienceSegment          HistoricalAudienceSegment? @map("audience_segment")
   arm                      RecoveryCandidateArm
   outcome                  RecoveryCandidateOutcome @default(pending)
   eligibleAt               DateTime                 @map("eligible_at") @db.Timestamptz(3)

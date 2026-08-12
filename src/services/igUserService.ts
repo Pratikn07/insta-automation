@@ -63,6 +63,7 @@ function originResetIfIdentityChanged(
     originMethod: null,
     // Null here is what makes the enrichment worker pick the row up again.
     originCheckedAt: null,
+    audienceSegment: null,
   };
 }
 
