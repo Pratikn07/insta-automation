@@ -27,6 +27,28 @@ const DEFAULT_INBOUND_WINDOW_HOURS = 24;
 const DEFAULT_COMPLETION_WINDOW_HOURS = 48;
 
 /**
+ * PostgreSQL accepts several UUID spellings but stores only its lowercase,
+ * hyphenated representation. Normalize at the selection boundary so the reviewed
+ * hash, persisted campaign, and later approval reconstruction use one identity.
+ */
+function normalizeRolloutGroupId(value: string): string | null {
+  if (value !== value.trim()) return null;
+  const hasOpeningBrace = value.startsWith("{");
+  const hasClosingBrace = value.endsWith("}");
+  if (hasOpeningBrace !== hasClosingBrace) return null;
+  const unbraced = hasOpeningBrace ? value.slice(1, -1) : value;
+  const compact = /^[0-9a-f]{32}$/i.test(unbraced)
+    ? unbraced
+    : /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(unbraced)
+      ? unbraced.replaceAll("-", "")
+      : null;
+  if (!compact) return null;
+  const lowercase = compact.toLowerCase();
+  return `${lowercase.slice(0, 8)}-${lowercase.slice(8, 12)}-${lowercase.slice(12, 16)}`
+    + `-${lowercase.slice(16, 20)}-${lowercase.slice(20)}`;
+}
+
+/**
  * Build the candidate list for a historical recovery campaign (design §34–§37).
  *
  * Selection is a SNAPSHOT, not a live query. The underlying data moves — origin
@@ -331,6 +353,7 @@ export async function selectHistoricalCandidates(input: {
   if (!isExpandedAudienceSelection && hasExpandedAudienceField) {
     throw new Error("expanded_audience_policy_version_required");
   }
+  let rolloutGroupId: string | undefined;
   if (isExpandedAudienceSelection) {
     if (
       input.audienceSegment === undefined
@@ -342,7 +365,9 @@ export async function selectHistoricalCandidates(input: {
     if (!AUDIENCE_SEGMENTS.includes(input.audienceSegment)) {
       throw new Error("invalid_audience_segment");
     }
-    if (!input.rolloutGroupId.trim()) throw new Error("invalid_rollout_group_id");
+    const normalizedRolloutGroupId = normalizeRolloutGroupId(input.rolloutGroupId);
+    if (!normalizedRolloutGroupId) throw new Error("invalid_rollout_group_id");
+    rolloutGroupId = normalizedRolloutGroupId;
     if (
       !Number.isInteger(input.rolloutGroupHourlyCap)
       || input.rolloutGroupHourlyCap < 1
@@ -525,7 +550,7 @@ export async function selectHistoricalCandidates(input: {
     completionWindowHours,
     ...(isExpandedAudienceSelection ? {
       audienceSegment: input.audienceSegment!,
-      rolloutGroupId: input.rolloutGroupId!,
+      rolloutGroupId: rolloutGroupId!,
       rolloutGroupHourlyCap: input.rolloutGroupHourlyCap!,
     } : {}),
   };
@@ -645,7 +670,7 @@ export async function selectHistoricalCandidates(input: {
         decisionHash,
         ...(isExpandedAudienceSelection ? {
           audienceSegment: input.audienceSegment!,
-          rolloutGroupId: input.rolloutGroupId!,
+          rolloutGroupId: rolloutGroupId!,
           rolloutGroupHourlyCap: input.rolloutGroupHourlyCap!,
         } : {}),
       },
