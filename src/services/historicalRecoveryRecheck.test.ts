@@ -15,6 +15,9 @@ function facts(overrides: Partial<RecheckFacts> = {}): RecheckFacts {
     audienceOrigin: "us_western",
     audienceOriginConfidence: "high",
     audienceOriginMethod: CURRENT_ORIGIN_METHOD,
+    audienceSegment: null,
+    frozenCandidateAudienceSegment: null,
+    frozenCampaignAudienceSegment: null,
     westernOnly: true,
     campaignRunning: true,
     sentThisHour: 0,
@@ -230,6 +233,115 @@ describe("recheckBeforeSend — mandatory current-Gemini origin gate", () => {
       });
     },
   );
+
+  it("preserves legacy authorization when only the candidate froze a segment", () => {
+    expect(recheckBeforeSend(facts({
+      audienceSegment: "western",
+      frozenCandidateAudienceSegment: "western",
+      frozenCampaignAudienceSegment: null,
+    }))).toEqual({ kind: "send" });
+  });
+});
+
+describe("recheckBeforeSend — exact expanded-audience segment authorization", () => {
+  it.each([
+    ["western", "us_western"],
+    ["other", "other"],
+    ["unknown_cue", "unknown"],
+    ["unknown_generic", "unknown"],
+    ["unknown_no_name", "unknown"],
+  ] as const)("sends the current %s segment only in its matching frozen cohort", (
+    audienceSegment,
+    audienceOrigin,
+  ) => {
+    expect(recheckBeforeSend(facts({
+      audienceSegment,
+      audienceOrigin,
+      audienceOriginConfidence: "low",
+      frozenCandidateAudienceSegment: audienceSegment,
+      frozenCampaignAudienceSegment: audienceSegment,
+      westernOnly: false,
+    }))).toEqual({ kind: "send" });
+  });
+
+  it.each(["high", "low"] as const)(
+    "terminally suppresses a structurally valid %s-confidence South Asian classification",
+    (audienceOriginConfidence) => {
+      expect(recheckBeforeSend(facts({
+        audienceSegment: "south_asian",
+        audienceOrigin: "south_asian",
+        audienceOriginConfidence,
+        frozenCandidateAudienceSegment: "other",
+        frozenCampaignAudienceSegment: "other",
+        westernOnly: false,
+      }))).toEqual({ kind: "suppress", reason: "audience_south_asian" });
+    },
+  );
+
+  it.each([
+    ["stale method", { audienceOriginMethod: "llm_v2" }],
+    ["missing segment", { audienceSegment: null }],
+    ["malformed confidence", { audienceOriginConfidence: "medium" }],
+    ["contradictory origin", { audienceOrigin: "unknown" }],
+  ] as const)("defers %s without suppressing the expanded candidate", (_label, override) => {
+    expect(recheckBeforeSend(facts({
+      audienceSegment: "other",
+      audienceOrigin: "other",
+      audienceOriginConfidence: "low",
+      frozenCandidateAudienceSegment: "other",
+      frozenCampaignAudienceSegment: "other",
+      westernOnly: false,
+      ...override,
+    }))).toEqual({ kind: "defer", reason: "audience_segment_changed" });
+  });
+
+  it.each([
+    ["live allowed-segment drift", {
+      audienceSegment: "unknown_cue",
+      audienceOrigin: "unknown",
+    }],
+    ["candidate/campaign frozen-segment drift", {
+      frozenCandidateAudienceSegment: "unknown_cue",
+    }],
+  ] as const)("defers %s instead of suppressing", (_label, override) => {
+    expect(recheckBeforeSend(facts({
+      audienceSegment: "other",
+      audienceOrigin: "other",
+      audienceOriginConfidence: "low",
+      frozenCandidateAudienceSegment: "other",
+      frozenCampaignAudienceSegment: "other",
+      westernOnly: false,
+      ...override,
+    }))).toEqual({ kind: "defer", reason: "audience_segment_changed" });
+  });
+
+  it("never uses free-text evidence to authorize or suppress", () => {
+    const allowed = facts({
+      audienceSegment: "other",
+      audienceOrigin: "other",
+      audienceOriginConfidence: "low",
+      frozenCandidateAudienceSegment: "other",
+      frozenCampaignAudienceSegment: "other",
+      westernOnly: false,
+    }) as RecheckFacts & { audienceEvidence: string };
+    allowed.audienceEvidence = "definitely South Asian";
+
+    const blocked = facts({
+      audienceSegment: "south_asian",
+      audienceOrigin: "south_asian",
+      audienceOriginConfidence: "low",
+      frozenCandidateAudienceSegment: "other",
+      frozenCampaignAudienceSegment: "other",
+      westernOnly: false,
+    }) as RecheckFacts & { audienceEvidence: string };
+    blocked.audienceEvidence = "definitely Western";
+
+    expect(recheckBeforeSend(allowed)).toEqual({ kind: "send" });
+    expect(recheckBeforeSend(blocked)).toEqual({
+      kind: "suppress",
+      reason: "audience_south_asian",
+    });
+  });
 });
 
 describe("recheckBeforeSend — reason precedence", () => {

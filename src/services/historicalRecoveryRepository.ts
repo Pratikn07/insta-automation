@@ -9,7 +9,7 @@ import {
   type DispatchReservation,
 } from "./publicRecoveryDispatchRepository.js";
 import { resolveCanonicalConversation } from "./canonicalConversation.js";
-import { evaluateHistoricalOrigin } from "./historicalRecoveryOriginPolicy.js";
+import { authorizeLiveHistoricalAudience } from "./historicalRecoveryRecheck.js";
 
 type HistoricalReservationAfterLocksTestHook = () => void | Promise<void>;
 type HistoricalReservationBeforeControlLockTestHook = (input: {
@@ -94,6 +94,8 @@ export type ClaimedCandidate = {
   evidence: string;
   arm: string;
   audienceOrigin: string | null;
+  /** Segment frozen with the candidate; nullable on legacy or incomplete snapshots. */
+  audienceSegment: string | null;
   /**
    * Proof this worker holds the row. Every release and finalise must present it, so a
    * stale claimant cannot overwrite the winner's outcome.
@@ -198,6 +200,7 @@ export async function claimCandidate(
       evidence: true,
       arm: true,
       audienceOrigin: true,
+      audienceSegment: true,
       attempts: true,
     },
   });
@@ -390,7 +393,7 @@ export async function startHistoricalDispatch(input: {
     await tx.$queryRaw`SELECT "id" FROM "recovery_campaign" WHERE "id" = ${source.campaignId}::uuid FOR UPDATE`;
     const campaign = await tx.recoveryCampaign.findUnique({
       where: { id: source.campaignId },
-      select: { state: true, westernOnly: true },
+      select: { state: true, westernOnly: true, audienceSegment: true },
     });
     if (campaign?.state !== "running") {
       return { kind: "blocked", reason: "campaign_not_running" };
@@ -407,7 +410,12 @@ export async function startHistoricalDispatch(input: {
     const [person, keyword] = await Promise.all([
       tx.igUser.findUnique({
         where: { id: source.igUserId },
-        select: { inferredOrigin: true, originConfidence: true, originMethod: true },
+        select: {
+          inferredOrigin: true,
+          originConfidence: true,
+          originMethod: true,
+          audienceSegment: true,
+        },
       }),
       tx.keyword.findUnique({
         where: { id: source.keywordId },
@@ -509,13 +517,18 @@ export async function startHistoricalDispatch(input: {
     // linearization point for origin enrichment: a committed rewrite is visible here;
     // a later rewrite waits until dispatch has been explicitly marked started. This
     // mandatory gate is deliberately immediately before the dispatch-start transition.
-    const originDecision = evaluateHistoricalOrigin({
-      origin: person?.inferredOrigin ?? null,
-      confidence: person?.originConfidence ?? null,
-      method: person?.originMethod ?? null,
+    const audienceDecision = authorizeLiveHistoricalAudience({
+      audienceSegment: person?.audienceSegment ?? null,
+      audienceOrigin: person?.inferredOrigin ?? null,
+      audienceOriginConfidence: person?.originConfidence ?? null,
+      audienceOriginMethod: person?.originMethod ?? null,
+      frozenCandidateAudienceSegment: source.audienceSegment ?? null,
+      frozenCampaignAudienceSegment: campaign.audienceSegment ?? null,
     });
-    if (originDecision.kind === "stale") return deferBeforeStart(originDecision.reason);
-    if (originDecision.kind === "block") return suppressBeforeStart(originDecision.reason);
+    if (audienceDecision.kind === "defer") return deferBeforeStart(audienceDecision.reason);
+    if (audienceDecision.kind === "suppress") {
+      return suppressBeforeStart(audienceDecision.reason);
+    }
 
     const started = await startPublicRecoveryDispatch(tx, input);
     if (!started) return { kind: "blocked", reason: "reservation_not_active" };
@@ -560,12 +573,11 @@ export type HistoricalDispatchStartBlockReason =
 
 export type HistoricalDispatchStartSuppressionReason =
   | "audience_south_asian"
-  | "audience_unknown"
-  | "audience_other"
-  | "audience_invalid_confidence"
   | "keyword_inactive";
 
-export type HistoricalDispatchStartDeferReason = "origin_not_current_gemini";
+export type HistoricalDispatchStartDeferReason =
+  | "origin_not_current_gemini"
+  | "audience_segment_changed";
 
 export type StartHistoricalDispatchResult =
   | { kind: "started" }

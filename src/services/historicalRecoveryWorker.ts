@@ -302,6 +302,9 @@ async function runLeasedTickBody(
       audienceOrigin: facts.audienceOrigin,
       audienceOriginConfidence: facts.audienceOriginConfidence,
       audienceOriginMethod: facts.audienceOriginMethod,
+      audienceSegment: facts.audienceSegment,
+      frozenCandidateAudienceSegment: facts.frozenCandidateAudienceSegment,
+      frozenCampaignAudienceSegment: facts.frozenCampaignAudienceSegment,
       // Retained as part of the immutable campaign manifest, but cannot relax the
       // mandatory current-Gemini historical public-comment gate.
       westernOnly: facts.approvedWesternOnly === true || env.DM_RECOVERY_WESTERN_ONLY,
@@ -336,7 +339,10 @@ async function runLeasedTickBody(
 
       await releaseCandidateClaim(id, claimed.claimToken);
       result.deferred++;
-      if (decision.reason === "origin_not_current_gemini") {
+      if (
+        decision.reason === "origin_not_current_gemini"
+        || decision.reason === "audience_segment_changed"
+      ) {
         await logEvent("historical_recovery_deferred", {
           campaignId: claimed.campaignId,
           candidateId: id,
@@ -775,6 +781,9 @@ type PreDispatchFacts = {
   audienceOrigin: string | null;
   audienceOriginConfidence: string | null;
   audienceOriginMethod: string | null;
+  audienceSegment: string | null;
+  frozenCandidateAudienceSegment: string | null;
+  frozenCampaignAudienceSegment: string | null;
   approvedWesternOnly: boolean | null;
   inboundCount: number;
   completedCount: number;
@@ -795,11 +804,22 @@ async function gatherPreDispatchFacts(
   const [campaign, person, recentContact, sourceResolution, capacity] = await Promise.all([
     prisma.recoveryCampaign.findUnique({
       where: { id: claimed.campaignId },
-      select: { state: true, hourlyCap: true, dailyCap: true, westernOnly: true },
+      select: {
+        state: true,
+        hourlyCap: true,
+        dailyCap: true,
+        westernOnly: true,
+        audienceSegment: true,
+      },
     }),
     prisma.igUser.findUnique({
       where: { id: claimed.igUserId },
-      select: { inferredOrigin: true, originConfidence: true, originMethod: true },
+      select: {
+        inferredOrigin: true,
+        originConfidence: true,
+        originMethod: true,
+        audienceSegment: true,
+      },
     }),
     // What has changed SINCE SELECTION, scoped to this person and this keyword (QA-11).
     //
@@ -866,6 +886,9 @@ async function gatherPreDispatchFacts(
     audienceOrigin: person?.inferredOrigin ?? null,
     audienceOriginConfidence: person?.originConfidence ?? null,
     audienceOriginMethod: person?.originMethod ?? null,
+    audienceSegment: person?.audienceSegment ?? null,
+    frozenCandidateAudienceSegment: claimed.audienceSegment ?? null,
+    frozenCampaignAudienceSegment: campaign?.audienceSegment ?? null,
     approvedWesternOnly: campaign?.westernOnly ?? null,
     inboundCount,
     completedCount,
