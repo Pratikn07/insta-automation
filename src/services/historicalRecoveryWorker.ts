@@ -431,6 +431,7 @@ async function runLeasedTickBody(
       if (
         reservation.reason === "global_hourly_cap_reached" ||
         reservation.reason === "global_daily_cap_reached" ||
+        reservation.reason === "rollout_group_hourly_cap_reached" ||
         reservation.reason === "circuit_open"
       ) {
         result.skipped = reservation.reason;

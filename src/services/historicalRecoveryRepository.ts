@@ -192,7 +192,15 @@ export async function reserveHistoricalDispatch(
 
     const source = await tx.recoveryCandidate.findUnique({
       where: { id: input.candidateId },
-      include: { campaign: { select: { state: true } } },
+      include: {
+        campaign: {
+          select: {
+            state: true,
+            rolloutGroupId: true,
+            rolloutGroupHourlyCap: true,
+          },
+        },
+      },
     });
     if (
       !source ||
@@ -229,6 +237,8 @@ export async function reserveHistoricalDispatch(
       globalDailyCap: input.globalDailyCap,
       campaignHourlyCap: input.hourlyCap,
       campaignDailyCap: input.dailyCap,
+      rolloutGroupId: source.campaign.rolloutGroupId ?? undefined,
+      rolloutGroupHourlyCap: source.campaign.rolloutGroupHourlyCap ?? undefined,
     });
   });
 }

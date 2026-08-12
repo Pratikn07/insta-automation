@@ -29,7 +29,10 @@ async function createPerson(): Promise<string> {
   return id;
 }
 
-async function createCampaign(): Promise<string> {
+async function createCampaign(input: {
+  rolloutGroupId?: string;
+  rolloutGroupHourlyCap?: number;
+} = {}): Promise<string> {
   const id = randomUUID();
   await db.recoveryCampaign.create({
     data: {
@@ -42,6 +45,7 @@ async function createCampaign(): Promise<string> {
       state: "running",
       approvedBy: "contract@example.com",
       approvedAt: new Date(),
+      ...input,
     },
   });
   return id;
@@ -481,6 +485,160 @@ describeWithDatabase("public recovery dispatch concurrency", () => {
       now,
       hourlyCap: 10,
       dailyCap: 10,
+      globalHourlyCap: 1,
+      globalDailyCap: 1_000,
+      prospectiveCooldownHours: 24,
+    })).resolves.toEqual({ kind: "blocked", reason: "global_hourly_cap_reached" });
+  });
+
+  it("shares a rolling-hour cap across a rollout group under concurrent reservations", async () => {
+    const now = new Date();
+    const rolloutGroupId = randomUUID();
+    const firstCampaignId = await createCampaign({ rolloutGroupId, rolloutGroupHourlyCap: 10 });
+    const secondCampaignId = await createCampaign({ rolloutGroupId, rolloutGroupHourlyCap: 10 });
+    const unrelatedCampaignId = await createCampaign({
+      rolloutGroupId: randomUUID(),
+      rolloutGroupHourlyCap: 10,
+    });
+    const capacityStates = [
+      "reserved", "dispatch_started", "sent", "uncertain", "reserved",
+      "dispatch_started", "sent", "uncertain", "reserved",
+    ] as const;
+    const capacityPeople = await Promise.all(
+      Array.from({ length: capacityStates.length + 2 }, () => createPerson()),
+    );
+    await db.publicRecoveryDispatch.createMany({
+      data: capacityStates.map((state, index) => ({
+        reservationToken: randomUUID(),
+        igUserId: capacityPeople[index]!,
+        sourceKind: "historical" as const,
+        sourceId: randomUUID(),
+        attemptNumber: 1,
+        campaignId: index % 2 === 0 ? firstCampaignId : secondCampaignId,
+        state,
+        reservedAt: now,
+        leaseExpiresAt: new Date(now.getTime() + 60_000),
+        ...(state === "dispatch_started" || state === "sent" || state === "uncertain"
+          ? { dispatchStartedAt: now }
+          : {}),
+        ...(state === "sent" ? { sentAt: now, providerReplyId: `provider-${randomUUID()}` } : {}),
+      })),
+    });
+    // A released reservation has no chance of posting and must immediately free a slot.
+    await db.publicRecoveryDispatch.create({
+      data: {
+        reservationToken: randomUUID(),
+        igUserId: capacityPeople[capacityStates.length]!,
+        sourceKind: "historical",
+        sourceId: randomUUID(),
+        attemptNumber: 1,
+        campaignId: firstCampaignId,
+        state: "released",
+        reservedAt: now,
+        leaseExpiresAt: new Date(now.getTime() + 60_000),
+        releasedAt: now,
+        terminalReason: "pre_network",
+      },
+    });
+    // Capacity in another rollout group must not affect this one.
+    await db.publicRecoveryDispatch.create({
+      data: {
+        reservationToken: randomUUID(),
+        igUserId: capacityPeople[capacityStates.length + 1]!,
+        sourceKind: "historical",
+        sourceId: randomUUID(),
+        attemptNumber: 1,
+        campaignId: unrelatedCampaignId,
+        state: "sent",
+        reservedAt: now,
+        leaseExpiresAt: new Date(now.getTime() + 60_000),
+        dispatchStartedAt: now,
+        sentAt: now,
+        providerReplyId: `provider-${randomUUID()}`,
+      },
+    });
+
+    const [first, second] = await Promise.all([
+      createCandidate(await createPerson(), firstCampaignId),
+      createCandidate(await createPerson(), secondCampaignId),
+    ]);
+    const lease = new Date(now.getTime() + 60_000);
+    const [firstClaim, secondClaim] = await Promise.all([
+      historical.claimCandidate(first.id, now, lease),
+      historical.claimCandidate(second.id, now, lease),
+    ]);
+    const results = await Promise.all([
+      historical.reserveHistoricalDispatch({
+        candidateId: first.id,
+        claimToken: firstClaim!.claimToken,
+        now,
+        hourlyCap: 100,
+        dailyCap: 100,
+        globalHourlyCap: 100,
+        globalDailyCap: 1_000,
+        prospectiveCooldownHours: 24,
+      }),
+      historical.reserveHistoricalDispatch({
+        candidateId: second.id,
+        claimToken: secondClaim!.claimToken,
+        now,
+        hourlyCap: 100,
+        dailyCap: 100,
+        globalHourlyCap: 100,
+        globalDailyCap: 1_000,
+        prospectiveCooldownHours: 24,
+      }),
+    ]);
+
+    expect(results.filter((result) => result.kind === "reserved")).toHaveLength(1);
+    expect(results.filter((result) => (
+      result.kind === "blocked" && result.reason === "rollout_group_hourly_cap_reached"
+    ))).toHaveLength(1);
+    expect(await db.publicRecoveryDispatch.count({
+      where: {
+        campaign: { rolloutGroupId },
+        state: { in: ["reserved", "dispatch_started", "sent", "uncertain"] },
+        reservedAt: { gt: new Date(now.getTime() - 60 * 60 * 1000) },
+      },
+    })).toBe(10);
+  });
+
+  it("gives the global hourly cap precedence over a rollout-group cap", async () => {
+    const now = new Date();
+    const campaignId = await createCampaign({
+      rolloutGroupId: randomUUID(),
+      rolloutGroupHourlyCap: 10,
+    });
+    const capacityPerson = await createPerson();
+    await db.publicRecoveryDispatch.create({
+      data: {
+        reservationToken: randomUUID(),
+        igUserId: capacityPerson,
+        sourceKind: "historical",
+        sourceId: randomUUID(),
+        attemptNumber: 1,
+        campaignId,
+        state: "sent",
+        reservedAt: now,
+        leaseExpiresAt: new Date(now.getTime() + 60_000),
+        dispatchStartedAt: now,
+        sentAt: now,
+        providerReplyId: `provider-${randomUUID()}`,
+      },
+    });
+    const candidate = await createCandidate(await createPerson(), campaignId);
+    const claim = await historical.claimCandidate(
+      candidate.id,
+      now,
+      new Date(now.getTime() + 60_000),
+    );
+
+    await expect(historical.reserveHistoricalDispatch({
+      candidateId: candidate.id,
+      claimToken: claim!.claimToken,
+      now,
+      hourlyCap: 100,
+      dailyCap: 100,
       globalHourlyCap: 1,
       globalDailyCap: 1_000,
       prospectiveCooldownHours: 24,

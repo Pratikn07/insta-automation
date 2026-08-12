@@ -895,6 +895,23 @@ describe("runHistoricalRecoveryTick — campaign pacing", () => {
     expect(result.deferred).toBe(1);
   });
 
+  it("defers without suppressing when the shared rollout group has no hourly capacity", async () => {
+    reserveHistoricalDispatch.mockResolvedValue({
+      kind: "blocked",
+      reason: "rollout_group_hourly_cap_reached",
+    });
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(markCandidateSuppressed).not.toHaveBeenCalled();
+    expect(releaseCandidateClaim).toHaveBeenCalledWith("cand-1", "token-1");
+    expect(result).toMatchObject({
+      deferred: 1,
+      skipped: "rollout_group_hourly_cap_reached",
+    });
+  });
+
   // The reservation must happen BEFORE Meta is contacted, or it reserves nothing.
   it("reserves capacity before dispatching", async () => {
     const order: string[] = [];

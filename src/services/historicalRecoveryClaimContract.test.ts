@@ -1,8 +1,12 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient, type Prisma } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  reservePublicRecoveryDispatch,
+  type ReserveDispatchInput,
+} from "./publicRecoveryDispatchRepository.js";
 
 // QA-02 demanded a real-Postgres race: "two clients must return exactly one claim".
 // A mocked client cannot show this — the defect was a WHERE clause that matched the
@@ -23,6 +27,34 @@ type Fixture = { resourceId: string; keywordId: string; igUserId: string; intent
 let fx: Fixture;
 /** Campaigns created per-test for cap isolation; removed in afterAll. */
 const campaignsToClean: string[] = [];
+
+describe("historical dispatch rollout-group metadata", () => {
+  const baseInput = (): ReserveDispatchInput => ({
+    sourceKind: "historical",
+    sourceId: randomUUID(),
+    attemptNumber: 1,
+    igUserId: `partial-group-${randomUUID()}`,
+    campaignId: randomUUID(),
+    now: new Date(),
+    leaseExpiresAt: new Date(Date.now() + 60_000),
+    prospectiveCooldownHours: 24,
+    globalHourlyCap: 100,
+    globalDailyCap: 1_000,
+  });
+
+  it.each([
+    { rolloutGroupId: randomUUID() },
+    { rolloutGroupHourlyCap: 10 },
+  ] satisfies Array<Pick<ReserveDispatchInput, "rolloutGroupId" | "rolloutGroupHourlyCap">>)(
+    "rejects incomplete locked rollout metadata %#",
+    async (partial) => {
+      await expect(reservePublicRecoveryDispatch({} as Prisma.TransactionClient, {
+        ...baseInput(),
+        ...partial,
+      })).resolves.toEqual({ kind: "blocked", reason: "invalid_rollout_group_metadata" });
+    },
+  );
+});
 
 async function seed(): Promise<Fixture> {
   const f: Fixture = {

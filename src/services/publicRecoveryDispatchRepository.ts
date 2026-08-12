@@ -12,6 +12,8 @@ export type DispatchBlockReason =
   | "daily_cap_reached"
   | "global_hourly_cap_reached"
   | "global_daily_cap_reached"
+  | "rollout_group_hourly_cap_reached"
+  | "invalid_rollout_group_metadata"
   | "source_attempt_exists"
   | "reconciled_alias";
 
@@ -32,6 +34,9 @@ export type ReserveDispatchInput = {
   globalDailyCap: number;
   campaignHourlyCap?: number;
   campaignDailyCap?: number;
+  /** Both values come from the locked historical campaign, never from a worker. */
+  rolloutGroupId?: string;
+  rolloutGroupHourlyCap?: number;
 };
 
 const ACTIVE_STATES = ["reserved", "dispatch_started"] as const;
@@ -49,6 +54,20 @@ export async function reservePublicRecoveryDispatch(
   tx: Prisma.TransactionClient,
   input: ReserveDispatchInput,
 ): Promise<DispatchReservation> {
+  const hasRolloutGroupId = input.rolloutGroupId !== undefined;
+  const hasRolloutGroupHourlyCap = input.rolloutGroupHourlyCap !== undefined;
+  if (hasRolloutGroupId !== hasRolloutGroupHourlyCap) {
+    return { kind: "blocked", reason: "invalid_rollout_group_metadata" };
+  }
+  if (
+    hasRolloutGroupHourlyCap &&
+    (!Number.isInteger(input.rolloutGroupHourlyCap) ||
+      input.rolloutGroupHourlyCap! < 1 ||
+      input.rolloutGroupHourlyCap! > 1_000)
+  ) {
+    return { kind: "blocked", reason: "invalid_rollout_group_metadata" };
+  }
+
   const existingSourceAttempt = await tx.publicRecoveryDispatch.findUnique({
     where: {
       sourceKind_sourceId_attemptNumber: {
@@ -103,6 +122,19 @@ export async function reservePublicRecoveryDispatch(
   }
   if (globalDay >= input.globalDailyCap) {
     return { kind: "blocked", reason: "global_daily_cap_reached" };
+  }
+
+  if (hasRolloutGroupId && hasRolloutGroupHourlyCap) {
+    const rolloutGroupHour = await tx.publicRecoveryDispatch.count({
+      where: {
+        campaign: { rolloutGroupId: input.rolloutGroupId },
+        state: { in: [...CAPACITY_STATES] },
+        reservedAt: { gt: hourAgo },
+      },
+    });
+    if (rolloutGroupHour >= input.rolloutGroupHourlyCap!) {
+      return { kind: "blocked", reason: "rollout_group_hourly_cap_reached" };
+    }
   }
 
   if (input.campaignId) {
