@@ -11,6 +11,7 @@ const {
   logEvent,
   approveCampaign,
   pauseCampaign,
+  pauseCampaignGroup,
   resumeCampaign,
   cancelCampaign,
   advanceCampaignStage,
@@ -23,6 +24,7 @@ const {
   logEvent: vi.fn(),
   approveCampaign: vi.fn(),
   pauseCampaign: vi.fn(),
+  pauseCampaignGroup: vi.fn(),
   resumeCampaign: vi.fn(),
   cancelCampaign: vi.fn(),
   advanceCampaignStage: vi.fn(),
@@ -42,6 +44,7 @@ vi.mock("../services/eventLogger.js", () => ({ logEvent }));
 vi.mock("../services/recoveryCampaignControl.js", () => ({
   approveCampaign,
   pauseCampaign,
+  pauseCampaignGroup,
   resumeCampaign,
   cancelCampaign,
   advanceCampaignStage,
@@ -53,6 +56,7 @@ import {
   CANDIDATE_VIEWS,
 } from "./historicalRecovery.routes.js";
 import { historicalRecoveryRouter } from "./historicalRecovery.routes.js";
+import { apiRouter } from "./router.js";
 import { CURRENT_ORIGIN_METHOD } from "../services/historicalRecoveryOriginPolicy.js";
 
 const CAMPAIGN_ID = "11111111-1111-4111-8111-111111111111";
@@ -70,6 +74,13 @@ function app(authenticated: boolean) {
   return server;
 }
 
+function ownerApiApp() {
+  const server = express();
+  server.use(express.json());
+  server.use("/api", apiRouter);
+  return server;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   candidateQueryRaw.mockResolvedValue([]);
@@ -78,6 +89,11 @@ beforeEach(() => {
   recordCampaignHealthObservation.mockResolvedValue({ created: true });
   logEvent.mockResolvedValue(undefined);
   approveCampaign.mockResolvedValue({ ok: true, state: "paused" });
+  pauseCampaignGroup.mockResolvedValue({
+    rolloutGroupId: CAMPAIGN_ID,
+    pausedCampaignIds: ["22222222-2222-4222-8222-222222222222"],
+    skipped: [{ campaignId: "33333333-3333-4333-8333-333333333333", state: "completed" }],
+  });
 });
 
 // The list and the tab badges both read from candidateViewWhere. If they could
@@ -335,5 +351,52 @@ describe("POST /campaigns/:id/health-observations", () => {
       .post(`/campaigns/${CAMPAIGN_ID}/health-observations`)
       .send(body)
       .expect(200, { created: false });
+  });
+});
+
+describe("POST /rollout-groups/:id/pause", () => {
+  it("returns the exact group result and forwards the bounded trimmed reason", async () => {
+    const response = await request(app(true))
+      .post(`/rollout-groups/${CAMPAIGN_ID}/pause`)
+      .send({ reason: "  owner emergency stop  " });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      rolloutGroupId: CAMPAIGN_ID,
+      pausedCampaignIds: ["22222222-2222-4222-8222-222222222222"],
+      skipped: [{ campaignId: "33333333-3333-4333-8333-333333333333", state: "completed" }],
+    });
+    expect(pauseCampaignGroup).toHaveBeenCalledWith(
+      CAMPAIGN_ID,
+      "owner emergency stop",
+      expect.any(Date),
+    );
+  });
+
+  it("rejects a malformed rollout-group UUID", async () => {
+    await request(app(true))
+      .post("/rollout-groups/not-a-uuid/pause")
+      .send({ reason: "stop" })
+      .expect(400, { error: "invalid_group_pause" });
+
+    expect(pauseCampaignGroup).not.toHaveBeenCalled();
+  });
+
+  it.each(["", "   ", "x".repeat(201)])("rejects the invalid reason %p", async (reason) => {
+    await request(app(true))
+      .post(`/rollout-groups/${CAMPAIGN_ID}/pause`)
+      .send({ reason })
+      .expect(400, { error: "invalid_group_pause" });
+
+    expect(pauseCampaignGroup).not.toHaveBeenCalled();
+  });
+
+  it("inherits owner authentication from the parent API router", async () => {
+    await request(ownerApiApp())
+      .post(`/api/historical-recovery/rollout-groups/${CAMPAIGN_ID}/pause`)
+      .send({ reason: "stop" })
+      .expect(401, { error: "missing_bearer_token" });
+
+    expect(pauseCampaignGroup).not.toHaveBeenCalled();
   });
 });

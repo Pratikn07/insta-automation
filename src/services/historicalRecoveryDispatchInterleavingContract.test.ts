@@ -37,6 +37,7 @@ async function reserveScenario(input: {
   selectionCutoff?: Date;
   westernOnly?: boolean;
   audienceSegment?: AudienceSegment;
+  rolloutGroupId?: string;
   inferredOrigin?: "south_asian" | "us_western" | "other" | "unknown";
   originConfidence?: "high" | "low";
   originEvidence?: string;
@@ -75,6 +76,8 @@ async function reserveScenario(input: {
       decisionHash: `hash-${campaignId}`,
       westernOnly: input.westernOnly ?? true,
       audienceSegment: input.audienceSegment,
+      rolloutGroupId: input.rolloutGroupId,
+      rolloutGroupHourlyCap: input.rolloutGroupId ? 10 : undefined,
       candidateCount: 1,
       state: "draft",
     },
@@ -685,16 +688,17 @@ describeWithDatabase("historical dispatch state interleavings", () => {
   it("serializes a durable health stop against final dispatch authorization", async () => {
     const scenario = await reserveScenario();
     const held = await holdControlLock();
-    const startPromise = historical.startHistoricalDispatch(scenario);
-    await waitForBlockedControlQueries(1);
-    const observation = await observations.recordCampaignHealthObservation({
+    const observationPromise = observations.recordCampaignHealthObservation({
       campaignId: scenario.campaignId,
       kind: "opt_out",
       sourceKey: `interleaving:${randomUUID()}`,
       observedAt: new Date(scenario.now.getTime() + 1),
     });
+    await waitForBlockedControlQueries(1);
+    const startPromise = historical.startHistoricalDispatch(scenario);
+    await waitForBlockedControlQueries(2);
     held.release();
-    const start = await within(startPromise);
+    const [observation, start] = await within(Promise.all([observationPromise, startPromise]));
     await held.done;
 
     expect(observation).toEqual({ created: true });
@@ -711,6 +715,37 @@ describeWithDatabase("historical dispatch state interleavings", () => {
     });
     expect(start).toEqual({ kind: "blocked", reason: "campaign_not_running" });
     expect(ledger).toEqual({ state: "reserved" });
+  });
+
+  it("serializes a rollout-group owner pause before final dispatch authorization", async () => {
+    const rolloutGroupId = randomUUID();
+    const scenario = await reserveScenario({ rolloutGroupId });
+    const held = await holdControlLock();
+    const pausePromise = campaigns.pauseCampaignGroup(
+      rolloutGroupId,
+      "owner emergency stop",
+      scenario.now,
+    );
+    await waitForBlockedControlQueries(1);
+    const startPromise = historical.startHistoricalDispatch(scenario);
+    await waitForBlockedControlQueries(2);
+    held.release();
+
+    const [pause, start] = await within(Promise.all([pausePromise, startPromise]));
+    await held.done;
+
+    expect(pause).toEqual({
+      rolloutGroupId,
+      pausedCampaignIds: [scenario.campaignId],
+      skipped: [],
+    });
+    expect(start).toEqual({ kind: "blocked", reason: "campaign_not_running" });
+    expect(
+      await db.recoveryCampaign.findUnique({
+        where: { id: scenario.campaignId },
+        select: { state: true, pauseReason: true },
+      }),
+    ).toEqual({ state: "paused", pauseReason: "owner emergency stop" });
   });
 
   it("completes concurrent pause versus dispatch start without deadlock", async () => {

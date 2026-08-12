@@ -45,7 +45,7 @@ async function pendingInbound(text: string, mid: string, observedAt: Date): Prom
   return message.id;
 }
 
-async function campaign(): Promise<string> {
+async function campaign(rolloutGroupId?: string): Promise<string> {
   const row = await db.recoveryCampaign.create({
     data: {
       phase: "unknown_read_pilot",
@@ -55,6 +55,7 @@ async function campaign(): Promise<string> {
       state: "running",
       approvedBy: "contract",
       approvedAt: new Date("2026-08-08T20:00:00Z"),
+      ...(rolloutGroupId ? { rolloutGroupId, rolloutGroupHourlyCap: 10 } : {}),
     },
   });
   return row.id;
@@ -83,6 +84,48 @@ afterAll(async () => {
 });
 
 describeWithDatabase("campaign health observations", () => {
+  it.each([
+    "complaint",
+    "opt_out",
+    "block",
+    "negative_reply",
+    "classifier_anomaly",
+  ] as const)("pauses every running group sibling for a direct %s signal", async (kind) => {
+    const rolloutGroupId = randomUUID();
+    const targetId = await campaign(rolloutGroupId);
+    const siblingId = await campaign(rolloutGroupId);
+    const unrelatedId = await campaign(randomUUID());
+    const input = {
+      campaignId: targetId,
+      kind,
+      sourceKey: `group:${kind}:${randomUUID()}`,
+      observedAt: new Date("2026-08-08T20:00:00Z"),
+    };
+
+    await expect(observations.recordCampaignHealthObservation(input)).resolves.toEqual({
+      created: true,
+    });
+    await expect(observations.recordCampaignHealthObservation(input)).resolves.toEqual({
+      created: false,
+    });
+
+    expect(await db.recoveryCampaign.findMany({
+      where: { id: { in: [targetId, siblingId] } },
+      select: { id: true, state: true, pauseReason: true },
+      orderBy: { id: "asc" },
+    })).toEqual(
+      [targetId, siblingId]
+        .sort()
+        .map((id) => ({ id, state: "paused", pauseReason: `auto:${kind}` })),
+    );
+    expect(
+      await db.recoveryCampaign.findUnique({
+        where: { id: unrelatedId },
+        select: { state: true, pauseReason: true },
+      }),
+    ).toEqual({ state: "running", pauseReason: null });
+  });
+
   it("creates one append-only observation for a replayed source key", async () => {
     const campaignId = await campaign();
     const input = {

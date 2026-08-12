@@ -7,6 +7,7 @@ import { env } from "../config/env.js";
 import {
   approveCampaign,
   pauseCampaign,
+  pauseCampaignGroup,
   resumeCampaign,
   cancelCampaign,
   advanceCampaignStage,
@@ -405,6 +406,22 @@ historicalRecoveryRouter.post("/campaigns/:id/pause", async (req, res) => {
     res.status(409).json({ error: result.reason });
     return;
   }
+  res.json(result);
+});
+
+const groupPauseParams = z.object({ id: z.string().uuid() });
+const groupPauseBody = z.object({ reason: z.string().trim().min(1).max(200) });
+
+/** Owner emergency stop for every running campaign in one expanded rollout. */
+historicalRecoveryRouter.post("/rollout-groups/:id/pause", async (req, res) => {
+  const params = groupPauseParams.safeParse(req.params);
+  const body = groupPauseBody.safeParse(req.body);
+  if (!params.success || !body.success) {
+    res.status(400).json({ error: "invalid_group_pause" });
+    return;
+  }
+
+  const result = await pauseCampaignGroup(params.data.id, body.data.reason, new Date());
   res.json(result);
 });
 

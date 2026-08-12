@@ -35,6 +35,77 @@ export type CampaignApprovalOptions = {
   startPaused?: boolean;
 };
 
+export type GroupPauseResult = {
+  rolloutGroupId: string;
+  pausedCampaignIds: string[];
+  skipped: Array<{ campaignId: string; state: string }>;
+};
+
+type LockedCampaignGroupMember = { id: string; state: string };
+
+function normalizeCampaignPauseReason(reason: string): string {
+  const normalized = reason.trim();
+  if (!normalized || normalized.length > 200) {
+    throw new Error("invalid_campaign_pause_reason");
+  }
+  return normalized;
+}
+
+/** Shared first lock for dispatch, health stops, and owner campaign control. */
+export async function lockRecoveryCampaignControl(
+  tx: Prisma.TransactionClient,
+): Promise<void> {
+  await tx.dmRecoveryControl.upsert({
+    where: { id: 1 },
+    create: { id: 1 },
+    update: {},
+  });
+  await tx.$queryRaw`SELECT "id" FROM "dm_recovery_control" WHERE "id" = 1 FOR UPDATE`;
+}
+
+/** Lock every member of one rollout group in the canonical campaign-ID order. */
+export async function lockCampaignGroupMembers(
+  tx: Prisma.TransactionClient,
+  rolloutGroupId: string,
+): Promise<LockedCampaignGroupMember[]> {
+  return tx.$queryRaw<LockedCampaignGroupMember[]>`
+    SELECT "id", "state"::text AS "state"
+    FROM "recovery_campaign"
+    WHERE "rollout_group_id" = ${rolloutGroupId}::uuid
+    ORDER BY "id"
+    FOR UPDATE
+  `;
+}
+
+/** Apply a group pause after the singleton and ordered campaign locks are held. */
+export async function pauseLockedCampaignGroup(
+  tx: Prisma.TransactionClient,
+  rolloutGroupId: string,
+  members: LockedCampaignGroupMember[],
+  reason: string,
+  now: Date,
+): Promise<GroupPauseResult> {
+  const normalizedReason = normalizeCampaignPauseReason(reason);
+  const pausedCampaignIds = members
+    .filter((member) => member.state === "running")
+    .map((member) => member.id);
+  const skipped = members
+    .filter((member) => member.state !== "running")
+    .map((member) => ({ campaignId: member.id, state: member.state }));
+
+  if (pausedCampaignIds.length > 0) {
+    const paused = await tx.recoveryCampaign.updateMany({
+      where: { id: { in: pausedCampaignIds }, state: "running" },
+      data: { state: "paused", pausedAt: now, pauseReason: normalizedReason },
+    });
+    if (paused.count !== pausedCampaignIds.length) {
+      throw new Error("campaign_group_pause_count_mismatch");
+    }
+  }
+
+  return { rolloutGroupId, pausedCampaignIds, skipped };
+}
+
 /** Rebuild the exact owner-reviewed manifest from its frozen database rows. */
 async function readStoredSelectionSnapshot(
   tx: Prisma.TransactionClient,
@@ -319,6 +390,28 @@ export async function pauseCampaign(
 
   await logEvent("historical_campaign_paused", { campaignId, reason });
   return { ok: true, state: "paused" };
+}
+
+/** Pause every running member of one expanded rollout group as one owner action. */
+export async function pauseCampaignGroup(
+  rolloutGroupId: string,
+  reason: string,
+  now = new Date(),
+): Promise<GroupPauseResult> {
+  const normalizedReason = normalizeCampaignPauseReason(reason);
+  const result = await prisma.$transaction(async (tx) => {
+    await lockRecoveryCampaignControl(tx);
+    const members = await lockCampaignGroupMembers(tx, rolloutGroupId);
+    return pauseLockedCampaignGroup(tx, rolloutGroupId, members, normalizedReason, now);
+  });
+
+  await logEvent("historical_campaign_group_paused", {
+    rolloutGroupId: result.rolloutGroupId,
+    reason: normalizedReason,
+    pausedCampaignIds: result.pausedCampaignIds,
+    skipped: result.skipped,
+  });
+  return result;
 }
 
 /**

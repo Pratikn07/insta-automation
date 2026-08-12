@@ -60,6 +60,7 @@ vi.mock("./historicalRecoverySnapshot.js", () => ({ verifyStoredSelectionSnapsho
 const {
   approveCampaign,
   pauseCampaign,
+  pauseCampaignGroup,
   resumeCampaign,
   cancelCampaign,
   completeCampaignIfDrained,
@@ -341,6 +342,94 @@ describe("pauseCampaign", () => {
       reason: "not_pausable_from_draft",
     });
   });
+});
+
+describe("pauseCampaignGroup", () => {
+  const rolloutGroupId = "11111111-1111-4111-8111-111111111111";
+
+  it("locks control before group campaigns in stable ID order and pauses only running members", async () => {
+    queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { id: "11111111-1111-4111-8111-111111111112", state: "running" },
+        { id: "22222222-2222-4222-8222-222222222222", state: "completed" },
+        { id: "33333333-3333-4333-8333-333333333333", state: "paused" },
+      ]);
+    campaignUpdateMany.mockResolvedValue({ count: 1 });
+
+    await expect(
+      pauseCampaignGroup(rolloutGroupId, " owner emergency stop "),
+    ).resolves.toEqual({
+      rolloutGroupId,
+      pausedCampaignIds: ["11111111-1111-4111-8111-111111111112"],
+      skipped: [
+        { campaignId: "22222222-2222-4222-8222-222222222222", state: "completed" },
+        { campaignId: "33333333-3333-4333-8333-333333333333", state: "paused" },
+      ],
+    });
+
+    expect(controlUpsert.mock.invocationCallOrder[0]).toBeLessThan(
+      queryRaw.mock.invocationCallOrder[0]!,
+    );
+    const controlLockSql = (queryRaw.mock.calls[0]?.[0] as readonly string[]).join(" ");
+    const groupLockSql = (queryRaw.mock.calls[1]?.[0] as readonly string[]).join(" ");
+    expect(controlLockSql).toContain('FROM "dm_recovery_control"');
+    expect(groupLockSql).toContain('WHERE "rollout_group_id" =');
+    expect(groupLockSql).toContain('ORDER BY "id"');
+    expect(queryRaw.mock.calls[1]?.[1]).toBe(rolloutGroupId);
+    expect(campaignUpdateMany).toHaveBeenCalledWith({
+      where: {
+        id: { in: ["11111111-1111-4111-8111-111111111112"] },
+        state: "running",
+      },
+      data: {
+        state: "paused",
+        pausedAt: expect.any(Date),
+        pauseReason: "owner emergency stop",
+      },
+    });
+    expect(logEvent).toHaveBeenCalledTimes(1);
+    expect(logEvent).toHaveBeenCalledWith("historical_campaign_group_paused", {
+      rolloutGroupId,
+      reason: "owner emergency stop",
+      pausedCampaignIds: ["11111111-1111-4111-8111-111111111112"],
+      skipped: [
+        { campaignId: "22222222-2222-4222-8222-222222222222", state: "completed" },
+        { campaignId: "33333333-3333-4333-8333-333333333333", state: "paused" },
+      ],
+    });
+  });
+
+  it("is idempotent when every group member is already non-running", async () => {
+    queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { id: "11111111-1111-4111-8111-111111111112", state: "paused" },
+        { id: "22222222-2222-4222-8222-222222222222", state: "cancelled" },
+      ]);
+
+    await expect(pauseCampaignGroup(rolloutGroupId, "already stopped")).resolves.toEqual({
+      rolloutGroupId,
+      pausedCampaignIds: [],
+      skipped: [
+        { campaignId: "11111111-1111-4111-8111-111111111112", state: "paused" },
+        { campaignId: "22222222-2222-4222-8222-222222222222", state: "cancelled" },
+      ],
+    });
+    expect(campaignUpdateMany).not.toHaveBeenCalled();
+    expect(logEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["", "   ", "x".repeat(201)])(
+    "rejects the invalid service reason %p before locking",
+    async (reason) => {
+      await expect(pauseCampaignGroup(rolloutGroupId, reason)).rejects.toThrow(
+        "invalid_campaign_pause_reason",
+      );
+      expect(controlUpsert).not.toHaveBeenCalled();
+      expect(queryRaw).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("resumeCampaign", () => {
