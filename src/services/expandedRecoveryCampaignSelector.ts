@@ -101,11 +101,15 @@ export async function selectExpandedRecoveryCampaigns(
       select: { igUserId: true },
     });
     assertNoPersistedRolloutDuplicates(persistedCandidates);
+    const persistedExclusions = await transaction.recoverySelectionExclusion.findMany({
+      where: { campaign: { rolloutGroupId } },
+      select: { igUserId: true },
+    });
 
     return {
       rolloutGroupId,
       campaigns,
-      excludedPeople: campaigns.reduce((total, campaign) => total + campaign.excludedPeople, 0),
+      excludedPeople: new Set(persistedExclusions.map((exclusion) => exclusion.igUserId)).size,
     };
   }, { isolationLevel: "Serializable", timeout: 60_000 });
 }

@@ -2,8 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const selectHistoricalCandidates = vi.fn();
 const candidateFindMany = vi.fn();
+const exclusionFindMany = vi.fn();
 const transactionClient = {
   recoveryCandidate: { findMany: candidateFindMany },
+  recoverySelectionExclusion: { findMany: exclusionFindMany },
 };
 const $transaction = vi.fn();
 
@@ -39,10 +41,16 @@ function selectionReport(segment: string, candidateCount = 2) {
 beforeEach(() => {
   selectHistoricalCandidates.mockReset();
   candidateFindMany.mockReset();
+  exclusionFindMany.mockReset();
   $transaction.mockReset();
   $transaction.mockImplementation(async (callback: (tx: typeof transactionClient) => unknown) =>
     callback(transactionClient));
   candidateFindMany.mockResolvedValue([]);
+  exclusionFindMany.mockResolvedValue([
+    { igUserId: "ig-overlap" },
+    { igUserId: "ig-overlap" },
+    { igUserId: "ig-distinct" },
+  ]);
   selectHistoricalCandidates.mockImplementation(async (input: { audienceSegment: string }) =>
     selectionReport(input.audienceSegment));
 });
@@ -80,18 +88,56 @@ describe("selectExpandedRecoveryCampaigns", () => {
     expect(result.rolloutGroupId).toMatch(
       /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/,
     );
-    expect(calls).toEqual(expect.arrayContaining([
+    expect(calls).toEqual([
       expect.objectContaining({
+        audienceSegment: "other",
         now: NOW,
         commentTo: COMMENT_TO,
         persist: true,
         holdoutPercent: 0,
         dailyCap: 1000,
         eligibilityPolicyVersion: "eligibility-v4-expanded-audience",
+        rolloutGroupId: result.rolloutGroupId,
         rolloutGroupHourlyCap: 10,
         transaction: transactionClient,
       }),
-    ]));
+      expect.objectContaining({
+        audienceSegment: "unknown_cue",
+        now: NOW,
+        commentTo: COMMENT_TO,
+        persist: true,
+        holdoutPercent: 0,
+        dailyCap: 1000,
+        eligibilityPolicyVersion: "eligibility-v4-expanded-audience",
+        rolloutGroupId: result.rolloutGroupId,
+        rolloutGroupHourlyCap: 10,
+        transaction: transactionClient,
+      }),
+      expect.objectContaining({
+        audienceSegment: "unknown_generic",
+        now: NOW,
+        commentTo: COMMENT_TO,
+        persist: true,
+        holdoutPercent: 0,
+        dailyCap: 1000,
+        eligibilityPolicyVersion: "eligibility-v4-expanded-audience",
+        rolloutGroupId: result.rolloutGroupId,
+        rolloutGroupHourlyCap: 10,
+        transaction: transactionClient,
+      }),
+      expect.objectContaining({
+        audienceSegment: "unknown_no_name",
+        now: NOW,
+        commentTo: COMMENT_TO,
+        persist: true,
+        holdoutPercent: 0,
+        dailyCap: 1000,
+        eligibilityPolicyVersion: "eligibility-v4-expanded-audience",
+        rolloutGroupId: result.rolloutGroupId,
+        rolloutGroupHourlyCap: 10,
+        transaction: transactionClient,
+      }),
+    ]);
     expect(candidateFindMany).toHaveBeenCalledWith({
       where: { campaign: { rolloutGroupId: result.rolloutGroupId } },
       select: { igUserId: true },
@@ -103,7 +149,11 @@ describe("selectExpandedRecoveryCampaigns", () => {
         { segment: "unknown_generic", campaignId: "campaign-unknown_generic", candidateCount: 2 },
         { segment: "unknown_no_name", campaignId: "campaign-unknown_no_name", candidateCount: 2 },
       ],
-      excludedPeople: 12,
+      excludedPeople: 2,
+    });
+    expect(exclusionFindMany).toHaveBeenCalledWith({
+      where: { campaign: { rolloutGroupId: result.rolloutGroupId } },
+      select: { igUserId: true },
     });
   });
 
@@ -126,6 +176,31 @@ describe("selectExpandedRecoveryCampaigns", () => {
       candidateCount: 0,
       decisionHash: "decision-unknown_generic",
       excludedPeople: 3,
+    });
+  });
+
+  it("returns zero distinct exclusions when every segment has zero candidates", async () => {
+    selectHistoricalCandidates.mockImplementation(async (input: { audienceSegment: string }) =>
+      selectionReport(input.audienceSegment, 0));
+    exclusionFindMany.mockResolvedValue([]);
+
+    const result = await selectExpandedRecoveryCampaigns({
+      phase: "unknown_read_pilot",
+      selectionVersion: "expanded-v1",
+      copyVersion: "recovery-v2",
+      westernOnly: true,
+      commentTo: COMMENT_TO,
+      now: NOW,
+    });
+
+    expect(result).toMatchObject({
+      excludedPeople: 0,
+      campaigns: [
+        { segment: "other", campaignId: null, candidateCount: 0 },
+        { segment: "unknown_cue", campaignId: null, candidateCount: 0 },
+        { segment: "unknown_generic", campaignId: null, candidateCount: 0 },
+        { segment: "unknown_no_name", campaignId: null, candidateCount: 0 },
+      ],
     });
   });
 

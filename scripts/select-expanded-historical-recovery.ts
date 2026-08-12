@@ -2,6 +2,7 @@ import { prisma } from "../src/lib/prisma.js";
 import { env } from "../src/config/env.js";
 import { COPY_VERSION } from "../src/services/historicalRecoveryCopy.js";
 import { selectExpandedRecoveryCampaigns } from "../src/services/expandedRecoveryCampaignSelector.js";
+import { formatExpandedRecoveryCampaignSelection } from "../src/services/expandedRecoveryCampaignOutput.js";
 import type { CampaignPhase } from "../src/services/historicalRecoveryEligibility.js";
 
 /**
@@ -47,33 +48,7 @@ async function main(): Promise<void> {
     now,
   });
 
-  console.log("EXPANDED RECOVERY DRAFTS CREATED — none approved or started");
-  console.log(`  rollout group      : ${result.rolloutGroupId}`);
-  console.log(`  phase              : ${phase}`);
-  console.log("  group hourly cap   : 10");
-  console.log("  holdout percent    : 0");
-  console.log("  eligibility policy : eligibility-v4-expanded-audience");
-  console.log(`  excluded people    : ${result.excludedPeople}`);
-  console.log("");
-
-  for (const campaign of result.campaigns) {
-    console.log(`  ${campaign.segment}:`);
-    console.log(`    campaign id       : ${campaign.campaignId ?? "none (zero candidates)"}`);
-    console.log(`    decision hash     : ${campaign.decisionHash}`);
-    console.log(`    candidate count   : ${campaign.candidateCount}`);
-    console.log(`    excluded people   : ${campaign.excludedPeople}`);
-    console.log("    exclusions:");
-    for (const [reason, count] of Object.entries(campaign.excludedByReason).sort(
-      ([left], [right]) => left.localeCompare(right),
-    )) {
-      console.log(`      ${reason}: ${count}`);
-    }
-  }
-
-  console.log("\n  one person across rollout: OK");
-  console.log(
-    "  Drafts are inert. No campaign has been approved, started, or sent by this command.",
-  );
+  console.log(formatExpandedRecoveryCampaignSelection({ ...result, phase }));
 }
 
 main()
