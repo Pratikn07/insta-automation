@@ -1,9 +1,27 @@
 import { describe, expect, it } from "vitest";
 import {
   CURRENT_ORIGIN_METHOD,
+  classifyIdentityPresence,
   deriveAudienceSegment,
   evaluateHistoricalAudience,
 } from "./historicalAudienceSegment.js";
+
+describe("classifyIdentityPresence", () => {
+  it.each([
+    [null, null],
+    ["   ", "\t"],
+    ["---", " - "],
+  ])("returns unknown_no_name for absent identity (%p, %p)", (username, name) => {
+    expect(classifyIdentityPresence({ username, name })).toBe("unknown_no_name");
+  });
+
+  it.each([
+    ["handle", null],
+    ["---", "Display Name"],
+  ])("returns null when either identity field has a usable value (%p, %p)", (username, name) => {
+    expect(classifyIdentityPresence({ username, name })).toBeNull();
+  });
+});
 
 describe("deriveAudienceSegment", () => {
   it.each([

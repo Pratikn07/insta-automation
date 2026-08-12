@@ -7,6 +7,18 @@ export type AudienceSegment = (typeof AUDIENCE_SEGMENTS)[number];
 
 export const CURRENT_ORIGIN_METHOD = "llm_v3";
 
+/**
+ * Identify accounts with no usable name signal before considering Gemini.
+ * Dash-only placeholders are treated exactly like absent profile fields.
+ */
+export function classifyIdentityPresence(input: {
+  username: string | null;
+  name: string | null;
+}): "unknown_no_name" | null {
+  const clean = (value: string | null) => (value ?? "").trim().replace(/^-+$/, "");
+  return clean(input.username) || clean(input.name) ? null : "unknown_no_name";
+}
+
 export const GEMINI_CUE_ASSESSMENTS = ["positive_cue", "no_meaningful_cue"] as const;
 export type GeminiCueAssessment = (typeof GEMINI_CUE_ASSESSMENTS)[number];
 

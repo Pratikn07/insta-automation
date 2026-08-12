@@ -204,14 +204,14 @@ describe("recheckBeforeSend — mandatory current-Gemini origin gate", () => {
   });
 
   it.each([
-    ["unknown", "audience_unknown"],
-    ["other", "audience_other"],
-  ] as const)("suppresses a current %s verdict with its explicit reason", (origin, reason) => {
+    "unknown",
+    "other",
+  ] as const)("defers a current %s verdict until segment-aware callers are available", (origin) => {
     expect(recheckBeforeSend(facts({
       audienceOrigin: origin,
       audienceOriginConfidence: "low",
       audienceOriginMethod: CURRENT_ORIGIN_METHOD,
-    }))).toEqual({ kind: "suppress", reason });
+    }))).toEqual({ kind: "defer", reason: "origin_not_current_gemini" });
   });
 
   it.each(["name", null])("defers a %s origin method rather than sending", (method) => {
@@ -222,11 +222,11 @@ describe("recheckBeforeSend — mandatory current-Gemini origin gate", () => {
   });
 
   it.each([null, "", "medium", "HIGH"])(
-    "suppresses a current Western verdict with invalid confidence %p",
+    "defers a current Western verdict with invalid confidence %p",
     (audienceOriginConfidence) => {
       expect(recheckBeforeSend(facts({ audienceOriginConfidence }))).toEqual({
-        kind: "suppress",
-        reason: "audience_invalid_confidence",
+        kind: "defer",
+        reason: "origin_not_current_gemini",
       });
     },
   );

@@ -4,6 +4,7 @@ import { logger } from "../lib/logger.js";
 import { env } from "../config/env.js";
 import { geminiEnabled } from "../meta/geminiClient.js";
 import { CURRENT_ORIGIN_METHOD } from "./historicalRecoveryOriginPolicy.js";
+import { classifyIdentityPresence } from "./historicalAudienceSegment.js";
 import { logEvent } from "./eventLogger.js";
 import {
   classifyOrigins,
@@ -81,19 +82,6 @@ async function spentTodayUsd(): Promise<number> {
   // and an over-estimate otherwise, which errs toward stopping early.
   const batches = Math.ceil(classifiedToday / MAX_ORIGIN_BATCH);
   return batches * estimateOriginCostUsd(MAX_ORIGIN_BATCH) + unrecordedSpendToday();
-}
-
-/**
- * A user with neither a name nor a username cannot be classified by any method,
- * so sending them to the model spends budget to be told "unknown".
- *
- * They are stamped as checked with origin `unknown` so the query does not return
- * them forever, and so the dashboard can tell "we looked and there was nothing"
- * apart from "not yet looked at".
- */
-function hasSignal(u: { username: string | null; name: string | null }): boolean {
-  const clean = (s: string | null) => (s ?? "").trim().replace(/^-+$/, "");
-  return Boolean(clean(u.username) || clean(u.name));
 }
 
 const ORIGIN_STILL_DUE = {
@@ -183,7 +171,7 @@ async function tickBody(): Promise<OriginEnrichmentResult> {
   const classifiable: OriginCandidate[] = [];
   const noSignal: OriginCandidate[] = [];
   for (const u of due) {
-    if (hasSignal(u)) classifiable.push(u);
+    if (classifyIdentityPresence(u) === null) classifiable.push(u);
     else noSignal.push(u);
   }
 

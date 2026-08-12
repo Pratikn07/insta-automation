@@ -148,7 +148,9 @@ describeWithDatabase("historical audience segment migration", () => {
         windowExpiresAt: new Date(startedAt.getTime() + 48 * 60 * 60 * 1000),
       },
     });
-    const campaign = await prisma.recoveryCampaign.create({ data: campaignData() });
+    const campaign = await prisma.recoveryCampaign.create({
+      data: campaignData({ rolloutGroupId: randomUUID(), rolloutGroupHourlyCap: 1 }),
+    });
     const candidate = await prisma.recoveryCandidate.create({
       data: {
         campaignId: campaign.id,
@@ -178,6 +180,10 @@ describeWithDatabase("historical audience segment migration", () => {
     await expect(prisma.recoveryCampaign.update({
       where: { id: campaign.id },
       data: { audienceSegment: "western" },
+    })).rejects.toThrow();
+    await expect(prisma.recoveryCampaign.update({
+      where: { id: campaign.id },
+      data: { rolloutGroupHourlyCap: 2 },
     })).rejects.toThrow();
     await expect(prisma.recoveryCampaign.update({
       where: { id: campaign.id },

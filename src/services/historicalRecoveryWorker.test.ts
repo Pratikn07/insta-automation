@@ -544,15 +544,13 @@ describe("runHistoricalRecoveryTick — pre-send recheck", () => {
     expect(markCandidateSuppressed).toHaveBeenCalledWith("cand-1", "token-1", "contacted_since_selection");
   });
 
-  it.each([
-    ["South Asian", { inferredOrigin: "south_asian", originConfidence: "high", originMethod: CURRENT_ORIGIN_METHOD }, "audience_south_asian"],
-    ["unknown", { inferredOrigin: "unknown", originConfidence: "low", originMethod: CURRENT_ORIGIN_METHOD }, "audience_unknown"],
-    ["other", { inferredOrigin: "other", originConfidence: "low", originMethod: CURRENT_ORIGIN_METHOD }, "audience_other"],
-    ["null confidence", { inferredOrigin: "us_western", originConfidence: null, originMethod: CURRENT_ORIGIN_METHOD }, "audience_invalid_confidence"],
-    ["malformed confidence", { inferredOrigin: "us_western", originConfidence: "medium", originMethod: CURRENT_ORIGIN_METHOD }, "audience_invalid_confidence"],
-  ] as const)("suppresses a current live %s verdict before reservation", async (_label, person, reason) => {
+  it("suppresses a current live South Asian verdict before reservation", async () => {
     flags.DM_RECOVERY_WESTERN_ONLY = false;
-    igUserFindUnique.mockResolvedValue(person);
+    igUserFindUnique.mockResolvedValue({
+      inferredOrigin: "south_asian",
+      originConfidence: "high",
+      originMethod: CURRENT_ORIGIN_METHOD,
+    });
 
     const result = await runHistoricalRecoveryTick();
 
@@ -563,8 +561,33 @@ describe("runHistoricalRecoveryTick — pre-send recheck", () => {
     expect(replyToComment).not.toHaveBeenCalled();
     expect(reserveHistoricalDispatch).not.toHaveBeenCalled();
     expect(startHistoricalDispatch).not.toHaveBeenCalled();
-    expect(markCandidateSuppressed).toHaveBeenCalledWith("cand-1", "token-1", reason);
+    expect(markCandidateSuppressed).toHaveBeenCalledWith("cand-1", "token-1", "audience_south_asian");
     expect(result.suppressed).toBe(1);
+  });
+
+  it.each([
+    ["unknown", { inferredOrigin: "unknown", originConfidence: "low", originMethod: CURRENT_ORIGIN_METHOD }],
+    ["other", { inferredOrigin: "other", originConfidence: "low", originMethod: CURRENT_ORIGIN_METHOD }],
+    ["null confidence", { inferredOrigin: "us_western", originConfidence: null, originMethod: CURRENT_ORIGIN_METHOD }],
+    ["malformed confidence", { inferredOrigin: "us_western", originConfidence: "medium", originMethod: CURRENT_ORIGIN_METHOD }],
+  ] as const)("defers a current live %s verdict before reservation", async (_label, person) => {
+    flags.DM_RECOVERY_WESTERN_ONLY = false;
+    igUserFindUnique.mockResolvedValue(person);
+
+    const result = await runHistoricalRecoveryTick();
+
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(reserveHistoricalDispatch).not.toHaveBeenCalled();
+    expect(startHistoricalDispatch).not.toHaveBeenCalled();
+    expect(markCandidateSuppressed).not.toHaveBeenCalled();
+    expect(releaseCandidateClaim).toHaveBeenCalledWith("cand-1", "token-1");
+    expect(logEvent).toHaveBeenCalledWith("historical_recovery_deferred", {
+      campaignId: "camp-1",
+      candidateId: "cand-1",
+      reason: "origin_not_current_gemini",
+      boundary: "advisory_pre_reservation",
+    });
+    expect(result.deferred).toBe(1);
   });
 
   it.each(["name", null])("defers a %s live origin method before reservation", async (originMethod) => {

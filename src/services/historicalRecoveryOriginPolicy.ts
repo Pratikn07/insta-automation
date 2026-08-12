@@ -22,8 +22,9 @@ export type HistoricalOriginDecision =
 
 /**
  * Compatibility policy for callers not yet migrated to persisted segments.
- * It preserves the binding rule during the transition: only a current South
- * Asian origin blocks; incomplete provenance defers for re-enrichment.
+ * Only a structurally valid current Western verdict may authorize during the
+ * transition. South Asian remains a terminal block; every other provenance is
+ * deferred for segment-aware callers rather than treated as an allowed audience.
  */
 export function evaluateHistoricalOrigin(input: {
   origin: string | null;
@@ -36,14 +37,9 @@ export function evaluateHistoricalOrigin(input: {
   if (input.confidence !== "high" && input.confidence !== "low") {
     return { kind: "stale", reason: "origin_not_current_gemini" };
   }
-  if (input.origin !== "us_western"
-    && input.origin !== "south_asian"
-    && input.origin !== "other"
-    && input.origin !== "unknown") {
-    return { kind: "stale", reason: "origin_not_current_gemini" };
-  }
   if (input.origin === "south_asian") {
     return { kind: "block", reason: "audience_south_asian" };
   }
-  return { kind: "allow" };
+  if (input.origin === "us_western") return { kind: "allow" };
+  return { kind: "stale", reason: "origin_not_current_gemini" };
 }

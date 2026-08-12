@@ -197,22 +197,22 @@ describe("decideEligibility — current Gemini origin gate", () => {
   });
 
   it.each([
-    ["other", "audience_other"],
-    ["unknown", "audience_unknown"],
-    [null, "audience_unknown"],
-  ])("blocks a current Gemini %s verdict", (audienceOrigin, reason) => {
+    "other",
+    "unknown",
+    null,
+  ])("defers a current Gemini %s verdict until segment-aware callers are available", (audienceOrigin) => {
     expect(decideEligibility(facts({ audienceOrigin }))).toEqual({
       kind: "exclude",
-      reason,
+      reason: "origin_not_current_gemini",
     });
   });
 
   it.each([null, "", "medium", "HIGH"])(
-    "blocks a current Western verdict with invalid confidence %p",
+    "defers a current Western verdict with invalid confidence %p",
     (audienceOriginConfidence) => {
       expect(decideEligibility(facts({ audienceOriginConfidence }))).toEqual({
         kind: "exclude",
-        reason: "audience_invalid_confidence",
+        reason: "origin_not_current_gemini",
       });
     },
   );
