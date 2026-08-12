@@ -125,19 +125,27 @@ async function seedEligible(opts: {
   person?: string;
   keywordId?: string;
   origin?: "us_western" | "south_asian" | "other" | "unknown";
+  audienceSegment?: "western" | "other" | "unknown_cue" | "unknown_generic" | "unknown_no_name" | "south_asian";
   originConfidence?: "high" | "low";
   originMethod?: string | null;
 }): Promise<{ intentId: string; igUserId: string; commentIds: string[] }> {
   const igUserId = opts.person ?? `${fx.igUserId}-${randomUUID()}`;
   const keywordId = opts.keywordId ?? fx.keywordId;
+  const origin = opts.origin ?? "us_western";
+  const audienceSegment = opts.audienceSegment ?? (
+    origin === "us_western" ? "western"
+      : origin === "south_asian" ? "south_asian"
+        : origin === "other" ? "other" : "unknown_generic"
+  );
 
   await prisma.igUser.upsert({
     where: { id: igUserId },
     create: {
       id: igUserId,
-      inferredOrigin: opts.origin ?? "us_western",
+      inferredOrigin: origin,
       originConfidence: opts.originConfidence ?? "high",
       originMethod: opts.originMethod === undefined ? CURRENT_ORIGIN_METHOD : opts.originMethod,
+      audienceSegment,
     },
     update: {},
   });
@@ -231,7 +239,41 @@ async function selectAndRead() {
 }
 
 describeWithLocalDatabase("selector requires the current Gemini origin method", () => {
-  it("persists only current Gemini Western users and reports the complete origin matrix", async () => {
+  it("selects only the exact expanded audience segment, even when another segment is allowed", async () => {
+    const other = await seedEligible({
+      triggers: [{ at: COMMENT_AT }],
+      origin: "other",
+      audienceSegment: "other",
+    });
+    await seedEligible({
+      triggers: [{ at: COMMENT_AT }],
+      origin: "us_western",
+      audienceSegment: "western",
+    });
+
+    const report = await selector.selectHistoricalCandidates({
+      phase: "unknown_read_pilot",
+      selectionVersion: `sel-test-exact-segment-${randomUUID()}`,
+      copyVersion: "recovery-v2",
+      westernOnly: false,
+      holdoutPercent: 0,
+      eligibilityPolicyVersion: "eligibility-v4-expanded-audience",
+      audienceSegment: "other",
+      rolloutGroupId: randomUUID(),
+      rolloutGroupHourlyCap: 2,
+      persist: true,
+      now: NOW,
+    });
+    const candidates = await prisma.recoveryCandidate.findMany({
+      where: { campaignId: report.campaignId! },
+      select: { igUserId: true, audienceSegment: true },
+    });
+
+    expect(candidates).toEqual([{ igUserId: other.igUserId, audienceSegment: "other" }]);
+    expect(report.excludedByReason).toMatchObject({ audience_segment_mismatch: 1 });
+  });
+
+  it("persists each current valid non-South-Asian segment and reports the complete origin matrix", async () => {
     const westernHigh = await seedEligible({
       triggers: [{ at: COMMENT_AT }],
       originConfidence: "high",
@@ -250,8 +292,10 @@ describeWithLocalDatabase("selector requires the current Gemini origin method", 
       origin: "south_asian",
       originConfidence: "low",
     });
-    await seedEligible({ triggers: [{ at: COMMENT_AT }], origin: "other" });
-    await seedEligible({ triggers: [{ at: COMMENT_AT }], origin: "unknown", originConfidence: "low" });
+    const other = await seedEligible({ triggers: [{ at: COMMENT_AT }], origin: "other" });
+    const unknown = await seedEligible({
+      triggers: [{ at: COMMENT_AT }], origin: "unknown", originConfidence: "low",
+    });
     await seedEligible({ triggers: [{ at: COMMENT_AT }], originMethod: "name" });
     await seedEligible({ triggers: [{ at: COMMENT_AT }], originMethod: null });
 
@@ -287,17 +331,29 @@ describeWithLocalDatabase("selector requires the current Gemini origin method", 
         audienceOriginConfidence: "low",
         audienceOriginMethod: CURRENT_ORIGIN_METHOD,
       },
+      {
+        igUserId: other.igUserId,
+        audienceOrigin: "other",
+        audienceOriginConfidence: "high",
+        audienceOriginMethod: CURRENT_ORIGIN_METHOD,
+      },
+      {
+        igUserId: unknown.igUserId,
+        audienceOrigin: "unknown",
+        audienceOriginConfidence: "low",
+        audienceOriginMethod: CURRENT_ORIGIN_METHOD,
+      },
     ]));
-    expect(candidates).toHaveLength(2);
+    expect(candidates).toHaveLength(4);
     expect(report.excludedByReason).toMatchObject({
       audience_south_asian: 2,
-      audience_other: 1,
-      audience_unknown: 1,
       origin_not_current_gemini: 2,
     });
     expect(report.originBreakdown).toEqual({
       [`${CURRENT_ORIGIN_METHOD}/us_western/high`]: 1,
       [`${CURRENT_ORIGIN_METHOD}/us_western/low`]: 1,
+      [`${CURRENT_ORIGIN_METHOD}/other/high`]: 1,
+      [`${CURRENT_ORIGIN_METHOD}/unknown/low`]: 1,
     });
   });
 });

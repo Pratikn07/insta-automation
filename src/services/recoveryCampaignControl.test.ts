@@ -217,6 +217,69 @@ describe("approveCampaign", () => {
     }));
   });
 
+  it("reconstructs exact expanded-audience metadata for approval verification", async () => {
+    candidateUpdateMany.mockResolvedValue({ count: 0 });
+    campaignFindUnique.mockResolvedValue({
+      state: "draft",
+      candidateCount: 1,
+      decisionHash: "contract-hash",
+      phase: "unknown_read_pilot",
+      selectionVersion: "selection-v4",
+      sourceDataCutoff: new Date("2026-08-09T00:00:00.000Z"),
+      commentFrom: null,
+      commentTo: null,
+      selectionLimit: 1,
+      holdoutPercent: 0,
+      copyVersion: "copy-v1",
+      selectionFingerprint: "fingerprint",
+      eligibilityPolicyVersion: "eligibility-v4-expanded-audience",
+      westernOnly: true,
+      inboundWindowHours: 24,
+      completionWindowHours: 48,
+      excludedCount: 0,
+      audienceSegment: "other",
+      rolloutGroupId: "11111111-1111-4111-8111-111111111111",
+      rolloutGroupHourlyCap: 2,
+    });
+    candidateFindMany.mockResolvedValue([{
+      selectionPosition: 0,
+      intentId: "intent-1",
+      igUserId: "person-1",
+      conversationId: "conversation-1",
+      keywordId: "keyword-1",
+      commentId: "comment-1",
+      mediaId: null,
+      commentAt: new Date("2026-08-09T00:00:00.000Z"),
+      keywordSnapshot: "SLEEP",
+      publicReplyText: "Please DM SLEEP",
+      evidence: "gate_sent_no_read",
+      audienceOrigin: "other",
+      audienceOriginMethod: CURRENT_ORIGIN_METHOD,
+      audienceOriginConfidence: "high",
+      audienceSegment: "other",
+      arm: "treatment",
+      sourceChoiceReason: "newest_eligible_comment",
+      sources: [{
+        position: 0,
+        commentId: "comment-1",
+        mediaId: null,
+        receivedAt: new Date("2026-08-09T00:00:00.000Z"),
+        choiceReason: "newest_eligible_comment",
+      }],
+    }]);
+
+    await approveCampaign("camp-1", "pratik");
+
+    expect(verifyStoredSelectionSnapshot).toHaveBeenCalledWith(expect.objectContaining({
+      configuration: expect.objectContaining({
+        audienceSegment: "other",
+        rolloutGroupId: "11111111-1111-4111-8111-111111111111",
+        rolloutGroupHourlyCap: 2,
+      }),
+      inclusions: [expect.objectContaining({ audienceSegment: "other" })],
+    }));
+  });
+
   it("logs the approval for the audit trail", async () => {
     campaignFindUnique.mockResolvedValue({
       state: "draft",

@@ -59,6 +59,9 @@ async function readStoredSelectionSnapshot(
       westernOnly: true,
       inboundWindowHours: true,
       completionWindowHours: true,
+      audienceSegment: true,
+      rolloutGroupId: true,
+      rolloutGroupHourlyCap: true,
       candidateCount: true,
       excludedCount: true,
       decisionHash: true,
@@ -84,6 +87,7 @@ async function readStoredSelectionSnapshot(
       audienceOrigin: true,
       audienceOriginMethod: true,
       audienceOriginConfidence: true,
+      audienceSegment: true,
       arm: true,
       sourceChoiceReason: true,
       sources: {
@@ -118,6 +122,11 @@ async function readStoredSelectionSnapshot(
           eligibilityPolicyVersion: current.eligibilityPolicyVersion,
           inboundWindowHours: current.inboundWindowHours,
           completionWindowHours: current.completionWindowHours,
+          ...(current.eligibilityPolicyVersion === "eligibility-v4-expanded-audience" ? {
+            audienceSegment: current.audienceSegment,
+            rolloutGroupId: current.rolloutGroupId,
+            rolloutGroupHourlyCap: current.rolloutGroupHourlyCap,
+          } : {}),
         }
       : null;
   const inclusions: SelectionSnapshotInclusion[] = storedCandidates.map((candidate) => ({
@@ -135,6 +144,9 @@ async function readStoredSelectionSnapshot(
     audienceOrigin: candidate.audienceOrigin,
     audienceOriginMethod: candidate.audienceOriginMethod,
     audienceOriginConfidence: candidate.audienceOriginConfidence,
+    ...(current.eligibilityPolicyVersion === "eligibility-v4-expanded-audience"
+      ? { audienceSegment: candidate.audienceSegment }
+      : {}),
     arm: candidate.arm,
     sourceChoiceReason: candidate.sourceChoiceReason ?? "",
     sources: candidate.sources.map((source) => ({

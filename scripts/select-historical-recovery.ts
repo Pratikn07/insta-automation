@@ -3,6 +3,11 @@ import { selectHistoricalCandidates } from "../src/services/historicalRecoverySe
 import { env } from "../src/config/env.js";
 import { COPY_VERSION } from "../src/services/historicalRecoveryCopy.js";
 import type { CampaignPhase } from "../src/services/historicalRecoveryEligibility.js";
+import {
+  AUDIENCE_SEGMENTS,
+  type AudienceSegment,
+} from "../src/services/historicalAudienceSegment.js";
+import { EXPANDED_AUDIENCE_ELIGIBILITY_POLICY_VERSION } from "../src/services/historicalRecoverySnapshot.js";
 
 /**
  * Draft a historical recovery campaign.
@@ -58,6 +63,21 @@ function requirePhase(value: string | undefined): CampaignPhase {
 const PHASE = requirePhase(phaseRaw);
 const limitArg = process.argv.indexOf("--limit");
 const LIMIT = limitArg >= 0 ? Number(process.argv[limitArg + 1]) : undefined;
+const audienceSegmentArg = process.argv.indexOf("--audience-segment");
+const audienceSegmentRaw = audienceSegmentArg >= 0 ? process.argv[audienceSegmentArg + 1] : undefined;
+const rolloutGroupIdArg = process.argv.indexOf("--rollout-group-id");
+const rolloutGroupId = rolloutGroupIdArg >= 0 ? process.argv[rolloutGroupIdArg + 1] : undefined;
+const rolloutGroupHourlyCapArg = process.argv.indexOf("--rollout-group-hourly-cap");
+const rolloutGroupHourlyCapRaw = rolloutGroupHourlyCapArg >= 0
+  ? process.argv[rolloutGroupHourlyCapArg + 1] : undefined;
+const usesExpandedAudience = audienceSegmentArg >= 0
+  || rolloutGroupIdArg >= 0
+  || rolloutGroupHourlyCapArg >= 0;
+
+if (audienceSegmentRaw !== undefined && !AUDIENCE_SEGMENTS.includes(audienceSegmentRaw as AudienceSegment)) {
+  console.error(`--audience-segment must be one of: ${AUDIENCE_SEGMENTS.join(", ")}`);
+  process.exit(1);
+}
 
 // Frozen on the campaign for compatibility and audit. Historical recovery now also
 // requires the current Gemini origin gate regardless of this legacy setting, but
@@ -87,6 +107,13 @@ async function main() {
     westernOnly: env.DM_RECOVERY_WESTERN_ONLY,
     commentTo: new Date(now.getTime() - MIN_AGE_DAYS * 24 * 60 * 60 * 1000),
     limit: LIMIT,
+    ...(usesExpandedAudience ? {
+      eligibilityPolicyVersion: EXPANDED_AUDIENCE_ELIGIBILITY_POLICY_VERSION,
+      audienceSegment: audienceSegmentRaw as AudienceSegment | undefined,
+      rolloutGroupId,
+      rolloutGroupHourlyCap: rolloutGroupHourlyCapRaw === undefined
+        ? undefined : Number(rolloutGroupHourlyCapRaw),
+    } : {}),
     persist: !PREVIEW,
     now,
   });
@@ -106,6 +133,11 @@ async function main() {
   console.log(`  decision hash     : ${report.decisionHash}`);
   console.log(`  phase             : ${PHASE}`);
   console.log(`  westernOnly (frozen): ${env.DM_RECOVERY_WESTERN_ONLY}`);
+  if (usesExpandedAudience) {
+    console.log(`  audience segment   : ${audienceSegmentRaw ?? "missing"}`);
+    console.log(`  rollout group      : ${rolloutGroupId ?? "missing"}`);
+    console.log(`  group hourly cap   : ${rolloutGroupHourlyCapRaw ?? "missing"}`);
+  }
   console.log(`  min comment age   : ${MIN_AGE_DAYS} days`);
   console.log(`  intents examined  : ${report.rawIntents}`);
   console.log(`  ELIGIBLE          : ${report.eligible}  (${report.eligiblePeople} people)`);

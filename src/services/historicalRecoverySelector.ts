@@ -15,10 +15,12 @@ import { recoveryCopyFor } from "./historicalRecoveryCopy.js";
 import {
   buildSelectionDecisionHash,
   buildSelectionFingerprint,
+  EXPANDED_AUDIENCE_ELIGIBILITY_POLICY_VERSION,
   type SelectionSnapshotConfiguration,
   type SelectionSnapshotExclusion,
   type SelectionSnapshotInclusion,
 } from "./historicalRecoverySnapshot.js";
+import { AUDIENCE_SEGMENTS, type AudienceSegment } from "./historicalAudienceSegment.js";
 
 export const HISTORICAL_RECOVERY_ELIGIBILITY_POLICY_VERSION = "eligibility-v3";
 const DEFAULT_INBOUND_WINDOW_HOURS = 24;
@@ -59,6 +61,7 @@ type SelectionRow = {
   audienceOrigin: string | null;
   audienceOriginConfidence: string | null;
   audienceOriginMethod: string | null;
+  audienceSegment: AudienceSegment | null;
   sources: Array<{
     commentId: string;
     mediaId: string | null;
@@ -215,7 +218,8 @@ async function loadRows(cutoff: Date): Promise<SelectionRow[]> {
 
       u."inferred_origin"   AS "audienceOrigin",
       u."origin_confidence" AS "audienceOriginConfidence",
-      u."origin_method"     AS "audienceOriginMethod"
+      u."origin_method"     AS "audienceOriginMethod",
+      u."audience_segment"  AS "audienceSegment"
 
     FROM "journey_intent" ji
     JOIN "conversations" c ON c."id" = ji."canonical_conversation_id"
@@ -305,6 +309,10 @@ export async function selectHistoricalCandidates(input: {
   limit?: number;
   holdoutPercent?: number;
   eligibilityPolicyVersion?: string;
+  /** An exact current segment for a v4 expanded-audience campaign. */
+  audienceSegment?: AudienceSegment;
+  rolloutGroupId?: string;
+  rolloutGroupHourlyCap?: number;
   inboundWindowHours?: number;
   completionWindowHours?: number;
   persist: boolean;
@@ -312,6 +320,36 @@ export async function selectHistoricalCandidates(input: {
 }): Promise<SelectionReport> {
   if (input.limit !== undefined && (!Number.isInteger(input.limit) || input.limit <= 0)) {
     throw new Error("invalid_selection_limit");
+  }
+  const eligibilityPolicyVersion = input.eligibilityPolicyVersion
+    ?? HISTORICAL_RECOVERY_ELIGIBILITY_POLICY_VERSION;
+  const isExpandedAudienceSelection = eligibilityPolicyVersion
+    === EXPANDED_AUDIENCE_ELIGIBILITY_POLICY_VERSION;
+  const hasExpandedAudienceField = input.audienceSegment !== undefined
+    || input.rolloutGroupId !== undefined
+    || input.rolloutGroupHourlyCap !== undefined;
+  if (!isExpandedAudienceSelection && hasExpandedAudienceField) {
+    throw new Error("expanded_audience_policy_version_required");
+  }
+  if (isExpandedAudienceSelection) {
+    if (
+      input.audienceSegment === undefined
+      || input.rolloutGroupId === undefined
+      || input.rolloutGroupHourlyCap === undefined
+    ) {
+      throw new Error("expanded_audience_metadata_required");
+    }
+    if (!AUDIENCE_SEGMENTS.includes(input.audienceSegment)) {
+      throw new Error("invalid_audience_segment");
+    }
+    if (!input.rolloutGroupId.trim()) throw new Error("invalid_rollout_group_id");
+    if (
+      !Number.isInteger(input.rolloutGroupHourlyCap)
+      || input.rolloutGroupHourlyCap < 1
+      || input.rolloutGroupHourlyCap > 1000
+    ) {
+      throw new Error("invalid_rollout_group_hourly_cap");
+    }
   }
   const cutoff = input.now ?? new Date();
   const rows = await loadRows(cutoff);
@@ -335,6 +373,7 @@ export async function selectHistoricalCandidates(input: {
       audienceOrigin: row.audienceOrigin,
       audienceOriginConfidence: row.audienceOriginConfidence,
       audienceOriginMethod: row.audienceOriginMethod,
+      audienceSegment: row.audienceSegment,
       westernOnly: input.westernOnly,
     };
     return { row, facts, decision: decideEligibility(facts) };
@@ -395,15 +434,30 @@ export async function selectHistoricalCandidates(input: {
     }
   }
 
+  // An expanded campaign has one exact audience segment. Other currently allowed
+  // segments remain eligible in general, but must not leak into this immutable cohort.
+  const matchingAudience = input.audienceSegment === undefined
+    ? included
+    : included.filter((entry) => entry.facts.audienceSegment === input.audienceSegment);
+  if (included.length > matchingAudience.length) {
+    excludedByReason.set("audience_segment_mismatch", included.length - matchingAudience.length);
+  }
+  const keptByAudience = new Set(matchingAudience.map((entry) => entry.facts.intentId));
+  for (const entry of included) {
+    if (!keptByAudience.has(entry.facts.intentId)) {
+      dropped(byIntentRow.get(entry.facts.intentId)!, "audience_segment_mismatch");
+    }
+  }
+
   // One public comment per person. 43 people hold 101 eligible intents, so without
   // this the campaign would try to contact them repeatedly; their most recent
   // unanswered request is the one recovered.
-  const perPerson = keepLatestPerPerson(included);
-  if (included.length > perPerson.length) {
-    excludedByReason.set("older_request_same_person", included.length - perPerson.length);
+  const perPerson = keepLatestPerPerson(matchingAudience);
+  if (matchingAudience.length > perPerson.length) {
+    excludedByReason.set("older_request_same_person", matchingAudience.length - perPerson.length);
   }
   const keptPerPerson = new Set(perPerson.map((e) => e.facts.intentId));
-  for (const entry of included) {
+  for (const entry of matchingAudience) {
     if (!keptPerPerson.has(entry.facts.intentId)) {
       dropped(byIntentRow.get(entry.facts.intentId)!, "older_request_same_person");
     }
@@ -423,8 +477,6 @@ export async function selectHistoricalCandidates(input: {
   }
 
   const holdoutPercent = input.holdoutPercent ?? 50;
-  const eligibilityPolicyVersion = input.eligibilityPolicyVersion
-    ?? HISTORICAL_RECOVERY_ELIGIBILITY_POLICY_VERSION;
   const inboundWindowHours = input.inboundWindowHours ?? DEFAULT_INBOUND_WINDOW_HOURS;
   const completionWindowHours = input.completionWindowHours
     ?? DEFAULT_COMPLETION_WINDOW_HOURS;
@@ -471,6 +523,11 @@ export async function selectHistoricalCandidates(input: {
     eligibilityPolicyVersion,
     inboundWindowHours,
     completionWindowHours,
+    ...(isExpandedAudienceSelection ? {
+      audienceSegment: input.audienceSegment!,
+      rolloutGroupId: input.rolloutGroupId!,
+      rolloutGroupHourlyCap: input.rolloutGroupHourlyCap!,
+    } : {}),
   };
 
   const inclusions: SelectionSnapshotInclusion[] = selected.map((entry, position) => {
@@ -505,6 +562,7 @@ export async function selectHistoricalCandidates(input: {
       audienceOrigin: row.audienceOrigin,
       audienceOriginMethod: row.audienceOriginMethod,
       audienceOriginConfidence: row.audienceOriginConfidence,
+      ...(isExpandedAudienceSelection ? { audienceSegment: row.audienceSegment } : {}),
       arm: arms.get(row.intentId)!,
       sourceChoiceReason: "newest_eligible_comment",
       sources,
@@ -585,6 +643,11 @@ export async function selectHistoricalCandidates(input: {
         inboundWindowHours,
         completionWindowHours,
         decisionHash,
+        ...(isExpandedAudienceSelection ? {
+          audienceSegment: input.audienceSegment!,
+          rolloutGroupId: input.rolloutGroupId!,
+          rolloutGroupHourlyCap: input.rolloutGroupHourlyCap!,
+        } : {}),
       },
     });
 
@@ -613,6 +676,7 @@ export async function selectHistoricalCandidates(input: {
         audienceOrigin: inclusion.audienceOrigin,
         audienceOriginMethod: inclusion.audienceOriginMethod,
         audienceOriginConfidence: inclusion.audienceOriginConfidence,
+        audienceSegment: byIntent.get(inclusion.intentId)!.row.audienceSegment,
         arm: inclusion.arm,
         eligibleAt: cutoff,
         sourceChoiceReason: inclusion.sourceChoiceReason,

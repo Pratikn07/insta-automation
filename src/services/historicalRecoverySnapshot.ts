@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
 import type { CampaignPhase } from "./historicalRecoveryEligibility.js";
+import type { AudienceSegment } from "./historicalAudienceSegment.js";
+
+export const EXPANDED_AUDIENCE_ELIGIBILITY_POLICY_VERSION = "eligibility-v4-expanded-audience";
 
 export type SelectionSnapshotConfiguration = {
   phase: CampaignPhase;
@@ -14,6 +17,10 @@ export type SelectionSnapshotConfiguration = {
   eligibilityPolicyVersion: string;
   inboundWindowHours: number;
   completionWindowHours: number;
+  /** Present only on expanded-audience snapshots; omitted from legacy hash inputs. */
+  audienceSegment?: AudienceSegment | null;
+  rolloutGroupId?: string | null;
+  rolloutGroupHourlyCap?: number | null;
 };
 
 export type SelectionSnapshotSource = {
@@ -39,6 +46,8 @@ export type SelectionSnapshotInclusion = {
   audienceOrigin: string | null;
   audienceOriginMethod: string | null;
   audienceOriginConfidence: string | null;
+  /** Present only on expanded-audience snapshots; omitted from legacy hash inputs. */
+  audienceSegment?: AudienceSegment | null;
   arm: "treatment" | "holdout";
   sourceChoiceReason: string;
   sources: SelectionSnapshotSource[];
@@ -127,11 +136,27 @@ export function verifyStoredSelectionSnapshot(
   }
 
   const intentIds = new Set<string>();
+  const isExpanded = snapshot.configuration.eligibilityPolicyVersion
+    === EXPANDED_AUDIENCE_ELIGIBILITY_POLICY_VERSION;
+  const expandedAudienceSegment = snapshot.configuration.audienceSegment;
+  if (
+    isExpanded
+    && (
+      !expandedAudienceSegment
+      || !snapshot.configuration.rolloutGroupId?.trim()
+      || !Number.isInteger(snapshot.configuration.rolloutGroupHourlyCap)
+      || (snapshot.configuration.rolloutGroupHourlyCap ?? 0) < 1
+      || (snapshot.configuration.rolloutGroupHourlyCap ?? 0) > 1000
+    )
+  ) {
+    return { ok: false, reason: "snapshot_incomplete" };
+  }
   for (const [position, inclusion] of snapshot.inclusions.entries()) {
     if (
       inclusion.position !== position
       || intentIds.has(inclusion.intentId)
       || !inclusion.audienceOriginMethod?.trim()
+      || (isExpanded && inclusion.audienceSegment !== expandedAudienceSegment)
       || !inclusion.sourceChoiceReason.trim()
       || inclusion.sources.length === 0
       || inclusion.sources[0]!.commentId !== inclusion.commentId
