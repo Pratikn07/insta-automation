@@ -120,13 +120,14 @@ export function candidateViewWhere(view: CandidateView): Prisma.RecoveryCandidat
  * fixed reporting bound here also protects the operator view from legacy or manually
  * imported timestamps that predate that invariant.
  */
-async function listBoundedRecoveredCandidateIds(campaignId?: string): Promise<string[]> {
+async function listBoundedRecoveredCandidateIds(campaignId: string | undefined, asOf: Date): Promise<string[]> {
   const requestedCampaignId = campaignId ?? null;
   const rows = await prisma.$queryRaw<Array<{ id: string }>>`
     SELECT candidate."id"
     FROM "recovery_candidate" candidate
     JOIN "recovery_campaign" campaign ON campaign."id" = candidate."campaign_id"
     WHERE (${requestedCampaignId}::uuid IS NULL OR candidate."campaign_id" = ${requestedCampaignId}::uuid)
+      AND candidate."created_at" <= ${asOf}
       AND candidate."later_completed_at" IS NOT NULL
       AND candidate."outcome" IN ('sent', 'send_uncertain', 'holdout_withheld')
       AND candidate."later_completed_at" >= CASE
@@ -275,7 +276,7 @@ const listQuery = z.object({
   cursor: z.string().uuid().optional(),
   // Pins the pagination boundary so rows cannot shift between pages while the
   // worker is sending — the same fix applied to the prospective list.
-  asOf: z.string().datetime().optional(),
+  asOf: z.string().datetime().transform((value) => new Date(value)).optional(),
 });
 
 /** Candidate list for one view, with the counts every tab badge reads from. */
@@ -285,10 +286,16 @@ historicalRecoveryRouter.get("/candidates", async (req, res) => {
     res.status(400).json({ error: "invalid_query", detail: parsed.error.flatten() });
     return;
   }
-  const { campaignId, view, limit, cursor } = parsed.data;
+  const { campaignId, view, limit, cursor, asOf } = parsed.data;
+  const paginationAsOf = asOf ?? new Date();
 
-  const base: Prisma.RecoveryCandidateWhereInput = campaignId ? { campaignId } : {};
-  const boundedRecoveredIds = await listBoundedRecoveredCandidateIds(campaignId);
+  const base: Prisma.RecoveryCandidateWhereInput = {
+    ...(campaignId ? { campaignId } : {}),
+    // Candidate selection is append-only, so pinning its creation boundary keeps
+    // an in-progress pagination run from gaining newly selected rows on page two.
+    createdAt: { lte: paginationAsOf },
+  };
+  const boundedRecoveredIds = await listBoundedRecoveredCandidateIds(campaignId, paginationAsOf);
   const where: Prisma.RecoveryCandidateWhereInput = {
     ...base,
     ...candidateViewWhere(view),
@@ -341,6 +348,9 @@ historicalRecoveryRouter.get("/candidates", async (req, res) => {
   res.json({
     counts,
     nextCursor: hasMore ? page[page.length - 1]?.id ?? null : null,
+    // The first response establishes this query's boundary; cursor requests echo
+    // the validated value so a client never mixes pages from different reads.
+    asOf: paginationAsOf.toISOString(),
     candidates: page.map((r) => {
       const observation = buildHistoricalAttributionObservation({
         ...r,
@@ -387,18 +397,94 @@ historicalRecoveryRouter.get("/candidates", async (req, res) => {
 });
 
 /** Full immutable candidate evidence plus the current audience classification. */
-historicalRecoveryRouter.get("/candidates/:id", async (req, res) => {
+historicalRecoveryRouter.get("/candidates/:id", async (req, res, next) => {
   const candidateId = z.string().uuid().safeParse(req.params.id);
   if (!candidateId.success) {
     res.status(400).json({ error: "invalid_candidate_id" });
     return;
   }
-  const detail = await historicalCandidateDetail(candidateId.data);
-  if (!detail) {
-    res.status(404).json({ error: "not_found" });
+  try {
+    const detail = await historicalCandidateDetail(candidateId.data);
+    if (!detail) {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
+    res.json(detail);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Historical candidates can only be acknowledged after an ambiguous or failed
+// public send. Reviewing deliberately leaves the terminal outcome unchanged: a
+// review is evidence that an owner assessed a risky result, never permission to
+// retry it.
+export const HISTORICAL_REVIEWABLE_OUTCOMES = ["send_failed", "send_uncertain"] as const;
+
+historicalRecoveryRouter.post("/candidates/:id/mark-reviewed", async (req, res, next) => {
+  const candidateId = z.string().uuid().safeParse(req.params.id);
+  if (!candidateId.success) {
+    res.status(400).json({ error: "invalid_candidate_id" });
     return;
   }
-  res.json(detail);
+
+  try {
+    const before = await prisma.recoveryCandidate.findUnique({
+      where: { id: candidateId.data },
+      select: { outcome: true, reviewedAt: true },
+    });
+    if (!before) {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
+    // A retry must not replace the original review timestamp or duplicate the
+    // audit event.
+    if (before.reviewedAt !== null) {
+      res.status(204).end();
+      return;
+    }
+
+    const result = await prisma.recoveryCandidate.updateMany({
+      // The conditional write makes concurrent owner requests safe and guards
+      // against an outcome changing between the read and acknowledgement.
+      where: {
+        id: candidateId.data,
+        outcome: { in: [...HISTORICAL_REVIEWABLE_OUTCOMES] },
+        reviewedAt: null,
+      },
+      data: { reviewedAt: new Date() },
+    });
+
+    if (result.count === 0) {
+      const current = await prisma.recoveryCandidate.findUnique({
+        where: { id: candidateId.data },
+        select: { outcome: true, reviewedAt: true },
+      });
+      if (!current) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      if (current.reviewedAt !== null) {
+        res.status(204).end();
+        return;
+      }
+      res.status(409).json({ error: "conflict", outcome: current.outcome });
+      return;
+    }
+
+    await logEvent("historical_recovery_reviewed", {
+      candidateId: candidateId.data,
+      actor: req.adminEmail ?? null,
+      action: "mark_reviewed",
+      // Review does not change the send outcome; record both values explicitly
+      // so audit readers never mistake acknowledgement for a state transition.
+      previousOutcome: before.outcome,
+      newOutcome: before.outcome,
+    });
+    res.status(204).end();
+  } catch (error) {
+    next(error);
+  }
 });
 
 const approveBody = z.object({

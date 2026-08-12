@@ -32,3 +32,38 @@
 
 - Existing test output includes expected error-level log fixtures for unrelated attribution/advisor/AI failure paths; the test commands still exit successfully.
 - This task does not alter rollout reservation enforcement or the group-pause service; it reports their existing state and calls the already-established group endpoint.
+
+## Fix Round 1/5
+
+### RED / GREEN
+
+- **RED:** Added route tests for review acknowledgement, UUID/404/idempotent/conflict behavior, and forwarded detail failures; drawer error/retry tests for 401, 404, and generic failures; real pagination-boundary assertions; and jsdom dialog focus/ARIA interaction tests. They failed for the absent route, missing `asOf`, unhandled detail rejection, permanent drawer skeleton, and missing dialog focus management.
+- **GREEN:** The focused backend suite passes **39 tests** and the focused UI suites pass **19 tests**. The full backend and web suites also pass.
+
+### API query semantics
+
+- `POST /historical-recovery/candidates/:id/mark-reviewed` is protected by the parent authenticated API router. It validates UUIDs, returns `404` for missing candidates, and returns `204` without writing for an already reviewed candidate.
+- It conditionally sets only `reviewedAt` for `send_failed` and `send_uncertain`; it never changes `outcome`. A concurrent successful review is idempotent (`204`); a still-unreviewable current outcome returns `409`; unexpected failures are forwarded to Express error middleware. Successful first reviews record one `historical_recovery_reviewed` audit event.
+- `GET /historical-recovery/candidates/:id` preserves `404` but catches service rejections and forwards them to Express, producing the established `500` response without an unhandled promise.
+- Candidate-list `asOf` is validated to a `Date`, established by page one, echoed on later pages, and applied as `createdAt <= asOf` to rows and counts (including recovered candidates). The web client sends cursor/asOf only for a concrete next-page parameter and never serializes `undefined`.
+
+### UI behavior and accessibility
+
+- The evidence drawer now replaces failed detail skeletons with an alert tailored for 401, 404, or generic failure plus a Retry action that refetches.
+- `ConfirmDialog` has unique `useId` heading/description references, autofocuses an enabled Cancel control (or the dialog when busy), traps Tab and Shift+Tab, retains its existing Escape dismissal, and restores focus to the invoking trigger. Page coverage verifies the group-pause confirmation interaction.
+
+### Verification
+
+- Focused backend: `npx vitest run src/api/historicalRecovery.routes.test.ts` — **39 passed**.
+- Focused web: drawer, recovery page, and confirm dialog tests — **19 passed**.
+- Full backend: `npm test` — **1,534 passed, 307 skipped**.
+- Full web: `npm test` (in `web`) — **485 passed**.
+- Backend build: `npm run build` — passed.
+- Web lint/build: `npm run lint`; `npm run build` (in `web`) — passed.
+- Prisma: `npx prisma validate` — valid.
+- `git diff --check` — clean.
+
+### Concerns
+
+- The creation-time cutoff assumes the established append-only candidate selection model; mutable outcomes continue to reflect their current operational state, while no newly selected row can appear mid-pagination.
+- The client defensively stops pagination if a malformed response lacks `asOf`, rather than issuing a request with `asOf=undefined`.

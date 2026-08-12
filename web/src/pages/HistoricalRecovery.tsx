@@ -52,6 +52,7 @@ type CandidatesResponse = {
   asOf: string;
   candidates: CandidateRow[];
 };
+type CandidatePageParam = { cursor: string; asOf: string };
 
 const TONE_CLASS: Record<string, string> = {
   positive: "text-emerald-400",
@@ -88,10 +89,10 @@ export function HistoricalRecovery() {
 
   const candidates = useInfiniteQuery({
     queryKey: ["historical-candidates", active?.id, tab],
-    initialPageParam: undefined as { cursor: string; asOf: string } | undefined,
+    initialPageParam: null as CandidatePageParam | null,
     queryFn: ({ pageParam }) => {
       const params = new URLSearchParams({ view: tab, campaignId: active!.id });
-      if (pageParam) {
+      if (pageParam !== null) {
         params.set("cursor", pageParam.cursor);
         params.set("asOf", pageParam.asOf);
       }
@@ -99,8 +100,10 @@ export function HistoricalRecovery() {
         `/historical-recovery/candidates?${params.toString()}`,
       );
     },
-    getNextPageParam: (last) =>
-      last.nextCursor ? { cursor: last.nextCursor, asOf: last.asOf } : undefined,
+    getNextPageParam: (last): CandidatePageParam | undefined =>
+      last.nextCursor && typeof last.asOf === "string"
+        ? { cursor: last.nextCursor, asOf: last.asOf }
+        : undefined,
     enabled: Boolean(active),
   });
 

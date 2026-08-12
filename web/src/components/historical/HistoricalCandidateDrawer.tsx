@@ -80,6 +80,15 @@ function readable(value: string): string {
   return value.replace(/_/g, " ");
 }
 
+function detailErrorMessage(error: unknown): string {
+  const status = error && typeof error === "object" && "status" in error
+    ? (error as { status?: unknown }).status
+    : undefined;
+  if (status === 401) return "Your session has expired. Sign in and try again.";
+  if (status === 404) return "This recovery candidate is no longer available.";
+  return "We couldn't load this recovery candidate. Please try again.";
+}
+
 export function HistoricalCandidateDrawer({
   candidateId,
   onClose,
@@ -126,10 +135,29 @@ export function HistoricalCandidateDrawer({
       title="Historical recovery evidence"
       description={data ? `${data.candidate.keywordSnapshot} · ${data.candidate.igUserId}` : undefined}
     >
-      {detail.isLoading || !data ? (
+      {detail.isLoading ? (
         <div className="space-y-3">
           <Skeleton className="h-20 w-full" />
           <Skeleton className="h-32 w-full" />
+        </div>
+      ) : detail.isError ? (
+        <div role="alert" className="space-y-3 rounded-md border border-destructive/50 p-4 text-sm">
+          <p>{detailErrorMessage(detail.error)}</p>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => void detail.refetch()}
+            disabled={detail.isFetching}
+          >
+            {detail.isFetching ? "Retrying…" : "Retry"}
+          </Button>
+        </div>
+      ) : !data ? (
+        <div role="alert" className="space-y-3 rounded-md border border-destructive/50 p-4 text-sm">
+          <p>We couldn't load this recovery candidate. Please try again.</p>
+          <Button type="button" variant="outline" onClick={() => void detail.refetch()}>
+            Retry
+          </Button>
         </div>
       ) : (
         <div className="space-y-6 text-sm">

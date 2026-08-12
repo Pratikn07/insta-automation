@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -249,6 +249,14 @@ describe("HistoricalRecovery", () => {
     const user = userEvent.setup();
     renderPage();
 
+    await waitFor(() =>
+      expect(
+        api.mock.calls.some(([path]) => {
+          const value = String(path);
+          return value.startsWith("/historical-recovery/candidates?") && !value.includes("asOf=");
+        }),
+      ).toBe(true),
+    );
     await user.click(await screen.findByRole("button", { name: "Load more" }));
 
     await waitFor(() =>
@@ -305,9 +313,13 @@ describe("HistoricalRecovery", () => {
     expect(screen.getByText("7 / 10 in the past hour")).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "Pause all expanded campaigns" })).toHaveLength(1);
 
-    await user.click(screen.getByRole("button", { name: "Pause all expanded campaigns" }));
-    expect(screen.getByRole("dialog")).toHaveTextContent("Pause all expanded campaigns?");
-    await user.click(screen.getByRole("button", { name: "Pause all campaigns" }));
+    const pauseAll = screen.getByRole("button", { name: "Pause all expanded campaigns" });
+    pauseAll.focus();
+    await user.click(pauseAll);
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toHaveTextContent("Pause all expanded campaigns?");
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus());
+    await user.click(within(dialog).getByRole("button", { name: "Pause all campaigns" }));
 
     await waitFor(() => {
       const call = api.mock.calls.find(([path]) => String(path).includes("/rollout-groups/"));
@@ -319,6 +331,34 @@ describe("HistoricalRecovery", () => {
         body: JSON.stringify({ reason: "Stopped from the dashboard" }),
       });
     });
+  });
+
+  it("restores the group pause trigger after an Escape-dismissed confirmation", async () => {
+    campaigns = [
+      campaign({
+        id: FIRST_CAMPAIGN_ID,
+        state: "running",
+        rolloutGroupId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      }),
+      campaign({
+        id: SECOND_CAMPAIGN_ID,
+        state: "running",
+        rolloutGroupId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      }),
+    ];
+    const user = userEvent.setup();
+    renderPage();
+
+    const pauseAll = await screen.findByRole("button", { name: "Pause all expanded campaigns" });
+    pauseAll.focus();
+    await user.click(pauseAll);
+    const dialog = screen.getByRole("dialog");
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus());
+
+    await user.keyboard("{Escape}");
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(pauseAll).toHaveFocus();
   });
 
   it("does not offer a shared pause when a group has no running sibling", async () => {

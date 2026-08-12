@@ -25,14 +25,61 @@ export function ConfirmDialog({
   onCancel,
   busy,
 }: ConfirmDialogProps) {
+  const dialogRef = React.useRef<HTMLDivElement>(null);
+  const cancelButtonRef = React.useRef<HTMLButtonElement>(null);
+  const triggerRef = React.useRef<HTMLElement | null>(null);
+  const onCancelRef = React.useRef(onCancel);
+  const titleId = React.useId();
+  const descriptionId = React.useId();
+
+  React.useEffect(() => {
+    onCancelRef.current = onCancel;
+  }, [onCancel]);
+
   React.useEffect(() => {
     if (!open) return;
+    triggerRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    if (cancelButtonRef.current && !cancelButtonRef.current.disabled) {
+      cancelButtonRef.current.focus();
+    } else {
+      dialogRef.current?.focus();
+    }
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCancel();
+      if (e.key === "Escape") onCancelRef.current();
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onCancel]);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      if (triggerRef.current?.isConnected) triggerRef.current.focus();
+    };
+  }, [open]);
+
+  const trapFocus = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "Tab") return;
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const focusable = Array.from(
+      dialog.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ),
+    );
+    if (focusable.length === 0) {
+      event.preventDefault();
+      dialog.focus();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
 
   return (
     <AnimatePresence>
@@ -53,13 +100,18 @@ export function ConfirmDialog({
             onClick={(e) => e.stopPropagation()}
             role="dialog"
             aria-modal="true"
+            aria-labelledby={titleId}
+            aria-describedby={description ? descriptionId : undefined}
+            ref={dialogRef}
+            tabIndex={-1}
+            onKeyDown={trapFocus}
           >
-            <h3 className="text-base font-semibold tracking-tight">{title}</h3>
+            <h3 id={titleId} className="text-base font-semibold tracking-tight">{title}</h3>
             {description && (
-              <p className="mt-2 text-sm text-muted-foreground">{description}</p>
+              <p id={descriptionId} className="mt-2 text-sm text-muted-foreground">{description}</p>
             )}
             <div className="mt-5 flex justify-end gap-2">
-              <Button variant="ghost" onClick={onCancel} disabled={busy}>
+              <Button ref={cancelButtonRef} variant="ghost" onClick={onCancel} disabled={busy}>
                 {cancelLabel}
               </Button>
               <Button
