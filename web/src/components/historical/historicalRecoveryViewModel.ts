@@ -28,6 +28,14 @@ export type CandidateOutcome =
 
 export type Tone = "neutral" | "positive" | "pending" | "warning" | "danger";
 
+export type AudienceSegment =
+  | "western"
+  | "other"
+  | "unknown_cue"
+  | "unknown_generic"
+  | "unknown_no_name"
+  | "south_asian";
+
 export type CampaignRow = {
   id: string;
   phase: string;
@@ -40,6 +48,10 @@ export type CampaignRow = {
   batchSize: number;
   hourlyCap: number;
   dailyCap: number;
+  audienceSegment: AudienceSegment | null;
+  rolloutGroupId: string | null;
+  rolloutGroupHourlyCap: number | null;
+  rolloutGroupSentLastHour: number;
   approvedBy: string | null;
   approvedAt: string | null;
   pauseReason: string | null;
@@ -64,10 +76,30 @@ export type CandidateRow = {
   audienceOrigin: string | null;
   audienceOriginMethod: string | null;
   audienceOriginConfidence: string | null;
+  audienceSegment: AudienceSegment | null;
+  currentAudienceSegment: AudienceSegment | null;
   createdAt: string;
 };
 
 export type CampaignPhaseView = { title: string; description: string };
+
+/** Human-readable, exhaustive labels for immutable and current audience segments. */
+export function audienceSegmentLabel(segment: AudienceSegment): string {
+  switch (segment) {
+    case "western":
+      return "Western";
+    case "other":
+      return "Other";
+    case "unknown_cue":
+      return "Unknown — ambiguous cultural cue";
+    case "unknown_generic":
+      return "Unknown — generic or no cultural cue";
+    case "unknown_no_name":
+      return "Unknown — no username/display name";
+    case "south_asian":
+      return "South Asian";
+  }
+}
 
 export function campaignPhaseView(phase: string): CampaignPhaseView {
   if (phase === "confirmed_failure") {

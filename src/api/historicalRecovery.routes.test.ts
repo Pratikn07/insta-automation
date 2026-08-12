@@ -6,6 +6,9 @@ const {
   candidateCount,
   candidateFindMany,
   candidateQueryRaw,
+  campaignFindMany,
+  candidateGroupBy,
+  historicalCandidateDetail,
   getIgUsers,
   recordCampaignHealthObservation,
   logEvent,
@@ -19,6 +22,9 @@ const {
   candidateCount: vi.fn(),
   candidateFindMany: vi.fn(),
   candidateQueryRaw: vi.fn(),
+  campaignFindMany: vi.fn(),
+  candidateGroupBy: vi.fn(),
+  historicalCandidateDetail: vi.fn(),
   getIgUsers: vi.fn(),
   recordCampaignHealthObservation: vi.fn(),
   logEvent: vi.fn(),
@@ -33,10 +39,12 @@ const {
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
     $queryRaw: candidateQueryRaw,
-    recoveryCandidate: { count: candidateCount, findMany: candidateFindMany },
+    recoveryCampaign: { findMany: campaignFindMany },
+    recoveryCandidate: { count: candidateCount, findMany: candidateFindMany, groupBy: candidateGroupBy },
   },
 }));
 vi.mock("../services/igUserService.js", () => ({ getIgUsers }));
+vi.mock("../services/historicalRecoveryCandidateDetail.js", () => ({ historicalCandidateDetail }));
 vi.mock("../services/campaignHealthObservation.js", () => ({
   recordCampaignHealthObservation,
 }));
@@ -88,7 +96,12 @@ beforeEach(() => {
   vi.clearAllMocks();
   candidateQueryRaw.mockResolvedValue([]);
   candidateCount.mockResolvedValue(1);
-  getIgUsers.mockResolvedValue({ "ig-1": { username: "frozen-owner" } });
+  candidateGroupBy.mockResolvedValue([]);
+  campaignFindMany.mockResolvedValue([]);
+  getIgUsers.mockResolvedValue({
+    "ig-1": { username: "frozen-owner", audienceSegment: "other" },
+  });
+  historicalCandidateDetail.mockResolvedValue(null);
   recordCampaignHealthObservation.mockResolvedValue({ created: true });
   logEvent.mockResolvedValue(undefined);
   approveCampaign.mockResolvedValue({ ok: true, state: "paused" });
@@ -223,7 +236,7 @@ describe("buildHistoricalAttributionObservation", () => {
 });
 
 describe("GET /candidates", () => {
-  it("returns the frozen origin provenance from the candidate", async () => {
+  it("returns frozen and current audience segments independently", async () => {
     candidateFindMany.mockResolvedValue([{
       id: "22222222-2222-4222-8222-222222222222",
       campaignId: CAMPAIGN_ID,
@@ -242,6 +255,7 @@ describe("GET /candidates", () => {
       audienceOrigin: "us_western",
       audienceOriginMethod: CURRENT_ORIGIN_METHOD,
       audienceOriginConfidence: "low",
+      audienceSegment: "unknown_no_name",
       sentAt: null,
       publicReplyId: null,
       suppressionReason: null,
@@ -260,7 +274,128 @@ describe("GET /candidates", () => {
       audienceOrigin: "us_western",
       audienceOriginMethod: CURRENT_ORIGIN_METHOD,
       audienceOriginConfidence: "low",
+      audienceSegment: "unknown_no_name",
+      currentAudienceSegment: "other",
     });
+  });
+});
+
+describe("GET /campaigns", () => {
+  it("reports each campaign's cap separately from its shared recent group capacity", async () => {
+    const rolloutGroupId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    campaignFindMany.mockResolvedValue([{
+      id: CAMPAIGN_ID,
+      phase: "unknown_read_pilot",
+      state: "running",
+      selectionVersion: "selection-v2",
+      selectionFingerprint: null,
+      decisionHash: null,
+      copyVersion: "recovery-v2",
+      eligibilityPolicyVersion: "eligibility-v4-expanded-audience",
+      sourceDataCutoff: new Date("2026-08-01T00:00:00.000Z"),
+      selectionLimit: 1000,
+      westernOnly: null,
+      holdoutPercent: 0,
+      inboundWindowHours: 24,
+      completionWindowHours: 48,
+      batchSize: 1,
+      hourlyCap: 3,
+      dailyCap: 1000,
+      candidateCount: 4,
+      excludedCount: 0,
+      audienceSegment: "other",
+      rolloutGroupId,
+      rolloutGroupHourlyCap: 10,
+      approvedBy: "owner@example.com",
+      approvedAt: new Date("2026-08-01T00:00:00.000Z"),
+      startedAt: new Date("2026-08-01T00:00:00.000Z"),
+      pausedAt: null,
+      pauseReason: null,
+      endedAt: null,
+      createdAt: new Date("2026-08-01T00:00:00.000Z"),
+    }]);
+    candidateQueryRaw.mockResolvedValueOnce([{ rolloutGroupId, sentLastHour: 7 }]);
+
+    const response = await request(app(true)).get("/campaigns");
+
+    expect(response.status).toBe(200);
+    expect(response.body.campaigns[0]).toMatchObject({
+      audienceSegment: "other",
+      rolloutGroupId,
+      rolloutGroupHourlyCap: 10,
+      rolloutGroupSentLastHour: 7,
+      hourlyCap: 3,
+    });
+    const capacityQuery = candidateQueryRaw.mock.calls[0]?.[0].join("?");
+    expect(capacityQuery).toContain('"reserved_at" >');
+    expect(capacityQuery).toContain("'reserved', 'dispatch_started', 'sent', 'uncertain'");
+    expect(capacityQuery).toContain('"rollout_group_id" IS NOT NULL');
+  });
+
+  it("reports zero shared capacity for an ungrouped campaign", async () => {
+    campaignFindMany.mockResolvedValue([{
+      id: CAMPAIGN_ID,
+      phase: "unknown_read_pilot",
+      state: "running",
+      selectionVersion: "selection-v2",
+      selectionFingerprint: null,
+      decisionHash: null,
+      copyVersion: "recovery-v2",
+      eligibilityPolicyVersion: null,
+      sourceDataCutoff: new Date("2026-08-01T00:00:00.000Z"),
+      selectionLimit: 1000,
+      westernOnly: null,
+      holdoutPercent: 0,
+      inboundWindowHours: 24,
+      completionWindowHours: 48,
+      batchSize: 1,
+      hourlyCap: 3,
+      dailyCap: 1000,
+      candidateCount: 4,
+      excludedCount: 0,
+      audienceSegment: null,
+      rolloutGroupId: null,
+      rolloutGroupHourlyCap: null,
+      approvedBy: null,
+      approvedAt: null,
+      startedAt: null,
+      pausedAt: null,
+      pauseReason: null,
+      endedAt: null,
+      createdAt: new Date("2026-08-01T00:00:00.000Z"),
+    }]);
+    candidateQueryRaw.mockResolvedValueOnce([]);
+
+    const response = await request(app(true)).get("/campaigns");
+
+    expect(response.status).toBe(200);
+    expect(response.body.campaigns[0]).toMatchObject({
+      rolloutGroupId: null,
+      rolloutGroupHourlyCap: null,
+      rolloutGroupSentLastHour: 0,
+    });
+  });
+});
+
+describe("GET /candidates/:id", () => {
+  it("exposes frozen and current audience segments from the detailed read model", async () => {
+    const candidateId = "22222222-2222-4222-8222-222222222222";
+    historicalCandidateDetail.mockResolvedValue({
+      candidate: {
+        id: candidateId,
+        audienceSegment: "unknown_no_name",
+        currentAudienceSegment: "other",
+      },
+    });
+
+    const response = await request(app(true)).get(`/candidates/${candidateId}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.candidate).toMatchObject({
+      audienceSegment: "unknown_no_name",
+      currentAudienceSegment: "other",
+    });
+    expect(historicalCandidateDetail).toHaveBeenCalledWith(candidateId);
   });
 });
 

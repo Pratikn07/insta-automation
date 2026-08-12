@@ -14,6 +14,7 @@ import {
 } from "../services/recoveryCampaignControl.js";
 import { recordCampaignHealthObservation } from "../services/campaignHealthObservation.js";
 import { logEvent } from "../services/eventLogger.js";
+import { historicalCandidateDetail } from "../services/historicalRecoveryCandidateDetail.js";
 
 /**
  * Read models and owner actions for historical recovery campaigns.
@@ -157,10 +158,11 @@ historicalRecoveryRouter.get("/campaigns", async (_req, res) => {
     take: 50,
   });
   const campaignIds = campaigns.map((campaign) => campaign.id);
+  const hourAgo = new Date(Date.now() - 60 * 60 * 1000);
 
   // One grouped query rather than one per campaign: at 985 candidates a per-row
   // loop would issue a query per outcome per campaign.
-  const [grouped, attributionRows] = await Promise.all([
+  const [grouped, attributionRows, rolloutGroupCapacity] = await Promise.all([
     prisma.recoveryCandidate.groupBy({
       by: ["campaignId", "outcome", "arm"],
       where: { campaignId: { in: campaignIds } },
@@ -179,7 +181,23 @@ historicalRecoveryRouter.get("/campaigns", async (_req, res) => {
         campaign: { select: { startedAt: true } },
       },
     }),
+    // A group is the capacity boundary. Count every campaign in it, rather than
+    // only the campaign selected in this dashboard, so this read model cannot make
+    // a shared 10/hour limit look like four independent limits.
+    prisma.$queryRaw<Array<{ rolloutGroupId: string; sentLastHour: number }>>`
+      SELECT campaign."rollout_group_id" AS "rolloutGroupId", COUNT(*)::int AS "sentLastHour"
+      FROM "public_recovery_dispatch" dispatch
+      JOIN "recovery_campaign" campaign ON campaign."id" = dispatch."campaign_id"
+      WHERE campaign."rollout_group_id" IS NOT NULL
+        AND dispatch."state" IN ('reserved', 'dispatch_started', 'sent', 'uncertain')
+        AND dispatch."reserved_at" > ${hourAgo}
+      GROUP BY campaign."rollout_group_id"
+    `,
   ]);
+
+  const rolloutCapacityByGroup = new Map(
+    rolloutGroupCapacity.map((row) => [row.rolloutGroupId, row.sentLastHour]),
+  );
 
   const progress = new Map<string, Record<string, number>>();
   for (const row of grouped) {
@@ -218,6 +236,13 @@ historicalRecoveryRouter.get("/campaigns", async (_req, res) => {
       selectionVersion: c.selectionVersion,
       selectionFingerprint: c.selectionFingerprint,
       decisionHash: c.decisionHash,
+      audienceSegment: c.audienceSegment,
+      rolloutGroupId: c.rolloutGroupId,
+      rolloutGroupHourlyCap: c.rolloutGroupHourlyCap,
+      // Ungrouped legacy campaigns have no shared-capacity boundary.
+      rolloutGroupSentLastHour: c.rolloutGroupId
+        ? rolloutCapacityByGroup.get(c.rolloutGroupId) ?? 0
+        : 0,
       copyVersion: c.copyVersion,
       eligibilityPolicyVersion: c.eligibilityPolicyVersion,
       sourceDataCutoff: c.sourceDataCutoff.toISOString(),
@@ -346,6 +371,8 @@ historicalRecoveryRouter.get("/candidates", async (req, res) => {
         audienceOrigin: r.audienceOrigin,
         audienceOriginMethod: r.audienceOriginMethod,
         audienceOriginConfidence: r.audienceOriginConfidence,
+        audienceSegment: r.audienceSegment,
+        currentAudienceSegment: usersById[r.igUserId]?.audienceSegment ?? null,
         sentAt: r.sentAt?.toISOString() ?? null,
         publicReplyId: r.publicReplyId,
         suppressionReason: r.suppressionReason,
@@ -357,6 +384,21 @@ historicalRecoveryRouter.get("/candidates", async (req, res) => {
       };
     }),
   });
+});
+
+/** Full immutable candidate evidence plus the current audience classification. */
+historicalRecoveryRouter.get("/candidates/:id", async (req, res) => {
+  const candidateId = z.string().uuid().safeParse(req.params.id);
+  if (!candidateId.success) {
+    res.status(400).json({ error: "invalid_candidate_id" });
+    return;
+  }
+  const detail = await historicalCandidateDetail(candidateId.data);
+  if (!detail) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+  res.json(detail);
 });
 
 const approveBody = z.object({

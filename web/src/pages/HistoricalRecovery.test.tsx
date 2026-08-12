@@ -278,4 +278,59 @@ describe("HistoricalRecovery", () => {
       "https://www.instagram.com/reel/source/",
     );
   });
+
+  it("offers one confirmed shared pause for a group with a running sibling", async () => {
+    campaigns = [
+      campaign({
+        id: FIRST_CAMPAIGN_ID,
+        state: "running",
+        audienceSegment: "other",
+        rolloutGroupId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        rolloutGroupHourlyCap: 10,
+        rolloutGroupSentLastHour: 7,
+      }),
+      campaign({
+        id: SECOND_CAMPAIGN_ID,
+        state: "running",
+        audienceSegment: "unknown_no_name",
+        rolloutGroupId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        rolloutGroupHourlyCap: 10,
+        rolloutGroupSentLastHour: 7,
+      }),
+    ];
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(await screen.findByText("Shared group capacity used")).toBeInTheDocument();
+    expect(screen.getByText("7 / 10 in the past hour")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Pause all expanded campaigns" })).toHaveLength(1);
+
+    await user.click(screen.getByRole("button", { name: "Pause all expanded campaigns" }));
+    expect(screen.getByRole("dialog")).toHaveTextContent("Pause all expanded campaigns?");
+    await user.click(screen.getByRole("button", { name: "Pause all campaigns" }));
+
+    await waitFor(() => {
+      const call = api.mock.calls.find(([path]) => String(path).includes("/rollout-groups/"));
+      expect(call?.[0]).toBe(
+        "/historical-recovery/rollout-groups/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/pause",
+      );
+      expect(call?.[1]).toMatchObject({
+        method: "POST",
+        body: JSON.stringify({ reason: "Stopped from the dashboard" }),
+      });
+    });
+  });
+
+  it("does not offer a shared pause when a group has no running sibling", async () => {
+    campaigns = [campaign({
+      state: "running",
+      rolloutGroupId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      rolloutGroupHourlyCap: 10,
+      rolloutGroupSentLastHour: 0,
+    })];
+    renderPage();
+
+    expect(await screen.findByRole("button", { name: "Pause" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Pause all expanded campaigns" })).not.toBeInTheDocument();
+  });
 });

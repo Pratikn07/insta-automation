@@ -5,7 +5,11 @@ import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Drawer } from "@/components/ui/drawer";
 import { Skeleton } from "@/components/ui/skeleton";
-import { campaignPhaseView } from "./historicalRecoveryViewModel";
+import {
+  audienceSegmentLabel,
+  campaignPhaseView,
+  type AudienceSegment,
+} from "./historicalRecoveryViewModel";
 
 type HistoricalCandidateDetail = {
   candidate: {
@@ -21,6 +25,8 @@ type HistoricalCandidateDetail = {
     audienceOrigin: string | null;
     audienceOriginMethod: string | null;
     audienceOriginConfidence: string | null;
+    audienceSegment: AudienceSegment | null;
+    currentAudienceSegment: AudienceSegment | null;
     arm: string;
     outcome: string;
     attempts: number;
@@ -110,6 +116,8 @@ export function HistoricalCandidateDrawer({
     data !== undefined &&
     data.candidate.reviewedAt === null &&
     ["send_failed", "send_uncertain"].includes(data.candidate.outcome);
+  const audienceSegmentsDrift = data !== undefined
+    && data.candidate.audienceSegment !== data.candidate.currentAudienceSegment;
 
   return (
     <Drawer
@@ -141,6 +149,19 @@ export function HistoricalCandidateDrawer({
               <dd>{data.candidate.audienceOriginMethod ? readable(data.candidate.audienceOriginMethod) : "Not recorded"}</dd>
               <dt className="text-muted-foreground">Origin confidence</dt>
               <dd>{data.candidate.audienceOriginConfidence ? readable(data.candidate.audienceOriginConfidence) : "Not recorded"}</dd>
+              {audienceSegmentsDrift ? (
+                <>
+                  <dt className="text-muted-foreground">Audience at selection</dt>
+                  <dd>{data.candidate.audienceSegment ? audienceSegmentLabel(data.candidate.audienceSegment) : "Not recorded"}</dd>
+                  <dt className="text-muted-foreground">Current audience</dt>
+                  <dd>{data.candidate.currentAudienceSegment ? audienceSegmentLabel(data.candidate.currentAudienceSegment) : "Not recorded"}</dd>
+                </>
+              ) : (
+                <>
+                  <dt className="text-muted-foreground">Audience segment</dt>
+                  <dd>{data.candidate.audienceSegment ? audienceSegmentLabel(data.candidate.audienceSegment) : "Not recorded"}</dd>
+                </>
+              )}
               <dt className="text-muted-foreground">Outcome</dt>
               <dd>{readable(data.candidate.outcome)}</dd>
               <dt className="text-muted-foreground">Attempts</dt>

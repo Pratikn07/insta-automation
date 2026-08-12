@@ -31,6 +31,8 @@ function detail(overrides: Record<string, unknown> = {}) {
       audienceOrigin: "us_western",
       audienceOriginMethod: "llm_v1",
       audienceOriginConfidence: "high",
+      audienceSegment: "other",
+      currentAudienceSegment: "unknown_no_name",
       arm: "treatment",
       outcome: "send_uncertain",
       attempts: 1,
@@ -137,6 +139,15 @@ describe("HistoricalCandidateDrawer", () => {
     expect(screen.getByText("us western")).toBeInTheDocument();
     expect(screen.getByText("llm v1")).toBeInTheDocument();
     expect(screen.getByText("high")).toBeInTheDocument();
+  });
+
+  it("shows frozen and current audience segments separately when they drift", async () => {
+    renderDrawer();
+
+    expect(await screen.findByText("Audience at selection")).toBeInTheDocument();
+    expect(screen.getByText("Other")).toBeInTheDocument();
+    expect(screen.getByText("Current audience")).toBeInTheDocument();
+    expect(screen.getByText("Unknown — no username/display name")).toBeInTheDocument();
   });
 
   it("links only to the verified stored source permalink", async () => {

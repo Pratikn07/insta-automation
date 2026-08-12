@@ -4,6 +4,7 @@ const candidateFindUnique = vi.fn();
 const reelFindUnique = vi.fn();
 const feedFindUnique = vi.fn();
 const eventFindMany = vi.fn();
+const igUserFindUnique = vi.fn();
 
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
@@ -11,6 +12,7 @@ vi.mock("../lib/prisma.js", () => ({
     reelMeta: { findUnique: reelFindUnique },
     feedPostMeta: { findUnique: feedFindUnique },
     eventLog: { findMany: eventFindMany },
+    igUser: { findUnique: igUserFindUnique },
   },
 }));
 
@@ -39,6 +41,7 @@ function candidateRow(overrides: Record<string, unknown> = {}) {
     audienceOrigin: "us_western",
     audienceOriginMethod: CURRENT_ORIGIN_METHOD,
     audienceOriginConfidence: "high",
+    audienceSegment: "other",
     arm: "treatment",
     outcome: "send_uncertain",
     attempts: 1,
@@ -103,7 +106,7 @@ function candidateRow(overrides: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
-  for (const fn of [candidateFindUnique, reelFindUnique, feedFindUnique, eventFindMany]) {
+  for (const fn of [candidateFindUnique, reelFindUnique, feedFindUnique, eventFindMany, igUserFindUnique]) {
     fn.mockReset();
   }
   candidateFindUnique.mockResolvedValue(candidateRow());
@@ -125,6 +128,7 @@ beforeEach(() => {
       createdAt: new Date("2026-08-08T19:00:00.000Z"),
     },
   ]);
+  igUserFindUnique.mockResolvedValue({ audienceSegment: "unknown_generic" });
 });
 
 describe("historicalCandidateDetail", () => {
@@ -138,6 +142,8 @@ describe("historicalCandidateDetail", () => {
       audienceOrigin: "us_western",
       audienceOriginMethod: CURRENT_ORIGIN_METHOD,
       audienceOriginConfidence: "high",
+      audienceSegment: "other",
+      currentAudienceSegment: "unknown_generic",
     });
     expect(detail?.auditEvents[0]).toEqual({
       id: "88888888-8888-4888-8888-888888888888",

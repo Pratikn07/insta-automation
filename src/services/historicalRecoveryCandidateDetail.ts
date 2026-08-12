@@ -18,6 +18,7 @@ const CANDIDATE_DETAIL_SELECT = {
   audienceOrigin: true,
   audienceOriginMethod: true,
   audienceOriginConfidence: true,
+  audienceSegment: true,
   arm: true,
   outcome: true,
   attempts: true,
@@ -100,7 +101,7 @@ export async function historicalCandidateDetail(candidateId: string) {
   });
   if (!row) return null;
 
-  const [reel, feed, auditRows] = await Promise.all([
+  const [reel, feed, auditRows, user] = await Promise.all([
     row.mediaId
       ? prisma.reelMeta.findUnique({
           where: { mediaId: row.mediaId },
@@ -118,6 +119,10 @@ export async function historicalCandidateDetail(candidateId: string) {
       orderBy: { createdAt: "asc" },
       take: 200,
       select: { id: true, kind: true, payload: true, createdAt: true },
+    }),
+    prisma.igUser.findUnique({
+      where: { id: row.igUserId },
+      select: { audienceSegment: true },
     }),
   ]);
 
@@ -139,6 +144,8 @@ export async function historicalCandidateDetail(candidateId: string) {
       audienceOrigin: row.audienceOrigin,
       audienceOriginMethod: row.audienceOriginMethod,
       audienceOriginConfidence: row.audienceOriginConfidence,
+      audienceSegment: row.audienceSegment,
+      currentAudienceSegment: user?.audienceSegment ?? null,
       arm: row.arm,
       outcome: row.outcome,
       attempts: row.attempts,
