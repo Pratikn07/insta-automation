@@ -87,4 +87,13 @@ describe("evaluateHistoricalAudience", () => {
       method: "llm_v2",
     })).toEqual({ kind: "defer", reason: "origin_not_current_gemini" });
   });
+
+  it.each([
+    ["segment", { segment: null, origin: "unknown", confidence: "low", method: CURRENT_ORIGIN_METHOD }, "audience_segment_invalid"],
+    ["origin", { segment: "unknown_generic", origin: null, confidence: "low", method: CURRENT_ORIGIN_METHOD }, "audience_segment_invalid"],
+    ["confidence", { segment: "unknown_generic", origin: "unknown", confidence: null, method: CURRENT_ORIGIN_METHOD }, "audience_segment_invalid"],
+    ["method", { segment: "unknown_generic", origin: "unknown", confidence: "low", method: null }, "origin_not_current_gemini"],
+  ] as const)("fails closed when %s is missing", (_field, input, reason) => {
+    expect(evaluateHistoricalAudience(input)).toEqual({ kind: "defer", reason });
+  });
 });

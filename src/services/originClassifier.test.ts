@@ -224,6 +224,23 @@ describe("classifyOrigins", () => {
       },
     );
 
+    it.each([[undefined], [null], [""], [42], [{}]])(
+      "drops a verdict with missing or non-string evidence %p",
+      async (evidence) => {
+        post.mockResolvedValue(reply([{
+          id: "u1",
+          origin: "us_western",
+          confidence: "low",
+          evidence,
+          cueAssessment: "positive_cue",
+          cueKind: "distinctive_cultural",
+        }]));
+
+        const res = await classifyOrigins(CANDIDATES);
+        expect(res.verdicts).toEqual([]);
+      },
+    );
+
     it("drops a structurally contradictory cue combination", async () => {
       post.mockResolvedValue(reply([{
         id: "u1",

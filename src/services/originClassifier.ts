@@ -171,7 +171,8 @@ function toVerdict(raw: unknown, requestedIds: Set<string>): OriginVerdict | nul
   const audienceSegment = deriveAudienceSegment({ origin, cueAssessment, cueKind });
   if (!audienceSegment) return null;
 
-  const evidence = typeof r.evidence === "string" ? r.evidence.slice(0, 200) : "";
+  if (typeof r.evidence !== "string" || r.evidence.trim().length === 0) return null;
+  const evidence = r.evidence.slice(0, 200);
 
   return { id, origin, confidence, cueKind, audienceSegment, evidence };
 }

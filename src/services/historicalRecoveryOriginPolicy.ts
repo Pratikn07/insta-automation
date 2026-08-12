@@ -17,20 +17,13 @@ export type {
 
 export type HistoricalOriginDecision =
   | { kind: "allow" }
-  | {
-      kind: "block";
-      reason:
-        | "audience_south_asian"
-        | "audience_other"
-        | "audience_unknown"
-        | "audience_invalid_confidence";
-    }
+  | { kind: "block"; reason: "audience_south_asian" }
   | { kind: "stale"; reason: "origin_not_current_gemini" };
 
 /**
- * Compatibility policy for legacy callers. Task 3 migrates selection and
- * dispatch callers to evaluateHistoricalAudience(), which also validates the
- * persisted segment.
+ * Compatibility policy for callers not yet migrated to persisted segments.
+ * It preserves the binding rule during the transition: only a current South
+ * Asian origin blocks; incomplete provenance defers for re-enrichment.
  */
 export function evaluateHistoricalOrigin(input: {
   origin: string | null;
@@ -41,12 +34,16 @@ export function evaluateHistoricalOrigin(input: {
     return { kind: "stale", reason: "origin_not_current_gemini" };
   }
   if (input.confidence !== "high" && input.confidence !== "low") {
-    return { kind: "block", reason: "audience_invalid_confidence" };
+    return { kind: "stale", reason: "origin_not_current_gemini" };
   }
-  if (input.origin === "us_western") return { kind: "allow" };
+  if (input.origin !== "us_western"
+    && input.origin !== "south_asian"
+    && input.origin !== "other"
+    && input.origin !== "unknown") {
+    return { kind: "stale", reason: "origin_not_current_gemini" };
+  }
   if (input.origin === "south_asian") {
     return { kind: "block", reason: "audience_south_asian" };
   }
-  if (input.origin === "other") return { kind: "block", reason: "audience_other" };
-  return { kind: "block", reason: "audience_unknown" };
+  return { kind: "allow" };
 }
