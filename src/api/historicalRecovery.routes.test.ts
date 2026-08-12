@@ -71,6 +71,9 @@ function app(authenticated: boolean) {
     });
   }
   server.use(historicalRecoveryRouter);
+  server.use((_error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    res.status(500).json({ error: "internal_error" });
+  });
   return server;
 }
 
@@ -398,5 +401,26 @@ describe("POST /rollout-groups/:id/pause", () => {
       .expect(401, { error: "missing_bearer_token" });
 
     expect(pauseCampaignGroup).not.toHaveBeenCalled();
+  });
+
+  it("returns not_found when a valid rollout group has no campaigns", async () => {
+    pauseCampaignGroup.mockRejectedValueOnce(Object.assign(
+      new Error("campaign_group_not_found"),
+      { code: "campaign_group_not_found" },
+    ));
+
+    await request(app(true))
+      .post(`/rollout-groups/${CAMPAIGN_ID}/pause`)
+      .send({ reason: "stop" })
+      .expect(404, { error: "not_found" });
+  });
+
+  it("forwards an unexpected service rejection to the error middleware", async () => {
+    pauseCampaignGroup.mockRejectedValueOnce(new Error("database unavailable"));
+
+    await request(app(true))
+      .post(`/rollout-groups/${CAMPAIGN_ID}/pause`)
+      .send({ reason: "stop" })
+      .expect(500, { error: "internal_error" });
   });
 });

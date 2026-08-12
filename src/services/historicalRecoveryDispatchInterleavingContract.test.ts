@@ -748,6 +748,101 @@ describeWithDatabase("historical dispatch state interleavings", () => {
     ).toEqual({ state: "paused", pauseReason: "owner emergency stop" });
   });
 
+  it("allows an already-first dispatch authorization to start before the group pause", async () => {
+    const rolloutGroupId = randomUUID();
+    const scenario = await reserveScenario({ rolloutGroupId });
+    const held = await holdControlLock();
+    const startPromise = historical.startHistoricalDispatch(scenario);
+    await waitForBlockedControlQueries(1);
+    const pausePromise = campaigns.pauseCampaignGroup(
+      rolloutGroupId,
+      "owner emergency stop",
+      scenario.now,
+    );
+    await waitForBlockedControlQueries(2);
+    held.release();
+
+    const [start, pause] = await within(Promise.all([startPromise, pausePromise]));
+    await held.done;
+
+    expect(start).toEqual({ kind: "started" });
+    expect(pause).toEqual({
+      rolloutGroupId,
+      pausedCampaignIds: [scenario.campaignId],
+      skipped: [],
+    });
+    expect(
+      await db.publicRecoveryDispatch.findUnique({
+        where: { id: scenario.dispatchId },
+        select: { state: true },
+      }),
+    ).toEqual({ state: "dispatch_started" });
+    expect(
+      await db.recoveryCampaign.findUnique({
+        where: { id: scenario.campaignId },
+        select: { state: true, pauseReason: true },
+      }),
+    ).toEqual({ state: "paused", pauseReason: "owner emergency stop" });
+  });
+
+  it("serializes target-first health locks for two siblings without deadlock", async () => {
+    const rolloutGroupId = randomUUID();
+    const scenario = await reserveScenario({ rolloutGroupId });
+    const sibling = await db.recoveryCampaign.create({
+      data: {
+        phase: "unknown_read_pilot",
+        selectionVersion: `${prefix}-${randomUUID()}`,
+        sourceDataCutoff: scenario.now,
+        copyVersion: "contract-v1",
+        state: "running",
+        approvedBy: "contract@example.com",
+        approvedAt: scenario.now,
+        startedAt: scenario.now,
+        rolloutGroupId,
+        rolloutGroupHourlyCap: 10,
+      },
+    });
+    const held = await holdControlLock();
+    const first = observations.recordCampaignHealthObservation({
+      campaignId: scenario.campaignId,
+      kind: "opt_out",
+      sourceKey: `interleaving:${randomUUID()}`,
+      observedAt: new Date(scenario.now.getTime() + 1),
+    });
+    await waitForBlockedControlQueries(1);
+    const second = observations.recordCampaignHealthObservation({
+      campaignId: sibling.id,
+      kind: "complaint",
+      sourceKey: `interleaving:${randomUUID()}`,
+      observedAt: new Date(scenario.now.getTime() + 2),
+    });
+    await waitForBlockedControlQueries(2);
+    held.release();
+
+    await expect(within(Promise.all([first, second]))).resolves.toEqual([
+      { created: true },
+      { created: true },
+    ]);
+    await held.done;
+
+    expect(await db.recoveryCampaign.findMany({
+      where: { id: { in: [scenario.campaignId, sibling.id] } },
+      select: { id: true, state: true },
+      orderBy: { id: "asc" },
+    })).toEqual(
+      [scenario.campaignId, sibling.id]
+        .sort()
+        .map((id) => ({ id, state: "paused" })),
+    );
+    const audits = (await db.eventLog.findMany({
+      where: { kind: "historical_campaign_group_paused" },
+      select: { payload: true },
+    })).filter((event) => (
+      event.payload as { rolloutGroupId?: string }
+    ).rolloutGroupId === rolloutGroupId);
+    expect(audits).toHaveLength(2);
+  });
+
   it("completes concurrent pause versus dispatch start without deadlock", async () => {
     const scenario = await reserveScenario();
     const held = await holdControlLock();

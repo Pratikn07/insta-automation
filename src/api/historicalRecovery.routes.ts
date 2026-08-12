@@ -413,7 +413,7 @@ const groupPauseParams = z.object({ id: z.string().uuid() });
 const groupPauseBody = z.object({ reason: z.string().trim().min(1).max(200) });
 
 /** Owner emergency stop for every running campaign in one expanded rollout. */
-historicalRecoveryRouter.post("/rollout-groups/:id/pause", async (req, res) => {
+historicalRecoveryRouter.post("/rollout-groups/:id/pause", async (req, res, next) => {
   const params = groupPauseParams.safeParse(req.params);
   const body = groupPauseBody.safeParse(req.body);
   if (!params.success || !body.success) {
@@ -421,8 +421,21 @@ historicalRecoveryRouter.post("/rollout-groups/:id/pause", async (req, res) => {
     return;
   }
 
-  const result = await pauseCampaignGroup(params.data.id, body.data.reason, new Date());
-  res.json(result);
+  try {
+    const result = await pauseCampaignGroup(params.data.id, body.data.reason, new Date());
+    res.json(result);
+  } catch (error) {
+    if (
+      error
+      && typeof error === "object"
+      && "code" in error
+      && error.code === "campaign_group_not_found"
+    ) {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
+    next(error);
+  }
 });
 
 /**

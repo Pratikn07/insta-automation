@@ -14,6 +14,7 @@ const dispatchFindMany = vi.fn();
 const dispatchUpdateMany = vi.fn();
 const dispatchCount = vi.fn();
 const queryRaw = vi.fn();
+const eventLogCreate = vi.fn();
 const logEvent = vi.fn();
 const verifyStoredSelectionSnapshot = vi.fn();
 
@@ -50,6 +51,7 @@ vi.mock("../lib/prisma.js", () => ({
           updateMany: dispatchUpdateMany,
           count: dispatchCount,
         },
+        eventLog: { create: eventLogCreate },
         $queryRaw: queryRaw,
       }),
   },
@@ -73,11 +75,12 @@ beforeEach(() => {
     campaignUpdateMany, campaignFindUnique, campaignFindMany, campaignUpdate,
     candidateUpdateMany, candidateFindMany, candidateCount, controlUpsert,
     dispatchFindMany, dispatchUpdateMany, dispatchCount, exclusionFindMany,
-    queryRaw, logEvent, verifyStoredSelectionSnapshot,
+    queryRaw, eventLogCreate, logEvent, verifyStoredSelectionSnapshot,
   ]) {
     fn.mockReset();
   }
   logEvent.mockResolvedValue(undefined);
+  eventLogCreate.mockResolvedValue({ id: "event-1" });
   queryRaw.mockResolvedValue([]);
   controlUpsert.mockResolvedValue({ id: 1 });
   candidateFindMany.mockResolvedValue([]);
@@ -388,16 +391,25 @@ describe("pauseCampaignGroup", () => {
         pauseReason: "owner emergency stop",
       },
     });
-    expect(logEvent).toHaveBeenCalledTimes(1);
-    expect(logEvent).toHaveBeenCalledWith("historical_campaign_group_paused", {
-      rolloutGroupId,
-      reason: "owner emergency stop",
-      pausedCampaignIds: ["11111111-1111-4111-8111-111111111112"],
-      skipped: [
-        { campaignId: "22222222-2222-4222-8222-222222222222", state: "completed" },
-        { campaignId: "33333333-3333-4333-8333-333333333333", state: "paused" },
-      ],
+    expect(eventLogCreate).toHaveBeenCalledTimes(1);
+    expect(eventLogCreate).toHaveBeenCalledWith({
+      data: {
+        kind: "historical_campaign_group_paused",
+        payload: {
+          rolloutGroupId,
+          reason: "owner emergency stop",
+          pausedCampaignIds: ["11111111-1111-4111-8111-111111111112"],
+          skipped: [
+            { campaignId: "22222222-2222-4222-8222-222222222222", state: "completed" },
+            { campaignId: "33333333-3333-4333-8333-333333333333", state: "paused" },
+          ],
+        },
+      },
     });
+    expect(logEvent).not.toHaveBeenCalledWith(
+      "historical_campaign_group_paused",
+      expect.anything(),
+    );
   });
 
   it("is idempotent when every group member is already non-running", async () => {
@@ -417,7 +429,78 @@ describe("pauseCampaignGroup", () => {
       ],
     });
     expect(campaignUpdateMany).not.toHaveBeenCalled();
-    expect(logEvent).toHaveBeenCalledTimes(1);
+    expect(eventLogCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an unknown valid group before updating or auditing", async () => {
+    queryRaw.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+
+    await expect(pauseCampaignGroup(rolloutGroupId, "stop")).rejects.toMatchObject({
+      code: "campaign_group_not_found",
+    });
+
+    expect(campaignUpdateMany).not.toHaveBeenCalled();
+    expect(eventLogCreate).not.toHaveBeenCalled();
+  });
+
+  it("propagates an audit failure so the transaction rolls back the pause", async () => {
+    queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { id: "11111111-1111-4111-8111-111111111112", state: "running" },
+      ]);
+    campaignUpdateMany.mockResolvedValue({ count: 1 });
+    eventLogCreate.mockRejectedValue(new Error("audit unavailable"));
+
+    await expect(pauseCampaignGroup(rolloutGroupId, "stop")).rejects.toThrow(
+      "audit unavailable",
+    );
+    expect(campaignUpdateMany).toHaveBeenCalledOnce();
+    expect(eventLogCreate).toHaveBeenCalledOnce();
+    expect(logEvent).not.toHaveBeenCalledWith(
+      "historical_campaign_group_paused",
+      expect.anything(),
+    );
+  });
+
+  it("rejects a pause-count mismatch before writing the audit", async () => {
+    queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { id: "11111111-1111-4111-8111-111111111112", state: "running" },
+      ]);
+    campaignUpdateMany.mockResolvedValue({ count: 0 });
+
+    await expect(pauseCampaignGroup(rolloutGroupId, "stop")).rejects.toThrow(
+      "campaign_group_pause_count_mismatch",
+    );
+    expect(eventLogCreate).not.toHaveBeenCalled();
+  });
+
+  it("writes one durable audit for each successful owner retry", async () => {
+    const campaignId = "11111111-1111-4111-8111-111111111112";
+    queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: campaignId, state: "running" }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: campaignId, state: "paused" }]);
+    campaignUpdateMany.mockResolvedValue({ count: 1 });
+
+    await pauseCampaignGroup(rolloutGroupId, "stop");
+    await pauseCampaignGroup(rolloutGroupId, "stop");
+
+    expect(eventLogCreate).toHaveBeenCalledTimes(2);
+    expect(eventLogCreate.mock.calls[0]?.[0]).toMatchObject({
+      data: { payload: { pausedCampaignIds: [campaignId], skipped: [] } },
+    });
+    expect(eventLogCreate.mock.calls[1]?.[0]).toMatchObject({
+      data: {
+        payload: {
+          pausedCampaignIds: [],
+          skipped: [{ campaignId, state: "paused" }],
+        },
+      },
+    });
   });
 
   it.each(["", "   ", "x".repeat(201)])(

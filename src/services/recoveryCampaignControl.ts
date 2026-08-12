@@ -41,6 +41,15 @@ export type GroupPauseResult = {
   skipped: Array<{ campaignId: string; state: string }>;
 };
 
+export class CampaignGroupNotFoundError extends Error {
+  readonly code = "campaign_group_not_found";
+
+  constructor() {
+    super("campaign_group_not_found");
+    this.name = "CampaignGroupNotFoundError";
+  }
+}
+
 type LockedCampaignGroupMember = { id: string; state: string };
 
 function normalizeCampaignPauseReason(reason: string): string {
@@ -86,6 +95,7 @@ export async function pauseLockedCampaignGroup(
   now: Date,
 ): Promise<GroupPauseResult> {
   const normalizedReason = normalizeCampaignPauseReason(reason);
+  if (members.length === 0) throw new CampaignGroupNotFoundError();
   const pausedCampaignIds = members
     .filter((member) => member.state === "running")
     .map((member) => member.id);
@@ -103,7 +113,19 @@ export async function pauseLockedCampaignGroup(
     }
   }
 
-  return { rolloutGroupId, pausedCampaignIds, skipped };
+  const result = { rolloutGroupId, pausedCampaignIds, skipped };
+  await tx.eventLog.create({
+    data: {
+      kind: "historical_campaign_group_paused",
+      payload: {
+        rolloutGroupId: result.rolloutGroupId,
+        reason: normalizedReason,
+        pausedCampaignIds: result.pausedCampaignIds,
+        skipped: result.skipped,
+      },
+    },
+  });
+  return result;
 }
 
 /** Rebuild the exact owner-reviewed manifest from its frozen database rows. */
@@ -403,13 +425,6 @@ export async function pauseCampaignGroup(
     await lockRecoveryCampaignControl(tx);
     const members = await lockCampaignGroupMembers(tx, rolloutGroupId);
     return pauseLockedCampaignGroup(tx, rolloutGroupId, members, normalizedReason, now);
-  });
-
-  await logEvent("historical_campaign_group_paused", {
-    rolloutGroupId: result.rolloutGroupId,
-    reason: normalizedReason,
-    pausedCampaignIds: result.pausedCampaignIds,
-    skipped: result.skipped,
   });
   return result;
 }

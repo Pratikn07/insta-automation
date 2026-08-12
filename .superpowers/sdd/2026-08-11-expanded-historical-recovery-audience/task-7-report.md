@@ -62,3 +62,52 @@ These changes are necessary and in scope: they directly cover the requested conc
 ## Concerns / Follow-up
 
 `MIGRATION_TEST_DATABASE_URL` is not configured in this worktree, so PostgreSQL-backed contract cases were skipped by their existing environment guard. The non-database portions, full available backend suite, build, Prisma generation/validation, and diff checks pass. The skipped database contracts should also be run against the project's disposable PostgreSQL test database before production release.
+
+## Fix Round 1/5 — Transactional Group Pause
+
+### Review Findings Addressed
+
+- Health observations now acquire the singleton recovery-control lock, then lock and read the target campaign row with `FOR UPDATE`, and only then lock all rollout-group members using `ORDER BY id FOR UPDATE`.
+- The Express 4 group-pause handler catches rejected service promises. Known empty-group errors return `404 { error: "not_found" }`; unexpected errors are passed to `next(error)` and the API error middleware returns `500 { error: "internal_error" }`.
+- A valid UUID with no matching campaigns now throws the distinct `campaign_group_not_found` service error before update or audit. An existing all-non-running group remains a successful idempotent result with every member in `skipped`.
+- Group-pause audits are written through `tx.eventLog.create` in the same Prisma transaction as campaign updates. The swallowing `logEvent` helper is no longer used for grouped owner or health pauses.
+
+### RED / GREEN
+
+RED command:
+
+```sh
+npx vitest run src/services/recoveryCampaignControl.test.ts src/services/campaignHealthObservation.test.ts src/api/historicalRecovery.routes.test.ts
+```
+
+Before the fix: 10 failed and 76 passed. The two route rejection cases timed out and Vitest reported two unhandled promise rejections; service tests demonstrated pre-lock identity reads, missing transactional audit writes, and successful empty-group responses.
+
+After the fix, the same command is GREEN: 86 passed in 3 files with no unhandled errors.
+
+### Transaction, Lock, and Audit Semantics
+
+The serialized order is `dm_recovery_control → target campaign → rollout-group campaigns ordered by id`. PostgreSQL row locks remain held until transaction completion; the target lock is therefore re-encountered by the ordered group query. This cannot create a target-first/group-order cycle among health, group-pause, or dispatch authorization paths because all three must first own the same singleton control lock. Other campaign-only transitions do not subsequently request the singleton or another group member, so they cannot complete a reverse cycle.
+
+The ordered group update count must equal the locked running-member count. A count mismatch throws before audit insertion. Audit insertion occurs after the conditional campaign update but before transaction commit; an audit rejection propagates and Prisma rolls back the campaign changes. For grouped health observations, the observation insert, sibling pauses, and group audit share one transaction. Only the caller that wins the idempotent observation insert writes the audit; duplicate delivery writes neither another pause nor another event.
+
+Owner retries are separate invocations: every successful invocation writes exactly one durable event, including an idempotent retry whose result contains only skipped states. This is per-invocation cardinality, not global deduplication.
+
+### Added Coverage
+
+- Unit mutation coverage fails if target identity is read before its row lock, if the group lock loses stable ordering, if the audit moves back to `logEvent`, or if empty groups regain success behavior.
+- Service tests cover audit failure propagation, pause-count mismatch before audit, all-non-running idempotency, and one persisted audit call for each successful owner retry.
+- Route tests cover `404 not_found` and unexpected service rejection through error middleware as `500 internal_error`, with no unhandled promise.
+- PostgreSQL contracts cover durable audit payload/cardinality, duplicate grouped-health delivery, unknown-group no-audit behavior, pause-first and dispatch-first serialization, and two target-first sibling health observations completing without deadlock.
+
+### Verification
+
+- Focused: 86 passed.
+- Impacted: 248 passed, 110 skipped; 7 files passed, 4 skipped.
+- Full backend: 1,525 passed, 307 skipped; 92 files passed, 23 skipped.
+- Build: passed with Prisma Client generation and TypeScript compilation.
+- Independent review: no actionable regressions; 56 focused service tests and build passed in its restricted environment.
+- No Prisma schema or migration changes were made.
+
+### Remaining Concern
+
+`MIGRATION_TEST_DATABASE_URL` remains unset, so the new PostgreSQL cardinality and interleaving cases are compiled but skipped locally. The reviewer sandbox also forbids local HTTP listeners, while the same route tests pass in the normal worktree. Run the PostgreSQL contract cases against the disposable local database before release.
