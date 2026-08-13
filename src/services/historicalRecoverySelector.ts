@@ -342,6 +342,7 @@ export async function selectHistoricalCandidates(input: {
   /** Cap the campaign to the first N candidates, oldest first (staged rollout). */
   limit?: number;
   holdoutPercent?: number;
+  hourlyCap?: number;
   dailyCap?: number;
   eligibilityPolicyVersion?: string;
   /** An exact current segment for a v4 expanded-audience campaign. */
@@ -522,6 +523,10 @@ export async function selectHistoricalCandidates(input: {
   }
 
   const holdoutPercent = input.holdoutPercent ?? 50;
+  const hourlyCap = input.hourlyCap ?? 3;
+  if (!Number.isInteger(hourlyCap) || hourlyCap < 1 || hourlyCap > 1000) {
+    throw new Error("invalid_hourly_cap");
+  }
   const dailyCap = input.dailyCap ?? 10;
   if (!Number.isInteger(dailyCap) || dailyCap < 1 || dailyCap > 1000) {
     throw new Error("invalid_daily_cap");
@@ -689,6 +694,7 @@ export async function selectHistoricalCandidates(input: {
         commentTo: input.commentTo ?? null,
         selectionLimit: input.limit ?? null,
         holdoutPercent,
+        hourlyCap,
         dailyCap,
         candidateCount: inclusions.length,
         excludedCount: snapshotExclusions.length,
