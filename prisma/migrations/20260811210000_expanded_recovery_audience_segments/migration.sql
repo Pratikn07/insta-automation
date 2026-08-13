@@ -24,6 +24,7 @@ ALTER TABLE "recovery_campaign"
       ("rollout_group_id" IS NULL AND "rollout_group_hourly_cap" IS NULL)
       OR (
         "rollout_group_id" IS NOT NULL
+        AND "rollout_group_hourly_cap" IS NOT NULL
         AND "rollout_group_hourly_cap" BETWEEN 1 AND 1000
       )
     );

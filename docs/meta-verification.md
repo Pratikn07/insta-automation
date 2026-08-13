@@ -356,61 +356,72 @@ MIGRATION_TEST_DATABASE_DISPOSABLE=true MIGRATION_TEST_DATABASE_URL="postgresql:
 A correct run reports **0 skipped**. Any skipped count means the contracts did
 not execute.
 
-## Audience origin enrichment
+## Historical-recovery audience classification
 
-**@tinysoho is a parenting product for a Western market, and its automation is
-scoped to that audience.** This is a recorded product decision, not a default to
-be rediscovered — see §4.8 of
-`docs/superpowers/specs/2026-08-07-instagram-automation-feature-requests-1-3-4-design.md`.
+The expanded historical-recovery policy is versioned as `llm_v3` and applies
+only to **historical public-comment recovery**. It does not change keyword
+matching, guide delivery, ordinary comment automation, or prospective DM
+recovery.
 
-A separate worker classifies each gate user's likely audience origin from their
-name and username, and — when `DM_RECOVERY_WESTERN_ONLY` is on — a
-high-confidence South-Asian verdict withholds the public recovery comment. The
-suppressed row is recorded with reason `audience_out_of_market`, which the
-dashboard shows as "Withheld by the audience filter" so the decision is
-reviewable rather than indistinguishable from an ordinary suppression.
+This is an operational classification based only on the available Instagram
+username and display name. It is not a claim of verified geography, nationality,
+or ethnicity. Free-text Gemini evidence is audit-only and never authorizes or
+blocks a send.
 
-**What is withheld is the unsolicited public comment, never the guide.** Anyone
-who comments a keyword still receives the gate DM and, on completing the journey,
-the guide. The filter decides only whether this account posts a public reminder
-to someone who has gone quiet.
+| Stored segment | Eligibility for historical recovery |
+|---|---|
+| `western` | Allow; it is an existing, separate population and is not duplicated by the expanded rollout. |
+| `other` | Allow in its own expanded campaign. |
+| `unknown_cue` | Allow in its own expanded campaign. |
+| `unknown_generic` | Allow in its own expanded campaign. |
+| `unknown_no_name` | Allow in its own expanded campaign. |
+| `south_asian` | Block at both `high` and `low` confidence. |
 
-Measured on the first 785 classified users: 47% high-confidence `south_asian`,
-9% high-confidence `us_western`, 17% `unknown`, the rest low confidence. Since
-only a high-confidence South-Asian verdict withholds, expect the filter to
-suppress roughly a third of reminders once the backlog is fully classified.
+Both normalized identity fields empty produce `unknown_no_name`
+deterministically; Gemini is not called. For every other account, a current,
+structurally valid `llm_v3` method, origin, confidence, and segment are
+required. Missing, stale, malformed, incomplete, or contradictory provenance
+defers the historical send and never default-allows it.
+
+**What is withheld is the unsolicited historical public comment, never the
+guide.** Anyone who comments a keyword continues through the ordinary gate and
+guide flow. The classifier only participates in the separately approved
+historical-recovery policy.
 
 ### Switches, and the order to use them
 
 | Variable | Default | Effect |
 |---|---|---|
-| `DM_RECOVERY_ORIGIN_LLM_ENABLED` | `false` | Runs the enrichment worker and populates `inferred_origin` / `origin_confidence` / `origin_evidence`. Sends nothing, gates nothing. |
-| `DM_RECOVERY_WESTERN_ONLY` | `false` (ships off; **intended on** in production) | Uses those verdicts to withhold public comments from an out-of-market audience. |
+| `DM_RECOVERY_ORIGIN_LLM_ENABLED` | `false` | Runs the enrichment worker and populates current `llm_v3` origin provenance and `audience_segment`. It sends nothing by itself. |
+| `DM_RECOVERY_WESTERN_ONLY` | `false` | Frozen on historical campaign manifests for compatibility/audit; it does not weaken the current segment authorization rule. |
 | `DM_RECOVERY_ORIGIN_BATCH_SIZE` | `25` | Users per Gemini call. |
 | `DM_RECOVERY_ORIGIN_INTERVAL_MS` | `120000` | Worker pacing. |
 
-Enable the first on its own, let it backfill, then read `inferred_origin` and
-`origin_evidence` and judge the verdicts against your own audience before
-enabling the second. They are deliberately independent so that is possible.
+Enable enrichment by itself, let it reclassify the targeted historical pool to
+`llm_v3`, and audit the structured method/segment/confidence counts before any
+expanded campaign is selected. Expanded sending stays disabled until that audit
+passes; the full sequence is in
+`docs/qa/2026-08-11-expanded-historical-recovery-audience-qa.md`.
 
 ### Production dependency
 
-**`GEMINI_API_KEY` must be set in Railway.** A local `.env` value does not
-propagate. Without it the worker no-ops, the column stays null, and the gate
-silently falls back to the weaker name-token screen — so an unset key does not
-fail loudly, it just quietly changes which screen is running. Spend is bounded
-by the existing `GEMINI_DAILY_BUDGET_USD`.
+**`GEMINI_API_KEY` must be set in the deployed API environment.** A local `.env`
+value does not propagate. Without it the worker no-ops and targeted users remain
+stale or incomplete, which is an audit failure rather than permission to send.
+Spend is bounded by the existing `GEMINI_DAILY_BUDGET_USD`.
 
 ### What this is, and is not
 
-It is a **name-based proxy, not geography.** Meta exposes no per-user country.
-Some diaspora users in the US will be withheld from, and some South Asian users
-with Western handles will not be. Roughly 30% of gate users have no usable name
-at all and are classified `unknown`, which no classifier fixes.
+It is a **name-based operational proxy, not geography.** Meta exposes no
+per-user country. The approved policy does not treat a missing or low-confidence
+classification as permission by default: `south_asian` is blocked at either
+confidence, all five listed non-South-Asian segments are eligible, and every
+missing/stale/malformed/inconsistent result defers.
 
-Verdicts are stored, not recomputed per send, and are retired when the name they
-were derived from changes. Only a high-confidence verdict withholds anything;
-absent, unknown, and low-confidence all fall through to sending.
+Verdicts are stored with their method and segment and are retired when the name
+or username they were derived from changes. Selection freezes that provenance on
+the candidate, while each send rechecks current provenance and repeats the
+critical authorization under the dispatch lock.
 
 ## Known follow-up
 

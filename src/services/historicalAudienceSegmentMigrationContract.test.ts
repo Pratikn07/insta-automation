@@ -38,7 +38,6 @@ afterAll(async () => {
 });
 
 async function deleteFixture(): Promise<void> {
-  await prisma.recoveryCandidate.deleteMany({ where: { igUserId } });
   await prisma.recoveryCampaign.deleteMany({
     where: { selectionVersion: { startsWith: "audience-segment-contract-" } },
   });
