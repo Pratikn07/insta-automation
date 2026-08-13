@@ -203,7 +203,7 @@ function successfulRunner(deploymentId = ROLLBACK_DEPLOYMENT_ID) {
     if (command === "railway" && args[0] === "deployment") {
       return JSON.stringify([{ id: deploymentId, status: "SUCCESS" }]);
     }
-    if (command === "railway" && args[0] === "ssh" && args.includes("--eval")) {
+    if (command === "railway" && args[0] === "ssh" && args.at(-1)?.includes("data:text/javascript;base64")) {
       return remoteAttestation();
     }
     if (command === "railway" && args[0] === "ssh") return selectionJson();
@@ -409,7 +409,7 @@ describe("expanded recovery operator resumability", () => {
     let selectorRuns = 0;
     const runner = runnerWith(async (command, args) => {
       if (command.endsWith("tsx")) return JSON.stringify({ ok: true });
-      if (command === "railway" && args[0] === "ssh" && args.includes("--eval")) return remoteAttestation();
+      if (command === "railway" && args[0] === "ssh" && args.at(-1)?.includes("data:text/javascript;base64")) return remoteAttestation();
       if (command === "railway" && args[0] === "ssh") {
         selectorRuns += 1;
         return "selector may have written drafts\nnot-json";
