@@ -1,8 +1,38 @@
 import type { CampaignPhase } from "./historicalRecoveryEligibility.js";
 import type { ExpandedRecoveryCampaignSelection } from "./expandedRecoveryCampaignSelector.js";
+import { COPY_VERSION } from "./historicalRecoveryCopy.js";
+import { EXPANDED_AUDIENCE_ELIGIBILITY_POLICY_VERSION } from "./historicalRecoverySnapshot.js";
+
+export const EXPANDED_RECOVERY_SELECTION_VERSION = "v1-canonical-intents-expanded-audience";
+
+type ExpandedSelectionWithPhase = ExpandedRecoveryCampaignSelection & { phase: CampaignPhase };
+
+/** Strict single-record output consumed by the fail-closed production operator. */
+export function expandedRecoveryCampaignSelectionRecord(result: ExpandedSelectionWithPhase) {
+  return {
+    schemaVersion: 1 as const,
+    kind: "expanded-recovery-selection" as const,
+    rolloutGroupId: result.rolloutGroupId,
+    phase: result.phase,
+    groupHourlyCap: 10 as const,
+    dailyCap: 1000 as const,
+    holdoutPercent: 0 as const,
+    eligibilityPolicyVersion: EXPANDED_AUDIENCE_ELIGIBILITY_POLICY_VERSION,
+    selectionVersion: EXPANDED_RECOVERY_SELECTION_VERSION,
+    copyVersion: COPY_VERSION,
+    onePersonAcrossRollout: true as const,
+    campaigns: result.campaigns.map((campaign) => ({
+      segment: campaign.segment,
+      campaignId: campaign.campaignId,
+      candidateCount: campaign.candidateCount,
+      excludedPeople: campaign.excludedPeople,
+      decisionHash: campaign.decisionHash,
+    })),
+  };
+}
 
 export function formatExpandedRecoveryCampaignSelection(
-  result: ExpandedRecoveryCampaignSelection & { phase: CampaignPhase },
+  result: ExpandedSelectionWithPhase,
 ): string {
   const anyDraftCreated = result.campaigns.some((campaign) => campaign.campaignId !== null);
   const lines = [

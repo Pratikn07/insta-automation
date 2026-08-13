@@ -21,6 +21,7 @@ import { internalAiRouter } from "./api/internalAi.routes.js";
 import { seedTokenFromEnv } from "./meta/tokenStore.js";
 import { runTokenRefreshTick } from "./meta/tokenRefresher.js";
 import { apiRouter } from "./api/router.js";
+import { buildDeploymentHealth } from "./services/deploymentHealth.js";
 
 const app = express();
 
@@ -49,7 +50,7 @@ app.use(express.json({ verify: captureRawBody, limit: "1mb" }));
 app.use("/internal/ai", internalAiRouter);
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, env: env.NODE_ENV });
+  res.json(buildDeploymentHealth(process.env, env.NODE_ENV));
 });
 
 app.get("/webhook", handleVerification);

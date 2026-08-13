@@ -16,9 +16,11 @@ const {
   recordCampaignHealthObservation,
   logEvent,
   approveCampaign,
+  approveCampaignGroup,
   pauseCampaign,
   pauseCampaignGroup,
   resumeCampaign,
+  resumeCampaignGroup,
   cancelCampaign,
   advanceCampaignStage,
 } = vi.hoisted(() => ({
@@ -35,9 +37,11 @@ const {
   recordCampaignHealthObservation: vi.fn(),
   logEvent: vi.fn(),
   approveCampaign: vi.fn(),
+  approveCampaignGroup: vi.fn(),
   pauseCampaign: vi.fn(),
   pauseCampaignGroup: vi.fn(),
   resumeCampaign: vi.fn(),
+  resumeCampaignGroup: vi.fn(),
   cancelCampaign: vi.fn(),
   advanceCampaignStage: vi.fn(),
 }));
@@ -67,9 +71,11 @@ vi.mock("../services/campaignHealthObservation.js", () => ({
 vi.mock("../services/eventLogger.js", () => ({ logEvent }));
 vi.mock("../services/recoveryCampaignControl.js", () => ({
   approveCampaign,
+  approveCampaignGroup,
   pauseCampaign,
   pauseCampaignGroup,
   resumeCampaign,
+  resumeCampaignGroup,
   cancelCampaign,
   advanceCampaignStage,
 }));
@@ -125,6 +131,16 @@ beforeEach(() => {
   recordCampaignHealthObservation.mockResolvedValue({ created: true });
   logEvent.mockResolvedValue(undefined);
   approveCampaign.mockResolvedValue({ ok: true, state: "paused" });
+  approveCampaignGroup.mockResolvedValue({
+    ok: true,
+    state: "paused",
+    campaignIds: ["22222222-2222-4222-8222-222222222222"],
+  });
+  resumeCampaignGroup.mockResolvedValue({
+    ok: true,
+    state: "running",
+    campaignIds: ["22222222-2222-4222-8222-222222222222"],
+  });
   pauseCampaignGroup.mockResolvedValue({
     rolloutGroupId: CAMPAIGN_ID,
     pausedCampaignIds: ["22222222-2222-4222-8222-222222222222"],
@@ -661,5 +677,81 @@ describe("POST /rollout-groups/:id/pause", () => {
       .post(`/rollout-groups/${CAMPAIGN_ID}/pause`)
       .send({ reason: "stop" })
       .expect(500, { error: "internal_error" });
+  });
+});
+
+describe("atomic rollout-group approve and resume", () => {
+  const campaigns = [{
+    id: "22222222-2222-4222-8222-222222222222",
+    segment: "other",
+    decisionHash: "d".repeat(64),
+  }];
+  const body = { campaigns, selectorPhase: "unknown_read_pilot" };
+
+  it("uses the authenticated owner and one group approval service call", async () => {
+    const response = await request(app(true))
+      .post(`/rollout-groups/${CAMPAIGN_ID}/approve`)
+      .send(body);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      ok: true,
+      state: "paused",
+      campaignIds: ["22222222-2222-4222-8222-222222222222"],
+    });
+    expect(approveCampaignGroup).toHaveBeenCalledWith({
+      rolloutGroupId: CAMPAIGN_ID,
+      campaigns,
+      selectorPhase: "unknown_read_pilot",
+      approvedBy: "owner@example.com",
+    });
+    expect(approveCampaign).not.toHaveBeenCalled();
+  });
+
+  it("resumes the exact group with one atomic service call", async () => {
+    await request(app(true))
+      .post(`/rollout-groups/${CAMPAIGN_ID}/resume`)
+      .send(body)
+      .expect(200, {
+        ok: true,
+        state: "running",
+        campaignIds: ["22222222-2222-4222-8222-222222222222"],
+      });
+    expect(resumeCampaignGroup).toHaveBeenCalledWith({
+      rolloutGroupId: CAMPAIGN_ID,
+      campaigns,
+      selectorPhase: "unknown_read_pilot",
+    });
+    expect(resumeCampaign).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed, duplicate, or non-canonical campaign topology", async () => {
+    await request(app(true))
+      .post(`/rollout-groups/${CAMPAIGN_ID}/approve`)
+      .send({
+        selectorPhase: "unknown_read_pilot",
+        campaigns: [
+          { id: campaigns[0]!.id, segment: "unknown_cue" },
+          { id: campaigns[0]!.id, segment: "other" },
+        ],
+      })
+      .expect(400, { error: "invalid_group_transition" });
+    expect(approveCampaignGroup).not.toHaveBeenCalled();
+  });
+
+  it("rejects a transition that is not bound to an exact selector decision hash", async () => {
+    await request(app(true))
+      .post(`/rollout-groups/${CAMPAIGN_ID}/approve`)
+      .send({ ...body, campaigns: [{ ...campaigns[0], decisionHash: "not-a-hash" }] })
+      .expect(400, { error: "invalid_group_transition" });
+    expect(approveCampaignGroup).not.toHaveBeenCalled();
+  });
+
+  it("inherits owner authentication from the API router", async () => {
+    await request(ownerApiApp())
+      .post(`/api/historical-recovery/rollout-groups/${CAMPAIGN_ID}/approve`)
+      .send(body)
+      .expect(401, { error: "missing_bearer_token" });
+    expect(approveCampaignGroup).not.toHaveBeenCalled();
   });
 });

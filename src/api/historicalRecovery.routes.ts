@@ -6,9 +6,11 @@ import { getIgUsers } from "../services/igUserService.js";
 import { env } from "../config/env.js";
 import {
   approveCampaign,
+  approveCampaignGroup,
   pauseCampaign,
   pauseCampaignGroup,
   resumeCampaign,
+  resumeCampaignGroup,
   cancelCampaign,
   advanceCampaignStage,
 } from "../services/recoveryCampaignControl.js";
@@ -530,6 +532,82 @@ historicalRecoveryRouter.post("/rollout-groups/:id/pause", async (req, res, next
       res.status(404).json({ error: "not_found" });
       return;
     }
+    next(error);
+  }
+});
+
+const expandedSegments = [
+  "other", "unknown_cue", "unknown_generic", "unknown_no_name",
+] as const;
+const groupTransitionBody = z.object({
+  selectorPhase: z.enum(["confirmed_failure", "unknown_read_pilot"]),
+  campaigns: z.array(z.object({
+    id: z.string().uuid(),
+    segment: z.enum(expandedSegments),
+    decisionHash: z.string().regex(/^[a-f0-9]{64}$/),
+  }).strict()).min(1).max(4),
+}).strict().superRefine((value, context) => {
+  const ids = new Set<string>();
+  let previousIndex = -1;
+  value.campaigns.forEach((campaign, index) => {
+    const segmentIndex = expandedSegments.indexOf(campaign.segment);
+    if (ids.has(campaign.id) || segmentIndex <= previousIndex) {
+      context.addIssue({ code: "custom", path: ["campaigns", index], message: "campaign topology invalid" });
+    }
+    ids.add(campaign.id);
+    previousIndex = segmentIndex;
+  });
+});
+
+/** Atomically validate and seal every non-empty member before any campaign changes. */
+historicalRecoveryRouter.post("/rollout-groups/:id/approve", async (req, res, next) => {
+  const params = groupPauseParams.safeParse(req.params);
+  const body = groupTransitionBody.safeParse(req.body);
+  if (!params.success || !body.success || !req.adminEmail) {
+    res.status(!req.adminEmail ? 401 : 400).json({
+      error: !req.adminEmail ? "owner_auth_required" : "invalid_group_transition",
+    });
+    return;
+  }
+  try {
+    const result = await approveCampaignGroup({
+      rolloutGroupId: params.data.id,
+      campaigns: body.data.campaigns,
+      selectorPhase: body.data.selectorPhase,
+      approvedBy: req.adminEmail,
+    });
+    if (!result.ok) {
+      res.status(409).json({ error: result.reason });
+      return;
+    }
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/** Atomically start the same exact, already-approved group after fresh verification. */
+historicalRecoveryRouter.post("/rollout-groups/:id/resume", async (req, res, next) => {
+  const params = groupPauseParams.safeParse(req.params);
+  const body = groupTransitionBody.safeParse(req.body);
+  if (!params.success || !body.success || !req.adminEmail) {
+    res.status(!req.adminEmail ? 401 : 400).json({
+      error: !req.adminEmail ? "owner_auth_required" : "invalid_group_transition",
+    });
+    return;
+  }
+  try {
+    const result = await resumeCampaignGroup({
+      rolloutGroupId: params.data.id,
+      campaigns: body.data.campaigns,
+      selectorPhase: body.data.selectorPhase,
+    });
+    if (!result.ok) {
+      res.status(409).json({ error: result.reason });
+      return;
+    }
+    res.json(result);
+  } catch (error) {
     next(error);
   }
 });

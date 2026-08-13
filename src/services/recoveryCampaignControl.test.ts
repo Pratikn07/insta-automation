@@ -9,6 +9,7 @@ const candidateUpdateMany = vi.fn();
 const candidateFindMany = vi.fn();
 const candidateCount = vi.fn();
 const exclusionFindMany = vi.fn();
+const igUserFindMany = vi.fn();
 const controlUpsert = vi.fn();
 const dispatchFindMany = vi.fn();
 const dispatchUpdateMany = vi.fn();
@@ -45,6 +46,7 @@ vi.mock("../lib/prisma.js", () => ({
           count: candidateCount,
         },
         recoverySelectionExclusion: { findMany: exclusionFindMany },
+        igUser: { findMany: igUserFindMany },
         dmRecoveryControl: { upsert: controlUpsert },
         publicRecoveryDispatch: {
           findMany: dispatchFindMany,
@@ -61,9 +63,11 @@ vi.mock("./historicalRecoverySnapshot.js", () => ({ verifyStoredSelectionSnapsho
 
 const {
   approveCampaign,
+  approveCampaignGroup,
   pauseCampaign,
   pauseCampaignGroup,
   resumeCampaign,
+  resumeCampaignGroup,
   cancelCampaign,
   completeCampaignIfDrained,
   advanceCampaignStage,
@@ -74,7 +78,7 @@ beforeEach(() => {
   for (const fn of [
     campaignUpdateMany, campaignFindUnique, campaignFindMany, campaignUpdate,
     candidateUpdateMany, candidateFindMany, candidateCount, controlUpsert,
-    dispatchFindMany, dispatchUpdateMany, dispatchCount, exclusionFindMany,
+    dispatchFindMany, dispatchUpdateMany, dispatchCount, exclusionFindMany, igUserFindMany,
     queryRaw, eventLogCreate, logEvent, verifyStoredSelectionSnapshot,
   ]) {
     fn.mockReset();
@@ -85,6 +89,7 @@ beforeEach(() => {
   controlUpsert.mockResolvedValue({ id: 1 });
   candidateFindMany.mockResolvedValue([]);
   exclusionFindMany.mockResolvedValue([]);
+  igUserFindMany.mockResolvedValue([]);
   verifyStoredSelectionSnapshot.mockReturnValue({ ok: true });
   dispatchFindMany.mockResolvedValue([]);
   dispatchUpdateMany.mockResolvedValue({ count: 0 });
@@ -320,6 +325,215 @@ describe("approveCampaign", () => {
     expect(candidateUpdateMany).toHaveBeenCalledWith({
       where: { campaignId: "camp-1", arm: "holdout", outcome: "pending" },
       data: { outcome: "holdout_withheld", suppressionReason: "holdout_arm" },
+    });
+  });
+});
+
+describe("atomic expanded rollout group transitions", () => {
+  const rolloutGroupId = "11111111-1111-4111-8111-111111111111";
+  const campaigns = [
+    { id: "22222222-2222-4222-8222-222222222221", segment: "other" as const, decisionHash: "d".repeat(64) },
+    { id: "22222222-2222-4222-8222-222222222222", segment: "unknown_cue" as const, decisionHash: "d".repeat(64) },
+  ];
+  const stored = (
+    segment: "other" | "unknown_cue",
+    state = "draft",
+    startedAt: Date | null = null,
+  ) => ({
+    state,
+    approvedBy: state === "paused" ? "owner@example.test" : null,
+    approvedAt: state === "paused" ? new Date("2026-08-12T00:00:00.000Z") : null,
+    pauseReason: state === "paused" ? PENDING_LAUNCH_PAUSE_REASON : null,
+    startedAt,
+    candidateCount: 1,
+    excludedCount: 0,
+    decisionHash: "d".repeat(64),
+    phase: "unknown_read_pilot",
+    selectionVersion: "v1-canonical-intents-expanded-audience",
+    sourceDataCutoff: new Date("2026-08-01T00:00:00.000Z"),
+    commentFrom: null,
+    commentTo: new Date("2026-08-04T00:00:00.000Z"),
+    selectionLimit: null,
+    holdoutPercent: 0,
+    copyVersion: "recovery-v2",
+    batchSize: 1,
+    hourlyCap: 10,
+    dailyCap: 1000,
+    selectionFingerprint: "f".repeat(64),
+    eligibilityPolicyVersion: "eligibility-v4-expanded-audience",
+    westernOnly: false,
+    inboundWindowHours: 24,
+    completionWindowHours: 48,
+    audienceSegment: segment,
+    rolloutGroupId,
+    rolloutGroupHourlyCap: 10,
+  });
+  const candidate = (index: number, segment: "other" | "unknown_cue") => ({
+    selectionPosition: 0,
+    intentId: `intent-${index}`,
+    igUserId: `person-${index}`,
+    conversationId: null,
+    keywordId: `keyword-${index}`,
+    commentId: `comment-${index}`,
+    mediaId: null,
+    commentAt: new Date("2026-08-01T00:00:00.000Z"),
+    keywordSnapshot: "SLEEP",
+    publicReplyText: "DM @tinysoho SLEEP",
+    evidence: "gate_sent_no_read",
+    audienceOrigin: segment === "other" ? "other" : "unknown",
+    audienceOriginMethod: CURRENT_ORIGIN_METHOD,
+    audienceOriginConfidence: "low",
+    audienceSegment: segment,
+    arm: "treatment",
+    sourceChoiceReason: "newest_eligible_comment",
+    sources: [{
+      position: 0,
+      commentId: `comment-${index}`,
+      mediaId: null,
+      receivedAt: new Date("2026-08-01T00:00:00.000Z"),
+      choiceReason: "newest_eligible_comment",
+    }],
+  });
+
+  function arrangeGroup(state = "draft") {
+    candidateUpdateMany.mockResolvedValue({ count: 0 });
+    queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(campaigns.map(({ id }) => ({ id, state })));
+    campaignFindUnique
+      .mockResolvedValueOnce(stored("other", state))
+      .mockResolvedValueOnce(stored("unknown_cue", state));
+    candidateFindMany
+      .mockResolvedValueOnce([candidate(1, "other")])
+      .mockResolvedValueOnce([candidate(2, "unknown_cue")]);
+    igUserFindMany.mockResolvedValue([
+      { id: "person-1", username: "alex", name: "Alex", audienceSegment: "other", inferredOrigin: "other", originMethod: CURRENT_ORIGIN_METHOD, originConfidence: "low" },
+      { id: "person-2", username: "sam", name: "Sam", audienceSegment: "unknown_cue", inferredOrigin: "unknown", originMethod: CURRENT_ORIGIN_METHOD, originConfidence: "low" },
+    ]);
+  }
+
+  it("verifies every campaign before making the single atomic group approval write", async () => {
+    arrangeGroup();
+    verifyStoredSelectionSnapshot
+      .mockReturnValueOnce({ ok: true })
+      .mockReturnValueOnce({ ok: false, reason: "snapshot_hash_mismatch" });
+
+    await expect(approveCampaignGroup({
+      rolloutGroupId,
+      campaigns,
+      selectorPhase: "unknown_read_pilot",
+      approvedBy: "owner@example.test",
+    })).resolves.toEqual({ ok: false, reason: "snapshot_hash_mismatch" });
+
+    expect(verifyStoredSelectionSnapshot).toHaveBeenCalledTimes(2);
+    expect(campaignUpdateMany).not.toHaveBeenCalled();
+    expect(candidateUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it("binds atomic approval to the selector's exact saved decision hashes", async () => {
+    arrangeGroup();
+
+    await expect(approveCampaignGroup({
+      rolloutGroupId,
+      campaigns: campaigns.map((campaign, index) => index === 1
+        ? { ...campaign, decisionHash: "e".repeat(64) }
+        : campaign),
+      selectorPhase: "unknown_read_pilot",
+      approvedBy: "owner@example.test",
+    })).resolves.toEqual({ ok: false, reason: "expanded_group_audit_failed" });
+
+    expect(campaignUpdateMany).not.toHaveBeenCalled();
+    expect(candidateUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it("approves all exact members together after the complete group passes", async () => {
+    arrangeGroup();
+    campaignUpdateMany.mockResolvedValue({ count: 2 });
+
+    await expect(approveCampaignGroup({
+      rolloutGroupId,
+      campaigns,
+      selectorPhase: "unknown_read_pilot",
+      approvedBy: "owner@example.test",
+    }, new Date("2026-08-12T01:00:00.000Z"))).resolves.toEqual({
+      ok: true,
+      state: "paused",
+      campaignIds: campaigns.map(({ id }) => id),
+    });
+    expect(campaignUpdateMany).toHaveBeenCalledTimes(1);
+    expect(campaignUpdateMany).toHaveBeenCalledWith({
+      where: { id: { in: campaigns.map(({ id }) => id) }, state: { in: ["draft", "awaiting_approval"] } },
+      data: {
+        state: "paused",
+        approvedBy: "owner@example.test",
+        approvedAt: new Date("2026-08-12T01:00:00.000Z"),
+        startedAt: null,
+        pausedAt: new Date("2026-08-12T01:00:00.000Z"),
+        pauseReason: PENDING_LAUNCH_PAUSE_REASON,
+        endedAt: null,
+      },
+    });
+  });
+
+  it("resumes the exact approved group atomically after re-verifying every snapshot", async () => {
+    arrangeGroup("paused");
+    campaignUpdateMany.mockResolvedValue({ count: 2 });
+
+    await expect(resumeCampaignGroup({
+      rolloutGroupId,
+      campaigns,
+      selectorPhase: "unknown_read_pilot",
+    }, new Date("2026-08-12T02:00:00.000Z"))).resolves.toEqual({
+      ok: true,
+      state: "running",
+      campaignIds: campaigns.map(({ id }) => id),
+    });
+    expect(verifyStoredSelectionSnapshot).toHaveBeenCalledTimes(2);
+    expect(campaignUpdateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves an existing launch timestamp when atomically resuming a mixed paused group", async () => {
+    const originalStart = new Date("2026-08-11T23:00:00.000Z");
+    const resumedAt = new Date("2026-08-12T02:00:00.000Z");
+    candidateUpdateMany.mockResolvedValue({ count: 0 });
+    queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(campaigns.map(({ id }) => ({ id, state: "paused" })));
+    campaignFindUnique
+      .mockResolvedValueOnce(stored("other", "paused", null))
+      .mockResolvedValueOnce(stored("unknown_cue", "paused", originalStart));
+    candidateFindMany
+      .mockResolvedValueOnce([candidate(1, "other")])
+      .mockResolvedValueOnce([candidate(2, "unknown_cue")]);
+    igUserFindMany.mockResolvedValue([
+      { id: "person-1", username: "alex", name: "Alex", audienceSegment: "other", inferredOrigin: "other", originMethod: CURRENT_ORIGIN_METHOD, originConfidence: "low" },
+      { id: "person-2", username: "sam", name: "Sam", audienceSegment: "unknown_cue", inferredOrigin: "unknown", originMethod: CURRENT_ORIGIN_METHOD, originConfidence: "low" },
+    ]);
+    campaignUpdateMany.mockResolvedValue({ count: 1 });
+
+    await expect(resumeCampaignGroup({
+      rolloutGroupId,
+      campaigns,
+      selectorPhase: "unknown_read_pilot",
+    }, resumedAt)).resolves.toMatchObject({ ok: true, state: "running" });
+
+    expect(campaignUpdateMany).toHaveBeenNthCalledWith(1, {
+      where: {
+        id: { in: [campaigns[0]!.id] },
+        state: "paused",
+        approvedAt: { not: null },
+        startedAt: null,
+      },
+      data: { state: "running", startedAt: resumedAt, pausedAt: null, pauseReason: null },
+    });
+    expect(campaignUpdateMany).toHaveBeenNthCalledWith(2, {
+      where: {
+        id: { in: [campaigns[1]!.id] },
+        state: "paused",
+        approvedAt: { not: null },
+        startedAt: { not: null },
+      },
+      data: { state: "running", pausedAt: null, pauseReason: null },
     });
   });
 });
