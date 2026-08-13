@@ -463,7 +463,7 @@ describe("external machine contracts", () => {
     [{ DM_RECOVERY_HISTORICAL_ENABLED: "true" }, true],
     [{ DM_RECOVERY_HISTORICAL_ENABLED: "false", ANOTHER_SECRET: "not-logged" }, false],
   ])("parses the exact variable-list key without accepting another value", (value, expected) => {
-    expect(parseHistoricalFlag(JSON.stringify(value))).toBe(expected);
+    expect(parseHistoricalFlag(JSON.stringify(value, null, 2))).toBe(expected);
   });
 
   it.each([

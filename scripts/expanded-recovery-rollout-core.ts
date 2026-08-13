@@ -476,7 +476,10 @@ export function parseDeploymentList(
 }
 
 export function parseHistoricalFlag(output: string): boolean {
-  const value = parseSingleJsonRecord(output, "historical_flag") as Record<string, unknown>;
+  const value = JSON.parse(output) as Record<string, unknown>;
+  if (!value || Array.isArray(value) || typeof value !== "object") {
+    throw new Error("historical_flag_record_invalid");
+  }
   const raw = value.DM_RECOVERY_HISTORICAL_ENABLED;
   if (raw === true || raw === "true") return true;
   if (raw === false || raw === "false") return false;
