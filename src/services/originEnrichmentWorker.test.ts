@@ -244,6 +244,7 @@ describe("runOriginEnrichmentTick", () => {
         inferredOrigin: "unknown",
         originConfidence: "low",
         originMethod: CURRENT_ORIGIN_METHOD,
+        audienceSegment: "unknown_generic",
         originCheckedAt: expect.any(Date),
       }),
     );

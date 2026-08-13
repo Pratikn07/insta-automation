@@ -246,6 +246,7 @@ async function tickBody(): Promise<OriginEnrichmentResult> {
         originConfidence: "low",
         originMethod: CURRENT_ORIGIN_METHOD,
         originEvidence: "model returned no verdict for this account",
+        audienceSegment: "unknown_generic",
         originCheckedAt: now,
       },
     })));
