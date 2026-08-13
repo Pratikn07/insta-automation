@@ -41,7 +41,7 @@ write_valid_state() {
 {
   "version": 3,
   "revision": 1,
-  "phase": "selected",
+  "phase": "inert",
   "identity": {
     "railway": {
       "projectId": "11111111-1111-4111-8111-111111111111",
@@ -70,16 +70,7 @@ write_valid_state() {
   "historicalPrior": false,
   "selectorDeployment": { "id": "44444444-4444-4444-8444-444444444444", "instanceId": null },
   "activeDeploymentId": "44444444-4444-4444-8444-444444444444",
-  "rollout": {
-    "groupId": "66666666-6666-4666-8666-666666666666",
-    "selectorPhase": "unknown_read_pilot",
-    "campaigns": [
-      { "segment": "other", "campaignId": "77777777-7777-4777-8777-777777777777", "candidateCount": 1, "decisionHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" },
-      { "segment": "unknown_cue", "campaignId": null, "candidateCount": 0, "decisionHash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" },
-      { "segment": "unknown_generic", "campaignId": null, "candidateCount": 0, "decisionHash": "1111111111111111111111111111111111111111111111111111111111111111" },
-      { "segment": "unknown_no_name", "campaignId": null, "candidateCount": 0, "decisionHash": "2222222222222222222222222222222222222222222222222222222222222222" }
-    ]
-  },
+  "rollout": null,
   "operation": null,
   "cleanup": null
 }
@@ -89,7 +80,7 @@ EOF
 run_signal_case() {
   local signal="$1"
   local state="$tmp/state-$signal.json"
-  printf '{"existing":"unreadable"}\n' > "$state"
+  write_valid_state "$state"
   set +e
   PATH="$tmp/bin:$PATH" FAKE_GIT_DELAY=1 EXPANDED_RECOVERY_STATE_FILE="$state" \
     bash "$script" deploy-inert >"$tmp/$signal.out" 2>&1 &
@@ -112,7 +103,7 @@ run_signal_case TERM
 run_signal_case HUP
 
 state="$tmp/concurrent.json"
-printf '{"existing":"unreadable"}\n' > "$state"
+write_valid_state "$state"
 set +e
 PATH="$tmp/bin:$PATH" FAKE_GIT_DELAY=1 EXPANDED_RECOVERY_STATE_FILE="$state" \
   bash "$script" deploy-inert >"$tmp/first.out" 2>&1 &

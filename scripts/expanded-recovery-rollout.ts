@@ -807,24 +807,23 @@ export class ExpandedRecoveryRolloutOperator {
   }
 }
 
-async function sourceIdentity(root: string, runner: OperatorCommandRunner): Promise<SourceIdentity> {
-  const status = await runner.run("git", ["status", "--porcelain=v1", "--untracked-files=all"]);
+async function sourceIdentity(
+  root: string,
+  runner: OperatorCommandRunner,
+  signal?: AbortSignal,
+): Promise<SourceIdentity> {
+  const status = await runner.run(
+    "git",
+    ["status", "--porcelain=v1", "--untracked-files=all"],
+    { signal },
+  );
   if (status.trim() !== "") throw new Error("deployment_source_tree_not_clean");
-  const releaseSha = (await runner.run("git", ["rev-parse", "HEAD"])).trim();
-  const tracked = (await runner.run("git", ["ls-files", "-z"]))
+  const releaseSha = (await runner.run("git", ["rev-parse", "HEAD"], { signal })).trim();
+  const tracked = (await runner.run("git", ["ls-files", "-z"], { signal }))
     .split("\0").filter(Boolean).sort();
-  let ignored = new Set<string>();
-  try {
-    ignored = new Set((await runner.run(
-      "git",
-      ["check-ignore", "--no-index", "-z", "--stdin"],
-      { input: `${tracked.join("\0")}\0` },
-    )).split("\0").filter(Boolean));
-  } catch (error) {
-    // git check-ignore exits 1 when nothing matched, which is a valid empty set.
-    if (!(error instanceof Error) || error.message !== "command_failed:git:1") throw error;
-  }
-  const uploaded = tracked.filter((relative) => !ignored.has(relative));
+  // Railway excludes this repository's operational .superpowers workspace.
+  // It is the only tracked path covered by .gitignore; fail if that contract drifts.
+  const uploaded = tracked.filter((relative) => !relative.startsWith(".superpowers/"));
   const tree = createHash("sha256");
   for (const relative of uploaded) {
     tree.update(relative).update("\0").update(await readFile(path.join(root, relative))).update("\0");
@@ -846,9 +845,11 @@ async function main(): Promise<void> {
   const startupMarker = `${stateFile}.cleanup-required`;
   let pendingSignal: keyof typeof SIGNAL_CODES | null = null;
   let operator: ExpandedRecoveryRolloutOperator | null = null;
+  const startupAbort = new AbortController();
   for (const signal of Object.keys(SIGNAL_CODES) as Array<keyof typeof SIGNAL_CODES>) {
     process.on(signal, () => {
       pendingSignal ??= signal;
+      startupAbort.abort();
       operator?.requestSignal(signal);
     });
   }
@@ -887,7 +888,7 @@ async function main(): Promise<void> {
     const savedState = await store.read();
     let source: SourceIdentity | null = null;
     try {
-      source = await sourceIdentity(root, runner);
+      source = await sourceIdentity(root, runner, startupAbort.signal);
       const config = parseOperatorConfig(process.env, source);
       operator = new ExpandedRecoveryRolloutOperator(root, config, store, runner, {}, source.files);
     } catch (startupError) {
