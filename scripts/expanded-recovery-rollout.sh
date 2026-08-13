@@ -49,8 +49,8 @@ require_common() {
 
 railway_scope=( )
 scope() { railway_scope=(--project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_SERVICE_ID" --environment "$RAILWAY_ENVIRONMENT_ID"); }
-api_get() { curl --fail --silent --show-error -H "Authorization: Bearer $OWNER_TOKEN" "$API_BASE$1"; }
-api_post() { curl --fail --silent --show-error -X POST -H "Authorization: Bearer $OWNER_TOKEN" -H 'Content-Type: application/json' --data "$2" "$API_BASE$1"; }
+api_get() { printf 'header = "Authorization: Bearer %s"\n' "$OWNER_TOKEN" | curl --config - --fail --silent --show-error "$API_BASE$1"; }
+api_post() { printf 'header = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\nrequest = "POST"\ndata = %s\n' "$OWNER_TOKEN" "$2" | curl --config - --fail --silent --show-error "$API_BASE$1"; }
 
 require_owner() {
   need OWNER_TOKEN; need OWNER_EMAIL
@@ -68,16 +68,26 @@ assert_group() {
 }
 
 pause_and_verify() {
-  [[ -n "${ROLLOUT_GROUP_ID:-}" && -n "${OWNER_TOKEN:-}" ]] || return 0
-  api_post "/api/historical-recovery/rollout-groups/$ROLLOUT_GROUP_ID/pause" '{"reason":"emergency: fail-closed operator cleanup"}' >/dev/null
-  api_get /api/historical-recovery/campaigns | jq -e --arg group "$ROLLOUT_GROUP_ID" --argjson ids "$(printf '%s' "$CAMPAIGN_IDS_CSV" | jq -R 'split(",")')" '
+  [[ -n "${ROLLOUT_GROUP_ID:-}" && -n "${OWNER_TOKEN:-}" ]] || return 1
+  local attempt
+  for attempt in 1 2 3; do
+    api_post "/api/historical-recovery/rollout-groups/$ROLLOUT_GROUP_ID/pause" '{"reason":"emergency: fail-closed operator cleanup"}' >/dev/null &&
+    api_get /api/historical-recovery/campaigns | jq -e --arg group "$ROLLOUT_GROUP_ID" --argjson ids "$(printf '%s' "$CAMPAIGN_IDS_CSV" | jq -R 'split(",")')" '
     [.campaigns[] | select(.rolloutGroupId == $group and (.id as $id | $ids | index($id))) | .state] | length == ($ids|length) and all(.[]; . != "running")' >/dev/null
+    if [[ $? == 0 ]]; then return 0; fi
+    sleep "$attempt"
+  done
+  return 1
 }
 restore_historical_flag() {
   [[ -n "${HISTORICAL_PRIOR:-}" ]] || return 0
   scope
-  railway variable set --skip-deploys "${railway_scope[@]}" "DM_RECOVERY_HISTORICAL_ENABLED=$HISTORICAL_PRIOR" >/dev/null
-  deploy_release 'rollback historical flag' >/dev/null
+  local attempt
+  for attempt in 1 2 3; do
+    railway variable set --skip-deploys "${railway_scope[@]}" "DM_RECOVERY_HISTORICAL_ENABLED=$HISTORICAL_PRIOR" >/dev/null && deploy_release 'rollback historical flag' >/dev/null && return 0
+    sleep "$attempt"
+  done
+  return 1
 }
 cleanup() {
   local code="$1"
@@ -86,15 +96,24 @@ cleanup() {
   cleanup_running=1
   set +e
   note 'armed cleanup: pausing exact rollout group and restoring historical flag'
-  pause_and_verify
-  restore_historical_flag
+  local failed=0
+  pause_and_verify || failed=1
+  restore_historical_flag || failed=1
+  if (( failed )); then
+    PHASE=cleanup_required
+    save_state || true
+    note 'SAFETY NOT PROVEN: cleanup failed; state is cleanup_required. Do not resume.'
+    set -e
+    return 75
+  fi
   set -e
   return "$code"
 }
-on_exit() { local code=$?; cleanup "$code"; exit "$code"; }
+on_exit() { local code=$? cleanup_code; cleanup "$code" || cleanup_code=$?; exit "${cleanup_code:-$code}"; }
 trap on_exit EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+trap 'exit 129' HUP
 arm_cleanup() { cleanup_armed=1; }
 disarm_cleanup() { cleanup_armed=0; }
 
@@ -124,7 +143,7 @@ capture_historical_prior() {
 deploy_inert() {
   require_common; scope
   [[ "${PHASE:-new}" == new || "${PHASE:-new}" == inert ]] || die 'cannot deploy inert after selection'
-  capture_historical_prior
+  [[ -n "${HISTORICAL_PRIOR:-}" ]] || capture_historical_prior
   railway variable set --skip-deploys "${railway_scope[@]}" DM_RECOVERY_HISTORICAL_ENABLED=false
   deploy_release 'expanded recovery inert'
   PHASE=inert; RELEASE_SHA="$(git rev-parse HEAD)"; save_state
@@ -132,11 +151,18 @@ deploy_inert() {
 select_drafts() {
   require_common; require_owner; scope
   [[ "${PHASE:-}" == inert ]] || die 'select requires inert phase'
+  need SELECTOR_PHASE
+  [[ "$SELECTOR_PHASE" == confirmed_failure || "$SELECTOR_PHASE" == unknown_read_pilot ]] || die 'SELECTOR_PHASE invalid'
   tsx audit-live >/dev/null
   need DEPLOYMENT_INSTANCE_ID; uuid "$DEPLOYMENT_INSTANCE_ID" || die 'deployment instance invalid'
   RELEASE_SHA="$(git rev-parse HEAD)"
-  railway ssh "${railway_scope[@]}" --deployment-instance "$DEPLOYMENT_INSTANCE_ID" -- bash -lc "test \"\$(git rev-parse HEAD)\" = '$RELEASE_SHA' && test \"\$RAILWAY_PROJECT_ID\" = '$RAILWAY_PROJECT_ID' && test \"\$RAILWAY_SERVICE_ID\" = '$RAILWAY_SERVICE_ID' && test \"\$RAILWAY_ENVIRONMENT_ID\" = '$RAILWAY_ENVIRONMENT_ID'" >/dev/null || die 'SSH instance cannot prove exact release/identity'
-  die 'selection requires explicit audited adoption after remote selector output; use adopt only'
+  PHASE=selecting; save_state
+  local output
+  output="$(railway ssh "${railway_scope[@]}" --deployment-instance "$DEPLOYMENT_INSTANCE_ID" -- bash -lc "test \"\$(git rev-parse HEAD)\" = '$RELEASE_SHA' && test \"\$RAILWAY_PROJECT_ID\" = '$RAILWAY_PROJECT_ID' && test \"\$RAILWAY_SERVICE_ID\" = '$RAILWAY_SERVICE_ID' && test \"\$RAILWAY_ENVIRONMENT_ID\" = '$RAILWAY_ENVIRONMENT_ID' && DM_RECOVERY_HISTORICAL_ENABLED=false npm run recovery:select-expanded -- --phase '$SELECTOR_PHASE'")" || die 'remote selector failed; adopt only if it may have written'
+  ROLLOUT_GROUP_ID="$(awk -F: '/rollout group/{gsub(/[[:space:]]/,"",$2);print $2;exit}' <<<"$output")"
+  CAMPAIGN_IDS_CSV="$(awk -F: '/campaign id/{gsub(/[[:space:]]/,"",$2);if($2!~/^none/)print $2}' <<<"$output" | paste -sd, -)"
+  campaign_ids; EXPECTED_NONEMPTY_CAMPAIGN_COUNT="${#campaign_ids_array[@]}"; assert_group draft
+  PHASE=selected; save_state
 }
 adopt() {
   require_common
@@ -147,10 +173,10 @@ adopt() {
   PHASE=selected; save_state
 }
 approve_start() {
+  arm_cleanup
   require_common; require_owner; scope
   [[ "${PHASE:-}" == selected ]] || die 'approve/start requires selected phase'
-  assert_group draft; tsx audit-group --group "$ROLLOUT_GROUP_ID" --phase draft >/dev/null; assert_circuit_closed
-  arm_cleanup
+  assert_group draft; tsx audit-live >/dev/null; tsx audit-group --group "$ROLLOUT_GROUP_ID" --phase draft >/dev/null; assert_circuit_closed
   [[ "${ROLLOUT_TEST_FAIL_AFTER_ARM:-}" != 1 ]] || die 'test failure after cleanup arm'
   campaign_ids; for id in "${campaign_ids_array[@]}"; do api_post "/api/historical-recovery/campaigns/$id/approve" "$(jq -nc --arg email "$OWNER_EMAIL" '{approvedBy:$email,startPaused:true}')" | jq -e '.ok == true and .state == "paused"' >/dev/null || die 'approval failed'; done
   assert_group paused; PHASE=approved; save_state
@@ -161,11 +187,12 @@ approve_start() {
   assert_group running; PHASE=running; save_state; disarm_cleanup
 }
 verify() {
+  arm_cleanup
   require_common; require_owner
-  [[ "${PHASE:-}" == running ]] || die 'verify requires running phase'
-  assert_group running; assert_circuit_closed; arm_cleanup
-  campaign_ids; for id in "${campaign_ids_array[@]}"; do tsx first-send --campaign "$id" --timeout-seconds 600 | while IFS=$'\t' read -r reply parent text; do curl --fail --silent --show-error -H "Authorization: Bearer $META_ACCESS_TOKEN" "https://graph.instagram.com/v21.0/$reply?fields=id,text,parent_id" | jq -e --arg id "$reply" --arg parent "$parent" --arg text "$text" '.id==$id and .parent_id==$parent and .text==$text' >/dev/null || die 'Meta readback mismatch'; done; done
-  tsx audit-group --group "$ROLLOUT_GROUP_ID" --phase running >/dev/null; assert_circuit_closed; PHASE=verified; save_state; disarm_cleanup
+  [[ "${PHASE:-}" == running || "${PHASE:-}" == completed ]] || die 'verify requires running/completed phase'
+  assert_group 'running|completed'; assert_circuit_closed
+  campaign_ids; for id in "${campaign_ids_array[@]}"; do tsx first-send --campaign "$id" --timeout-seconds 600 | while IFS=$'\t' read -r reply parent text; do printf 'header = "Authorization: Bearer %s"\n' "$META_ACCESS_TOKEN" | curl --config - --fail --silent --show-error "https://graph.instagram.com/v21.0/$reply?fields=id,text,parent_id" | jq -e --arg id "$reply" --arg parent "$parent" --arg text "$text" '.id==$id and .parent_id==$parent and .text==$text' >/dev/null || die 'Meta readback mismatch'; done; done
+  tsx audit-group --group "$ROLLOUT_GROUP_ID" --phase 'running|completed' >/dev/null; assert_circuit_closed; PHASE=verified; save_state; disarm_cleanup
 }
 pause() { require_common; require_owner; assert_group 'paused|running|completed'; arm_cleanup; pause_and_verify; PHASE=paused; save_state; disarm_cleanup; }
 

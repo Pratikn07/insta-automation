@@ -52,9 +52,11 @@ async function auditGroup(): Promise<void> {
   const client = await readonlyClient();
   try {
     const bad = await client.query<{ count: string }>(`
+      WITH duplicates AS (SELECT k.ig_user_id FROM recovery_candidate k JOIN recovery_campaign c ON c.id=k.campaign_id WHERE c.rollout_group_id=$1::uuid GROUP BY k.ig_user_id HAVING COUNT(*)>1),
+      capacity AS (SELECT COUNT(*) AS n FROM public_recovery_dispatch d JOIN recovery_campaign c ON c.id=d.campaign_id WHERE c.rollout_group_id=$1::uuid AND d.state IN ('reserved','dispatch_started','sent','uncertain') AND d.reserved_at > NOW()-INTERVAL '1 hour')
       SELECT COUNT(*)::text AS count FROM recovery_campaign c
       LEFT JOIN recovery_candidate k ON k.campaign_id=c.id LEFT JOIN ig_users u ON u.id=k.ig_user_id
-      WHERE c.rollout_group_id=$1::uuid AND (c.state::text<>$2 OR c.audience_segment NOT IN ('other','unknown_cue','unknown_generic','unknown_no_name') OR c.holdout_percent<>0 OR c.batch_size<>1 OR c.hourly_cap>10 OR c.daily_cap<>1000 OR c.rollout_group_hourly_cap<>10 OR (k.id IS NOT NULL AND (k.audience_segment IS DISTINCT FROM c.audience_segment OR k.audience_segment IS DISTINCT FROM u.audience_segment OR k.audience_origin IS DISTINCT FROM u.inferred_origin OR k.audience_origin_method IS DISTINCT FROM u.origin_method OR k.audience_origin_confidence IS DISTINCT FROM u.origin_confidence)))`, [group, phase]);
+      WHERE c.rollout_group_id=$1::uuid AND (c.state::text<>ALL(string_to_array($2,'|')) OR c.audience_segment NOT IN ('other','unknown_cue','unknown_generic','unknown_no_name') OR c.holdout_percent<>0 OR c.batch_size<>1 OR c.hourly_cap<>10 OR c.daily_cap<>1000 OR c.rollout_group_hourly_cap<>10 OR c.selection_fingerprint IS NULL OR c.decision_hash IS NULL OR EXISTS(SELECT 1 FROM duplicates) OR (SELECT n FROM capacity)>10 OR (k.id IS NOT NULL AND (k.audience_segment IS DISTINCT FROM c.audience_segment OR k.audience_segment IS DISTINCT FROM u.audience_segment OR k.audience_origin IS DISTINCT FROM u.inferred_origin OR k.audience_origin_method IS DISTINCT FROM u.origin_method OR k.audience_origin_confidence IS DISTINCT FROM u.origin_confidence)))`, [group, phase]);
     if (bad.rows[0]?.count !== "0") throw new Error(`group audit failures=${bad.rows[0]?.count}`);
     process.stdout.write('{"ok":true}\n');
   } finally { await done(client); }

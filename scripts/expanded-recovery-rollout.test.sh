@@ -63,9 +63,9 @@ status=$?
 set -e
 [[ "$status" -ne 0 ]]
 rg -q '/pause' "$log"
-! rg -q 'restart' "$log"
-! rg -q 'token-must-not-appear|secret:never-log' "$log"
-! rg -q 'token-must-not-appear|secret:never-log' "$state"
+if rg -q 'restart' "$log"; then exit 1; fi
+if rg -q 'token-must-not-appear|secret:never-log' "$log"; then exit 1; fi
+if rg -q 'token-must-not-appear|secret:never-log' "$state"; then exit 1; fi
 
 : > "$log"
 export FAKE_GROUP_MISMATCH=1
@@ -75,7 +75,7 @@ bash "$script" approve-start >/dev/null 2>&1
 status=$?
 set -e
 [[ "$status" -ne 0 ]]
-! rg -q '/approve' "$log"
+if rg -q '/approve' "$log"; then exit 1; fi
 
 : > "$log"
 unset FAKE_GROUP_MISMATCH
@@ -87,6 +87,6 @@ status=$?
 set -e
 [[ "$status" -ne 0 ]]
 rg -q '/pause' "$log"
-! rg -q 'meta-secret-must-not-appear' "$log"
+if rg -q 'meta-secret-must-not-appear' "$log"; then exit 1; fi
 
 printf 'behavioral rollout safety tests passed\n'
