@@ -88,6 +88,7 @@ export async function selectExpandedRecoveryCampaigns(
         audienceSegment: segment,
         eligibilityPolicyVersion: EXPANDED_AUDIENCE_ELIGIBILITY_POLICY_VERSION,
         holdoutPercent: 0,
+        hourlyCap: 10,
         dailyCap: 1000,
         includeExclusionIdentities: true,
         persist: true,
