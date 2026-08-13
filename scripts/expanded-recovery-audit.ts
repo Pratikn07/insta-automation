@@ -177,10 +177,19 @@ async function readonlyClient(): Promise<Client> {
   const client = new Client({ connectionString });
   await client.connect();
   await client.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
+  const auditRole = process.env.EXPANDED_AUDIT_ROLE?.trim();
+  if (auditRole) {
+    if (!/^[a-z_][a-z0-9_]{0,62}$/.test(auditRole)) throw new Error("audit role name invalid");
+    await client.query(`SET LOCAL ROLE ${auditRole}`);
+  }
   const safety = await client.query<{ user: string; readonly: string; dml: boolean }>(`
     SELECT current_user AS user, current_setting('transaction_read_only') AS readonly,
       has_table_privilege(current_user, 'recovery_campaign', 'INSERT, UPDATE, DELETE, TRUNCATE') AS dml`);
-  if (safety.rows[0]?.readonly !== "on" || (safety.rows[0]?.dml && process.env.EXPANDED_AUDIT_TEST_ALLOW_DML_ROLE !== "true")) throw new Error("audit role must be transaction-read-only and lack recovery_campaign DML");
+  if (
+    safety.rows[0]?.readonly !== "on"
+    || (auditRole && safety.rows[0]?.user !== auditRole)
+    || (safety.rows[0]?.dml && process.env.EXPANDED_AUDIT_TEST_ALLOW_DML_ROLE !== "true")
+  ) throw new Error("audit role must be transaction-read-only and lack recovery_campaign DML");
   return client;
 }
 async function done(client: Client): Promise<void> { await client.query("ROLLBACK"); await client.end(); }
