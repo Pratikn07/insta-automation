@@ -821,9 +821,12 @@ async function sourceIdentity(
   const releaseSha = (await runner.run("git", ["rev-parse", "HEAD"], { signal })).trim();
   const tracked = (await runner.run("git", ["ls-files", "-z"], { signal }))
     .split("\0").filter(Boolean).sort();
-  // Railway excludes this repository's operational .superpowers workspace.
-  // It is the only tracked path covered by .gitignore; fail if that contract drifts.
-  const uploaded = tracked.filter((relative) => !relative.startsWith(".superpowers/"));
+  const ignored = new Set((await runner.run(
+    "git",
+    ["ls-files", "-ci", "--exclude-standard", "-z"],
+    { signal },
+  )).split("\0").filter(Boolean));
+  const uploaded = tracked.filter((relative) => !ignored.has(relative));
   const tree = createHash("sha256");
   for (const relative of uploaded) {
     tree.update(relative).update("\0").update(await readFile(path.join(root, relative))).update("\0");

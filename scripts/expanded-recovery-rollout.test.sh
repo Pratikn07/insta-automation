@@ -31,6 +31,9 @@ fi
 if [[ "$1 $2" == "ls-files -z" ]]; then
   exit 0
 fi
+if [[ "$1 $2" == "ls-files -ci" ]]; then
+  exit 0
+fi
 exec "$(dirname "$0")/real-git" "$@"
 EOF
 chmod +x "$tmp/bin/git"
