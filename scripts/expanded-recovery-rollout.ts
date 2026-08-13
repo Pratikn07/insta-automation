@@ -572,7 +572,7 @@ export class ExpandedRecoveryRolloutOperator {
     const state = this.requireBoundState();
     const output = await this.runner.run("railway", [
       "ssh", ...this.railwayScope(state), "--deployment-instance", instanceId,
-      "--", "node", "--input-type=module", "--eval", REMOTE_ATTESTATION_PROGRAM,
+      "node", "--input-type=module", "--eval", REMOTE_ATTESTATION_PROGRAM,
     ], { signal: this.actionAbort.signal });
     assertRemoteSelectorBinding(state, instanceId, parseRemoteAttestation(output));
   }
@@ -609,7 +609,7 @@ export class ExpandedRecoveryRolloutOperator {
     });
     const output = await this.runner.run("railway", [
       "ssh", ...this.railwayScope(), "--deployment-instance", instanceId,
-      "--", "./node_modules/.bin/tsx", "scripts/select-expanded-historical-recovery.ts",
+      "./node_modules/.bin/tsx", "scripts/select-expanded-historical-recovery.ts",
       "--phase", selectorPhase, "--json",
     ], { signal: this.actionAbort.signal });
     const selection = parseSelectionOutput(output);
