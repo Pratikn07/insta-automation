@@ -30,6 +30,7 @@ const CAMPAIGN_IDS = [
   "77777777-7777-4777-8777-777777777773",
   "77777777-7777-4777-8777-777777777774",
 ] as const;
+const SOURCE_TREE_SHA = "c".repeat(64);
 
 function environment(overrides: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
   return {
@@ -52,9 +53,11 @@ function state(phase: OperatorState["phase"] = "selected"): OperatorState {
   const config = parseOperatorConfig(environment(), {
     releaseSha: "a".repeat(40),
     selectorSha256: "b".repeat(64),
+    sourceTreeSha256: SOURCE_TREE_SHA,
   });
   return {
-    version: 2,
+    version: 3,
+    revision: 1,
     phase,
     identity: config.identity,
     historicalPrior: false,
@@ -106,6 +109,7 @@ describe("operator identity", () => {
     const config = parseOperatorConfig(environment(), {
       releaseSha: "a".repeat(40),
       selectorSha256: "b".repeat(64),
+      sourceTreeSha256: SOURCE_TREE_SHA,
     });
 
     expect(config.identity.api).toMatchObject({
@@ -120,6 +124,7 @@ describe("operator identity", () => {
     });
     expect(config.identity.api.fingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(config.identity.database.fingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(config.identity.sourceTreeSha256).toBe(SOURCE_TREE_SHA);
   });
 
   it.each([
@@ -132,6 +137,7 @@ describe("operator identity", () => {
     expect(() => parseOperatorConfig(environment(override), {
       releaseSha: "a".repeat(40),
       selectorSha256: "b".repeat(64),
+      sourceTreeSha256: SOURCE_TREE_SHA,
     })).toThrow();
   });
 
@@ -140,6 +146,7 @@ describe("operator identity", () => {
     const current = parseOperatorConfig(environment({ RAILWAY_SERVICE_ID: "88888888-8888-4888-8888-888888888888" }), {
       releaseSha: "a".repeat(40),
       selectorSha256: "b".repeat(64),
+      sourceTreeSha256: SOURCE_TREE_SHA,
     });
 
     expect(() => assertOperatorIdentity(saved, current.identity)).toThrow("operator_identity_drift");
@@ -224,6 +231,7 @@ describe("remote selector binding", () => {
       deploymentId: DEPLOYMENT_ID,
     },
     releaseSha: "a".repeat(40),
+    sourceTreeSha256: SOURCE_TREE_SHA,
     selectorSha256: "b".repeat(64),
     database: { protocol: "postgresql:", host: "db.example.test", port: "5432", name: "app" },
     historicalEnabled: false,
@@ -239,6 +247,7 @@ describe("remote selector binding", () => {
 
   it.each([
     ["deployment", { railway: { projectId: PROJECT_ID, serviceId: SERVICE_ID, environmentId: ENVIRONMENT_ID, deploymentId: "99999999-9999-4999-8999-999999999999" } }],
+    ["source tree", { sourceTreeSha256: "e".repeat(64) }],
     ["selector", { selectorSha256: "f".repeat(64) }],
     ["database", { database: { protocol: "postgresql:", host: "other.example.test", port: "5432", name: "app" } }],
     ["database protocol", { database: { protocol: "postgres:", host: "db.example.test", port: "5432", name: "app" } }],
@@ -263,6 +272,8 @@ describe("active API deployment binding", () => {
       environmentId: ENVIRONMENT_ID,
       deploymentId: DEPLOYMENT_ID,
       releaseSha: "a".repeat(40),
+      sourceTreeSha256: SOURCE_TREE_SHA,
+      selectorSha256: "b".repeat(64),
       historicalEnabled: false,
     },
   });
@@ -275,6 +286,8 @@ describe("active API deployment binding", () => {
   it.each([
     ["deployment", { deploymentId: "99999999-9999-4999-8999-999999999999" }],
     ["release", { releaseSha: "c".repeat(40) }],
+    ["source tree", { sourceTreeSha256: "e".repeat(64) }],
+    ["selector", { selectorSha256: "e".repeat(64) }],
     ["historical flag", { historicalEnabled: true }],
   ])("rejects a mismatched %s", (_label, deploymentOverride) => {
     const value = apiAttestation();
@@ -447,11 +460,19 @@ describe("external machine contracts", () => {
   });
 
   it.each([
-    [{ value: true }, true],
-    [{ value: "false" }, false],
     [{ DM_RECOVERY_HISTORICAL_ENABLED: "true" }, true],
-  ])("parses the historical flag without accepting another value", (value, expected) => {
+    [{ DM_RECOVERY_HISTORICAL_ENABLED: "false", ANOTHER_SECRET: "not-logged" }, false],
+  ])("parses the exact variable-list key without accepting another value", (value, expected) => {
     expect(parseHistoricalFlag(JSON.stringify(value))).toBe(expected);
+  });
+
+  it.each([
+    { value: true },
+    { dm_recovery_historical_enabled: "false" },
+    { DM_RECOVERY_HISTORICAL_ENABLED: "maybe" },
+    [],
+  ])("rejects an unsupported or ambiguous variable-list record %#", (value) => {
+    expect(() => parseHistoricalFlag(JSON.stringify(value))).toThrow();
   });
 
   it("parses a strict first-send record", () => {

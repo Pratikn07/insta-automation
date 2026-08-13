@@ -24,3 +24,4 @@ prisma/migrations/dev.db*
 .worktrees/
 .vercel
 .expanded-recovery-rollout.state.json
+.expanded-recovery-rollout.state.json.cleanup-required

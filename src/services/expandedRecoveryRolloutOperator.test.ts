@@ -27,6 +27,7 @@ const CAMPAIGN_ID = "77777777-7777-4777-8777-777777777777";
 const ROLLBACK_DEPLOYMENT_ID = "88888888-8888-4888-8888-888888888888";
 const RELEASE_SHA = "a".repeat(40);
 const SELECTOR_SHA = "b".repeat(64);
+const SOURCE_TREE_SHA = "c".repeat(64);
 const DECISION_HASH = "d".repeat(64);
 
 function environment(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
@@ -51,7 +52,11 @@ function environment(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
 }
 
 function config(env = environment()): OperatorConfig {
-  return parseOperatorConfig(env, { releaseSha: RELEASE_SHA, selectorSha256: SELECTOR_SHA });
+  return parseOperatorConfig(env, {
+    releaseSha: RELEASE_SHA,
+    selectorSha256: SELECTOR_SHA,
+    sourceTreeSha256: SOURCE_TREE_SHA,
+  });
 }
 
 function selectionJson(phase: "confirmed_failure" | "unknown_read_pilot" = "unknown_read_pilot"): string {
@@ -95,7 +100,8 @@ function rolloutState(
             ? { kind: "select", selectorPhase: "unknown_read_pilot", startedAt: "2026-08-12T00:00:00.000Z" }
             : null;
   return parseRolloutState(JSON.stringify({
-    version: 2,
+    version: 3,
+    revision: 1,
     phase,
     identity,
     historicalPrior: false,
@@ -133,6 +139,7 @@ function remoteAttestation(): string {
       deploymentId: DEPLOYMENT_ID,
     },
     releaseSha: RELEASE_SHA,
+    sourceTreeSha256: SOURCE_TREE_SHA,
     selectorSha256: SELECTOR_SHA,
     database: { protocol: "postgresql:", host: "db.example.test", port: "5432", name: "app" },
     historicalEnabled: false,
@@ -149,6 +156,8 @@ function health(deploymentId: string, historicalEnabled: boolean) {
       environmentId: ENVIRONMENT_ID,
       deploymentId,
       releaseSha: RELEASE_SHA,
+      sourceTreeSha256: SOURCE_TREE_SHA,
+      selectorSha256: SELECTOR_SHA,
       historicalEnabled,
     },
   };
@@ -171,9 +180,13 @@ class MemoryStore implements OperatorStateRepository {
   readonly writes: OperatorState[] = [];
   constructor(public current: OperatorState | null) {}
   async read(): Promise<OperatorState | null> { return this.current && structuredClone(this.current); }
-  async write(value: OperatorState): Promise<void> {
-    this.current = parseRolloutState(JSON.stringify(value));
+  async write(value: OperatorState): Promise<OperatorState> {
+    if ((this.current?.revision ?? 0) !== value.revision) {
+      throw new Error("rollout_state_stale_write");
+    }
+    this.current = parseRolloutState(JSON.stringify({ ...value, revision: value.revision + 1 }));
     this.writes.push(structuredClone(this.current));
+    return structuredClone(this.current);
   }
 }
 
@@ -508,13 +521,44 @@ describe("rollout state durability", () => {
     const file = path.join(directory, "state.json");
     try {
       const store = new RolloutStateStore(file);
-      await store.write(rolloutState("running"));
+      const initial = rolloutState("running");
+      initial.revision = 0;
+      await store.write(initial);
 
       expect((await stat(file)).mode & 0o777).toBe(0o600);
       expect(await store.read()).toMatchObject({ phase: "running" });
       const serialized = await readFile(file, "utf8");
       expect(serialized).not.toContain("database-secret");
       expect(serialized).not.toContain("owner-token-secret");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a stale writer instead of overwriting a newer cleanup lock", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "expanded-recovery-cas-"));
+    const file = path.join(directory, "state.json");
+    try {
+      const store = new RolloutStateStore(file);
+      const initial = rolloutState("running");
+      initial.revision = 0;
+      const persisted = await store.write(initial);
+      const stale = structuredClone(persisted);
+      await store.write({
+        ...persisted,
+        phase: "cleanup_required",
+        cleanup: {
+          required: true,
+          reason: "safety lock",
+          requestedAt: "2026-08-12T00:00:00.000Z",
+          pauseVerified: false,
+          historicalVerified: false,
+        },
+      });
+      await expect(store.write({ ...stale, phase: "verified" })).rejects.toThrow(
+        "rollout_state_stale_write",
+      );
+      expect(await store.read()).toMatchObject({ phase: "cleanup_required" });
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

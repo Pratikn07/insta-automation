@@ -2,7 +2,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
-import { mkdir, open, readFile, rename } from "node:fs/promises";
+import { access, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
@@ -34,11 +34,17 @@ const PENDING_DEPLOYMENT_STATES = new Set([
   "WAITING", "QUEUED", "BUILDING", "DEPLOYING", "INITIALIZING", "PENDING", "IN_PROGRESS",
 ]);
 const SIGNAL_CODES = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 } as const;
+const ARTIFACT_FILE = ".expanded-recovery-artifact.json";
 const REMOTE_ATTESTATION_PROGRAM = String.raw`
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 const database = new URL(process.env.DATABASE_URL ?? "");
 const historical = process.env.DM_RECOVERY_HISTORICAL_ENABLED;
+const artifact = JSON.parse(readFileSync(".expanded-recovery-artifact.json", "utf8"));
+const sourceTree = createHash("sha256");
+for (const relative of artifact.files) {
+  sourceTree.update(relative).update("\0").update(readFileSync(relative)).update("\0");
+}
 const record = {
   schemaVersion: 1,
   kind: "expanded-recovery-remote-attestation",
@@ -48,7 +54,8 @@ const record = {
     environmentId: process.env.RAILWAY_ENVIRONMENT_ID,
     deploymentId: process.env.RAILWAY_DEPLOYMENT_ID,
   },
-  releaseSha: process.env.EXPANDED_RECOVERY_RELEASE_SHA,
+  releaseSha: artifact.releaseSha,
+  sourceTreeSha256: sourceTree.digest("hex"),
   selectorSha256: createHash("sha256").update(readFileSync("scripts/select-expanded-historical-recovery.ts")).digest("hex"),
   database: { protocol: database.protocol, host: database.hostname, port: database.port || "5432", name: decodeURIComponent(database.pathname.replace(/^\//, "")) },
   historicalEnabled: historical === "true" ? true : historical === "false" ? false : null,
@@ -68,7 +75,7 @@ export type OperatorCommandRunner = {
 
 export type OperatorStateRepository = {
   read(): Promise<OperatorState | null>;
-  write(state: OperatorState): Promise<void>;
+  write(state: OperatorState): Promise<OperatorState>;
 };
 
 export type OperatorRuntimeOverrides = {
@@ -76,6 +83,13 @@ export type OperatorRuntimeOverrides = {
   fetch: typeof fetch;
   sleep: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
   now: () => Date;
+};
+
+type SourceIdentity = {
+  releaseSha: string;
+  sourceTreeSha256: string;
+  selectorSha256: string;
+  files: string[];
 };
 
 export class SafeCommandRunner implements OperatorCommandRunner {
@@ -142,13 +156,26 @@ export class RolloutStateStore implements OperatorStateRepository {
     }
   }
 
-  async write(state: OperatorState): Promise<void> {
+  async write(state: OperatorState): Promise<OperatorState> {
     const validated = parseRolloutState(JSON.stringify(state));
     await mkdir(path.dirname(this.file), { recursive: true });
+    let current: OperatorState | null = null;
+    try {
+      current = parseRolloutState(await readFile(this.file, "utf8"));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if ((current?.revision ?? 0) !== validated.revision) {
+      throw new Error("rollout_state_stale_write");
+    }
+    const next = parseRolloutState(JSON.stringify({
+      ...validated,
+      revision: validated.revision + 1,
+    }));
     const temporary = `${this.file}.${process.pid}.${randomUUID()}.tmp`;
     const handle = await open(temporary, "wx", 0o600);
     try {
-      await handle.writeFile(`${JSON.stringify(validated, null, 2)}\n`, "utf8");
+      await handle.writeFile(`${JSON.stringify(next, null, 2)}\n`, "utf8");
       await handle.sync();
     } finally {
       await handle.close();
@@ -160,6 +187,7 @@ export class RolloutStateStore implements OperatorStateRepository {
     } finally {
       await directory.close();
     }
+    return next;
   }
 }
 
@@ -217,6 +245,7 @@ export class ExpandedRecoveryRolloutOperator {
     private readonly store: OperatorStateRepository,
     private readonly runner: OperatorCommandRunner,
     runtime: Partial<OperatorRuntimeOverrides> = {},
+    private readonly sourceFiles: string[] = [],
   ) {
     this.environment = runtime.environment ?? process.env;
     this.fetchImpl = runtime.fetch ?? fetch;
@@ -229,8 +258,9 @@ export class ExpandedRecoveryRolloutOperator {
         originalExitCode: exitCode,
         reason,
         writeState: async (next) => {
-          await this.store.write(next);
-          this.state = next;
+          const persisted = await this.store.write(next);
+          Object.assign(next, persisted);
+          this.state = persisted;
         },
         pauseAndVerify: () => this.pauseAndVerify(),
         restoreHistoricalFlag: () => this.restoreHistoricalFlag(),
@@ -279,8 +309,7 @@ export class ExpandedRecoveryRolloutOperator {
   }
 
   private async persist(next: OperatorState): Promise<void> {
-    await this.store.write(next);
-    this.state = next;
+    this.state = await this.store.write(next);
   }
 
   private async apiJson(
@@ -381,17 +410,37 @@ export class ExpandedRecoveryRolloutOperator {
   ): Promise<string> {
     const state = this.requireState();
     const scope = this.railwayScope(state);
-    await this.runner.run("railway", [
-      "variable", "set", "--skip-deploys", ...scope,
-      `DM_RECOVERY_HISTORICAL_ENABLED=${historicalEnabled}`,
-      `EXPANDED_RECOVERY_RELEASE_SHA=${state.identity.releaseSha}`,
-    ], { signal });
-    const started = await this.runner.run("railway", [
-      "up", "--detach", "--json", ...scope, "--message", message,
-    ], { signal });
-    const deploymentId = parseDeploymentStartOutput(started);
-    await this.waitForDeployment(deploymentId, signal);
-    return deploymentId;
+    const artifactPath = path.join(this.root, ARTIFACT_FILE);
+    const artifact = {
+      schemaVersion: 1,
+      kind: "expanded-recovery-deployment-artifact",
+      releaseSha: state.identity.releaseSha,
+      sourceTreeSha256: state.identity.sourceTreeSha256,
+      selectorSha256: state.identity.selectorSha256,
+      files: this.sourceFiles,
+    };
+    if (this.sourceFiles.length > 0) {
+      const handle = await open(artifactPath, "wx", 0o600);
+      try {
+        await handle.writeFile(`${JSON.stringify(artifact)}\n`, "utf8");
+      } finally {
+        await handle.close();
+      }
+    }
+    try {
+      await this.runner.run("railway", [
+        "variable", "set", "--skip-deploys", ...scope,
+        `DM_RECOVERY_HISTORICAL_ENABLED=${historicalEnabled}`,
+      ], { signal });
+      const started = await this.runner.run("railway", [
+        "up", "--detach", "--json", ...scope, "--message", message,
+      ], { signal });
+      const deploymentId = parseDeploymentStartOutput(started);
+      await this.waitForDeployment(deploymentId, signal);
+      return deploymentId;
+    } finally {
+      if (this.sourceFiles.length > 0) await rm(artifactPath, { force: true });
+    }
   }
 
   private auditEnvironment(): NodeJS.ProcessEnv {
@@ -475,7 +524,7 @@ export class ExpandedRecoveryRolloutOperator {
   private async captureHistoricalPrior(): Promise<boolean> {
     const state = this.requireState();
     const output = await this.runner.run("railway", [
-      "variable", "get", "DM_RECOVERY_HISTORICAL_ENABLED", ...this.railwayScope(state), "--json",
+      "variable", "list", ...this.railwayScope(state), "--json",
     ], { signal: this.actionAbort.signal });
     return parseHistoricalFlag(output);
   }
@@ -491,7 +540,8 @@ export class ExpandedRecoveryRolloutOperator {
     }
     if (!this.state) {
       const provisional: OperatorState = {
-        version: 2,
+        version: 3,
+        revision: 0,
         phase: "deploying_inert",
         identity: this.config.identity,
         historicalPrior: false,
@@ -724,8 +774,8 @@ export class ExpandedRecoveryRolloutOperator {
   }
 
   async execute(command: OperatorCommand): Promise<number> {
-    this.state = await this.store.read();
     try {
+      this.state = await this.store.read();
       if (command === "deploy-inert") await this.deployInert();
       else {
         const state = this.requireState();
@@ -757,38 +807,115 @@ export class ExpandedRecoveryRolloutOperator {
   }
 }
 
-async function sourceIdentity(root: string, runner: OperatorCommandRunner) {
+async function sourceIdentity(root: string, runner: OperatorCommandRunner): Promise<SourceIdentity> {
+  const status = await runner.run("git", ["status", "--porcelain=v1", "--untracked-files=all"]);
+  if (status.trim() !== "") throw new Error("deployment_source_tree_not_clean");
   const releaseSha = (await runner.run("git", ["rev-parse", "HEAD"])).trim();
+  const tracked = (await runner.run("git", ["ls-files", "-z"]))
+    .split("\0").filter(Boolean).sort();
+  const tree = createHash("sha256");
+  for (const relative of tracked) {
+    tree.update(relative).update("\0").update(await readFile(path.join(root, relative))).update("\0");
+  }
   const selector = await readFile(path.join(root, "scripts/select-expanded-historical-recovery.ts"));
   return {
     releaseSha,
+    sourceTreeSha256: tree.digest("hex"),
     selectorSha256: createHash("sha256").update(selector).digest("hex"),
+    files: tracked,
   };
 }
 
 async function main(): Promise<void> {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const stateFile = process.env.EXPANDED_RECOVERY_STATE_FILE
+    ?? path.join(root, ".expanded-recovery-rollout.state.json");
+  const lockDirectory = `${stateFile}.lock`;
+  const startupMarker = `${stateFile}.cleanup-required`;
+  let pendingSignal: keyof typeof SIGNAL_CODES | null = null;
+  let operator: ExpandedRecoveryRolloutOperator | null = null;
+  for (const signal of Object.keys(SIGNAL_CODES) as Array<keyof typeof SIGNAL_CODES>) {
+    process.on(signal, () => {
+      pendingSignal ??= signal;
+      operator?.requestSignal(signal);
+    });
+  }
   const command = process.argv[2] as OperatorCommand | undefined;
   const allowed: OperatorCommand[] = [
     "deploy-inert", "select", "adopt", "approve-start", "verify", "pause", "retry-cleanup",
   ];
-  if (!command || !allowed.includes(command)) {
-    throw new Error(`commands: ${allowed.join(" ")}`);
+  if (!command || !allowed.includes(command)) throw new Error(`commands: ${allowed.join(" ")}`);
+  try {
+    await mkdir(lockDirectory, { mode: 0o700 });
+    await writeFile(path.join(lockDirectory, "pid"), `${process.pid}\n`, { mode: 0o600 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      let ownerAlive = true;
+      try {
+        const owner = Number((await readFile(path.join(lockDirectory, "pid"), "utf8")).trim());
+        if (!Number.isSafeInteger(owner) || owner <= 0) throw new Error("invalid_lock_owner");
+        process.kill(owner, 0);
+      } catch (ownerError) {
+        if ((ownerError as NodeJS.ErrnoException).code === "ESRCH") ownerAlive = false;
+      }
+      if (!ownerAlive) {
+        await rm(lockDirectory, { recursive: true, force: true });
+        await mkdir(lockDirectory, { mode: 0o700 });
+        await writeFile(path.join(lockDirectory, "pid"), `${process.pid}\n`, { mode: 0o600 });
+      } else {
+        process.stderr.write("ERROR: another rollout operator owns the exclusive lock\n");
+        process.exitCode = 75;
+        return;
+      }
+    }
+    throw error;
   }
-  const runner = new SafeCommandRunner(root);
-  const config = parseOperatorConfig(process.env, await sourceIdentity(root, runner));
-  const stateFile = process.env.EXPANDED_RECOVERY_STATE_FILE
-    ?? path.join(root, ".expanded-recovery-rollout.state.json");
-  const operator = new ExpandedRecoveryRolloutOperator(
-    root,
-    config,
-    new RolloutStateStore(stateFile),
-    runner,
-  );
-  for (const signal of Object.keys(SIGNAL_CODES) as Array<keyof typeof SIGNAL_CODES>) {
-    process.on(signal, () => operator.requestSignal(signal));
+  try {
+    try {
+      await access(startupMarker);
+      if (command !== "retry-cleanup") throw new Error("startup_cleanup_required_lock");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    const runner = new SafeCommandRunner(root);
+    const store = new RolloutStateStore(stateFile);
+    const savedState = await store.read();
+    let source: SourceIdentity | null = null;
+    try {
+      source = await sourceIdentity(root, runner);
+      const config = parseOperatorConfig(process.env, source);
+      operator = new ExpandedRecoveryRolloutOperator(root, config, store, runner, {}, source.files);
+    } catch (startupError) {
+      if (!savedState?.rollout) throw startupError;
+      operator = new ExpandedRecoveryRolloutOperator(
+        root,
+        { apiBase: savedState.identity.api.origin, pgUrl: "", identity: savedState.identity },
+        store,
+        runner,
+      );
+      if (pendingSignal) operator.requestSignal(pendingSignal);
+      process.exitCode = await operator.execute("retry-cleanup");
+      if (process.exitCode !== 0) {
+        await writeFile(startupMarker, `${safeReason(startupError)}\n`, { mode: 0o600 });
+      }
+      return;
+    }
+    if (pendingSignal) operator.requestSignal(pendingSignal);
+    process.exitCode = await operator.execute(command);
+    if (process.exitCode === 0) await rm(startupMarker, { force: true });
+  } catch (error) {
+    let priorStateMayExist = false;
+    try { await access(stateFile); priorStateMayExist = true; } catch { /* absent */ }
+    if (priorStateMayExist) {
+      await writeFile(startupMarker, `${safeReason(error)}\n`, { mode: 0o600 });
+      process.exitCode = 75;
+    } else {
+      process.exitCode = pendingSignal ? SIGNAL_CODES[pendingSignal] : 1;
+    }
+    process.stderr.write(`ERROR: ${safeReason(error)}\n`);
+  } finally {
+    await rm(lockDirectory, { recursive: true, force: true });
   }
-  process.exitCode = await operator.execute(command);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

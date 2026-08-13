@@ -26,6 +26,7 @@ const identitySchema = z.object({
     serviceName: z.string().trim().min(1),
   }).strict(),
   releaseSha: gitSha,
+  sourceTreeSha256: sha256,
   selectorSha256: sha256,
   api: z.object({
     origin: z.string().url(),
@@ -63,6 +64,7 @@ const phaseSchema = z.enum([
   "completed",
   "verifying",
   "verified",
+  "rolled_back",
   "recovery_ready",
   "cleanup_required",
 ]);
@@ -88,7 +90,8 @@ const cleanupSchema = z.object({
 }).strict();
 
 const rolloutStateSchema = z.object({
-  version: z.literal(2),
+  version: z.literal(3),
+  revision: z.number().int().min(0),
   phase: phaseSchema,
   identity: identitySchema,
   historicalPrior: z.boolean(),
@@ -109,7 +112,10 @@ const rolloutStateSchema = z.object({
     if (value.selectorDeployment !== null || value.activeDeploymentId !== null || value.rollout !== null) {
       context.addIssue({ code: "custom", message: "deploying inert state must be unbound" });
     }
-  } else if (value.selectorDeployment === null || value.activeDeploymentId === null) {
+  } else if (
+    value.phase !== "cleanup_required"
+    && (value.selectorDeployment === null || value.activeDeploymentId === null)
+  ) {
     context.addIssue({ code: "custom", message: "deployed state identity incomplete" });
   }
   const manifestPhases = new Set<typeof value.phase>([
@@ -221,7 +227,7 @@ function exactDatabaseIdentity(raw: string, expectedHost: string, expectedName: 
 
 export function parseOperatorConfig(
   environment: NodeJS.ProcessEnv,
-  source: { releaseSha: string; selectorSha256: string },
+  source: { releaseSha: string; sourceTreeSha256: string; selectorSha256: string },
 ): OperatorConfig {
   const apiBase = required(environment, "API_BASE");
   const expectedApiHost = required(environment, "EXPECTED_API_HOST");
@@ -242,6 +248,7 @@ export function parseOperatorConfig(
       serviceName: required(environment, "API_SERVICE"),
     },
     releaseSha: source.releaseSha,
+    sourceTreeSha256: source.sourceTreeSha256,
     selectorSha256: source.selectorSha256,
     api: {
       origin: api.origin,
@@ -339,6 +346,7 @@ const remoteAttestationSchema = z.object({
     deploymentId: uuid,
   }).strict(),
   releaseSha: gitSha,
+  sourceTreeSha256: sha256,
   selectorSha256: sha256,
   database: z.object({
     protocol: z.enum(["postgres:", "postgresql:"]),
@@ -374,6 +382,7 @@ export function assertRemoteSelectorBinding(
     || attestation.railway.environmentId !== state.identity.railway.environmentId
     || attestation.railway.deploymentId !== state.selectorDeployment.id
     || attestation.releaseSha !== state.identity.releaseSha
+    || attestation.sourceTreeSha256 !== state.identity.sourceTreeSha256
     || attestation.selectorSha256 !== state.identity.selectorSha256
     || attestation.database.protocol !== state.identity.database.protocol
     || attestation.database.host !== state.identity.database.host
@@ -394,6 +403,8 @@ const apiAttestationSchema = z.object({
     environmentId: uuid,
     deploymentId: uuid,
     releaseSha: gitSha,
+    sourceTreeSha256: sha256,
+    selectorSha256: sha256,
     historicalEnabled: z.boolean(),
   }).strict(),
 }).strict();
@@ -416,6 +427,8 @@ export function assertActiveDeploymentBinding(
     || deployment.environmentId !== state.identity.railway.environmentId
     || deployment.deploymentId !== state.activeDeploymentId
     || deployment.releaseSha !== state.identity.releaseSha
+    || deployment.sourceTreeSha256 !== state.identity.sourceTreeSha256
+    || deployment.selectorSha256 !== state.identity.selectorSha256
     || deployment.historicalEnabled !== expectedHistoricalEnabled
   ) {
     throw new Error("active_api_identity_mismatch");
@@ -464,7 +477,7 @@ export function parseDeploymentList(
 
 export function parseHistoricalFlag(output: string): boolean {
   const value = parseSingleJsonRecord(output, "historical_flag") as Record<string, unknown>;
-  const raw = value.value ?? value.DM_RECOVERY_HISTORICAL_ENABLED;
+  const raw = value.DM_RECOVERY_HISTORICAL_ENABLED;
   if (raw === true || raw === "true") return true;
   if (raw === false || raw === "false") return false;
   throw new Error("historical_flag_not_boolean");
@@ -611,6 +624,7 @@ const allowedByPhase: Record<OperatorState["phase"], readonly OperatorCommand[]>
   completed: ["verify", "pause"],
   verifying: ["retry-cleanup"],
   verified: ["verify", "pause"],
+  rolled_back: ["deploy-inert"],
   recovery_ready: ["approve-start", "pause"],
   cleanup_required: ["retry-cleanup"],
 };

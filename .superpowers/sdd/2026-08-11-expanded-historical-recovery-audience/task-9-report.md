@@ -127,6 +127,33 @@ use the approved environment, reclassify to zero stale targets, pass the owner
 audit, and complete the first-comment Meta readback before expanded sending is
 enabled.
 
+## Fix Round 5/5 — process-safe launch boundary
+
+The final safety pass closes the independent Round 4 findings. Operator commands
+now hold one exclusive PID lock for their entire lifecycle and state writes use a
+monotonic revision compare-and-swap, so a stale process cannot overwrite a
+`cleanup_required` state. Signal handlers are installed before fallible startup;
+INT, TERM, and HUP are exercised through the real wrapper. If startup cannot
+parse a pre-existing rollout state, a mode-0600 cleanup marker blocks all commands
+except recovery and the process exits 75.
+
+The operator uses Railway's supported `variable list --json` contract, requires a
+clean tracked Git tree, and packages a manifest containing the tracked-file list
+and deterministic source digest. The deployed health endpoint and remote selector
+both recompute the packaged files before attesting the release. The temporary
+manifest is removed locally after each upload.
+
+Grouped campaigns are rejected by the legacy per-campaign approve and resume
+services. The atomic group transaction now locks and checks identity-presence
+normalization plus rolling group capacity with the rest of the frozen manifest.
+First-send verification selects the actual earliest sent candidate before
+validating its unique historical dispatch and approved source.
+
+Focused evidence: backend build passed; 6 focused files / 186 tests passed; the
+real wrapper plus core/operator suite passed 59 tests including INT/TERM/HUP and
+concurrent-process lock behavior; shell syntax and `git diff --check` passed.
+No production, merge, push, database mutation, or Meta call occurred.
+
 ## Fix Round 1/5 — executable rollout hardening
 
 ### Scope and files

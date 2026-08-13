@@ -3,6 +3,7 @@ import {
   assertExpandedGroupAuditSnapshot,
   hasExactHistoricalAudienceShape,
   isAuthorizedFirstSendRow,
+  selectAuthorizedEarliestFirstSendRow,
   type ExpandedGroupAuditSnapshot,
 } from "../../scripts/expanded-recovery-audit.js";
 import {
@@ -161,5 +162,42 @@ describe("first-send source authorization", () => {
     { approvedSourceCommentIds: [] },
   ])("rejects an unauthorized source shape %#", (override) => {
     expect(isAuthorizedFirstSendRow({ ...row, ...override })).toBe(false);
+  });
+
+  const sentRow = (overrides: Record<string, unknown> = {}) => ({
+    reply: "reply-1",
+    text: "DM @tinysoho SLEEP",
+    candidateId: "candidate-1",
+    candidateSentAt: new Date("2026-08-12T00:00:00.000Z"),
+    dispatchId: "dispatch-1",
+    dispatchState: "sent",
+    dispatchSentAt: new Date("2026-08-12T00:00:01.000Z"),
+    providerReplyId: "reply-1",
+    sourceKind: "historical",
+    sourceId: "candidate-1",
+    dispatchCommentId: "comment-2",
+    approvedSourceCommentIds: ["comment-1", "comment-2"],
+    ...overrides,
+  });
+
+  it("returns the actual earliest sent candidate only when its unique dispatch is authorized", () => {
+    expect(selectAuthorizedEarliestFirstSendRow([
+      sentRow({ candidateId: "candidate-2", sourceId: "candidate-2", dispatchId: "dispatch-2", candidateSentAt: new Date("2026-08-12T00:01:00.000Z") }),
+      sentRow(),
+    ])).toMatchObject({ candidateId: "candidate-1", dispatchId: "dispatch-1" });
+  });
+
+  it("fails immediately when the actual earliest send is unsafe instead of accepting a later valid send", () => {
+    expect(() => selectAuthorizedEarliestFirstSendRow([
+      sentRow({ sourceKind: "prospective" }),
+      sentRow({ candidateId: "candidate-2", sourceId: "candidate-2", dispatchId: "dispatch-2", candidateSentAt: new Date("2026-08-12T00:01:00.000Z") }),
+    ])).toThrow("first_send_source_unauthorized");
+  });
+
+  it("requires exactly one dispatch for the actual earliest candidate", () => {
+    expect(() => selectAuthorizedEarliestFirstSendRow([
+      sentRow(),
+      sentRow({ dispatchId: "dispatch-duplicate" }),
+    ])).toThrow("first_send_dispatch_not_unique");
   });
 });

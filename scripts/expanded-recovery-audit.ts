@@ -119,8 +119,8 @@ export function hasExactHistoricalAudienceShape(row: AudienceRow): boolean {
 
 export type FirstSendSourceRow = {
   candidateId: string;
-  sourceKind: string;
-  sourceId: string;
+  sourceKind: string | null;
+  sourceId: string | null;
   dispatchCommentId: string | null;
   approvedSourceCommentIds: string[];
 };
@@ -130,6 +130,45 @@ export function isAuthorizedFirstSendRow(row: FirstSendSourceRow): boolean {
     && row.sourceId === row.candidateId
     && row.dispatchCommentId !== null
     && row.approvedSourceCommentIds.includes(row.dispatchCommentId);
+}
+
+export type FirstSendAuditRow = FirstSendSourceRow & {
+  reply: string | null;
+  text: string | null;
+  candidateSentAt: Date;
+  dispatchId: string | null;
+  dispatchState: string | null;
+  dispatchSentAt: Date | null;
+  providerReplyId: string | null;
+};
+
+/** Select the actual first sent candidate, then validate rather than pre-filtering it away. */
+export function selectAuthorizedEarliestFirstSendRow(
+  rows: FirstSendAuditRow[],
+): FirstSendAuditRow | null {
+  if (rows.length === 0) return null;
+  const ordered = [...rows].sort((left, right) =>
+    left.candidateSentAt.getTime() - right.candidateSentAt.getTime()
+    || left.candidateId.localeCompare(right.candidateId)
+    || (left.dispatchId ?? "").localeCompare(right.dispatchId ?? ""));
+  const earliest = ordered[0]!;
+  const dispatchRows = ordered.filter(({ candidateId }) => candidateId === earliest.candidateId);
+  if (dispatchRows.length !== 1 || earliest.dispatchId === null) {
+    throw new Error("first_send_dispatch_not_unique");
+  }
+  if (
+    earliest.dispatchState !== "sent"
+    || earliest.dispatchSentAt === null
+    || earliest.reply === null
+    || earliest.text === null
+    || earliest.providerReplyId !== earliest.reply
+  ) {
+    throw new Error("first_send_dispatch_inconsistent");
+  }
+  if (!isAuthorizedFirstSendRow(earliest)) {
+    throw new Error("first_send_source_unauthorized");
+  }
+  return earliest;
 }
 
 async function readonlyClient(): Promise<Client> {
@@ -406,18 +445,15 @@ async function firstSend(): Promise<void> {
   for (;;) {
     const client = await readonlyClient();
     try {
-      const rows = await client.query<{
-        reply: string;
-        text: string;
-        candidateId: string;
-        sourceKind: string;
-        sourceId: string;
-        dispatchCommentId: string | null;
-        approvedSourceCommentIds: string[];
-      }>(`
+      const rows = await client.query<FirstSendAuditRow>(`
         SELECT c.public_reply_id AS reply,
           c.public_reply_text AS text,
           c.id AS "candidateId",
+          c.sent_at AS "candidateSentAt",
+          d.id::text AS "dispatchId",
+          d.state::text AS "dispatchState",
+          d.sent_at AS "dispatchSentAt",
+          d.provider_reply_id AS "providerReplyId",
           d.source_kind::text AS "sourceKind",
           d.source_id::text AS "sourceId",
           c.dispatch_comment_id AS "dispatchCommentId",
@@ -429,20 +465,15 @@ async function firstSend(): Promise<void> {
           ) AS "approvedSourceCommentIds"
         FROM recovery_candidate c
         JOIN recovery_campaign campaign ON campaign.id=c.campaign_id
-        JOIN public_recovery_dispatch d
+        LEFT JOIN public_recovery_dispatch d
           ON d.campaign_id=c.campaign_id
          AND d.ig_user_id=c.ig_user_id
-         AND d.source_kind='historical'
-         AND d.source_id=c.id
         WHERE c.campaign_id=$1::uuid
           AND campaign.state IN ('running','completed')
           AND c.outcome='sent'
-          AND d.state='sent'
           AND c.sent_at IS NOT NULL
-          AND d.sent_at IS NOT NULL
-          AND c.public_reply_id=d.provider_reply_id
         ORDER BY c.sent_at ASC, c.id, d.id`, [campaign]);
-      const row = rows.rows.find(isAuthorizedFirstSendRow);
+      const row = selectAuthorizedEarliestFirstSendRow(rows.rows);
       if (row) {
         process.stdout.write(JSON.stringify({
           schemaVersion: 1,

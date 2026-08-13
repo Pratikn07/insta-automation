@@ -173,6 +173,23 @@ describe("approveCampaign", () => {
     expect(await approveCampaign("nope", "pratik")).toEqual({ ok: false, reason: "not_found" });
   });
 
+  it("rejects per-campaign approval for a rollout-group member", async () => {
+    candidateUpdateMany.mockResolvedValue({ count: 0 });
+    campaignFindUnique.mockResolvedValue({
+      state: "draft",
+      rolloutGroupId: "11111111-1111-4111-8111-111111111111",
+      candidateCount: 1,
+      decisionHash: "contract-hash",
+    });
+
+    await expect(approveCampaign("camp-1", "pratik")).resolves.toEqual({
+      ok: false,
+      reason: "grouped_campaign_requires_atomic_approval",
+    });
+    expect(candidateUpdateMany).not.toHaveBeenCalled();
+    expect(campaignUpdate).not.toHaveBeenCalled();
+  });
+
   it.each([
     "snapshot_incomplete",
     "snapshot_fingerprint_mismatch",
@@ -226,69 +243,6 @@ describe("approveCampaign", () => {
     }));
   });
 
-  it("reconstructs exact expanded-audience metadata for approval verification", async () => {
-    candidateUpdateMany.mockResolvedValue({ count: 0 });
-    campaignFindUnique.mockResolvedValue({
-      state: "draft",
-      candidateCount: 1,
-      decisionHash: "contract-hash",
-      phase: "unknown_read_pilot",
-      selectionVersion: "selection-v4",
-      sourceDataCutoff: new Date("2026-08-09T00:00:00.000Z"),
-      commentFrom: null,
-      commentTo: null,
-      selectionLimit: 1,
-      holdoutPercent: 0,
-      copyVersion: "copy-v1",
-      selectionFingerprint: "fingerprint",
-      eligibilityPolicyVersion: "eligibility-v4-expanded-audience",
-      westernOnly: true,
-      inboundWindowHours: 24,
-      completionWindowHours: 48,
-      excludedCount: 0,
-      audienceSegment: "other",
-      rolloutGroupId: "11111111-1111-4111-8111-111111111111",
-      rolloutGroupHourlyCap: 2,
-    });
-    candidateFindMany.mockResolvedValue([{
-      selectionPosition: 0,
-      intentId: "intent-1",
-      igUserId: "person-1",
-      conversationId: "conversation-1",
-      keywordId: "keyword-1",
-      commentId: "comment-1",
-      mediaId: null,
-      commentAt: new Date("2026-08-09T00:00:00.000Z"),
-      keywordSnapshot: "SLEEP",
-      publicReplyText: "Please DM SLEEP",
-      evidence: "gate_sent_no_read",
-      audienceOrigin: "other",
-      audienceOriginMethod: CURRENT_ORIGIN_METHOD,
-      audienceOriginConfidence: "high",
-      audienceSegment: "other",
-      arm: "treatment",
-      sourceChoiceReason: "newest_eligible_comment",
-      sources: [{
-        position: 0,
-        commentId: "comment-1",
-        mediaId: null,
-        receivedAt: new Date("2026-08-09T00:00:00.000Z"),
-        choiceReason: "newest_eligible_comment",
-      }],
-    }]);
-
-    await approveCampaign("camp-1", "pratik");
-
-    expect(verifyStoredSelectionSnapshot).toHaveBeenCalledWith(expect.objectContaining({
-      configuration: expect.objectContaining({
-        audienceSegment: "other",
-        rolloutGroupId: "11111111-1111-4111-8111-111111111111",
-        rolloutGroupHourlyCap: 2,
-      }),
-      inclusions: [expect.objectContaining({ audienceSegment: "other" })],
-    }));
-  });
-
   it("logs the approval for the audit trail", async () => {
     campaignFindUnique.mockResolvedValue({
       state: "draft",
@@ -336,7 +290,7 @@ describe("atomic expanded rollout group transitions", () => {
     { id: "22222222-2222-4222-8222-222222222222", segment: "unknown_cue" as const, decisionHash: "d".repeat(64) },
   ];
   const stored = (
-    segment: "other" | "unknown_cue",
+    segment: "other" | "unknown_cue" | "unknown_no_name",
     state = "draft",
     startedAt: Date | null = null,
   ) => ({
@@ -368,7 +322,7 @@ describe("atomic expanded rollout group transitions", () => {
     rolloutGroupId,
     rolloutGroupHourlyCap: 10,
   });
-  const candidate = (index: number, segment: "other" | "unknown_cue") => ({
+  const candidate = (index: number, segment: "other" | "unknown_cue" | "unknown_no_name") => ({
     selectionPosition: 0,
     intentId: `intent-${index}`,
     igUserId: `person-${index}`,
@@ -535,6 +489,68 @@ describe("atomic expanded rollout group transitions", () => {
       },
       data: { state: "running", pausedAt: null, pauseReason: null },
     });
+  });
+
+  it("rejects a no-name manifest when the locked live identity has a meaningful name", async () => {
+    const noNameCampaign = {
+      id: "22222222-2222-4222-8222-222222222223",
+      segment: "unknown_no_name" as const,
+      decisionHash: "d".repeat(64),
+    };
+    queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: noNameCampaign.id, state: "draft" }]);
+    campaignFindUnique.mockResolvedValueOnce(stored("unknown_no_name"));
+    candidateFindMany.mockResolvedValueOnce([candidate(3, "unknown_no_name")]);
+    igUserFindMany.mockResolvedValueOnce([{
+      id: "person-3",
+      username: "meaningful_handle",
+      name: null,
+      audienceSegment: "unknown_no_name",
+      inferredOrigin: "unknown",
+      originMethod: CURRENT_ORIGIN_METHOD,
+      originConfidence: "low",
+    }]);
+    candidateUpdateMany.mockResolvedValueOnce({ count: 0 });
+    campaignUpdateMany.mockResolvedValueOnce({ count: 1 });
+
+    await expect(approveCampaignGroup({
+      rolloutGroupId,
+      campaigns: [noNameCampaign],
+      selectorPhase: "unknown_read_pilot",
+      approvedBy: "owner@example.test",
+    })).resolves.toEqual({ ok: false, reason: "expanded_group_live_audience_mismatch" });
+    expect(campaignUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects approval when locked rolling group capacity already exceeds ten", async () => {
+    arrangeGroup();
+    dispatchCount.mockResolvedValueOnce(11);
+    campaignUpdateMany.mockResolvedValueOnce({ count: 2 });
+
+    await expect(approveCampaignGroup({
+      rolloutGroupId,
+      campaigns,
+      selectorPhase: "unknown_read_pilot",
+      approvedBy: "owner@example.test",
+    })).resolves.toEqual({ ok: false, reason: "expanded_group_capacity_exceeded" });
+    expect(campaignUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it("keeps an emergency cleanup pause latched until atomic group reapproval", async () => {
+    arrangeGroup("paused");
+    campaignFindUnique
+      .mockReset()
+      .mockResolvedValueOnce({ ...stored("other", "paused"), pauseReason: "emergency: operator cleanup" })
+      .mockResolvedValueOnce({ ...stored("unknown_cue", "paused"), pauseReason: "emergency: operator cleanup" });
+    campaignUpdateMany.mockResolvedValueOnce({ count: 2 });
+
+    await expect(resumeCampaignGroup({
+      rolloutGroupId,
+      campaigns,
+      selectorPhase: "unknown_read_pilot",
+    })).resolves.toEqual({ ok: false, reason: "expanded_group_not_safely_resumable" });
+    expect(campaignUpdateMany).not.toHaveBeenCalled();
   });
 });
 
@@ -821,6 +837,20 @@ describe("resumeCampaign", () => {
         pauseReason: null,
       },
     }));
+  });
+
+  it("rejects per-campaign resume for a rollout-group member even with acknowledgement", async () => {
+    campaignFindUnique.mockResolvedValue({
+      ...reviewedPause("emergency: fail-closed operator cleanup"),
+      rolloutGroupId: "11111111-1111-4111-8111-111111111111",
+    });
+    campaignUpdateMany.mockResolvedValueOnce({ count: 1 });
+
+    await expect(resumeCampaign("camp-1", { acknowledgeAutoPause: "reviewed" })).resolves.toEqual({
+      ok: false,
+      reason: "grouped_campaign_requires_atomic_resume",
+    });
+    expect(campaignUpdateMany).not.toHaveBeenCalled();
   });
 
   it("refuses a complete-looking paused campaign whose stored candidate method is missing", async () => {

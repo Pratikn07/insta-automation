@@ -2,4 +2,4 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-exec "$root/node_modules/.bin/tsx" "$root/scripts/expanded-recovery-rollout.ts" "$@"
+exec node --import tsx "$root/scripts/expanded-recovery-rollout.ts" "$@"
