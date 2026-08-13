@@ -67,3 +67,35 @@
 
 - The creation-time cutoff assumes the established append-only candidate selection model; mutable outcomes continue to reflect their current operational state, while no newly selected row can appear mid-pagination.
 - The client defensively stops pagination if a malformed response lacks `asOf`, rather than issuing a request with `asOf=undefined`.
+
+## Fix Round 2/5
+
+### RED / GREEN
+
+- **RED:** The focused route suite exposed incomplete pagination-boundary assertions against the established validation response shape, while the busy-dialog test showed that a blocked backdrop dismissal let the next Tab leave the dialog. A busy-to-available dialog state also left focus on page content instead of its re-enabled Cancel control.
+- **GREEN:** Pagination now rejects a lone cursor or `asOf` and rejects future `asOf` values while retaining the server-established boundary. Review acknowledgement and its audit are performed through one transaction; an audit failure rejects and rolls the acknowledgement back. The busy dialog re-focuses its container for blocked Escape/backdrop dismissal, traps both Tab directions while all controls are disabled, and returns to Cancel if it remains open after becoming available.
+
+### Files
+
+- `src/api/historicalRecovery.routes.ts`
+- `src/api/historicalRecovery.routes.test.ts`
+- `src/services/historicalRecoveryReview.ts`
+- `src/services/historicalRecoveryReview.test.ts`
+- `web/src/components/ui/confirm-dialog.tsx`
+- `web/src/components/ui/confirm-dialog.test.tsx`
+
+### Commit
+
+- `fix: enforce recovery dashboard invariants`
+
+### Verification
+
+- Focused backend: `npx vitest run src/api/historicalRecovery.routes.test.ts src/services/historicalRecoveryReview.test.ts` — 45 passed.
+- Focused web: confirm dialog, recovery page, and candidate drawer tests — 21 passed.
+- Full backend: `npm test` — 1,540 passed, 307 skipped.
+- Full web: `npm --prefix web test` — 487 passed.
+- Backend build, web lint/build, `npx prisma validate`, and `git diff --check` passed.
+
+### Concerns
+
+- The full backend suite emits existing expected error-log fixtures for unrelated advisor, AI-runtime, and attribution failure paths; the command exits successfully.

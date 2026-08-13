@@ -15,6 +15,11 @@ import {
 import { recordCampaignHealthObservation } from "../services/campaignHealthObservation.js";
 import { logEvent } from "../services/eventLogger.js";
 import { historicalCandidateDetail } from "../services/historicalRecoveryCandidateDetail.js";
+import {
+  markHistoricalCandidateReviewed,
+} from "../services/historicalRecoveryReview.js";
+
+export { HISTORICAL_REVIEWABLE_OUTCOMES } from "../services/historicalRecoveryReview.js";
 
 /**
  * Read models and owner actions for historical recovery campaigns.
@@ -277,17 +282,26 @@ const listQuery = z.object({
   // Pins the pagination boundary so rows cannot shift between pages while the
   // worker is sending — the same fix applied to the prospective list.
   asOf: z.string().datetime().transform((value) => new Date(value)).optional(),
+}).superRefine(({ cursor, asOf }, context) => {
+  if (Boolean(cursor) !== Boolean(asOf)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "cursor_and_asOf_must_be_provided_together" });
+  }
 });
 
 /** Candidate list for one view, with the counts every tab badge reads from. */
 historicalRecoveryRouter.get("/candidates", async (req, res) => {
+  const requestNow = new Date();
   const parsed = listQuery.safeParse(req.query);
   if (!parsed.success) {
     res.status(400).json({ error: "invalid_query", detail: parsed.error.flatten() });
     return;
   }
   const { campaignId, view, limit, cursor, asOf } = parsed.data;
-  const paginationAsOf = asOf ?? new Date();
+  if (asOf && asOf > requestNow) {
+    res.status(400).json({ error: "invalid_query" });
+    return;
+  }
+  const paginationAsOf = asOf ?? requestNow;
 
   const base: Prisma.RecoveryCandidateWhereInput = {
     ...(campaignId ? { campaignId } : {}),
@@ -415,12 +429,6 @@ historicalRecoveryRouter.get("/candidates/:id", async (req, res, next) => {
   }
 });
 
-// Historical candidates can only be acknowledged after an ambiguous or failed
-// public send. Reviewing deliberately leaves the terminal outcome unchanged: a
-// review is evidence that an owner assessed a risky result, never permission to
-// retry it.
-export const HISTORICAL_REVIEWABLE_OUTCOMES = ["send_failed", "send_uncertain"] as const;
-
 historicalRecoveryRouter.post("/candidates/:id/mark-reviewed", async (req, res, next) => {
   const candidateId = z.string().uuid().safeParse(req.params.id);
   if (!candidateId.success) {
@@ -429,59 +437,19 @@ historicalRecoveryRouter.post("/candidates/:id/mark-reviewed", async (req, res, 
   }
 
   try {
-    const before = await prisma.recoveryCandidate.findUnique({
-      where: { id: candidateId.data },
-      select: { outcome: true, reviewedAt: true },
+    const result = await markHistoricalCandidateReviewed({
+      candidateId: candidateId.data,
+      actor: req.adminEmail ?? null,
     });
-    if (!before) {
+    if (result.kind === "not_found") {
       res.status(404).json({ error: "not_found" });
       return;
     }
-    // A retry must not replace the original review timestamp or duplicate the
-    // audit event.
-    if (before.reviewedAt !== null) {
+    if (result.kind === "reviewed" || result.kind === "already_reviewed") {
       res.status(204).end();
       return;
     }
-
-    const result = await prisma.recoveryCandidate.updateMany({
-      // The conditional write makes concurrent owner requests safe and guards
-      // against an outcome changing between the read and acknowledgement.
-      where: {
-        id: candidateId.data,
-        outcome: { in: [...HISTORICAL_REVIEWABLE_OUTCOMES] },
-        reviewedAt: null,
-      },
-      data: { reviewedAt: new Date() },
-    });
-
-    if (result.count === 0) {
-      const current = await prisma.recoveryCandidate.findUnique({
-        where: { id: candidateId.data },
-        select: { outcome: true, reviewedAt: true },
-      });
-      if (!current) {
-        res.status(404).json({ error: "not_found" });
-        return;
-      }
-      if (current.reviewedAt !== null) {
-        res.status(204).end();
-        return;
-      }
-      res.status(409).json({ error: "conflict", outcome: current.outcome });
-      return;
-    }
-
-    await logEvent("historical_recovery_reviewed", {
-      candidateId: candidateId.data,
-      actor: req.adminEmail ?? null,
-      action: "mark_reviewed",
-      // Review does not change the send outcome; record both values explicitly
-      // so audit readers never mistake acknowledgement for a state transition.
-      previousOutcome: before.outcome,
-      newOutcome: before.outcome,
-    });
-    res.status(204).end();
+    res.status(409).json({ error: "conflict", outcome: result.outcome });
   } catch (error) {
     next(error);
   }

@@ -11,6 +11,7 @@ const {
   campaignFindMany,
   candidateGroupBy,
   historicalCandidateDetail,
+  markHistoricalCandidateReviewed,
   getIgUsers,
   recordCampaignHealthObservation,
   logEvent,
@@ -29,6 +30,7 @@ const {
   campaignFindMany: vi.fn(),
   candidateGroupBy: vi.fn(),
   historicalCandidateDetail: vi.fn(),
+  markHistoricalCandidateReviewed: vi.fn(),
   getIgUsers: vi.fn(),
   recordCampaignHealthObservation: vi.fn(),
   logEvent: vi.fn(),
@@ -55,6 +57,10 @@ vi.mock("../lib/prisma.js", () => ({
 }));
 vi.mock("../services/igUserService.js", () => ({ getIgUsers }));
 vi.mock("../services/historicalRecoveryCandidateDetail.js", () => ({ historicalCandidateDetail }));
+vi.mock("../services/historicalRecoveryReview.js", () => ({
+  HISTORICAL_REVIEWABLE_OUTCOMES: ["send_failed", "send_uncertain"],
+  markHistoricalCandidateReviewed,
+}));
 vi.mock("../services/campaignHealthObservation.js", () => ({
   recordCampaignHealthObservation,
 }));
@@ -115,6 +121,7 @@ beforeEach(() => {
     "ig-1": { username: "frozen-owner", audienceSegment: "other" },
   });
   historicalCandidateDetail.mockResolvedValue(null);
+  markHistoricalCandidateReviewed.mockResolvedValue({ kind: "not_found" });
   recordCampaignHealthObservation.mockResolvedValue({ created: true });
   logEvent.mockResolvedValue(undefined);
   approveCampaign.mockResolvedValue({ ok: true, state: "paused" });
@@ -311,6 +318,28 @@ describe("GET /candidates", () => {
       createdAt: { lte: new Date(asOf) },
     });
   });
+
+  it.each([
+    "?campaignId=11111111-1111-4111-8111-111111111111&view=all&cursor=22222222-2222-4222-8222-222222222222",
+    "?campaignId=11111111-1111-4111-8111-111111111111&view=all&asOf=2026-08-12T10%3A00%3A00.000Z",
+  ])("rejects an incomplete pagination boundary: %s", async (query) => {
+    const response = await request(app(true)).get(`/candidates${query}`);
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toBe("invalid_query");
+  });
+
+  it("rejects a future pagination boundary", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-12T10:00:00.000Z"));
+    try {
+      await request(app(true)).get(
+        "/candidates?campaignId=11111111-1111-4111-8111-111111111111&view=all&cursor=22222222-2222-4222-8222-222222222222&asOf=2026-08-12T10%3A00%3A00.001Z",
+      ).expect(400, { error: "invalid_query" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("GET /campaigns", () => {
@@ -445,47 +474,27 @@ describe("POST /candidates/:id/mark-reviewed", () => {
   const candidateId = "22222222-2222-4222-8222-222222222222";
 
   it("acknowledges a reviewable historical failure without changing its outcome", async () => {
-    candidateFindUnique.mockResolvedValueOnce({ outcome: "send_uncertain", reviewedAt: null });
-    candidateUpdateMany.mockResolvedValueOnce({ count: 1 });
+    markHistoricalCandidateReviewed.mockResolvedValueOnce({ kind: "reviewed" });
 
     const response = await request(app(true)).post(`/candidates/${candidateId}/mark-reviewed`);
 
     expect(response.status).toBe(204);
-    expect(candidateUpdateMany).toHaveBeenCalledWith({
-      where: {
-        id: candidateId,
-        outcome: { in: ["send_failed", "send_uncertain"] },
-        reviewedAt: null,
-      },
-      data: { reviewedAt: expect.any(Date) },
-    });
-    expect(logEvent).toHaveBeenCalledWith("historical_recovery_reviewed", expect.objectContaining({
+    expect(markHistoricalCandidateReviewed).toHaveBeenCalledWith(expect.objectContaining({
       candidateId,
-      previousOutcome: "send_uncertain",
-      newOutcome: "send_uncertain",
+      actor: "owner@example.com",
     }));
   });
 
   it("is idempotent for a previously reviewed candidate", async () => {
-    candidateFindUnique.mockResolvedValueOnce({
-      outcome: "send_failed",
-      reviewedAt: new Date("2026-08-12T09:00:00.000Z"),
-    });
+    markHistoricalCandidateReviewed.mockResolvedValueOnce({ kind: "already_reviewed" });
 
     await request(app(true)).post(`/candidates/${candidateId}/mark-reviewed`).expect(204);
-
-    expect(candidateUpdateMany).not.toHaveBeenCalled();
-    expect(logEvent).not.toHaveBeenCalled();
   });
 
   it("does not acknowledge an outcome that does not require review", async () => {
-    candidateFindUnique.mockResolvedValueOnce({ outcome: "sent", reviewedAt: null });
-    candidateUpdateMany.mockResolvedValueOnce({ count: 0 });
-    candidateFindUnique.mockResolvedValueOnce({ outcome: "sent", reviewedAt: null });
+    markHistoricalCandidateReviewed.mockResolvedValueOnce({ kind: "conflict", outcome: "sent" });
 
     await request(app(true)).post(`/candidates/${candidateId}/mark-reviewed`).expect(409);
-
-    expect(logEvent).not.toHaveBeenCalled();
   });
 
   it("returns 404 for an unknown candidate and 400 for a malformed id", async () => {

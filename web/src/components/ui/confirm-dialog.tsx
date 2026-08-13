@@ -29,12 +29,26 @@ export function ConfirmDialog({
   const cancelButtonRef = React.useRef<HTMLButtonElement>(null);
   const triggerRef = React.useRef<HTMLElement | null>(null);
   const onCancelRef = React.useRef(onCancel);
+  const busyRef = React.useRef(busy);
+  const wasBusyRef = React.useRef(busy);
   const titleId = React.useId();
   const descriptionId = React.useId();
 
   React.useEffect(() => {
     onCancelRef.current = onCancel;
   }, [onCancel]);
+
+  React.useEffect(() => {
+    busyRef.current = busy;
+  }, [busy]);
+
+  const dismiss = React.useCallback(() => {
+    if (busyRef.current) {
+      dialogRef.current?.focus();
+      return;
+    }
+    onCancelRef.current();
+  }, []);
 
   React.useEffect(() => {
     if (!open) return;
@@ -47,14 +61,27 @@ export function ConfirmDialog({
       dialogRef.current?.focus();
     }
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCancelRef.current();
+      if (e.key === "Escape") dismiss();
     };
     window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("keydown", onKey);
       if (triggerRef.current?.isConnected) triggerRef.current.focus();
     };
-  }, [open]);
+  }, [open, dismiss]);
+
+  React.useEffect(() => {
+    if (!open) {
+      wasBusyRef.current = busy;
+      return;
+    }
+    if (busy) {
+      dialogRef.current?.focus();
+    } else if (wasBusyRef.current && cancelButtonRef.current && !cancelButtonRef.current.disabled) {
+      cancelButtonRef.current.focus();
+    }
+    wasBusyRef.current = busy;
+  }, [open, busy]);
 
   const trapFocus = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "Tab") return;
@@ -89,7 +116,7 @@ export function ConfirmDialog({
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
-          onClick={onCancel}
+          onClick={dismiss}
         >
           <motion.div
             initial={{ y: 8, opacity: 0, scale: 0.98 }}
@@ -111,7 +138,7 @@ export function ConfirmDialog({
               <p id={descriptionId} className="mt-2 text-sm text-muted-foreground">{description}</p>
             )}
             <div className="mt-5 flex justify-end gap-2">
-              <Button ref={cancelButtonRef} variant="ghost" onClick={onCancel} disabled={busy}>
+              <Button ref={cancelButtonRef} variant="ghost" onClick={dismiss} disabled={busy}>
                 {cancelLabel}
               </Button>
               <Button
