@@ -813,8 +813,20 @@ async function sourceIdentity(root: string, runner: OperatorCommandRunner): Prom
   const releaseSha = (await runner.run("git", ["rev-parse", "HEAD"])).trim();
   const tracked = (await runner.run("git", ["ls-files", "-z"]))
     .split("\0").filter(Boolean).sort();
+  let ignored = new Set<string>();
+  try {
+    ignored = new Set((await runner.run(
+      "git",
+      ["check-ignore", "--no-index", "-z", "--stdin"],
+      { input: `${tracked.join("\0")}\0` },
+    )).split("\0").filter(Boolean));
+  } catch (error) {
+    // git check-ignore exits 1 when nothing matched, which is a valid empty set.
+    if (!(error instanceof Error) || error.message !== "command_failed:git:1") throw error;
+  }
+  const uploaded = tracked.filter((relative) => !ignored.has(relative));
   const tree = createHash("sha256");
-  for (const relative of tracked) {
+  for (const relative of uploaded) {
     tree.update(relative).update("\0").update(await readFile(path.join(root, relative))).update("\0");
   }
   const selector = await readFile(path.join(root, "scripts/select-expanded-historical-recovery.ts"));
@@ -822,7 +834,7 @@ async function sourceIdentity(root: string, runner: OperatorCommandRunner): Prom
     releaseSha,
     sourceTreeSha256: tree.digest("hex"),
     selectorSha256: createHash("sha256").update(selector).digest("hex"),
-    files: tracked,
+    files: uploaded,
   };
 }
 
@@ -850,23 +862,12 @@ async function main(): Promise<void> {
     await writeFile(path.join(lockDirectory, "pid"), `${process.pid}\n`, { mode: 0o600 });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-      let ownerAlive = true;
-      try {
-        const owner = Number((await readFile(path.join(lockDirectory, "pid"), "utf8")).trim());
-        if (!Number.isSafeInteger(owner) || owner <= 0) throw new Error("invalid_lock_owner");
-        process.kill(owner, 0);
-      } catch (ownerError) {
-        if ((ownerError as NodeJS.ErrnoException).code === "ESRCH") ownerAlive = false;
-      }
-      if (!ownerAlive) {
-        await rm(lockDirectory, { recursive: true, force: true });
-        await mkdir(lockDirectory, { mode: 0o700 });
-        await writeFile(path.join(lockDirectory, "pid"), `${process.pid}\n`, { mode: 0o600 });
-      } else {
-        process.stderr.write("ERROR: another rollout operator owns the exclusive lock\n");
-        process.exitCode = 75;
-        return;
-      }
+      // Never steal a lock: liveness checks and delete/recreate introduce a race
+      // where two contenders can both become owners. A stale lock therefore
+      // requires deliberate operator recovery after production state is checked.
+      process.stderr.write("ERROR: rollout operator exclusive lock exists; verify production state before manual recovery\n");
+      process.exitCode = 75;
+      return;
     }
     throw error;
   }

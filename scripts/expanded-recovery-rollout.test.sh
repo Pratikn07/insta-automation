@@ -89,7 +89,7 @@ EOF
 run_signal_case() {
   local signal="$1"
   local state="$tmp/state-$signal.json"
-  write_valid_state "$state"
+  printf '{"existing":"unreadable"}\n' > "$state"
   set +e
   PATH="$tmp/bin:$PATH" FAKE_GIT_DELAY=1 EXPANDED_RECOVERY_STATE_FILE="$state" \
     bash "$script" deploy-inert >"$tmp/$signal.out" 2>&1 &
@@ -112,7 +112,7 @@ run_signal_case TERM
 run_signal_case HUP
 
 state="$tmp/concurrent.json"
-write_valid_state "$state"
+printf '{"existing":"unreadable"}\n' > "$state"
 set +e
 PATH="$tmp/bin:$PATH" FAKE_GIT_DELAY=1 EXPANDED_RECOVERY_STATE_FILE="$state" \
   bash "$script" deploy-inert >"$tmp/first.out" 2>&1 &
@@ -130,7 +130,7 @@ first_status=$?
 set -e
 [[ "$second_status" -eq 75 ]]
 [[ "$first_status" -eq 75 ]]
-[[ "$(cat "$tmp/second.out")" == *"exclusive lock"* ]]
+[[ "$(cat "$tmp/second.out")" == *"exclusive lock exists"* ]]
 
 "$root/node_modules/.bin/vitest" run \
   "$root/src/services/expandedRecoveryRolloutCore.test.ts" \
