@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { CURRENT_ORIGIN_METHOD } from "./historicalRecoveryOriginPolicy.js";
+import type { AudienceSegment } from "./historicalAudienceSegment.js";
+import { recheckBeforeSend } from "./historicalRecoveryRecheck.js";
 
 const databaseUrl = process.env.MIGRATION_TEST_DATABASE_URL;
 const describeWithDatabase = databaseUrl ? describe.sequential : describe.skip;
@@ -34,6 +36,11 @@ type ReservedScenario = {
 async function reserveScenario(input: {
   selectionCutoff?: Date;
   westernOnly?: boolean;
+  audienceSegment?: AudienceSegment;
+  rolloutGroupId?: string;
+  inferredOrigin?: "south_asian" | "us_western" | "other" | "unknown";
+  originConfidence?: "high" | "low";
+  originEvidence?: string;
 } = {}): Promise<ReservedScenario> {
   const campaignId = randomUUID();
   const igUserId = `${prefix}-${randomUUID()}`;
@@ -43,9 +50,11 @@ async function reserveScenario(input: {
   await db.igUser.create({
     data: {
       id: igUserId,
-      inferredOrigin: "us_western",
-      originConfidence: "high",
+      inferredOrigin: input.inferredOrigin ?? "us_western",
+      originConfidence: input.originConfidence ?? "high",
       originMethod: CURRENT_ORIGIN_METHOD,
+      originEvidence: input.originEvidence,
+      audienceSegment: input.audienceSegment,
     },
   });
   const intent = await db.journeyIntent.create({
@@ -66,6 +75,9 @@ async function reserveScenario(input: {
       copyVersion: "contract-v1",
       decisionHash: `hash-${campaignId}`,
       westernOnly: input.westernOnly ?? true,
+      audienceSegment: input.audienceSegment,
+      rolloutGroupId: input.rolloutGroupId,
+      rolloutGroupHourlyCap: input.rolloutGroupId ? 10 : undefined,
       candidateCount: 1,
       state: "draft",
     },
@@ -82,6 +94,7 @@ async function reserveScenario(input: {
       keywordSnapshot: "SLEEP",
       publicReplyText: "contract",
       evidence: "gate_sent_no_read",
+      audienceSegment: input.audienceSegment,
       arm: "treatment",
       eligibleAt: selectionCutoff,
       sources: {
@@ -339,21 +352,93 @@ describeWithDatabase("historical dispatch state interleavings", () => {
   });
 
   it.each([
-    ["south_asian", "audience_south_asian"],
-    ["unknown", "audience_unknown"],
-    ["other", "audience_other"],
-  ] as const)("releases and suppresses a current %s verdict at final locked authorization", async (origin, reason) => {
-    const scenario = await reserveScenario({ westernOnly: false });
+    ["western", "us_western"],
+    ["other", "other"],
+    ["unknown_cue", "unknown"],
+    ["unknown_generic", "unknown"],
+    ["unknown_no_name", "unknown"],
+  ] as const)("starts dispatch only for an exact live/frozen %s segment", async (
+    audienceSegment,
+    inferredOrigin,
+  ) => {
+    const scenario = await reserveScenario({
+      westernOnly: false,
+      audienceSegment,
+      inferredOrigin,
+      originConfidence: "low",
+      originEvidence: "South Asian surname in audit-only prose",
+    });
+
+    await expect(historical.startHistoricalDispatch(scenario)).resolves.toEqual({ kind: "started" });
+    expect(await db.publicRecoveryDispatch.findUnique({
+      where: { id: scenario.dispatchId },
+      select: { state: true, dispatchStartedAt: true },
+    })).toEqual({ state: "dispatch_started", dispatchStartedAt: expect.any(Date) });
+  });
+
+  it.each(["high", "low"] as const)(
+    "releases and terminally suppresses a current %s-confidence South Asian segment",
+    async (originConfidence) => {
+      const scenario = await reserveScenario({
+        westernOnly: false,
+        audienceSegment: "other",
+        inferredOrigin: "other",
+      });
+      await db.igUser.update({
+        where: { id: scenario.igUserId },
+        data: {
+          audienceSegment: "south_asian",
+          inferredOrigin: "south_asian",
+          originConfidence,
+          originMethod: CURRENT_ORIGIN_METHOD,
+          originEvidence: "audit text says Western",
+        },
+      });
+
+      await expect(historical.startHistoricalDispatch(scenario)).resolves.toEqual({
+        kind: "suppressed",
+        reason: "audience_south_asian",
+      });
+      expect(await db.publicRecoveryDispatch.findUnique({
+        where: { id: scenario.dispatchId },
+        select: { state: true, dispatchStartedAt: true },
+      })).toEqual({ state: "released", dispatchStartedAt: null });
+      expect(await db.recoveryCandidate.findUnique({
+        where: { id: scenario.candidateId },
+        select: { outcome: true, suppressionReason: true, claimToken: true, dispatchStartedAt: true },
+      })).toEqual({
+        outcome: "suppressed",
+        suppressionReason: "audience_south_asian",
+        claimToken: null,
+        dispatchStartedAt: null,
+      });
+      expect(await db.recoveryCampaignBatchRun.findUnique({
+        where: { id: scenario.batchRunId },
+        select: { consumed: true },
+      })).toEqual({ consumed: 0 });
+    },
+  );
+
+  it("defers allowed live-segment drift instead of suppressing", async () => {
+    const scenario = await reserveScenario({
+      westernOnly: false,
+      audienceSegment: "other",
+      inferredOrigin: "other",
+    });
     await db.igUser.update({
       where: { id: scenario.igUserId },
       data: {
-        inferredOrigin: origin,
+        audienceSegment: "unknown_cue",
+        inferredOrigin: "unknown",
         originConfidence: "low",
         originMethod: CURRENT_ORIGIN_METHOD,
       },
     });
 
-    await expect(historical.startHistoricalDispatch(scenario)).resolves.toEqual({ kind: "suppressed", reason });
+    await expect(historical.startHistoricalDispatch(scenario)).resolves.toEqual({
+      kind: "deferred",
+      reason: "audience_segment_changed",
+    });
     expect(await db.publicRecoveryDispatch.findUnique({
       where: { id: scenario.dispatchId },
       select: { state: true, dispatchStartedAt: true },
@@ -362,8 +447,8 @@ describeWithDatabase("historical dispatch state interleavings", () => {
       where: { id: scenario.candidateId },
       select: { outcome: true, suppressionReason: true, claimToken: true, dispatchStartedAt: true },
     })).toEqual({
-      outcome: "suppressed",
-      suppressionReason: reason,
+      outcome: "pending",
+      suppressionReason: null,
       claimToken: null,
       dispatchStartedAt: null,
     });
@@ -373,17 +458,39 @@ describeWithDatabase("historical dispatch state interleavings", () => {
     })).toEqual({ consumed: 0 });
   });
 
-  it("rechecks a concurrent origin downgrade under the final person lock", async () => {
-    const scenario = await reserveScenario();
-    const held = await holdControlLock();
-    const start = historical.startHistoricalDispatch({
-      ...scenario,
-      currentWesternOnly: true,
+  it("rechecks other to South Asian after advisory and suppresses before provider authorization", async () => {
+    const scenario = await reserveScenario({
+      westernOnly: false,
+      audienceSegment: "other",
+      inferredOrigin: "other",
+      originConfidence: "low",
     });
+    expect(recheckBeforeSend({
+      sourceComment: "visible",
+      repliedSinceSelection: false,
+      completedSinceSelection: false,
+      contactedSinceSelection: false,
+      audienceOrigin: "other",
+      audienceOriginConfidence: "low",
+      audienceOriginMethod: CURRENT_ORIGIN_METHOD,
+      audienceSegment: "other",
+      frozenCandidateAudienceSegment: "other",
+      frozenCampaignAudienceSegment: "other",
+      westernOnly: false,
+      campaignRunning: true,
+      sentThisHour: 0,
+      hourlyCap: 100,
+      sentToday: 0,
+      dailyCap: 100,
+    })).toEqual({ kind: "send" });
+
+    const held = await holdControlLock();
+    const start = historical.startHistoricalDispatch(scenario);
     await waitForBlockedControlQueries(1);
     await db.igUser.update({
       where: { id: scenario.igUserId },
       data: {
+        audienceSegment: "south_asian",
         inferredOrigin: "south_asian",
         originConfidence: "high",
         originMethod: CURRENT_ORIGIN_METHOD,
@@ -396,6 +503,18 @@ describeWithDatabase("historical dispatch state interleavings", () => {
       reason: "audience_south_asian",
     });
     await held.done;
+    expect(await db.publicRecoveryDispatch.findUnique({
+      where: { id: scenario.dispatchId },
+      select: { state: true, dispatchStartedAt: true },
+    })).toEqual({ state: "released", dispatchStartedAt: null });
+    expect(await db.recoveryCandidate.findUnique({
+      where: { id: scenario.candidateId },
+      select: { outcome: true, claimToken: true, dispatchStartedAt: true },
+    })).toEqual({ outcome: "suppressed", claimToken: null, dispatchStartedAt: null });
+    expect(await db.recoveryCampaignBatchRun.findUnique({
+      where: { id: scenario.batchRunId },
+      select: { consumed: true },
+    })).toEqual({ consumed: 0 });
   });
 
   it("releases a reservation when the current Gemini verdict becomes stale while final authorization waits", async () => {
@@ -428,18 +547,28 @@ describeWithDatabase("historical dispatch state interleavings", () => {
     })).toEqual({ consumed: 0 });
   });
 
-  it.each([null, "medium"])(
-    "suppresses before dispatch when locked live confidence is invalid %p",
-    async (originConfidence) => {
-      const scenario = await reserveScenario();
+  it.each([
+    ["stale method", { originMethod: "name" }],
+    ["missing segment", { audienceSegment: null }],
+    ["missing confidence", { originConfidence: null }],
+    ["malformed confidence", { originConfidence: "medium" }],
+  ] as const)(
+    "defers %s under final locks as audience_segment_changed",
+    async (_label, data) => {
+      const scenario = await reserveScenario({
+        westernOnly: false,
+        audienceSegment: "other",
+        inferredOrigin: "other",
+        originConfidence: "low",
+      });
       await db.igUser.update({
         where: { id: scenario.igUserId },
-        data: { originConfidence },
+        data,
       });
 
       await expect(historical.startHistoricalDispatch(scenario)).resolves.toEqual({
-        kind: "suppressed",
-        reason: "audience_invalid_confidence",
+        kind: "deferred",
+        reason: "audience_segment_changed",
       });
       expect(await db.publicRecoveryDispatch.findUnique({
         where: { id: scenario.dispatchId },
@@ -559,16 +688,17 @@ describeWithDatabase("historical dispatch state interleavings", () => {
   it("serializes a durable health stop against final dispatch authorization", async () => {
     const scenario = await reserveScenario();
     const held = await holdControlLock();
-    const startPromise = historical.startHistoricalDispatch(scenario);
-    await waitForBlockedControlQueries(1);
-    const observation = await observations.recordCampaignHealthObservation({
+    const observationPromise = observations.recordCampaignHealthObservation({
       campaignId: scenario.campaignId,
       kind: "opt_out",
       sourceKey: `interleaving:${randomUUID()}`,
       observedAt: new Date(scenario.now.getTime() + 1),
     });
+    await waitForBlockedControlQueries(1);
+    const startPromise = historical.startHistoricalDispatch(scenario);
+    await waitForBlockedControlQueries(2);
     held.release();
-    const start = await within(startPromise);
+    const [observation, start] = await within(Promise.all([observationPromise, startPromise]));
     await held.done;
 
     expect(observation).toEqual({ created: true });
@@ -585,6 +715,132 @@ describeWithDatabase("historical dispatch state interleavings", () => {
     });
     expect(start).toEqual({ kind: "blocked", reason: "campaign_not_running" });
     expect(ledger).toEqual({ state: "reserved" });
+  });
+
+  it("serializes a rollout-group owner pause before final dispatch authorization", async () => {
+    const rolloutGroupId = randomUUID();
+    const scenario = await reserveScenario({ rolloutGroupId });
+    const held = await holdControlLock();
+    const pausePromise = campaigns.pauseCampaignGroup(
+      rolloutGroupId,
+      "owner emergency stop",
+      scenario.now,
+    );
+    await waitForBlockedControlQueries(1);
+    const startPromise = historical.startHistoricalDispatch(scenario);
+    await waitForBlockedControlQueries(2);
+    held.release();
+
+    const [pause, start] = await within(Promise.all([pausePromise, startPromise]));
+    await held.done;
+
+    expect(pause).toEqual({
+      rolloutGroupId,
+      pausedCampaignIds: [scenario.campaignId],
+      skipped: [],
+    });
+    expect(start).toEqual({ kind: "blocked", reason: "campaign_not_running" });
+    expect(
+      await db.recoveryCampaign.findUnique({
+        where: { id: scenario.campaignId },
+        select: { state: true, pauseReason: true },
+      }),
+    ).toEqual({ state: "paused", pauseReason: "owner emergency stop" });
+  });
+
+  it("allows an already-first dispatch authorization to start before the group pause", async () => {
+    const rolloutGroupId = randomUUID();
+    const scenario = await reserveScenario({ rolloutGroupId });
+    const held = await holdControlLock();
+    const startPromise = historical.startHistoricalDispatch(scenario);
+    await waitForBlockedControlQueries(1);
+    const pausePromise = campaigns.pauseCampaignGroup(
+      rolloutGroupId,
+      "owner emergency stop",
+      scenario.now,
+    );
+    await waitForBlockedControlQueries(2);
+    held.release();
+
+    const [start, pause] = await within(Promise.all([startPromise, pausePromise]));
+    await held.done;
+
+    expect(start).toEqual({ kind: "started" });
+    expect(pause).toEqual({
+      rolloutGroupId,
+      pausedCampaignIds: [scenario.campaignId],
+      skipped: [],
+    });
+    expect(
+      await db.publicRecoveryDispatch.findUnique({
+        where: { id: scenario.dispatchId },
+        select: { state: true },
+      }),
+    ).toEqual({ state: "dispatch_started" });
+    expect(
+      await db.recoveryCampaign.findUnique({
+        where: { id: scenario.campaignId },
+        select: { state: true, pauseReason: true },
+      }),
+    ).toEqual({ state: "paused", pauseReason: "owner emergency stop" });
+  });
+
+  it("serializes target-first health locks for two siblings without deadlock", async () => {
+    const rolloutGroupId = randomUUID();
+    const scenario = await reserveScenario({ rolloutGroupId });
+    const sibling = await db.recoveryCampaign.create({
+      data: {
+        phase: "unknown_read_pilot",
+        selectionVersion: `${prefix}-${randomUUID()}`,
+        sourceDataCutoff: scenario.now,
+        copyVersion: "contract-v1",
+        state: "running",
+        approvedBy: "contract@example.com",
+        approvedAt: scenario.now,
+        startedAt: scenario.now,
+        rolloutGroupId,
+        rolloutGroupHourlyCap: 10,
+      },
+    });
+    const held = await holdControlLock();
+    const first = observations.recordCampaignHealthObservation({
+      campaignId: scenario.campaignId,
+      kind: "opt_out",
+      sourceKey: `interleaving:${randomUUID()}`,
+      observedAt: new Date(scenario.now.getTime() + 1),
+    });
+    await waitForBlockedControlQueries(1);
+    const second = observations.recordCampaignHealthObservation({
+      campaignId: sibling.id,
+      kind: "complaint",
+      sourceKey: `interleaving:${randomUUID()}`,
+      observedAt: new Date(scenario.now.getTime() + 2),
+    });
+    await waitForBlockedControlQueries(2);
+    held.release();
+
+    await expect(within(Promise.all([first, second]))).resolves.toEqual([
+      { created: true },
+      { created: true },
+    ]);
+    await held.done;
+
+    expect(await db.recoveryCampaign.findMany({
+      where: { id: { in: [scenario.campaignId, sibling.id] } },
+      select: { id: true, state: true },
+      orderBy: { id: "asc" },
+    })).toEqual(
+      [scenario.campaignId, sibling.id]
+        .sort()
+        .map((id) => ({ id, state: "paused" })),
+    );
+    const audits = (await db.eventLog.findMany({
+      where: { kind: "historical_campaign_group_paused" },
+      select: { payload: true },
+    })).filter((event) => (
+      event.payload as { rolloutGroupId?: string }
+    ).rolloutGroupId === rolloutGroupId);
+    expect(audits).toHaveLength(2);
   });
 
   it("completes concurrent pause versus dispatch start without deadlock", async () => {

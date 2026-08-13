@@ -12,6 +12,7 @@ import {
   campaignActions,
   campaignPhaseView,
   campaignStatusView,
+  audienceSegmentLabel,
   recoveryRate,
   type CampaignRow,
   type CandidateRow,
@@ -51,6 +52,7 @@ type CandidatesResponse = {
   asOf: string;
   candidates: CandidateRow[];
 };
+type CandidatePageParam = { cursor: string; asOf: string };
 
 const TONE_CLASS: Record<string, string> = {
   positive: "text-emerald-400",
@@ -70,7 +72,11 @@ export function HistoricalRecovery() {
   const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
   const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
   const [stageOpen, setStageOpen] = useState(false);
-  const [confirming, setConfirming] = useState<null | { action: string; campaignId: string }>(null);
+  const [confirming, setConfirming] = useState<
+    | null
+    | { action: "approve" | "cancel"; campaignId: string }
+    | { action: "pause_group"; rolloutGroupId: string }
+  >(null);
 
   const campaigns = useQuery({
     queryKey: ["historical-campaigns"],
@@ -83,10 +89,10 @@ export function HistoricalRecovery() {
 
   const candidates = useInfiniteQuery({
     queryKey: ["historical-candidates", active?.id, tab],
-    initialPageParam: undefined as { cursor: string; asOf: string } | undefined,
+    initialPageParam: null as CandidatePageParam | null,
     queryFn: ({ pageParam }) => {
       const params = new URLSearchParams({ view: tab, campaignId: active!.id });
-      if (pageParam) {
+      if (pageParam !== null) {
         params.set("cursor", pageParam.cursor);
         params.set("asOf", pageParam.asOf);
       }
@@ -94,8 +100,10 @@ export function HistoricalRecovery() {
         `/historical-recovery/candidates?${params.toString()}`,
       );
     },
-    getNextPageParam: (last) =>
-      last.nextCursor ? { cursor: last.nextCursor, asOf: last.asOf } : undefined,
+    getNextPageParam: (last): CandidatePageParam | undefined =>
+      last.nextCursor && typeof last.asOf === "string"
+        ? { cursor: last.nextCursor, asOf: last.asOf }
+        : undefined,
     enabled: Boolean(active),
   });
 
@@ -142,6 +150,20 @@ export function HistoricalRecovery() {
     onError: (err: Error) => toast.error(err.message),
   });
 
+  const pauseGroup = useMutation({
+    mutationFn: (rolloutGroupId: string) =>
+      api<{ rolloutGroupId: string }>(`/historical-recovery/rollout-groups/${rolloutGroupId}/pause`, {
+        method: "POST",
+        body: JSON.stringify({ reason: "Stopped from the dashboard" }),
+      }),
+    onSuccess: () => {
+      toast.success("Expanded campaigns paused");
+      void queryClient.invalidateQueries({ queryKey: ["historical-campaigns"] });
+      void queryClient.invalidateQueries({ queryKey: ["historical-candidates"] });
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
   if (campaigns.isLoading) {
     return (
       <div className="space-y-4 p-6">
@@ -173,6 +195,12 @@ export function HistoricalRecovery() {
   const actions = campaignActions(active.state as CampaignState);
   const rate = recoveryRate({ ...active.progress, recovered: candidateCounts?.recovered ?? 0 });
   const attention = candidateCounts?.attention ?? 0;
+  const hasRunningGroupSibling = active.rolloutGroupId !== null && campaignRows.some(
+    (campaign) =>
+      campaign.id !== active.id
+      && campaign.rolloutGroupId === active.rolloutGroupId
+      && campaign.state === "running",
+  );
 
   return (
     <div className="space-y-6 p-6">
@@ -261,6 +289,16 @@ export function HistoricalRecovery() {
                 Pause
               </Button>
             )}
+            {hasRunningGroupSibling && active.rolloutGroupId && (
+              <Button
+                variant="destructive"
+                onClick={() => setConfirming({ action: "pause_group", rolloutGroupId: active.rolloutGroupId! })}
+                disabled={pauseGroup.isPending}
+              >
+                <Pause className="mr-1.5 h-4 w-4" />
+                Pause all expanded campaigns
+              </Button>
+            )}
             {actions.canResume && (
               <Button
                 onClick={() => act.mutate({ action: "resume", campaignId: active.id })}
@@ -298,6 +336,26 @@ export function HistoricalRecovery() {
             <dt className="text-xs text-muted-foreground">Selected</dt>
             <dd className="mt-0.5 text-lg tabular-nums">{active.candidateCount}</dd>
           </div>
+          {active.audienceSegment && (
+            <div>
+              <dt className="text-xs text-muted-foreground">Audience at selection</dt>
+              <dd className="mt-0.5 text-sm">{audienceSegmentLabel(active.audienceSegment)}</dd>
+            </div>
+          )}
+          {active.rolloutGroupId && active.rolloutGroupHourlyCap !== null && (
+            <>
+              <div>
+                <dt className="text-xs text-muted-foreground">Campaign capacity</dt>
+                <dd className="mt-0.5 text-sm tabular-nums">{active.hourlyCap} per hour</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-muted-foreground">Shared group capacity used</dt>
+                <dd className="mt-0.5 text-sm tabular-nums">
+                  {active.rolloutGroupSentLastHour} / {active.rolloutGroupHourlyCap} in the past hour
+                </dd>
+              </div>
+            </>
+          )}
           <div>
             <dt className="text-xs text-muted-foreground">Sent</dt>
             <dd className="mt-0.5 text-lg tabular-nums">{active.progress.sent ?? 0}</dd>
@@ -417,21 +475,35 @@ export function HistoricalRecovery() {
       <ConfirmDialog
         open={confirming !== null}
         onCancel={() => setConfirming(null)}
-        busy={act.isPending}
-        destructive={confirming?.action === "cancel"}
+        busy={act.isPending || pauseGroup.isPending}
+        destructive={confirming?.action === "cancel" || confirming?.action === "pause_group"}
         title={
           confirming?.action === "approve"
             ? `Start contacting ${active.candidateCount} people?`
-            : "Cancel this campaign?"
+            : confirming?.action === "pause_group"
+              ? "Pause all expanded campaigns?"
+              : "Cancel this campaign?"
         }
         description={
           confirming?.action === "approve"
             ? `Each person gets one public comment on the reel they originally commented on. Sending is paced at ${active.hourlyCap} an hour, and you can pause at any time. ${active.holdoutPercent}% are held back as a control so you can tell whether it worked.`
-            : "Reminders already posted stay posted — those comments are live on Instagram. Everything unsent is abandoned."
+            : confirming?.action === "pause_group"
+              ? "This immediately pauses every running campaign in this expanded rollout. Reminders already posted stay posted."
+              : "Reminders already posted stay posted — those comments are live on Instagram. Everything unsent is abandoned."
         }
-        confirmLabel={confirming?.action === "approve" ? "Approve and start" : "Cancel campaign"}
+        confirmLabel={
+          confirming?.action === "approve"
+            ? "Approve and start"
+            : confirming?.action === "pause_group"
+              ? "Pause all campaigns"
+              : "Cancel campaign"
+        }
         onConfirm={() => {
-          if (confirming) act.mutate(confirming);
+          if (confirming?.action === "pause_group") {
+            pauseGroup.mutate(confirming.rolloutGroupId);
+          } else if (confirming) {
+            act.mutate(confirming);
+          }
           setConfirming(null);
         }}
       />

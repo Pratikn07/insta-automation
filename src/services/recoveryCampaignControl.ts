@@ -6,6 +6,11 @@ import {
   type SelectionSnapshotConfiguration,
   type SelectionSnapshotInclusion,
 } from "./historicalRecoverySnapshot.js";
+import {
+  classifyIdentityPresence,
+  evaluateHistoricalAudience,
+  type AudienceSegment,
+} from "./historicalAudienceSegment.js";
 
 /**
  * Owner control over a historical recovery campaign.
@@ -35,6 +40,99 @@ export type CampaignApprovalOptions = {
   startPaused?: boolean;
 };
 
+export type GroupPauseResult = {
+  rolloutGroupId: string;
+  pausedCampaignIds: string[];
+  skipped: Array<{ campaignId: string; state: string }>;
+};
+
+export class CampaignGroupNotFoundError extends Error {
+  readonly code = "campaign_group_not_found";
+
+  constructor() {
+    super("campaign_group_not_found");
+    this.name = "CampaignGroupNotFoundError";
+  }
+}
+
+type LockedCampaignGroupMember = { id: string; state: string };
+
+function normalizeCampaignPauseReason(reason: string): string {
+  const normalized = reason.trim();
+  if (!normalized || normalized.length > 200) {
+    throw new Error("invalid_campaign_pause_reason");
+  }
+  return normalized;
+}
+
+/** Shared first lock for dispatch, health stops, and owner campaign control. */
+export async function lockRecoveryCampaignControl(
+  tx: Prisma.TransactionClient,
+): Promise<void> {
+  await tx.dmRecoveryControl.upsert({
+    where: { id: 1 },
+    create: { id: 1 },
+    update: {},
+  });
+  await tx.$queryRaw`SELECT "id" FROM "dm_recovery_control" WHERE "id" = 1 FOR UPDATE`;
+}
+
+/** Lock every member of one rollout group in the canonical campaign-ID order. */
+export async function lockCampaignGroupMembers(
+  tx: Prisma.TransactionClient,
+  rolloutGroupId: string,
+): Promise<LockedCampaignGroupMember[]> {
+  return tx.$queryRaw<LockedCampaignGroupMember[]>`
+    SELECT "id", "state"::text AS "state"
+    FROM "recovery_campaign"
+    WHERE "rollout_group_id" = ${rolloutGroupId}::uuid
+    ORDER BY "id"
+    FOR UPDATE
+  `;
+}
+
+/** Apply a group pause after the singleton and ordered campaign locks are held. */
+export async function pauseLockedCampaignGroup(
+  tx: Prisma.TransactionClient,
+  rolloutGroupId: string,
+  members: LockedCampaignGroupMember[],
+  reason: string,
+  now: Date,
+): Promise<GroupPauseResult> {
+  const normalizedReason = normalizeCampaignPauseReason(reason);
+  if (members.length === 0) throw new CampaignGroupNotFoundError();
+  const pausedCampaignIds = members
+    .filter((member) => member.state === "running")
+    .map((member) => member.id);
+  const skipped = members
+    .filter((member) => member.state !== "running")
+    .map((member) => ({ campaignId: member.id, state: member.state }));
+
+  if (pausedCampaignIds.length > 0) {
+    const paused = await tx.recoveryCampaign.updateMany({
+      where: { id: { in: pausedCampaignIds }, state: "running" },
+      data: { state: "paused", pausedAt: now, pauseReason: normalizedReason },
+    });
+    if (paused.count !== pausedCampaignIds.length) {
+      throw new Error("campaign_group_pause_count_mismatch");
+    }
+  }
+
+  const result = { rolloutGroupId, pausedCampaignIds, skipped };
+  await tx.eventLog.create({
+    data: {
+      kind: "historical_campaign_group_paused",
+      payload: {
+        rolloutGroupId: result.rolloutGroupId,
+        reason: normalizedReason,
+        pausedCampaignIds: result.pausedCampaignIds,
+        skipped: result.skipped,
+      },
+    },
+  });
+  return result;
+}
+
 /** Rebuild the exact owner-reviewed manifest from its frozen database rows. */
 async function readStoredSelectionSnapshot(
   tx: Prisma.TransactionClient,
@@ -44,6 +142,8 @@ async function readStoredSelectionSnapshot(
     where: { id: campaignId },
     select: {
       state: true,
+      approvedBy: true,
+      approvedAt: true,
       pauseReason: true,
       startedAt: true,
       phase: true,
@@ -54,11 +154,17 @@ async function readStoredSelectionSnapshot(
       selectionLimit: true,
       holdoutPercent: true,
       copyVersion: true,
+      batchSize: true,
+      hourlyCap: true,
+      dailyCap: true,
       selectionFingerprint: true,
       eligibilityPolicyVersion: true,
       westernOnly: true,
       inboundWindowHours: true,
       completionWindowHours: true,
+      audienceSegment: true,
+      rolloutGroupId: true,
+      rolloutGroupHourlyCap: true,
       candidateCount: true,
       excludedCount: true,
       decisionHash: true,
@@ -84,6 +190,7 @@ async function readStoredSelectionSnapshot(
       audienceOrigin: true,
       audienceOriginMethod: true,
       audienceOriginConfidence: true,
+      audienceSegment: true,
       arm: true,
       sourceChoiceReason: true,
       sources: {
@@ -118,6 +225,11 @@ async function readStoredSelectionSnapshot(
           eligibilityPolicyVersion: current.eligibilityPolicyVersion,
           inboundWindowHours: current.inboundWindowHours,
           completionWindowHours: current.completionWindowHours,
+          ...(current.eligibilityPolicyVersion === "eligibility-v4-expanded-audience" ? {
+            audienceSegment: current.audienceSegment,
+            rolloutGroupId: current.rolloutGroupId,
+            rolloutGroupHourlyCap: current.rolloutGroupHourlyCap,
+          } : {}),
         }
       : null;
   const inclusions: SelectionSnapshotInclusion[] = storedCandidates.map((candidate) => ({
@@ -135,6 +247,9 @@ async function readStoredSelectionSnapshot(
     audienceOrigin: candidate.audienceOrigin,
     audienceOriginMethod: candidate.audienceOriginMethod,
     audienceOriginConfidence: candidate.audienceOriginConfidence,
+    ...(current.eligibilityPolicyVersion === "eligibility-v4-expanded-audience"
+      ? { audienceSegment: candidate.audienceSegment }
+      : {}),
     arm: candidate.arm,
     sourceChoiceReason: candidate.sourceChoiceReason ?? "",
     sources: candidate.sources.map((source) => ({
@@ -227,6 +342,9 @@ export async function approveCampaign(
     const stored = await readStoredSelectionSnapshot(tx, campaignId);
     if (!stored) return { kind: "blocked", reason: "not_found" } as const;
     const { current, snapshot } = stored;
+    if (current.rolloutGroupId) {
+      return { kind: "blocked", reason: "grouped_campaign_requires_atomic_approval" } as const;
+    }
     if (!(["draft", "awaiting_approval"] as string[]).includes(current.state)) {
       return {
         kind: "blocked",
@@ -279,6 +397,321 @@ export async function approveCampaign(
   return { ok: true, state: result.state };
 }
 
+const EXPANDED_SEGMENT_ORDER = [
+  "other", "unknown_cue", "unknown_generic", "unknown_no_name",
+] as const satisfies readonly AudienceSegment[];
+
+type ExpandedCampaignIdentity = {
+  id: string;
+  segment: (typeof EXPANDED_SEGMENT_ORDER)[number];
+  decisionHash: string;
+};
+
+export type ExpandedCampaignGroupTransitionInput = {
+  rolloutGroupId: string;
+  campaigns: ExpandedCampaignIdentity[];
+  selectorPhase: "confirmed_failure" | "unknown_read_pilot";
+};
+
+export type ExpandedCampaignGroupTransition = CampaignTransition & {
+  campaignIds?: string[];
+};
+
+function validExpandedCampaignTopology(campaigns: ExpandedCampaignIdentity[]): boolean {
+  if (campaigns.length < 1 || campaigns.length > 4) return false;
+  const ids = new Set<string>();
+  let previousIndex = -1;
+  for (const campaign of campaigns) {
+    const index = EXPANDED_SEGMENT_ORDER.indexOf(campaign.segment);
+    if (
+      index <= previousIndex
+      || ids.has(campaign.id)
+      || !/^[a-f0-9]{64}$/.test(campaign.decisionHash)
+    ) return false;
+    previousIndex = index;
+    ids.add(campaign.id);
+  }
+  return true;
+}
+
+type VerifiedExpandedGroup = {
+  campaignIds: string[];
+  stored: NonNullable<Awaited<ReturnType<typeof readStoredSelectionSnapshot>>>[];
+};
+
+async function verifyLockedExpandedGroup(
+  tx: Prisma.TransactionClient,
+  input: ExpandedCampaignGroupTransitionInput,
+  allowedStates: readonly string[],
+  now: Date,
+): Promise<{ ok: true; value: VerifiedExpandedGroup } | { ok: false; reason: string }> {
+  if (!validExpandedCampaignTopology(input.campaigns)) {
+    return { ok: false, reason: "expanded_group_topology_invalid" };
+  }
+  const members = await lockCampaignGroupMembers(tx, input.rolloutGroupId);
+  const campaignIds = input.campaigns.map(({ id }) => id);
+  if (
+    members.length !== campaignIds.length
+    || members.some(({ id, state }) => !campaignIds.includes(id) || !allowedStates.includes(state))
+  ) {
+    return { ok: false, reason: "expanded_group_set_or_state_mismatch" };
+  }
+
+  await tx.$queryRaw`
+    SELECT u."id"
+    FROM "ig_users" u
+    JOIN "recovery_candidate" k ON k."ig_user_id"=u."id"
+    JOIN "recovery_campaign" c ON c."id"=k."campaign_id"
+    WHERE c."rollout_group_id"=${input.rolloutGroupId}::uuid
+    ORDER BY u."id" FOR UPDATE OF u
+  `;
+  await tx.$queryRaw`
+    SELECT k."id" FROM "recovery_candidate" k
+    JOIN "recovery_campaign" c ON c."id"=k."campaign_id"
+    WHERE c."rollout_group_id"=${input.rolloutGroupId}::uuid
+    ORDER BY k."ig_user_id", k."id" FOR UPDATE OF k
+  `;
+  await tx.$queryRaw`
+    SELECT s."id" FROM "recovery_candidate_source" s
+    JOIN "recovery_candidate" k ON k."id"=s."candidate_id"
+    JOIN "recovery_campaign" c ON c."id"=k."campaign_id"
+    WHERE c."rollout_group_id"=${input.rolloutGroupId}::uuid
+    ORDER BY k."ig_user_id", k."id", s."position" FOR UPDATE OF s
+  `;
+  await tx.$queryRaw`
+    SELECT e."id" FROM "recovery_selection_exclusion" e
+    JOIN "recovery_campaign" c ON c."id"=e."campaign_id"
+    WHERE c."rollout_group_id"=${input.rolloutGroupId}::uuid
+    ORDER BY e."campaign_id", e."intent_id" FOR UPDATE OF e
+  `;
+
+  const stored = [] as VerifiedExpandedGroup["stored"];
+  let firstFailure: string | null = null;
+  const people = new Set<string>();
+  for (const expected of input.campaigns) {
+    const value = await readStoredSelectionSnapshot(tx, expected.id);
+    if (!value) {
+      firstFailure ??= "not_found";
+      continue;
+    }
+    stored.push(value);
+    const { current, snapshot } = value;
+    const verified = verifyStoredSelectionSnapshot(snapshot);
+    if (!verified.ok) firstFailure ??= verified.reason;
+    if (
+      current.phase !== input.selectorPhase
+      || current.decisionHash !== expected.decisionHash
+      || snapshot.decisionHash !== expected.decisionHash
+      || current.selectionVersion !== "v1-canonical-intents-expanded-audience"
+      || current.copyVersion !== "recovery-v2"
+      || current.eligibilityPolicyVersion !== "eligibility-v4-expanded-audience"
+      || current.audienceSegment !== expected.segment
+      || current.rolloutGroupId !== input.rolloutGroupId
+      || current.rolloutGroupHourlyCap !== 10
+      || current.holdoutPercent !== 0
+      || current.batchSize !== 1
+      || current.hourlyCap !== 10
+      || current.dailyCap !== 1000
+      || current.candidateCount <= 0
+      || snapshot.inclusions.some(({ arm, audienceSegment }) =>
+        arm !== "treatment" || audienceSegment !== expected.segment)
+    ) firstFailure ??= "expanded_group_audit_failed";
+    for (const inclusion of snapshot.inclusions) {
+      if (people.has(inclusion.igUserId)) firstFailure ??= "expanded_group_duplicate_person";
+      people.add(inclusion.igUserId);
+    }
+  }
+
+  const users = await tx.igUser.findMany({
+    where: { id: { in: [...people] } },
+    select: {
+      id: true,
+      username: true,
+      name: true,
+      audienceSegment: true,
+      inferredOrigin: true,
+      originConfidence: true,
+      originMethod: true,
+    },
+  });
+  const usersById = new Map(users.map((user) => [user.id, user]));
+  for (const value of stored) {
+    const segment = value.current.audienceSegment;
+    for (const inclusion of value.snapshot.inclusions) {
+      const user = usersById.get(inclusion.igUserId);
+      const decision = evaluateHistoricalAudience({
+        segment: user?.audienceSegment ?? null,
+        origin: user?.inferredOrigin ?? null,
+        confidence: user?.originConfidence ?? null,
+        method: user?.originMethod ?? null,
+      });
+      const identityPresence = user
+        ? classifyIdentityPresence({ username: user.username, name: user.name })
+        : null;
+      const identityMatchesSegment = segment === "unknown_no_name"
+        ? identityPresence === "unknown_no_name"
+          && user?.inferredOrigin === "unknown"
+          && user.originConfidence === "low"
+        : identityPresence === null && user?.audienceSegment !== "unknown_no_name";
+      if (
+        decision.kind !== "allow"
+        || !identityMatchesSegment
+        || user?.audienceSegment !== segment
+        || inclusion.audienceSegment !== segment
+        || inclusion.audienceOrigin !== user.inferredOrigin
+        || inclusion.audienceOriginMethod !== user.originMethod
+        || inclusion.audienceOriginConfidence !== user.originConfidence
+      ) firstFailure ??= "expanded_group_live_audience_mismatch";
+    }
+  }
+  // Dispatch reservation takes the same singleton lock first, so this count cannot
+  // increase until the approval/resume transaction commits.
+  const rollingCapacity = await tx.publicRecoveryDispatch.count({
+    where: {
+      campaign: { rolloutGroupId: input.rolloutGroupId },
+      state: { in: ["reserved", "dispatch_started", "sent", "uncertain"] },
+      reservedAt: { gt: new Date(now.getTime() - 60 * 60 * 1000) },
+    },
+  });
+  if (rollingCapacity > 10) firstFailure ??= "expanded_group_capacity_exceeded";
+  if (firstFailure) return { ok: false, reason: firstFailure };
+  return { ok: true, value: { campaignIds, stored } };
+}
+
+/** Seal every expanded campaign in one transaction after all manifests validate. */
+export async function approveCampaignGroup(
+  input: ExpandedCampaignGroupTransitionInput & { approvedBy: string },
+  now = new Date(),
+): Promise<ExpandedCampaignGroupTransition> {
+  if (!input.approvedBy.trim()) return { ok: false, reason: "approver_required" };
+  return prisma.$transaction(async (tx) => {
+    await lockRecoveryCampaignControl(tx);
+    const verified = await verifyLockedExpandedGroup(
+      tx,
+      input,
+      ["draft", "awaiting_approval", "paused"],
+      now,
+    );
+    if (!verified.ok) return verified;
+    const draftIds = verified.value.stored.flatMap(({ current }, index) =>
+      current.state === "draft" || current.state === "awaiting_approval"
+        ? [input.campaigns[index]!.id]
+        : []);
+    if (draftIds.length > 0) {
+      const withheld = await tx.recoveryCandidate.updateMany({
+        where: { campaignId: { in: draftIds }, arm: "holdout", outcome: "pending" },
+        data: { outcome: "holdout_withheld", suppressionReason: "holdout_arm" },
+      });
+      if (withheld.count !== 0) throw new Error("expanded_group_holdout_present");
+      const updated = await tx.recoveryCampaign.updateMany({
+        where: { id: { in: draftIds }, state: { in: ["draft", "awaiting_approval"] } },
+        data: {
+          state: "paused",
+          approvedBy: input.approvedBy.trim(),
+          approvedAt: now,
+          startedAt: null,
+          pausedAt: now,
+          pauseReason: PENDING_LAUNCH_PAUSE_REASON,
+          endedAt: null,
+        },
+      });
+      if (updated.count !== draftIds.length) throw new Error("expanded_group_approval_count_mismatch");
+    }
+    const emergencyPausedIds = verified.value.stored.flatMap(({ current }, index) =>
+      current.state === "paused" && current.pauseReason?.startsWith("emergency:")
+        ? [input.campaigns[index]!.id]
+        : []);
+    if (emergencyPausedIds.length > 0) {
+      const updated = await tx.recoveryCampaign.updateMany({
+        where: {
+          id: { in: emergencyPausedIds },
+          state: "paused",
+        },
+        data: {
+          approvedBy: input.approvedBy.trim(),
+          approvedAt: now,
+          pausedAt: now,
+          pauseReason: PENDING_LAUNCH_PAUSE_REASON,
+        },
+      });
+      if (updated.count !== emergencyPausedIds.length) {
+        throw new Error("expanded_group_reapproval_count_mismatch");
+      }
+    }
+    await tx.eventLog.create({
+      data: {
+        kind: "historical_campaign_group_approved",
+        payload: { rolloutGroupId: input.rolloutGroupId, campaignIds: verified.value.campaignIds, approvedBy: input.approvedBy.trim() },
+      },
+    });
+    return { ok: true, state: "paused", campaignIds: verified.value.campaignIds };
+  });
+}
+
+/** Start every approved member in one transaction after a fresh full-group verification. */
+export async function resumeCampaignGroup(
+  input: ExpandedCampaignGroupTransitionInput,
+  now = new Date(),
+): Promise<ExpandedCampaignGroupTransition> {
+  return prisma.$transaction(async (tx) => {
+    await lockRecoveryCampaignControl(tx);
+    const verified = await verifyLockedExpandedGroup(tx, input, ["paused", "completed"], now);
+    if (!verified.ok) return verified;
+    if (verified.value.stored.some(({ current }) =>
+      current.state === "paused"
+      && (
+        !current.approvedAt
+        || current.pauseReason?.startsWith("auto:")
+        || current.pauseReason?.startsWith("emergency:")
+      ))) {
+      return { ok: false, reason: "expanded_group_not_safely_resumable" };
+    }
+    const firstLaunchIds = verified.value.stored.flatMap(({ current }, index) =>
+      current.state === "paused" && current.startedAt === null
+        ? [input.campaigns[index]!.id]
+        : []);
+    const previouslyLaunchedIds = verified.value.stored.flatMap(({ current }, index) =>
+      current.state === "paused" && current.startedAt !== null
+        ? [input.campaigns[index]!.id]
+        : []);
+    if (firstLaunchIds.length > 0) {
+      const updated = await tx.recoveryCampaign.updateMany({
+        where: {
+          id: { in: firstLaunchIds },
+          state: "paused",
+          approvedAt: { not: null },
+          startedAt: null,
+        },
+        data: { state: "running", startedAt: now, pausedAt: null, pauseReason: null },
+      });
+      if (updated.count !== firstLaunchIds.length) {
+        throw new Error("expanded_group_resume_count_mismatch");
+      }
+    }
+    if (previouslyLaunchedIds.length > 0) {
+      const updated = await tx.recoveryCampaign.updateMany({
+        where: {
+          id: { in: previouslyLaunchedIds },
+          state: "paused",
+          approvedAt: { not: null },
+          startedAt: { not: null },
+        },
+        data: { state: "running", pausedAt: null, pauseReason: null },
+      });
+      if (updated.count !== previouslyLaunchedIds.length) {
+        throw new Error("expanded_group_resume_count_mismatch");
+      }
+    }
+    await tx.eventLog.create({
+      data: {
+        kind: "historical_campaign_group_resumed",
+        payload: { rolloutGroupId: input.rolloutGroupId, campaignIds: verified.value.campaignIds },
+      },
+    });
+    return { ok: true, state: "running", campaignIds: verified.value.campaignIds };
+  });
+}
+
 /**
  * Pause a running campaign — the emergency stop.
  *
@@ -307,6 +740,21 @@ export async function pauseCampaign(
 
   await logEvent("historical_campaign_paused", { campaignId, reason });
   return { ok: true, state: "paused" };
+}
+
+/** Pause every running member of one expanded rollout group as one owner action. */
+export async function pauseCampaignGroup(
+  rolloutGroupId: string,
+  reason: string,
+  now = new Date(),
+): Promise<GroupPauseResult> {
+  const normalizedReason = normalizeCampaignPauseReason(reason);
+  const result = await prisma.$transaction(async (tx) => {
+    await lockRecoveryCampaignControl(tx);
+    const members = await lockCampaignGroupMembers(tx, rolloutGroupId);
+    return pauseLockedCampaignGroup(tx, rolloutGroupId, members, normalizedReason, now);
+  });
+  return result;
 }
 
 /**
@@ -370,6 +818,9 @@ export async function resumeCampaign(
     const stored = await readStoredSelectionSnapshot(tx, campaignId);
     if (!stored) return { kind: "blocked", reason: "not_found" } as const;
     const { current, snapshot } = stored;
+    if (current.rolloutGroupId) {
+      return { kind: "blocked", reason: "grouped_campaign_requires_atomic_resume" } as const;
+    }
     if (current.state !== "paused") {
       return { kind: "blocked", reason: `not_resumable_from_${current.state}` } as const;
     }

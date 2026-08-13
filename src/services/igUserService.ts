@@ -7,6 +7,7 @@ export interface IgUserLite {
   id: string;
   username: string | null;
   name: string | null;
+  audienceSegment: string | null;
   isFollower: boolean | null;
   followerCount: number | null;
   isVerified: boolean | null;
@@ -22,6 +23,7 @@ function toLite(r: {
   id: string;
   username: string | null;
   name: string | null;
+  audienceSegment: string | null;
   isFollower: boolean | null;
   followerCount: number | null;
   isVerified: boolean | null;
@@ -30,6 +32,7 @@ function toLite(r: {
     id: r.id,
     username: r.username,
     name: r.name,
+    audienceSegment: r.audienceSegment,
     isFollower: r.isFollower,
     followerCount: r.followerCount,
     isVerified: r.isVerified,
@@ -63,6 +66,7 @@ function originResetIfIdentityChanged(
     originMethod: null,
     // Null here is what makes the enrichment worker pick the row up again.
     originCheckedAt: null,
+    audienceSegment: null,
   };
 }
 
@@ -169,7 +173,15 @@ export async function resolveUsername(igUserId: string): Promise<IgUserLite> {
       });
       return toLite(row);
     } catch {
-      return { id: igUserId, username: null, name: null, isFollower: null, followerCount: null, isVerified: null };
+      return {
+        id: igUserId,
+        username: null,
+        name: null,
+        audienceSegment: null,
+        isFollower: null,
+        followerCount: null,
+        isVerified: null,
+      };
     }
   }
 }

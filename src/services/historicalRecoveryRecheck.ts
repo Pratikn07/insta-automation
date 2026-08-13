@@ -11,7 +11,10 @@
  * database or the Graph API.
  */
 
-import { evaluateHistoricalOrigin } from "./historicalRecoveryOriginPolicy.js";
+import {
+  evaluateHistoricalAudience,
+  evaluateHistoricalOrigin,
+} from "./historicalRecoveryOriginPolicy.js";
 
 /**
  * What we learned by reading the source comment just now (QA-09).
@@ -55,9 +58,15 @@ export type RecheckFacts = {
   audienceOriginConfidence: string | null;
   /** Classifier method/version for the live verdict; anything else is stale. */
   audienceOriginMethod: string | null;
+  /** Current persisted structural segment; free-text evidence is never consulted. */
+  audienceSegment: string | null;
+  /** Segment frozen into the immutable candidate snapshot, null for legacy rows. */
+  frozenCandidateAudienceSegment: string | null;
+  /** Segment frozen into the immutable campaign manifest, null for legacy rows. */
+  frozenCampaignAudienceSegment: string | null;
   /**
-   * Retained for the frozen campaign manifest and caller compatibility. Historical
-   * dispatch always requires the current Gemini Western verdict, even when false.
+   * Retained for the frozen campaign manifest and caller compatibility. It cannot
+   * weaken either legacy fail-closed authorization or exact expanded-segment matching.
    */
   westernOnly: boolean;
   /** Campaign still running — a pause between claim and send must stop the send. */
@@ -81,10 +90,7 @@ export type RecheckSuppressionReason =
   | "replied_since_selection"
   | "completed_since_selection"
   | "contacted_since_selection"
-  | "audience_south_asian"
-  | "audience_unknown"
-  | "audience_other"
-  | "audience_invalid_confidence";
+  | "audience_south_asian";
 
 export type RecheckDeferralReason =
   | "campaign_not_running"
@@ -92,13 +98,69 @@ export type RecheckDeferralReason =
   | "hourly_cap_reached"
   | "source_read_auth_failed"
   | "source_read_failed"
-  | "origin_not_current_gemini";
+  | "origin_not_current_gemini"
+  | "audience_segment_changed";
 
 export type RecheckDecision =
   | { kind: "send" }
   | { kind: "suppress"; reason: RecheckSuppressionReason }
   /** Not this person's fault — try again on a later tick. */
   | { kind: "defer"; reason: RecheckDeferralReason };
+
+export type LiveAudienceAuthorizationDecision =
+  | { kind: "allow" }
+  | { kind: "suppress"; reason: "audience_south_asian" }
+  | {
+      kind: "defer";
+      reason: "origin_not_current_gemini" | "audience_segment_changed";
+    };
+
+/**
+ * Authorize legacy and expanded snapshots without letting one weaken the other.
+ *
+ * Legacy campaigns have no campaign segment and retain their current fail-closed
+ * origin-only compatibility rule; selectors may still persist a candidate's audit
+ * segment on those rows. Once the campaign freezes a segment, the candidate must match
+ * it and both must match a structurally valid live classification. South Asian is
+ * terminal even when it represents drift; every other malformed or changed expanded
+ * classification is recoverable after reclassification and therefore defers.
+ */
+export function authorizeLiveHistoricalAudience(input: {
+  audienceSegment: string | null;
+  audienceOrigin: string | null;
+  audienceOriginConfidence: string | null;
+  audienceOriginMethod: string | null;
+  frozenCandidateAudienceSegment: string | null;
+  frozenCampaignAudienceSegment: string | null;
+}): LiveAudienceAuthorizationDecision {
+  const isExpanded = input.frozenCampaignAudienceSegment !== null;
+  if (!isExpanded) {
+    const legacy = evaluateHistoricalOrigin({
+      origin: input.audienceOrigin,
+      confidence: input.audienceOriginConfidence,
+      method: input.audienceOriginMethod,
+    });
+    if (legacy.kind === "stale") return { kind: "defer", reason: legacy.reason };
+    if (legacy.kind === "block") return { kind: "suppress", reason: legacy.reason };
+    return { kind: "allow" };
+  }
+
+  const live = evaluateHistoricalAudience({
+    segment: input.audienceSegment,
+    origin: input.audienceOrigin,
+    confidence: input.audienceOriginConfidence,
+    method: input.audienceOriginMethod,
+  });
+  if (live.kind === "block") return { kind: "suppress", reason: live.reason };
+  if (
+    live.kind === "defer"
+    || input.frozenCandidateAudienceSegment !== input.frozenCampaignAudienceSegment
+    || input.audienceSegment !== input.frozenCampaignAudienceSegment
+  ) {
+    return { kind: "defer", reason: "audience_segment_changed" };
+  }
+  return { kind: "allow" };
+}
 
 export function recheckBeforeSend(facts: RecheckFacts): RecheckDecision {
   // Campaign state first: a pause is the owner's emergency stop, and it must take
@@ -155,20 +217,23 @@ export function recheckBeforeSend(facts: RecheckFacts): RecheckDecision {
     return { kind: "suppress", reason: "contacted_since_selection" };
   }
 
-  // Historical public replies always require a fresh verdict from the current Gemini
-  // classifier. `westernOnly` is a frozen campaign-selection setting; it never relaxes
-  // this final public-comment gate. An unavailable or stale method can become current
-  // after enrichment, so defer it; a current non-Western/unknown verdict is terminal.
-  const originDecision = evaluateHistoricalOrigin({
-    origin: facts.audienceOrigin,
-    confidence: facts.audienceOriginConfidence,
-    method: facts.audienceOriginMethod,
+  // Historical public replies always require fresh structural classification.
+  // `westernOnly` is frozen for compatibility and never relaxes this gate. Expanded
+  // campaigns require exact live/candidate/campaign segment equality; legacy campaigns
+  // keep the current fail-closed origin-only policy.
+  const audienceDecision = authorizeLiveHistoricalAudience({
+    audienceSegment: facts.audienceSegment,
+    audienceOrigin: facts.audienceOrigin,
+    audienceOriginConfidence: facts.audienceOriginConfidence,
+    audienceOriginMethod: facts.audienceOriginMethod,
+    frozenCandidateAudienceSegment: facts.frozenCandidateAudienceSegment,
+    frozenCampaignAudienceSegment: facts.frozenCampaignAudienceSegment,
   });
-  if (originDecision.kind === "stale") {
-    return { kind: "defer", reason: originDecision.reason };
+  if (audienceDecision.kind === "defer") {
+    return { kind: "defer", reason: audienceDecision.reason };
   }
-  if (originDecision.kind === "block") {
-    return { kind: "suppress", reason: originDecision.reason };
+  if (audienceDecision.kind === "suppress") {
+    return { kind: "suppress", reason: audienceDecision.reason };
   }
 
   return { kind: "send" };

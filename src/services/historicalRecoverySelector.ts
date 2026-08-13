@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import {
   decideEligibility,
@@ -15,14 +16,38 @@ import { recoveryCopyFor } from "./historicalRecoveryCopy.js";
 import {
   buildSelectionDecisionHash,
   buildSelectionFingerprint,
+  EXPANDED_AUDIENCE_ELIGIBILITY_POLICY_VERSION,
   type SelectionSnapshotConfiguration,
   type SelectionSnapshotExclusion,
   type SelectionSnapshotInclusion,
 } from "./historicalRecoverySnapshot.js";
+import { AUDIENCE_SEGMENTS, type AudienceSegment } from "./historicalAudienceSegment.js";
 
 export const HISTORICAL_RECOVERY_ELIGIBILITY_POLICY_VERSION = "eligibility-v3";
 const DEFAULT_INBOUND_WINDOW_HOURS = 24;
 const DEFAULT_COMPLETION_WINDOW_HOURS = 48;
+
+/**
+ * PostgreSQL accepts several UUID spellings but stores only its lowercase,
+ * hyphenated representation. Normalize at the selection boundary so the reviewed
+ * hash, persisted campaign, and later approval reconstruction use one identity.
+ */
+function normalizeRolloutGroupId(value: string): string | null {
+  if (value !== value.trim()) return null;
+  const hasOpeningBrace = value.startsWith("{");
+  const hasClosingBrace = value.endsWith("}");
+  if (hasOpeningBrace !== hasClosingBrace) return null;
+  const unbraced = hasOpeningBrace ? value.slice(1, -1) : value;
+  const compact = /^[0-9a-f]{32}$/i.test(unbraced)
+    ? unbraced
+    : /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(unbraced)
+      ? unbraced.replaceAll("-", "")
+      : null;
+  if (!compact) return null;
+  const lowercase = compact.toLowerCase();
+  return `${lowercase.slice(0, 8)}-${lowercase.slice(8, 12)}-${lowercase.slice(12, 16)}`
+    + `-${lowercase.slice(16, 20)}-${lowercase.slice(20)}`;
+}
 
 /**
  * Build the candidate list for a historical recovery campaign (design §34–§37).
@@ -59,6 +84,7 @@ type SelectionRow = {
   audienceOrigin: string | null;
   audienceOriginConfidence: string | null;
   audienceOriginMethod: string | null;
+  audienceSegment: AudienceSegment | null;
   sources: Array<{
     commentId: string;
     mediaId: string | null;
@@ -79,6 +105,14 @@ export type SelectionReport = {
   rawIntents: number;
   eligible: number;
   eligiblePeople: number;
+  /** Distinct people represented by one or more recorded exclusions. */
+  excludedPeople: number;
+  /**
+   * Stable, non-free-text exclusion identities for a coordinating transaction.
+   * They are not operator CLI output; callers use them only to derive aggregate
+   * exclusion counts without losing zero-candidate selection decisions.
+   */
+  excludedIgUserIds?: string[];
   byEvidence: Record<string, number>;
   /** Selected candidates by non-sensitive origin provenance. */
   originBreakdown: Record<string, number>;
@@ -92,8 +126,11 @@ export type SelectionReport = {
  * `cutoff` bounds every time-sensitive subquery, so re-running the same selection
  * version reproduces the same list even as new data arrives.
  */
-async function loadRows(cutoff: Date): Promise<SelectionRow[]> {
-  return prisma.$queryRaw<SelectionRow[]>`
+async function loadRows(
+  cutoff: Date,
+  database: Pick<Prisma.TransactionClient, "$queryRaw"> = prisma,
+): Promise<SelectionRow[]> {
+  return database.$queryRaw<SelectionRow[]>`
     SELECT
       ji."id"          AS "intentId",
       ji."ig_user_id"  AS "igUserId",
@@ -215,7 +252,8 @@ async function loadRows(cutoff: Date): Promise<SelectionRow[]> {
 
       u."inferred_origin"   AS "audienceOrigin",
       u."origin_confidence" AS "audienceOriginConfidence",
-      u."origin_method"     AS "audienceOriginMethod"
+      u."origin_method"     AS "audienceOriginMethod",
+      u."audience_segment"  AS "audienceSegment"
 
     FROM "journey_intent" ji
     JOIN "conversations" c ON c."id" = ji."canonical_conversation_id"
@@ -304,17 +342,62 @@ export async function selectHistoricalCandidates(input: {
   /** Cap the campaign to the first N candidates, oldest first (staged rollout). */
   limit?: number;
   holdoutPercent?: number;
+  dailyCap?: number;
   eligibilityPolicyVersion?: string;
+  /** An exact current segment for a v4 expanded-audience campaign. */
+  audienceSegment?: AudienceSegment;
+  rolloutGroupId?: string;
+  rolloutGroupHourlyCap?: number;
   inboundWindowHours?: number;
   completionWindowHours?: number;
+  /** Internal expanded-rollout detail; ordinary selector reports keep prior shape. */
+  includeExclusionIdentities?: boolean;
   persist: boolean;
   now?: Date;
+  /**
+   * Lets a higher-level selection coordinate several draft campaigns atomically.
+   * Omit it to preserve the selector's existing one-campaign transaction.
+   */
+  transaction?: Prisma.TransactionClient;
 }): Promise<SelectionReport> {
   if (input.limit !== undefined && (!Number.isInteger(input.limit) || input.limit <= 0)) {
     throw new Error("invalid_selection_limit");
   }
+  const eligibilityPolicyVersion = input.eligibilityPolicyVersion
+    ?? HISTORICAL_RECOVERY_ELIGIBILITY_POLICY_VERSION;
+  const isExpandedAudienceSelection = eligibilityPolicyVersion
+    === EXPANDED_AUDIENCE_ELIGIBILITY_POLICY_VERSION;
+  const hasExpandedAudienceField = input.audienceSegment !== undefined
+    || input.rolloutGroupId !== undefined
+    || input.rolloutGroupHourlyCap !== undefined;
+  if (!isExpandedAudienceSelection && hasExpandedAudienceField) {
+    throw new Error("expanded_audience_policy_version_required");
+  }
+  let rolloutGroupId: string | undefined;
+  if (isExpandedAudienceSelection) {
+    if (
+      input.audienceSegment === undefined
+      || input.rolloutGroupId === undefined
+      || input.rolloutGroupHourlyCap === undefined
+    ) {
+      throw new Error("expanded_audience_metadata_required");
+    }
+    if (!AUDIENCE_SEGMENTS.includes(input.audienceSegment)) {
+      throw new Error("invalid_audience_segment");
+    }
+    const normalizedRolloutGroupId = normalizeRolloutGroupId(input.rolloutGroupId);
+    if (!normalizedRolloutGroupId) throw new Error("invalid_rollout_group_id");
+    rolloutGroupId = normalizedRolloutGroupId;
+    if (
+      !Number.isInteger(input.rolloutGroupHourlyCap)
+      || input.rolloutGroupHourlyCap < 1
+      || input.rolloutGroupHourlyCap > 1000
+    ) {
+      throw new Error("invalid_rollout_group_hourly_cap");
+    }
+  }
   const cutoff = input.now ?? new Date();
-  const rows = await loadRows(cutoff);
+  const rows = await loadRows(cutoff, input.transaction ?? prisma);
 
   const decided = rows.map((row) => {
     const facts: EligibilityFacts = {
@@ -335,6 +418,7 @@ export async function selectHistoricalCandidates(input: {
       audienceOrigin: row.audienceOrigin,
       audienceOriginConfidence: row.audienceOriginConfidence,
       audienceOriginMethod: row.audienceOriginMethod,
+      audienceSegment: row.audienceSegment,
       westernOnly: input.westernOnly,
     };
     return { row, facts, decision: decideEligibility(facts) };
@@ -395,15 +479,30 @@ export async function selectHistoricalCandidates(input: {
     }
   }
 
+  // An expanded campaign has one exact audience segment. Other currently allowed
+  // segments remain eligible in general, but must not leak into this immutable cohort.
+  const matchingAudience = input.audienceSegment === undefined
+    ? included
+    : included.filter((entry) => entry.facts.audienceSegment === input.audienceSegment);
+  if (included.length > matchingAudience.length) {
+    excludedByReason.set("audience_segment_mismatch", included.length - matchingAudience.length);
+  }
+  const keptByAudience = new Set(matchingAudience.map((entry) => entry.facts.intentId));
+  for (const entry of included) {
+    if (!keptByAudience.has(entry.facts.intentId)) {
+      dropped(byIntentRow.get(entry.facts.intentId)!, "audience_segment_mismatch");
+    }
+  }
+
   // One public comment per person. 43 people hold 101 eligible intents, so without
   // this the campaign would try to contact them repeatedly; their most recent
   // unanswered request is the one recovered.
-  const perPerson = keepLatestPerPerson(included);
-  if (included.length > perPerson.length) {
-    excludedByReason.set("older_request_same_person", included.length - perPerson.length);
+  const perPerson = keepLatestPerPerson(matchingAudience);
+  if (matchingAudience.length > perPerson.length) {
+    excludedByReason.set("older_request_same_person", matchingAudience.length - perPerson.length);
   }
   const keptPerPerson = new Set(perPerson.map((e) => e.facts.intentId));
-  for (const entry of included) {
+  for (const entry of matchingAudience) {
     if (!keptPerPerson.has(entry.facts.intentId)) {
       dropped(byIntentRow.get(entry.facts.intentId)!, "older_request_same_person");
     }
@@ -423,8 +522,10 @@ export async function selectHistoricalCandidates(input: {
   }
 
   const holdoutPercent = input.holdoutPercent ?? 50;
-  const eligibilityPolicyVersion = input.eligibilityPolicyVersion
-    ?? HISTORICAL_RECOVERY_ELIGIBILITY_POLICY_VERSION;
+  const dailyCap = input.dailyCap ?? 10;
+  if (!Number.isInteger(dailyCap) || dailyCap < 1 || dailyCap > 1000) {
+    throw new Error("invalid_daily_cap");
+  }
   const inboundWindowHours = input.inboundWindowHours ?? DEFAULT_INBOUND_WINDOW_HOURS;
   const completionWindowHours = input.completionWindowHours
     ?? DEFAULT_COMPLETION_WINDOW_HOURS;
@@ -471,6 +572,11 @@ export async function selectHistoricalCandidates(input: {
     eligibilityPolicyVersion,
     inboundWindowHours,
     completionWindowHours,
+    ...(isExpandedAudienceSelection ? {
+      audienceSegment: input.audienceSegment!,
+      rolloutGroupId: rolloutGroupId!,
+      rolloutGroupHourlyCap: input.rolloutGroupHourlyCap!,
+    } : {}),
   };
 
   const inclusions: SelectionSnapshotInclusion[] = selected.map((entry, position) => {
@@ -505,6 +611,7 @@ export async function selectHistoricalCandidates(input: {
       audienceOrigin: row.audienceOrigin,
       audienceOriginMethod: row.audienceOriginMethod,
       audienceOriginConfidence: row.audienceOriginConfidence,
+      ...(isExpandedAudienceSelection ? { audienceSegment: row.audienceSegment } : {}),
       arm: arms.get(row.intentId)!,
       sourceChoiceReason: "newest_eligible_comment",
       sources,
@@ -535,6 +642,9 @@ export async function selectHistoricalCandidates(input: {
     originBreakdown[key] = (originBreakdown[key] ?? 0) + 1;
   }
 
+  const excludedIgUserIds = [...new Set(
+    [...exclusions.values()].map((exclusion) => exclusion.igUserId),
+  )].sort((left, right) => left.localeCompare(right));
   const report: SelectionReport = {
     campaignId: null,
     selectionFingerprint,
@@ -543,6 +653,8 @@ export async function selectHistoricalCandidates(input: {
     rawIntents: rows.length,
     eligible: selected.length,
     eligiblePeople: new Set(selected.map((e) => e.facts.igUserId)).size,
+    excludedPeople: excludedIgUserIds.length,
+    ...(input.includeExclusionIdentities ? { excludedIgUserIds } : {}),
     byEvidence,
     originBreakdown,
     excludedByReason: Object.fromEntries(excludedByReason),
@@ -565,7 +677,7 @@ export async function selectHistoricalCandidates(input: {
   const campaignId = randomUUID();
   const candidates = inclusions.map((inclusion) => ({ id: randomUUID(), inclusion }));
 
-  await prisma.$transaction(async (tx) => {
+  const persistSelection = async (tx: Prisma.TransactionClient) => {
     await tx.recoveryCampaign.create({
       data: {
         id: campaignId,
@@ -577,6 +689,7 @@ export async function selectHistoricalCandidates(input: {
         commentTo: input.commentTo ?? null,
         selectionLimit: input.limit ?? null,
         holdoutPercent,
+        dailyCap,
         candidateCount: inclusions.length,
         excludedCount: snapshotExclusions.length,
         selectionFingerprint,
@@ -585,6 +698,11 @@ export async function selectHistoricalCandidates(input: {
         inboundWindowHours,
         completionWindowHours,
         decisionHash,
+        ...(isExpandedAudienceSelection ? {
+          audienceSegment: input.audienceSegment!,
+          rolloutGroupId: rolloutGroupId!,
+          rolloutGroupHourlyCap: input.rolloutGroupHourlyCap!,
+        } : {}),
       },
     });
 
@@ -613,6 +731,7 @@ export async function selectHistoricalCandidates(input: {
         audienceOrigin: inclusion.audienceOrigin,
         audienceOriginMethod: inclusion.audienceOriginMethod,
         audienceOriginConfidence: inclusion.audienceOriginConfidence,
+        audienceSegment: byIntent.get(inclusion.intentId)!.row.audienceSegment,
         arm: inclusion.arm,
         eligibleAt: cutoff,
         sourceChoiceReason: inclusion.sourceChoiceReason,
@@ -629,7 +748,12 @@ export async function selectHistoricalCandidates(input: {
           choiceReason: source.choiceReason,
         }))),
     });
-  }, { isolationLevel: "Serializable" });
+  };
+  if (input.transaction) {
+    await persistSelection(input.transaction);
+  } else {
+    await prisma.$transaction(persistSelection, { isolationLevel: "Serializable" });
+  }
 
   report.campaignId = campaignId;
   return report;

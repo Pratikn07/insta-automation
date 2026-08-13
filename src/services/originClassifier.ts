@@ -4,13 +4,16 @@ import type { Origin } from "./originInference.js";
 import {
   CURRENT_ORIGIN_METHOD,
   GEMINI_CUE_ASSESSMENTS,
+  GEMINI_CUE_KINDS,
+  deriveAudienceSegment,
+  type AudienceSegment,
   type GeminiCueAssessment,
-  normalizeGeminiVerdict,
-} from "./historicalRecoveryOriginPolicy.js";
+  type GeminiCueKind,
+} from "./historicalAudienceSegment.js";
 
 // Keep the existing caller-facing name while sharing the canonical method value
 // with the historical recovery policy.
-export { CURRENT_ORIGIN_METHOD as ORIGIN_PROMPT_VERSION } from "./historicalRecoveryOriginPolicy.js";
+export { CURRENT_ORIGIN_METHOD as ORIGIN_PROMPT_VERSION } from "./historicalAudienceSegment.js";
 
 // Gemini 2.5 Flash paid-tier pricing (per 1M tokens). Mirrors
 // geminiAnalysisService's PRICE block — kept local so a change to the reel
@@ -39,6 +42,8 @@ export interface OriginVerdict {
   id: string;
   origin: Origin;
   confidence: "high" | "low";
+  cueKind: GeminiCueKind;
+  audienceSegment: AudienceSegment;
   evidence: string;
 }
 
@@ -63,9 +68,10 @@ const RESPONSE_SCHEMA = {
           origin: { type: "string", enum: ["south_asian", "us_western", "other", "unknown"] },
           confidence: { type: "string", enum: ["high", "low"] },
           cueAssessment: { type: "string", enum: [...GEMINI_CUE_ASSESSMENTS] },
+          cueKind: { type: "string", enum: [...GEMINI_CUE_KINDS] },
           evidence: { type: "string" },
         },
-        required: ["id", "origin", "confidence", "cueAssessment", "evidence"],
+        required: ["id", "origin", "confidence", "cueAssessment", "cueKind", "evidence"],
       },
     },
   },
@@ -75,18 +81,19 @@ const RESPONSE_SCHEMA = {
 // The instruction is deliberately permissive about `unknown`. A model pushed to
 // commit on every row will confabulate on the handle-only accounts that make up
 // most of this dataset (`__SP♥️__`, `sathu`, `-`), and a confident wrong answer
-// is worse than an honest abstention: only `high` confidence withholds a send,
-// so a fabricated `high` silently drops someone from the experiment.
+// is worse than an honest abstention: an unsupported segment must be retried,
+// while a South Asian segment suppresses historical recovery.
 const PROMPT = `You are classifying the likely cultural origin of Instagram accounts from their display name and username ONLY.
 
 For each account return:
 - origin: "south_asian" (Indian subcontinent — India, Pakistan, Bangladesh, Sri Lanka, Nepal — including diaspora), "us_western" (US/UK/Canada/Australia/Western Europe), "other" (clearly neither), or "unknown".
 - confidence: "high" ONLY when the name or username is a distinctive, unambiguous cue — a South Asian script, or a name that is overwhelmingly associated with one region. Otherwise "low".
 - cueAssessment: "positive_cue" when the name or username contains a meaningful cultural cue, even if it is weak; otherwise "no_meaningful_cue".
+- cueKind: "distinctive_cultural" only with cueAssessment "positive_cue" and an origin other than "unknown"; "ambiguous_cultural" only with cueAssessment "positive_cue" and origin "unknown"; "generic_or_no_cue" only with cueAssessment "no_meaningful_cue" and origin "unknown".
 - evidence: a SHORT phrase naming the cue you used (e.g. "Tamil given name Kanimozhi", "Telugu surname Pasumarthi", "generic handle, no cue").
 
 Rules that matter:
-1. Return "unknown" with "low" confidence and cueAssessment "no_meaningful_cue" when there is genuinely nothing to go on — a numeric or generic handle ("user_9928", "sathu", "-", "explore._.things"), an emoji-only name, or a name too short or ambiguous to place. Do NOT guess. Abstaining is the correct answer for these and will not be penalised.
+1. Return "unknown" with "low" confidence, cueAssessment "no_meaningful_cue", and cueKind "generic_or_no_cue" when there is genuinely nothing to go on — a numeric or generic handle ("user_9928", "sathu", "-", "explore._.things"), an emoji-only name, or a name too short to place. Return "unknown" with cueAssessment "positive_cue" and cueKind "ambiguous_cultural" when a meaningful cultural cue exists but cannot be placed reliably. Do NOT guess. Abstaining is the correct answer for these and will not be penalised.
 2. Never infer from anything except the two strings given. You have no other information about these people.
 3. A common English first name may be a weak "positive_cue" and "us_western" at "low" confidence at best — many South Asian users adopt one.
 4. Return exactly one result per input id, echoing the id verbatim.
@@ -104,6 +111,7 @@ interface GenerateResponse {
 
 const VALID_ORIGINS = new Set<Origin>(["south_asian", "us_western", "other", "unknown"]);
 const VALID_CUE_ASSESSMENTS = new Set<string>(GEMINI_CUE_ASSESSMENTS);
+const VALID_CUE_KINDS = new Set<string>(GEMINI_CUE_KINDS);
 
 /** Longest name or username put in front of the model. */
 const ROSTER_FIELD_LIMIT = 80;
@@ -157,9 +165,16 @@ function toVerdict(raw: unknown, requestedIds: Set<string>): OriginVerdict | nul
   }
   const cueAssessment = r.cueAssessment as GeminiCueAssessment;
 
-  const evidence = typeof r.evidence === "string" ? r.evidence.slice(0, 200) : "";
+  if (typeof r.cueKind !== "string" || !VALID_CUE_KINDS.has(r.cueKind)) return null;
+  const cueKind = r.cueKind as GeminiCueKind;
 
-  return normalizeGeminiVerdict({ id, origin, confidence, evidence, cueAssessment });
+  const audienceSegment = deriveAudienceSegment({ origin, cueAssessment, cueKind });
+  if (!audienceSegment) return null;
+
+  if (typeof r.evidence !== "string" || r.evidence.trim().length === 0) return null;
+  const evidence = r.evidence.slice(0, 200);
+
+  return { id, origin, confidence, cueKind, audienceSegment, evidence };
 }
 
 /**

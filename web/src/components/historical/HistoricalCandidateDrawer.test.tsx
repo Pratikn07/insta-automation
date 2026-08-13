@@ -31,6 +31,8 @@ function detail(overrides: Record<string, unknown> = {}) {
       audienceOrigin: "us_western",
       audienceOriginMethod: "llm_v1",
       audienceOriginConfidence: "high",
+      audienceSegment: "other",
+      currentAudienceSegment: "unknown_no_name",
       arm: "treatment",
       outcome: "send_uncertain",
       attempts: 1,
@@ -139,6 +141,15 @@ describe("HistoricalCandidateDrawer", () => {
     expect(screen.getByText("high")).toBeInTheDocument();
   });
 
+  it("shows frozen and current audience segments separately when they drift", async () => {
+    renderDrawer();
+
+    expect(await screen.findByText("Audience at selection")).toBeInTheDocument();
+    expect(screen.getByText("Other")).toBeInTheDocument();
+    expect(screen.getByText("Current audience")).toBeInTheDocument();
+    expect(screen.getByText("Unknown — no username/display name")).toBeInTheDocument();
+  });
+
   it("links only to the verified stored source permalink", async () => {
     renderDrawer();
     const link = await screen.findByRole("link", { name: "View source post" });
@@ -176,5 +187,29 @@ describe("HistoricalCandidateDrawer", () => {
 
     expect(await screen.findByText("Reviewed")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Mark reviewed" })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    [{ status: 401 }, "Your session has expired. Sign in and try again."],
+    [{ status: 404 }, "This recovery candidate is no longer available."],
+    [new Error("network unavailable"), "We couldn't load this recovery candidate. Please try again."],
+  ])("shows a useful detail error for %o instead of an endless skeleton", async (error, message) => {
+    api.mockRejectedValueOnce(error);
+    renderDrawer();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(message);
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(screen.queryByText("Canonical intent")).not.toBeInTheDocument();
+  });
+
+  it("retries a failed detail request", async () => {
+    api.mockRejectedValueOnce(new Error("network unavailable")).mockResolvedValueOnce(detail());
+    const user = userEvent.setup();
+    renderDrawer();
+
+    await user.click(await screen.findByRole("button", { name: "Retry" }));
+
+    expect(await screen.findByText("Canonical intent")).toBeInTheDocument();
+    expect(api).toHaveBeenCalledTimes(2);
   });
 });

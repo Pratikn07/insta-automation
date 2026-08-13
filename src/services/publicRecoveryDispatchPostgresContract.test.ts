@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient, type Prisma } from "@prisma/client";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { CURRENT_ORIGIN_METHOD } from "./historicalRecoveryOriginPolicy.js";
+import {
+  setHistoricalReservationAfterLocksTestHook,
+  setHistoricalReservationBeforeControlLockTestHook,
+} from "./historicalRecoveryRepository.js";
 
 const databaseUrl = process.env.MIGRATION_TEST_DATABASE_URL;
 const describeWithDatabase = databaseUrl ? describe.sequential : describe.skip;
@@ -16,6 +20,19 @@ let keywordId: string;
 let otherKeywordId: string;
 let intentSequence = 0;
 
+describe("historical dispatch test barrier", () => {
+  it("installs and clears the synchronization hooks", () => {
+    const clearAfterLocks = setHistoricalReservationAfterLocksTestHook(async () => undefined);
+    const clearBeforeControl = setHistoricalReservationBeforeControlLockTestHook(
+      async () => undefined,
+    );
+    expect(typeof clearAfterLocks).toBe("function");
+    expect(typeof clearBeforeControl).toBe("function");
+    clearBeforeControl();
+    clearAfterLocks();
+  });
+});
+
 async function createPerson(): Promise<string> {
   const id = `${prefix}-${randomUUID()}`;
   await db.igUser.create({
@@ -29,7 +46,10 @@ async function createPerson(): Promise<string> {
   return id;
 }
 
-async function createCampaign(): Promise<string> {
+async function createCampaign(input: {
+  rolloutGroupId?: string;
+  rolloutGroupHourlyCap?: number;
+} = {}): Promise<string> {
   const id = randomUUID();
   await db.recoveryCampaign.create({
     data: {
@@ -42,9 +62,93 @@ async function createCampaign(): Promise<string> {
       state: "running",
       approvedBy: "contract@example.com",
       approvedAt: new Date(),
+      ...input,
     },
   });
   return id;
+}
+
+function dispatchFixture(input: {
+  state: "reserved" | "dispatch_started" | "sent" | "uncertain" | "released";
+  igUserId: string;
+  campaignId: string;
+  reservedAt: Date;
+}): Prisma.PublicRecoveryDispatchCreateManyInput {
+  const base = {
+    reservationToken: randomUUID(),
+    igUserId: input.igUserId,
+    sourceKind: "historical" as const,
+    sourceId: randomUUID(),
+    attemptNumber: 1,
+    campaignId: input.campaignId,
+    state: input.state,
+    reservedAt: input.reservedAt,
+    leaseExpiresAt: new Date(input.reservedAt.getTime() + 60_000),
+  };
+  switch (input.state) {
+    case "reserved":
+      return base;
+    case "dispatch_started":
+      return { ...base, dispatchStartedAt: input.reservedAt };
+    case "sent":
+      return {
+        ...base,
+        dispatchStartedAt: input.reservedAt,
+        sentAt: input.reservedAt,
+        providerReplyId: `provider-${randomUUID()}`,
+      };
+    case "uncertain":
+      return {
+        ...base,
+        dispatchStartedAt: input.reservedAt,
+        terminalReason: "test_uncertain",
+      };
+    case "released":
+      return {
+        ...base,
+        releasedAt: input.reservedAt,
+        terminalReason: "test_released",
+      };
+  }
+}
+
+async function waitForQueryToWaitOnLock(marker: string): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const rows = await db.$queryRaw<Array<{ wait_event_type: string | null }>>`
+      SELECT wait_event_type
+      FROM pg_stat_activity
+      WHERE query LIKE ${`%${marker}%`}
+    `;
+    if (rows.some((row) => row.wait_event_type === "Lock")) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`expected ${marker} to wait on the campaign row lock`);
+}
+
+async function waitForReservationToWaitOnControlLock(pid: number): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const rows = await db.$queryRaw<Array<{
+      state: string;
+      wait_event_type: string | null;
+      query: string;
+    }>>`
+      SELECT state, wait_event_type, query
+      FROM pg_stat_activity
+      WHERE pid = ${pid}
+    `;
+    const row = rows[0];
+    if (
+      row?.state === "active" &&
+      row.wait_event_type === "Lock" &&
+      row.query.includes('dm_recovery_control')
+    ) {
+      return;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`reservation backend ${pid} did not wait on dm_recovery_control`);
 }
 
 async function openBatch(campaignId: string, now: Date): Promise<string> {
@@ -485,6 +589,255 @@ describeWithDatabase("public recovery dispatch concurrency", () => {
       globalDailyCap: 1_000,
       prospectiveCooldownHours: 24,
     })).resolves.toEqual({ kind: "blocked", reason: "global_hourly_cap_reached" });
+  });
+
+  it("shares a rolling-hour cap across a rollout group under concurrent reservations", async () => {
+    const now = new Date();
+    const rolloutGroupId = randomUUID();
+    const firstCampaignId = await createCampaign({ rolloutGroupId, rolloutGroupHourlyCap: 10 });
+    const secondCampaignId = await createCampaign({ rolloutGroupId, rolloutGroupHourlyCap: 10 });
+    const unrelatedCampaignId = await createCampaign({
+      rolloutGroupId: randomUUID(),
+      rolloutGroupHourlyCap: 10,
+    });
+    const capacityStates = [
+      "reserved", "dispatch_started", "sent", "uncertain", "reserved",
+      "dispatch_started", "sent", "uncertain", "reserved",
+    ] as const;
+    const capacityPeople = await Promise.all(
+      Array.from({ length: capacityStates.length + 2 }, () => createPerson()),
+    );
+    await db.publicRecoveryDispatch.createMany({
+      data: capacityStates.map((state, index) => dispatchFixture({
+        state,
+        igUserId: capacityPeople[index]!,
+        campaignId: index % 2 === 0 ? firstCampaignId : secondCampaignId,
+        reservedAt: now,
+      })),
+    });
+    // A released reservation has no chance of posting and must immediately free a slot.
+    await db.publicRecoveryDispatch.create({
+      data: dispatchFixture({
+        state: "released",
+        igUserId: capacityPeople[capacityStates.length]!,
+        campaignId: firstCampaignId,
+        reservedAt: now,
+      }),
+    });
+    // Capacity in another rollout group must not affect this one.
+    await db.publicRecoveryDispatch.create({
+      data: dispatchFixture({
+        state: "sent",
+        igUserId: capacityPeople[capacityStates.length + 1]!,
+        campaignId: unrelatedCampaignId,
+        reservedAt: now,
+      }),
+    });
+
+    const [first, second] = await Promise.all([
+      createCandidate(await createPerson(), firstCampaignId),
+      createCandidate(await createPerson(), secondCampaignId),
+    ]);
+    const lease = new Date(now.getTime() + 60_000);
+    const [firstClaim, secondClaim] = await Promise.all([
+      historical.claimCandidate(first.id, now, lease),
+      historical.claimCandidate(second.id, now, lease),
+    ]);
+    let releaseFirstControlLock!: () => void;
+    const firstControlLockHeld = Promise.withResolvers<void>();
+    const firstControlLockRelease = new Promise<void>((resolve) => {
+      releaseFirstControlLock = resolve;
+    });
+    let firstControlLockReleased = false;
+    const releaseControlLock = () => {
+      if (firstControlLockReleased) return;
+      firstControlLockReleased = true;
+      releaseFirstControlLock();
+    };
+    let controlLockEntries = 0;
+    const secondReservationBackend = Promise.withResolvers<number>();
+    const resetBeforeControlLockHook = setHistoricalReservationBeforeControlLockTestHook(
+      async ({ candidateId, tx }) => {
+        if (candidateId !== second.id) return;
+        const rows = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+        secondReservationBackend.resolve(rows[0]!.pid);
+      },
+    );
+    const resetTestHook = setHistoricalReservationAfterLocksTestHook(async () => {
+      controlLockEntries++;
+      if (controlLockEntries === 1) {
+        firstControlLockHeld.resolve();
+        await firstControlLockRelease;
+        return;
+      }
+      if (!firstControlLockReleased) {
+        throw new Error("second reservation entered after-control-lock hook before release");
+      }
+    });
+    try {
+      const firstReservation = historical.reserveHistoricalDispatch({
+        candidateId: first.id,
+        claimToken: firstClaim!.claimToken,
+        now,
+        hourlyCap: 100,
+        dailyCap: 100,
+        globalHourlyCap: 100,
+        globalDailyCap: 1_000,
+        prospectiveCooldownHours: 24,
+      });
+      await firstControlLockHeld.promise;
+      const secondReservation = historical.reserveHistoricalDispatch({
+        candidateId: second.id,
+        claimToken: secondClaim!.claimToken,
+        now,
+        hourlyCap: 100,
+        dailyCap: 100,
+        globalHourlyCap: 100,
+        globalDailyCap: 1_000,
+        prospectiveCooldownHours: 24,
+      });
+      await waitForReservationToWaitOnControlLock(await secondReservationBackend.promise);
+      releaseControlLock();
+      const results = await Promise.all([firstReservation, secondReservation]);
+
+      expect(results.filter((result) => result.kind === "reserved")).toHaveLength(1);
+      expect(results.filter((result) => (
+        result.kind === "blocked" && result.reason === "rollout_group_hourly_cap_reached"
+      ))).toHaveLength(1);
+      expect(await db.publicRecoveryDispatch.count({
+        where: {
+          campaign: { rolloutGroupId },
+          state: { in: ["reserved", "dispatch_started", "sent", "uncertain"] },
+          reservedAt: { gt: new Date(now.getTime() - 60 * 60 * 1000) },
+        },
+      })).toBe(10);
+    } finally {
+      releaseControlLock();
+      resetTestHook();
+      resetBeforeControlLockHook();
+    }
+  });
+
+  it("gives the global hourly cap precedence over a rollout-group cap", async () => {
+    const now = new Date();
+    const campaignId = await createCampaign({
+      rolloutGroupId: randomUUID(),
+      rolloutGroupHourlyCap: 10,
+    });
+    const capacityPerson = await createPerson();
+    await db.publicRecoveryDispatch.createMany({
+      data: Array.from({ length: 10 }, () => dispatchFixture({
+        state: "sent",
+        igUserId: capacityPerson,
+        campaignId,
+        reservedAt: now,
+      })),
+    });
+    const candidate = await createCandidate(await createPerson(), campaignId);
+    const claim = await historical.claimCandidate(
+      candidate.id,
+      now,
+      new Date(now.getTime() + 60_000),
+    );
+
+    await expect(historical.reserveHistoricalDispatch({
+      candidateId: candidate.id,
+      claimToken: claim!.claimToken,
+      now,
+      hourlyCap: 100,
+      dailyCap: 100,
+      globalHourlyCap: 1,
+      globalDailyCap: 1_000,
+      prospectiveCooldownHours: 24,
+    })).resolves.toEqual({ kind: "blocked", reason: "global_hourly_cap_reached" });
+  });
+
+  it("does not count a rollout reservation at the exact rolling-hour lower bound", async () => {
+    const now = new Date();
+    const campaignId = await createCampaign({
+      rolloutGroupId: randomUUID(),
+      rolloutGroupHourlyCap: 1,
+    });
+    await db.publicRecoveryDispatch.create({
+      data: dispatchFixture({
+        state: "sent",
+        igUserId: await createPerson(),
+        campaignId,
+        reservedAt: new Date(now.getTime() - 60 * 60 * 1000),
+      }),
+    });
+    const candidate = await createCandidate(await createPerson(), campaignId);
+    const claim = await historical.claimCandidate(
+      candidate.id,
+      now,
+      new Date(now.getTime() + 60_000),
+    );
+
+    await expect(historical.reserveHistoricalDispatch({
+      candidateId: candidate.id,
+      claimToken: claim!.claimToken,
+      now,
+      hourlyCap: 100,
+      dailyCap: 100,
+      globalHourlyCap: 100,
+      globalDailyCap: 1_000,
+      prospectiveCooldownHours: 24,
+    })).resolves.toMatchObject({ kind: "reserved" });
+  });
+
+  it("locks campaign rollout metadata before reading it for a reservation", async () => {
+    const now = new Date();
+    const campaignId = await createCampaign({
+      rolloutGroupId: randomUUID(),
+      rolloutGroupHourlyCap: 10,
+    });
+    const candidate = await createCandidate(await createPerson(), campaignId);
+    const claim = await historical.claimCandidate(
+      candidate.id,
+      now,
+      new Date(now.getTime() + 60_000),
+    );
+    let releaseReservation!: () => void;
+    const reservationLocked = Promise.withResolvers<void>();
+    const reservationRelease = new Promise<void>((resolve) => {
+      releaseReservation = resolve;
+    });
+    let reservationReleased = false;
+    const releaseLockedReservation = () => {
+      if (reservationReleased) return;
+      reservationReleased = true;
+      releaseReservation();
+    };
+    const resetTestHook = setHistoricalReservationAfterLocksTestHook(async () => {
+      reservationLocked.resolve();
+      await reservationRelease;
+    });
+    try {
+      const reservation = historical.reserveHistoricalDispatch({
+        candidateId: candidate.id,
+        claimToken: claim!.claimToken,
+        now,
+        hourlyCap: 100,
+        dailyCap: 100,
+        globalHourlyCap: 100,
+        globalDailyCap: 1_000,
+        prospectiveCooldownHours: 24,
+      });
+      await reservationLocked.promise;
+      const probe = db.$transaction(async (tx) => {
+        await tx.$queryRaw`
+          /* rollout_metadata_lock_probe */
+          SELECT "id" FROM "recovery_campaign" WHERE "id" = ${campaignId}::uuid FOR UPDATE
+        `;
+      });
+      await waitForQueryToWaitOnLock("rollout_metadata_lock_probe");
+      releaseLockedReservation();
+      await expect(reservation).resolves.toMatchObject({ kind: "reserved" });
+      await expect(probe).resolves.toBeUndefined();
+    } finally {
+      releaseLockedReservation();
+      resetTestHook();
+    }
   });
 
   it("allows only one cross-system reservation for the final rolling-day slot", async () => {

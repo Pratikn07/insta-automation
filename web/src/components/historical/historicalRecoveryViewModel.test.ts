@@ -6,6 +6,7 @@ import {
   campaignPhaseView,
   suppressionLabel,
   recoveryRate,
+  audienceSegmentLabel,
   type CandidateRow,
   type CampaignRow,
 } from "./historicalRecoveryViewModel";
@@ -33,6 +34,8 @@ function candidate(overrides: Partial<CandidateRow> = {}): CandidateRow {
     audienceOriginConfidence: "low",
     createdAt: "2026-07-01T00:00:00.000Z",
     ...overrides,
+    audienceSegment: overrides.audienceSegment ?? null,
+    currentAudienceSegment: overrides.currentAudienceSegment ?? null,
   };
 }
 
@@ -55,6 +58,10 @@ function campaign(overrides: Partial<CampaignRow> = {}): CampaignRow {
     createdAt: "2026-08-01T00:00:00.000Z",
     progress: {},
     ...overrides,
+    audienceSegment: overrides.audienceSegment ?? null,
+    rolloutGroupId: overrides.rolloutGroupId ?? null,
+    rolloutGroupHourlyCap: overrides.rolloutGroupHourlyCap ?? null,
+    rolloutGroupSentLastHour: overrides.rolloutGroupSentLastHour ?? 0,
   };
 }
 
@@ -159,6 +166,19 @@ describe("suppressionLabel", () => {
 
   it("says withheld when there is no reason at all", () => {
     expect(suppressionLabel(null)).toBe("Withheld");
+  });
+});
+
+describe("audienceSegmentLabel", () => {
+  it.each([
+    ["western", "Western"],
+    ["other", "Other"],
+    ["unknown_cue", "Unknown — ambiguous cultural cue"],
+    ["unknown_generic", "Unknown — generic or no cultural cue"],
+    ["unknown_no_name", "Unknown — no username/display name"],
+    ["south_asian", "South Asian"],
+  ] as const)("labels %s without relying on a person's name", (segment, expected) => {
+    expect(audienceSegmentLabel(segment)).toBe(expected);
   });
 });
 

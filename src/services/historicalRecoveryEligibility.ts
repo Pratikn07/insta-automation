@@ -1,5 +1,5 @@
 import { assignRecoveryCohort } from "./dmRecoveryPolicy.js";
-import { evaluateHistoricalOrigin } from "./historicalRecoveryOriginPolicy.js";
+import { evaluateHistoricalAudience } from "./historicalRecoveryOriginPolicy.js";
 
 /**
  * Who may be contacted by a historical recovery campaign — as pure functions.
@@ -42,6 +42,8 @@ export type EligibilityFacts = {
   audienceOrigin: string | null;
   audienceOriginConfidence: string | null;
   audienceOriginMethod: string | null;
+  /** Current persisted audience classification; required for the segment-aware gate. */
+  audienceSegment: string | null;
   /** Frozen for compatibility and audit; it does not weaken the mandatory origin gate. */
   westernOnly: boolean;
 };
@@ -99,16 +101,18 @@ export function decideEligibility(facts: EligibilityFacts): EligibilityDecision 
     return { kind: "exclude", reason: "keyword_inactive" };
   }
 
-  // Historical recovery always requires the current Gemini classification. The legacy
-  // westernOnly flag remains frozen on the campaign for compatibility and audit, but
-  // cannot permit a public send when the classification is stale, absent, or disallowed.
-  const origin = evaluateHistoricalOrigin({
+  // Historical recovery always requires a current, internally consistent audience
+  // classification. The legacy westernOnly flag remains frozen on the campaign for
+  // compatibility and audit, but cannot permit a public send when the classification
+  // is stale, absent, invalid, or South Asian.
+  const audience = evaluateHistoricalAudience({
+    segment: facts.audienceSegment,
     origin: facts.audienceOrigin,
     confidence: facts.audienceOriginConfidence,
     method: facts.audienceOriginMethod,
   });
-  if (origin.kind !== "allow") {
-    return { kind: "exclude", reason: origin.reason };
+  if (audience.kind !== "allow") {
+    return { kind: "exclude", reason: audience.reason };
   }
 
   // Evidence classification. `gate_exhausted` is the stronger claim — we know the

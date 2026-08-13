@@ -5,7 +5,11 @@ import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Drawer } from "@/components/ui/drawer";
 import { Skeleton } from "@/components/ui/skeleton";
-import { campaignPhaseView } from "./historicalRecoveryViewModel";
+import {
+  audienceSegmentLabel,
+  campaignPhaseView,
+  type AudienceSegment,
+} from "./historicalRecoveryViewModel";
 
 type HistoricalCandidateDetail = {
   candidate: {
@@ -21,6 +25,8 @@ type HistoricalCandidateDetail = {
     audienceOrigin: string | null;
     audienceOriginMethod: string | null;
     audienceOriginConfidence: string | null;
+    audienceSegment: AudienceSegment | null;
+    currentAudienceSegment: AudienceSegment | null;
     arm: string;
     outcome: string;
     attempts: number;
@@ -74,6 +80,15 @@ function readable(value: string): string {
   return value.replace(/_/g, " ");
 }
 
+function detailErrorMessage(error: unknown): string {
+  const status = error && typeof error === "object" && "status" in error
+    ? (error as { status?: unknown }).status
+    : undefined;
+  if (status === 401) return "Your session has expired. Sign in and try again.";
+  if (status === 404) return "This recovery candidate is no longer available.";
+  return "We couldn't load this recovery candidate. Please try again.";
+}
+
 export function HistoricalCandidateDrawer({
   candidateId,
   onClose,
@@ -110,6 +125,8 @@ export function HistoricalCandidateDrawer({
     data !== undefined &&
     data.candidate.reviewedAt === null &&
     ["send_failed", "send_uncertain"].includes(data.candidate.outcome);
+  const audienceSegmentsDrift = data !== undefined
+    && data.candidate.audienceSegment !== data.candidate.currentAudienceSegment;
 
   return (
     <Drawer
@@ -118,10 +135,29 @@ export function HistoricalCandidateDrawer({
       title="Historical recovery evidence"
       description={data ? `${data.candidate.keywordSnapshot} · ${data.candidate.igUserId}` : undefined}
     >
-      {detail.isLoading || !data ? (
+      {detail.isLoading ? (
         <div className="space-y-3">
           <Skeleton className="h-20 w-full" />
           <Skeleton className="h-32 w-full" />
+        </div>
+      ) : detail.isError ? (
+        <div role="alert" className="space-y-3 rounded-md border border-destructive/50 p-4 text-sm">
+          <p>{detailErrorMessage(detail.error)}</p>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => void detail.refetch()}
+            disabled={detail.isFetching}
+          >
+            {detail.isFetching ? "Retrying…" : "Retry"}
+          </Button>
+        </div>
+      ) : !data ? (
+        <div role="alert" className="space-y-3 rounded-md border border-destructive/50 p-4 text-sm">
+          <p>We couldn't load this recovery candidate. Please try again.</p>
+          <Button type="button" variant="outline" onClick={() => void detail.refetch()}>
+            Retry
+          </Button>
         </div>
       ) : (
         <div className="space-y-6 text-sm">
@@ -141,6 +177,19 @@ export function HistoricalCandidateDrawer({
               <dd>{data.candidate.audienceOriginMethod ? readable(data.candidate.audienceOriginMethod) : "Not recorded"}</dd>
               <dt className="text-muted-foreground">Origin confidence</dt>
               <dd>{data.candidate.audienceOriginConfidence ? readable(data.candidate.audienceOriginConfidence) : "Not recorded"}</dd>
+              {audienceSegmentsDrift ? (
+                <>
+                  <dt className="text-muted-foreground">Audience at selection</dt>
+                  <dd>{data.candidate.audienceSegment ? audienceSegmentLabel(data.candidate.audienceSegment) : "Not recorded"}</dd>
+                  <dt className="text-muted-foreground">Current audience</dt>
+                  <dd>{data.candidate.currentAudienceSegment ? audienceSegmentLabel(data.candidate.currentAudienceSegment) : "Not recorded"}</dd>
+                </>
+              ) : (
+                <>
+                  <dt className="text-muted-foreground">Audience segment</dt>
+                  <dd>{data.candidate.audienceSegment ? audienceSegmentLabel(data.candidate.audienceSegment) : "Not recorded"}</dd>
+                </>
+              )}
               <dt className="text-muted-foreground">Outcome</dt>
               <dd>{readable(data.candidate.outcome)}</dd>
               <dt className="text-muted-foreground">Attempts</dt>

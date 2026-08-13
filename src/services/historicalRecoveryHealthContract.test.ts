@@ -84,7 +84,7 @@ afterAll(async () => {
 });
 
 /** A running, approved campaign. */
-async function runningCampaign(): Promise<string> {
+async function runningCampaign(rolloutGroupId?: string): Promise<string> {
   const row = await prisma.recoveryCampaign.create({
     data: {
       phase: "unknown_read_pilot",
@@ -98,6 +98,7 @@ async function runningCampaign(): Promise<string> {
       approvedBy: "owner",
       approvedAt: T0,
       startedAt: T0,
+      ...(rolloutGroupId ? { rolloutGroupId, rolloutGroupHourlyCap: 10 } : {}),
     },
   });
   return row.id;
@@ -405,6 +406,23 @@ describeWithLocalDatabase("a tripped stop condition pauses only that campaign", 
 
     expect((await campaignRow(failing))!.state).toBe("paused");
     expect((await campaignRow(healthy))!.state).toBe("running");
+  });
+
+  it("keeps rate-based evaluation campaign-specific inside a rollout group", async () => {
+    const rolloutGroupId = randomUUID();
+    const healthy = await runningCampaign(rolloutGroupId);
+    const failing = await runningCampaign(rolloutGroupId);
+    await candidates(healthy, 10, { outcome: "sent" });
+    await candidates(failing, 5, { outcome: "sent" });
+    await candidates(failing, 5, { outcome: "send_failed" });
+
+    await health.evaluateCampaignHealth(failing, T0);
+
+    expect(await campaignRow(failing)).toEqual({
+      state: "paused",
+      pauseReason: "auto:public_failure_rate",
+    });
+    expect(await campaignRow(healthy)).toEqual({ state: "running", pauseReason: null });
   });
 
   it("does not pause a campaign that is sending cleanly", async () => {

@@ -1,6 +1,11 @@
 import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
 import { logEvent } from "./eventLogger.js";
+import {
+  lockCampaignGroupMembers,
+  lockRecoveryCampaignControl,
+  pauseLockedCampaignGroup,
+} from "./recoveryCampaignControl.js";
 
 export type CampaignHealthSignal =
   | "complaint"
@@ -77,15 +82,21 @@ export async function recordCampaignHealthObservation(input: {
   }
 
   const result = await prisma.$transaction(async (tx) => {
-    // Serialize with startHistoricalDispatch's final campaign lock. If this commits
-    // first, start sees `paused` and cannot authorize Meta. If dispatch start commits
-    // first, that attempt is explicitly in flight and can finalize truthfully while
-    // every later start is fenced by this pause.
-    await tx.$queryRaw`
-      SELECT "id" FROM "recovery_campaign"
+    // Every health/group/dispatch path owns this singleton before any campaign row.
+    // That serialization makes the required target-first identity read safe: although
+    // the later group lock is ordered by ID, another serialized path cannot hold a
+    // sibling and wait for this target, so the apparent target/group inversion cannot
+    // form a deadlock cycle.
+    await lockRecoveryCampaignControl(tx);
+    const [target] = await tx.$queryRaw<Array<{ id: string; rolloutGroupId: string | null }>>`
+      SELECT "id", "rollout_group_id" AS "rolloutGroupId"
+      FROM "recovery_campaign"
       WHERE "id" = ${input.campaignId}::uuid
       FOR UPDATE
     `;
+    const groupMembers = target?.rolloutGroupId
+      ? await lockCampaignGroupMembers(tx, target.rolloutGroupId)
+      : null;
 
     const inserted = await tx.recoveryCampaignHealthObservation.createMany({
       data: [{
@@ -98,21 +109,31 @@ export async function recordCampaignHealthObservation(input: {
       skipDuplicates: true,
     });
 
-    const paused = inserted.count === 1
-      ? await tx.recoveryCampaign.updateMany({
-          where: { id: input.campaignId, state: "running" },
-          data: {
-            state: "paused",
-            pausedAt: input.observedAt,
-            pauseReason: `auto:${input.kind}`,
-          },
-        })
-      : { count: 0 };
+    let legacyPaused = false;
+    if (inserted.count === 1 && target?.rolloutGroupId && groupMembers) {
+      await pauseLockedCampaignGroup(
+        tx,
+        target.rolloutGroupId,
+        groupMembers,
+        `auto:${input.kind}`,
+        input.observedAt,
+      );
+    } else if (inserted.count === 1) {
+      const paused = await tx.recoveryCampaign.updateMany({
+        where: { id: input.campaignId, state: "running" },
+        data: {
+          state: "paused",
+          pausedAt: input.observedAt,
+          pauseReason: `auto:${input.kind}`,
+        },
+      });
+      legacyPaused = paused.count === 1;
+    }
 
-    return { created: inserted.count === 1, paused: paused.count === 1 };
+    return { created: inserted.count === 1, legacyPaused };
   });
 
-  if (result.paused) {
+  if (result.legacyPaused) {
     await logEvent("historical_campaign_auto_paused", {
       campaignId: input.campaignId,
       reason: input.kind,

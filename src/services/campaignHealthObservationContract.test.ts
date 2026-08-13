@@ -7,6 +7,7 @@ const describeWithDatabase = databaseUrl ? describe.sequential : describe.skip;
 
 let db: PrismaClient;
 let observations: typeof import("./campaignHealthObservation.js");
+let campaignControl: typeof import("./recoveryCampaignControl.js");
 const prefix = `health-observation-${randomUUID()}`;
 const igUserId = `${prefix}-person`;
 
@@ -45,7 +46,7 @@ async function pendingInbound(text: string, mid: string, observedAt: Date): Prom
   return message.id;
 }
 
-async function campaign(): Promise<string> {
+async function campaign(rolloutGroupId?: string): Promise<string> {
   const row = await db.recoveryCampaign.create({
     data: {
       phase: "unknown_read_pilot",
@@ -55,6 +56,7 @@ async function campaign(): Promise<string> {
       state: "running",
       approvedBy: "contract",
       approvedAt: new Date("2026-08-08T20:00:00Z"),
+      ...(rolloutGroupId ? { rolloutGroupId, rolloutGroupHourlyCap: 10 } : {}),
     },
   });
   return row.id;
@@ -67,6 +69,7 @@ beforeAll(async () => {
   expect(process.env.DATABASE_URL).toBe(databaseUrl);
   db = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
   observations = await import("./campaignHealthObservation.js");
+  campaignControl = await import("./recoveryCampaignControl.js");
   await db.igUser.create({ data: { id: igUserId } });
 });
 
@@ -83,6 +86,108 @@ afterAll(async () => {
 });
 
 describeWithDatabase("campaign health observations", () => {
+  it.each([
+    "complaint",
+    "opt_out",
+    "block",
+    "negative_reply",
+    "classifier_anomaly",
+  ] as const)("pauses every running group sibling for a direct %s signal", async (kind) => {
+    const rolloutGroupId = randomUUID();
+    const targetId = await campaign(rolloutGroupId);
+    const siblingId = await campaign(rolloutGroupId);
+    const unrelatedId = await campaign(randomUUID());
+    const input = {
+      campaignId: targetId,
+      kind,
+      sourceKey: `group:${kind}:${randomUUID()}`,
+      observedAt: new Date("2026-08-08T20:00:00Z"),
+    };
+
+    await expect(observations.recordCampaignHealthObservation(input)).resolves.toEqual({
+      created: true,
+    });
+    await expect(observations.recordCampaignHealthObservation(input)).resolves.toEqual({
+      created: false,
+    });
+
+    expect(await db.recoveryCampaign.findMany({
+      where: { id: { in: [targetId, siblingId] } },
+      select: { id: true, state: true, pauseReason: true },
+      orderBy: { id: "asc" },
+    })).toEqual(
+      [targetId, siblingId]
+        .sort()
+        .map((id) => ({ id, state: "paused", pauseReason: `auto:${kind}` })),
+    );
+    expect(
+      await db.recoveryCampaign.findUnique({
+        where: { id: unrelatedId },
+        select: { state: true, pauseReason: true },
+      }),
+    ).toEqual({ state: "running", pauseReason: null });
+    const groupAudits = (await db.eventLog.findMany({
+      where: { kind: "historical_campaign_group_paused" },
+      select: { payload: true },
+    })).filter((event) => (
+      event.payload as { rolloutGroupId?: string }
+    ).rolloutGroupId === rolloutGroupId);
+    expect(groupAudits).toEqual([{
+      payload: {
+        rolloutGroupId,
+        reason: `auto:${kind}`,
+        pausedCampaignIds: [targetId, siblingId].sort(),
+        skipped: [],
+      },
+    }]);
+  });
+
+  it("writes one durable group audit for each successful owner invocation", async () => {
+    const rolloutGroupId = randomUUID();
+    const targetId = await campaign(rolloutGroupId);
+    const siblingId = await campaign(rolloutGroupId);
+
+    await campaignControl.pauseCampaignGroup(rolloutGroupId, "owner stop");
+    await campaignControl.pauseCampaignGroup(rolloutGroupId, "owner stop");
+
+    const payloads = (await db.eventLog.findMany({
+      where: { kind: "historical_campaign_group_paused" },
+      select: { payload: true },
+      orderBy: { createdAt: "asc" },
+    }))
+      .map((event) => event.payload as {
+        rolloutGroupId?: string;
+        pausedCampaignIds?: string[];
+        skipped?: Array<{ campaignId: string; state: string }>;
+      })
+      .filter((payload) => payload.rolloutGroupId === rolloutGroupId);
+
+    expect(payloads).toHaveLength(2);
+    expect(payloads[0]).toMatchObject({ pausedCampaignIds: [targetId, siblingId].sort(), skipped: [] });
+    expect(payloads[1]).toMatchObject({
+      pausedCampaignIds: [],
+      skipped: [targetId, siblingId]
+        .sort()
+        .map((campaignId) => ({ campaignId, state: "paused" })),
+    });
+  });
+
+  it("rejects an unknown group without a durable audit", async () => {
+    const rolloutGroupId = randomUUID();
+
+    await expect(
+      campaignControl.pauseCampaignGroup(rolloutGroupId, "owner stop"),
+    ).rejects.toMatchObject({ code: "campaign_group_not_found" });
+
+    const audit = (await db.eventLog.findMany({
+      where: { kind: "historical_campaign_group_paused" },
+      select: { payload: true },
+    })).find((event) => (
+      event.payload as { rolloutGroupId?: string }
+    ).rolloutGroupId === rolloutGroupId);
+    expect(audit).toBeUndefined();
+  });
+
   it("creates one append-only observation for a replayed source key", async () => {
     const campaignId = await campaign();
     const input = {

@@ -6,13 +6,22 @@ import { getIgUsers } from "../services/igUserService.js";
 import { env } from "../config/env.js";
 import {
   approveCampaign,
+  approveCampaignGroup,
   pauseCampaign,
+  pauseCampaignGroup,
   resumeCampaign,
+  resumeCampaignGroup,
   cancelCampaign,
   advanceCampaignStage,
 } from "../services/recoveryCampaignControl.js";
 import { recordCampaignHealthObservation } from "../services/campaignHealthObservation.js";
 import { logEvent } from "../services/eventLogger.js";
+import { historicalCandidateDetail } from "../services/historicalRecoveryCandidateDetail.js";
+import {
+  markHistoricalCandidateReviewed,
+} from "../services/historicalRecoveryReview.js";
+
+export { HISTORICAL_REVIEWABLE_OUTCOMES } from "../services/historicalRecoveryReview.js";
 
 /**
  * Read models and owner actions for historical recovery campaigns.
@@ -118,13 +127,14 @@ export function candidateViewWhere(view: CandidateView): Prisma.RecoveryCandidat
  * fixed reporting bound here also protects the operator view from legacy or manually
  * imported timestamps that predate that invariant.
  */
-async function listBoundedRecoveredCandidateIds(campaignId?: string): Promise<string[]> {
+async function listBoundedRecoveredCandidateIds(campaignId: string | undefined, asOf: Date): Promise<string[]> {
   const requestedCampaignId = campaignId ?? null;
   const rows = await prisma.$queryRaw<Array<{ id: string }>>`
     SELECT candidate."id"
     FROM "recovery_candidate" candidate
     JOIN "recovery_campaign" campaign ON campaign."id" = candidate."campaign_id"
     WHERE (${requestedCampaignId}::uuid IS NULL OR candidate."campaign_id" = ${requestedCampaignId}::uuid)
+      AND candidate."created_at" <= ${asOf}
       AND candidate."later_completed_at" IS NOT NULL
       AND candidate."outcome" IN ('sent', 'send_uncertain', 'holdout_withheld')
       AND candidate."later_completed_at" >= CASE
@@ -156,10 +166,11 @@ historicalRecoveryRouter.get("/campaigns", async (_req, res) => {
     take: 50,
   });
   const campaignIds = campaigns.map((campaign) => campaign.id);
+  const hourAgo = new Date(Date.now() - 60 * 60 * 1000);
 
   // One grouped query rather than one per campaign: at 985 candidates a per-row
   // loop would issue a query per outcome per campaign.
-  const [grouped, attributionRows] = await Promise.all([
+  const [grouped, attributionRows, rolloutGroupCapacity] = await Promise.all([
     prisma.recoveryCandidate.groupBy({
       by: ["campaignId", "outcome", "arm"],
       where: { campaignId: { in: campaignIds } },
@@ -178,7 +189,23 @@ historicalRecoveryRouter.get("/campaigns", async (_req, res) => {
         campaign: { select: { startedAt: true } },
       },
     }),
+    // A group is the capacity boundary. Count every campaign in it, rather than
+    // only the campaign selected in this dashboard, so this read model cannot make
+    // a shared 10/hour limit look like four independent limits.
+    prisma.$queryRaw<Array<{ rolloutGroupId: string; sentLastHour: number }>>`
+      SELECT campaign."rollout_group_id" AS "rolloutGroupId", COUNT(*)::int AS "sentLastHour"
+      FROM "public_recovery_dispatch" dispatch
+      JOIN "recovery_campaign" campaign ON campaign."id" = dispatch."campaign_id"
+      WHERE campaign."rollout_group_id" IS NOT NULL
+        AND dispatch."state" IN ('reserved', 'dispatch_started', 'sent', 'uncertain')
+        AND dispatch."reserved_at" > ${hourAgo}
+      GROUP BY campaign."rollout_group_id"
+    `,
   ]);
+
+  const rolloutCapacityByGroup = new Map(
+    rolloutGroupCapacity.map((row) => [row.rolloutGroupId, row.sentLastHour]),
+  );
 
   const progress = new Map<string, Record<string, number>>();
   for (const row of grouped) {
@@ -217,6 +244,13 @@ historicalRecoveryRouter.get("/campaigns", async (_req, res) => {
       selectionVersion: c.selectionVersion,
       selectionFingerprint: c.selectionFingerprint,
       decisionHash: c.decisionHash,
+      audienceSegment: c.audienceSegment,
+      rolloutGroupId: c.rolloutGroupId,
+      rolloutGroupHourlyCap: c.rolloutGroupHourlyCap,
+      // Ungrouped legacy campaigns have no shared-capacity boundary.
+      rolloutGroupSentLastHour: c.rolloutGroupId
+        ? rolloutCapacityByGroup.get(c.rolloutGroupId) ?? 0
+        : 0,
       copyVersion: c.copyVersion,
       eligibilityPolicyVersion: c.eligibilityPolicyVersion,
       sourceDataCutoff: c.sourceDataCutoff.toISOString(),
@@ -249,20 +283,35 @@ const listQuery = z.object({
   cursor: z.string().uuid().optional(),
   // Pins the pagination boundary so rows cannot shift between pages while the
   // worker is sending — the same fix applied to the prospective list.
-  asOf: z.string().datetime().optional(),
+  asOf: z.string().datetime().transform((value) => new Date(value)).optional(),
+}).superRefine(({ cursor, asOf }, context) => {
+  if (Boolean(cursor) !== Boolean(asOf)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "cursor_and_asOf_must_be_provided_together" });
+  }
 });
 
 /** Candidate list for one view, with the counts every tab badge reads from. */
 historicalRecoveryRouter.get("/candidates", async (req, res) => {
+  const requestNow = new Date();
   const parsed = listQuery.safeParse(req.query);
   if (!parsed.success) {
     res.status(400).json({ error: "invalid_query", detail: parsed.error.flatten() });
     return;
   }
-  const { campaignId, view, limit, cursor } = parsed.data;
+  const { campaignId, view, limit, cursor, asOf } = parsed.data;
+  if (asOf && asOf > requestNow) {
+    res.status(400).json({ error: "invalid_query" });
+    return;
+  }
+  const paginationAsOf = asOf ?? requestNow;
 
-  const base: Prisma.RecoveryCandidateWhereInput = campaignId ? { campaignId } : {};
-  const boundedRecoveredIds = await listBoundedRecoveredCandidateIds(campaignId);
+  const base: Prisma.RecoveryCandidateWhereInput = {
+    ...(campaignId ? { campaignId } : {}),
+    // Candidate selection is append-only, so pinning its creation boundary keeps
+    // an in-progress pagination run from gaining newly selected rows on page two.
+    createdAt: { lte: paginationAsOf },
+  };
+  const boundedRecoveredIds = await listBoundedRecoveredCandidateIds(campaignId, paginationAsOf);
   const where: Prisma.RecoveryCandidateWhereInput = {
     ...base,
     ...candidateViewWhere(view),
@@ -315,6 +364,9 @@ historicalRecoveryRouter.get("/candidates", async (req, res) => {
   res.json({
     counts,
     nextCursor: hasMore ? page[page.length - 1]?.id ?? null : null,
+    // The first response establishes this query's boundary; cursor requests echo
+    // the validated value so a client never mixes pages from different reads.
+    asOf: paginationAsOf.toISOString(),
     candidates: page.map((r) => {
       const observation = buildHistoricalAttributionObservation({
         ...r,
@@ -345,6 +397,8 @@ historicalRecoveryRouter.get("/candidates", async (req, res) => {
         audienceOrigin: r.audienceOrigin,
         audienceOriginMethod: r.audienceOriginMethod,
         audienceOriginConfidence: r.audienceOriginConfidence,
+        audienceSegment: r.audienceSegment,
+        currentAudienceSegment: usersById[r.igUserId]?.audienceSegment ?? null,
         sentAt: r.sentAt?.toISOString() ?? null,
         publicReplyId: r.publicReplyId,
         suppressionReason: r.suppressionReason,
@@ -356,6 +410,51 @@ historicalRecoveryRouter.get("/candidates", async (req, res) => {
       };
     }),
   });
+});
+
+/** Full immutable candidate evidence plus the current audience classification. */
+historicalRecoveryRouter.get("/candidates/:id", async (req, res, next) => {
+  const candidateId = z.string().uuid().safeParse(req.params.id);
+  if (!candidateId.success) {
+    res.status(400).json({ error: "invalid_candidate_id" });
+    return;
+  }
+  try {
+    const detail = await historicalCandidateDetail(candidateId.data);
+    if (!detail) {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
+    res.json(detail);
+  } catch (error) {
+    next(error);
+  }
+});
+
+historicalRecoveryRouter.post("/candidates/:id/mark-reviewed", async (req, res, next) => {
+  const candidateId = z.string().uuid().safeParse(req.params.id);
+  if (!candidateId.success) {
+    res.status(400).json({ error: "invalid_candidate_id" });
+    return;
+  }
+
+  try {
+    const result = await markHistoricalCandidateReviewed({
+      candidateId: candidateId.data,
+      actor: req.adminEmail ?? null,
+    });
+    if (result.kind === "not_found") {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
+    if (result.kind === "reviewed" || result.kind === "already_reviewed") {
+      res.status(204).end();
+      return;
+    }
+    res.status(409).json({ error: "conflict", outcome: result.outcome });
+  } catch (error) {
+    next(error);
+  }
 });
 
 const approveBody = z.object({
@@ -406,6 +505,111 @@ historicalRecoveryRouter.post("/campaigns/:id/pause", async (req, res) => {
     return;
   }
   res.json(result);
+});
+
+const groupPauseParams = z.object({ id: z.string().uuid() });
+const groupPauseBody = z.object({ reason: z.string().trim().min(1).max(200) });
+
+/** Owner emergency stop for every running campaign in one expanded rollout. */
+historicalRecoveryRouter.post("/rollout-groups/:id/pause", async (req, res, next) => {
+  const params = groupPauseParams.safeParse(req.params);
+  const body = groupPauseBody.safeParse(req.body);
+  if (!params.success || !body.success) {
+    res.status(400).json({ error: "invalid_group_pause" });
+    return;
+  }
+
+  try {
+    const result = await pauseCampaignGroup(params.data.id, body.data.reason, new Date());
+    res.json(result);
+  } catch (error) {
+    if (
+      error
+      && typeof error === "object"
+      && "code" in error
+      && error.code === "campaign_group_not_found"
+    ) {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
+    next(error);
+  }
+});
+
+const expandedSegments = [
+  "other", "unknown_cue", "unknown_generic", "unknown_no_name",
+] as const;
+const groupTransitionBody = z.object({
+  selectorPhase: z.enum(["confirmed_failure", "unknown_read_pilot"]),
+  campaigns: z.array(z.object({
+    id: z.string().uuid(),
+    segment: z.enum(expandedSegments),
+    decisionHash: z.string().regex(/^[a-f0-9]{64}$/),
+  }).strict()).min(1).max(4),
+}).strict().superRefine((value, context) => {
+  const ids = new Set<string>();
+  let previousIndex = -1;
+  value.campaigns.forEach((campaign, index) => {
+    const segmentIndex = expandedSegments.indexOf(campaign.segment);
+    if (ids.has(campaign.id) || segmentIndex <= previousIndex) {
+      context.addIssue({ code: "custom", path: ["campaigns", index], message: "campaign topology invalid" });
+    }
+    ids.add(campaign.id);
+    previousIndex = segmentIndex;
+  });
+});
+
+/** Atomically validate and seal every non-empty member before any campaign changes. */
+historicalRecoveryRouter.post("/rollout-groups/:id/approve", async (req, res, next) => {
+  const params = groupPauseParams.safeParse(req.params);
+  const body = groupTransitionBody.safeParse(req.body);
+  if (!params.success || !body.success || !req.adminEmail) {
+    res.status(!req.adminEmail ? 401 : 400).json({
+      error: !req.adminEmail ? "owner_auth_required" : "invalid_group_transition",
+    });
+    return;
+  }
+  try {
+    const result = await approveCampaignGroup({
+      rolloutGroupId: params.data.id,
+      campaigns: body.data.campaigns,
+      selectorPhase: body.data.selectorPhase,
+      approvedBy: req.adminEmail,
+    });
+    if (!result.ok) {
+      res.status(409).json({ error: result.reason });
+      return;
+    }
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/** Atomically start the same exact, already-approved group after fresh verification. */
+historicalRecoveryRouter.post("/rollout-groups/:id/resume", async (req, res, next) => {
+  const params = groupPauseParams.safeParse(req.params);
+  const body = groupTransitionBody.safeParse(req.body);
+  if (!params.success || !body.success || !req.adminEmail) {
+    res.status(!req.adminEmail ? 401 : 400).json({
+      error: !req.adminEmail ? "owner_auth_required" : "invalid_group_transition",
+    });
+    return;
+  }
+  try {
+    const result = await resumeCampaignGroup({
+      rolloutGroupId: params.data.id,
+      campaigns: body.data.campaigns,
+      selectorPhase: body.data.selectorPhase,
+    });
+    if (!result.ok) {
+      res.status(409).json({ error: result.reason });
+      return;
+    }
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
 });
 
 /**

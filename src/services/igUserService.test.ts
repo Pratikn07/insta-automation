@@ -13,7 +13,7 @@ vi.mock("./eventLogger.js", () => ({ describeGraphError: () => ({ category: "tes
 
 const { rememberUsername, resolveUsername } = await import("./igUserService.js");
 
-/** The five columns retired when the identity behind a verdict changes. */
+/** The six columns retired when the identity behind a verdict changes. */
 const CLEARED = {
   inferredOrigin: null,
   originConfidence: null,
@@ -23,6 +23,7 @@ const CLEARED = {
   // `resolveAudienceOrigin` happens to test the verdict as well as the method.
   originMethod: null,
   originCheckedAt: null,
+  audienceSegment: null,
 };
 
 beforeEach(() => {
@@ -103,7 +104,13 @@ describe("origin verdict lifecycle", () => {
     const { update } = upsert.mock.calls[0][0];
     expect(update.originMethod).toBeNull();
     // The whole set moves together or the row is self-contradictory.
-    for (const column of ["inferredOrigin", "originConfidence", "originEvidence", "originCheckedAt"]) {
+    for (const column of [
+      "inferredOrigin",
+      "originConfidence",
+      "originEvidence",
+      "originCheckedAt",
+      "audienceSegment",
+    ]) {
       expect(update[column]).toBeNull();
     }
   });

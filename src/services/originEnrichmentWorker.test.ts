@@ -99,7 +99,13 @@ describe("runOriginEnrichmentTick", () => {
     arrange([{ id: "u1", username: "priya_s", name: "Priya Sharma" }]);
     classifyOrigins.mockResolvedValue({
       verdicts: [
-        { id: "u1", origin: "south_asian", confidence: "high", evidence: "Indian given name Priya" },
+        {
+          id: "u1",
+          origin: "south_asian",
+          confidence: "high",
+          audienceSegment: "south_asian",
+          evidence: "Indian given name Priya",
+        },
       ],
       costUsd: 0.0001,
     });
@@ -113,6 +119,7 @@ describe("runOriginEnrichmentTick", () => {
         originConfidence: "high",
         originMethod: CURRENT_ORIGIN_METHOD,
         originEvidence: "Indian given name Priya",
+        audienceSegment: "south_asian",
         originCheckedAt: expect.any(Date),
       }),
     );
@@ -163,12 +170,14 @@ describe("runOriginEnrichmentTick", () => {
       where: { id: "u1", username: null, name: null, ...STILL_DUE },
     }));
     expect(writtenData()).toEqual(
-      expect.objectContaining({
+      {
         inferredOrigin: "unknown",
         originConfidence: "low",
         originMethod: CURRENT_ORIGIN_METHOD,
+        originEvidence: "no name or username to classify",
+        audienceSegment: "unknown_no_name",
         originCheckedAt: expect.any(Date),
-      }),
+      },
     );
   });
 

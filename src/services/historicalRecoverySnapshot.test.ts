@@ -82,6 +82,15 @@ function exclusion(
 }
 
 describe("selection snapshot fingerprint", () => {
+  it("preserves the hashes of a legacy snapshot with no expanded-audience keys", () => {
+    expect(buildSelectionFingerprint(config())).toBe(
+      "87d793c41f5bceffe33b44438a9df17153c5f3acd2c350f35c94a91add4ee812",
+    );
+    expect(buildSelectionDecisionHash(config(), [inclusion()], [exclusion()])).toBe(
+      "c035ccf32abad9027775287e1c958003e52ce5971a0507c5ab8e65cdb3dd934b",
+    );
+  });
+
   it("changes for every normalized selector input", () => {
     const base = buildSelectionFingerprint(config());
     const variants: SelectionSnapshotConfiguration[] = [
@@ -124,6 +133,31 @@ describe("selection snapshot fingerprint", () => {
 });
 
 describe("selection snapshot decision hash", () => {
+  it("changes when only the selected segment or rollout group changes", () => {
+    const expanded = config({
+      eligibilityPolicyVersion: "eligibility-v4-expanded-audience",
+      audienceSegment: "other",
+      rolloutGroupId: "11111111-1111-4111-8111-111111111111",
+      rolloutGroupHourlyCap: 2,
+    });
+    const base = buildSelectionDecisionHash(
+      expanded,
+      [inclusion({ audienceSegment: "other" })],
+      [exclusion()],
+    );
+
+    expect(buildSelectionDecisionHash(
+      expanded,
+      [inclusion({ audienceSegment: "western" })],
+      [exclusion()],
+    )).not.toBe(base);
+    expect(buildSelectionDecisionHash(
+      { ...expanded, rolloutGroupId: "22222222-2222-4222-8222-222222222222" },
+      [inclusion({ audienceSegment: "other" })],
+      [exclusion()],
+    )).not.toBe(base);
+  });
+
   it("covers origin method, arms, ordered approved sources, source reason, and exclusions", () => {
     const base = buildSelectionDecisionHash(config(), [inclusion()], [exclusion()]);
     const variants = [
@@ -190,6 +224,22 @@ describe("stored selection snapshot verification", () => {
 
   it("accepts the exact complete manifest", () => {
     expect(verifyStoredSelectionSnapshot(stored())).toEqual({ ok: true });
+  });
+
+  it("requires the frozen exact audience and rollout metadata for expanded snapshots", () => {
+    const configuration = config({
+      eligibilityPolicyVersion: "eligibility-v4-expanded-audience",
+    });
+    const inclusions = [inclusion()];
+    expect(verifyStoredSelectionSnapshot({
+      configuration,
+      selectionFingerprint: buildSelectionFingerprint(configuration),
+      decisionHash: buildSelectionDecisionHash(configuration, inclusions, [exclusion()]),
+      candidateCount: inclusions.length,
+      excludedCount: 1,
+      inclusions,
+      exclusions: [exclusion()],
+    })).toEqual({ ok: false, reason: "snapshot_incomplete" });
   });
 
   it.each([

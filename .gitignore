@@ -23,3 +23,5 @@ prisma/migrations/dev.db*
 # Local isolated development worktrees
 .worktrees/
 .vercel
+.expanded-recovery-rollout.state.json
+.expanded-recovery-rollout.state.json.cleanup-required
