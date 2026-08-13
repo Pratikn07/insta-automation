@@ -871,6 +871,10 @@ async function main(): Promise<void> {
     throw error;
   }
   try {
+    // This file is generated only while this process owns the exclusive lock.
+    // A prior SIGKILL/power loss can leave it behind; removing it here prevents
+    // that recoverable crash residue from permanently blocking fail-closed cleanup.
+    await rm(path.join(root, ARTIFACT_FILE), { force: true });
     try {
       await access(startupMarker);
       if (command !== "retry-cleanup") throw new Error("startup_cleanup_required_lock");
