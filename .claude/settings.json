@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "defaultMode": "dontAsk",
+    "deny": [
+      "Read(./.env)",
+      "Edit(./.env)",
+      "Read(./secrets/**)",
+      "Edit(./secrets/**)"
+    ]
+  }
+}
