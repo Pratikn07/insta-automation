@@ -101,12 +101,17 @@ export const guideFollowDef: FunnelDef = {
       label: "Following (first reading)",
       definition:
         "Measured as following when the recheck worker read them ~3 days after delivery. A lower bound: someone who follows on day 10 is not counted, and anyone the worker has not reached yet is missing entirely.",
+      // The shortfall mixes "did not follow" with "not yet read", and nothing
+      // in the data separates them. Reporting it as loss would overstate.
+      coverageOnly: true,
     },
     {
       key: "followingD21",
       label: "Still following (21 days)",
       definition:
         "Read a SECOND time ~21 days later and still following. This is the only stage that can distinguish a real follower from someone who followed to unlock a freebie and left.",
+      // Almost entirely worker backlog: 5 of 1,400 eligible measured so far.
+      coverageOnly: true,
     },
   ],
 };

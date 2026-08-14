@@ -1,8 +1,33 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { FollowerStock, Stats } from "@/lib/types";
+import type { FollowerStock, GuideFollowResult, Stats } from "@/lib/types";
 import type { UsWeekOverWeek } from "@/lib/followerFlow";
 import { FollowerKpiRow } from "./FollowerKpiRow";
+
+// Only the third tile reads this, and only its headline. Everything else is
+// present so the fixture matches the real API response shape.
+const funnel = {
+  key: "guide-follow",
+  name: "Guide → follow",
+  question: "",
+  window: { from: "2026-07-15T00:00:00.000Z", to: "2026-08-14T00:00:00.000Z" },
+  cohortSize: 3383,
+  stages: [],
+  headline: {
+    fromStage: "gateSent",
+    toStage: "replied",
+    label: "Reply rate",
+    rationale: "",
+    rate: { numerator: 1589, denominator: 3360, pct: 47.3, belowMinSample: false },
+  },
+  followGateConversion: { numerator: 202, denominator: 270, pct: 74.8, belowMinSample: false },
+  stuckAtWall: 68,
+  askDistribution: [],
+  expressLane: 1355,
+  byEntryPath: [],
+  retention: { numerator: 5, denominator: 5, pct: 100, belowMinSample: false },
+  homeTileCohort: { deliveredToNonFollower: 29, ofWhichRedelivery: 1 },
+} satisfies GuideFollowResult;
 
 const stock: FollowerStock = {
   capturedAt: "2026-07-25T23:24:27.681Z",
@@ -56,8 +81,10 @@ describe("FollowerKpiRow", () => {
         stock={stock}
         avgPerDay7={108}
         stats={stats}
+        funnel={funnel}
         isFlowLoading={false}
         isStatsLoading={false}
+        isFunnelLoading={false}
       />,
     );
 
@@ -74,8 +101,10 @@ describe("FollowerKpiRow", () => {
         stock={stock}
         avgPerDay7={108}
         stats={stats}
+        funnel={funnel}
         isFlowLoading={false}
         isStatsLoading={false}
+        isFunnelLoading={false}
       />,
     );
     expect(html).toContain("newest 2 still settling");
@@ -88,8 +117,10 @@ describe("FollowerKpiRow", () => {
         stock={stock}
         avgPerDay7={108}
         stats={stats}
+        funnel={funnel}
         isFlowLoading={false}
         isStatsLoading={false}
+        isFunnelLoading={false}
       />,
     );
     expect(html).toContain("Not enough history yet for a week-over-week read");
@@ -103,8 +134,10 @@ describe("FollowerKpiRow", () => {
         stock={stock}
         avgPerDay7={108}
         stats={stats}
+        funnel={funnel}
         isFlowLoading={false}
         isStatsLoading={false}
+        isFunnelLoading={false}
       />,
     );
     expect(html).toContain("4,355");
@@ -119,8 +152,10 @@ describe("FollowerKpiRow", () => {
         stock={stock}
         avgPerDay7={108}
         stats={stats}
+        funnel={funnel}
         isFlowLoading={false}
         isStatsLoading={false}
+        isFunnelLoading={false}
       />,
     );
     // "How many followers were added a day" is a must-have; trimming the panel
@@ -135,8 +170,10 @@ describe("FollowerKpiRow", () => {
         stock={stock}
         avgPerDay7={91}
         stats={stats}
+        funnel={funnel}
         isFlowLoading={false}
         isStatsLoading={false}
+        isFunnelLoading={false}
       />,
     );
     expect(html).toContain("4,578");
@@ -151,29 +188,53 @@ describe("FollowerKpiRow", () => {
         stock={{ ...stock, followersTotal: null }}
         avgPerDay7={91}
         stats={stats}
+        funnel={funnel}
         isFlowLoading={false}
         isStatsLoading={false}
+        isFunnelLoading={false}
       />,
     );
     expect(html).toContain("4,355");
     expect(html).toContain("Counted across Meta&#x27;s 45 reported countries");
   });
 
-  it("shows the guide-to-follow yield without claiming causation", () => {
+  it("leads the third tile with the reply rate and its counts", () => {
     const html = renderToStaticMarkup(
       <FollowerKpiRow
         weekOverWeek={wow}
         stock={stock}
         avgPerDay7={108}
         stats={stats}
+        funnel={funnel}
         isFlowLoading={false}
         isStatsLoading={false}
+        isFunnelLoading={false}
       />,
     );
-    expect(html).toContain("22.3%");
-    expect(html).toContain("25 of 112");
-    expect(html).toContain("followed after");
-    expect(html).not.toContain("because");
+    expect(html).toContain("Reply rate");
+    expect(html).toContain("47.3%");
+    expect(html).toContain("1,589 of 3,360");
+    // The loss is what a reader can act on, so it travels with the rate.
+    expect(html).toContain("1,771 never replied");
+  });
+
+  it("no longer reports the retired guide-to-follow yield", () => {
+    // The hard follow gate drained that tile's cohort to zero. Reviving it
+    // would put a number on Home that the data can no longer support.
+    const html = renderToStaticMarkup(
+      <FollowerKpiRow
+        weekOverWeek={wow}
+        stock={stock}
+        avgPerDay7={108}
+        stats={stats}
+        funnel={funnel}
+        isFlowLoading={false}
+        isStatsLoading={false}
+        isFunnelLoading={false}
+      />,
+    );
+    expect(html).not.toContain("22.3%");
+    expect(html).not.toContain("non-followers followed");
   });
 
   it("degrades each tile independently when its feed is missing", () => {
@@ -183,53 +244,44 @@ describe("FollowerKpiRow", () => {
         stock={null}
         avgPerDay7={null}
         stats={undefined}
+        funnel={undefined}
         isFlowLoading={false}
         isStatsLoading={false}
+        isFunnelLoading={false}
       />,
     );
     expect(html).toContain("Needs two days of follower geography");
+    expect(html).toContain("Reply rate is temporarily unavailable");
     expect(html).toContain("—");
   });
 });
 
-describe("FollowerKpiRow follow-through line", () => {
-  it("shows whether the counted followers stayed", () => {
+describe("FollowerKpiRow reply-rate tile", () => {
+  it("puts the counts in the value slot when the sample is too thin to rate", () => {
+    // Mirrors GuardedNumber on the Funnels page: a suppressed percentage must
+    // never come back as a bare dash, which reads as "broken" rather than
+    // "not enough data".
+    const thin = {
+      ...funnel,
+      headline: {
+        ...funnel.headline,
+        rate: { numerator: 2, denominator: 4, pct: null, belowMinSample: true },
+      },
+    } satisfies GuideFollowResult;
+
     const html = renderToStaticMarkup(
       <FollowerKpiRow
         weekOverWeek={wow}
         stock={stock}
         avgPerDay7={108}
         stats={stats}
+        funnel={thin}
         isFlowLoading={false}
         isStatsLoading={false}
+        isFunnelLoading={false}
       />,
     );
-    expect(html).toContain("11 of 12 still following 21 days later");
-  });
-
-  it("falls back to the measuring count when nothing has been re-measured", () => {
-    const noFt = {
-      ...stats,
-      followConversion: {
-        ...stats.followConversion!,
-        followThroughChecked: 0,
-        stillFollowing: 0,
-        unfollowed: 0,
-        retentionPct: null,
-        pending: 4,
-      },
-    };
-    const html = renderToStaticMarkup(
-      <FollowerKpiRow
-        weekOverWeek={wow}
-        stock={stock}
-        avgPerDay7={108}
-        stats={noFt}
-        isFlowLoading={false}
-        isStatsLoading={false}
-      />,
-    );
-    expect(html).toContain("4 still measuring");
-    expect(html).not.toContain("still following");
+    expect(html).toContain("2 of 4");
+    expect(html).not.toContain("50%");
   });
 });

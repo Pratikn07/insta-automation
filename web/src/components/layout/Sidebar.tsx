@@ -10,6 +10,7 @@ import {
   Users,
   BarChart3,
   MailQuestion,
+  Filter,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -24,6 +25,9 @@ const items = [
   { to: "/assistant", label: "Assistant", icon: Sparkles },
   { to: "/users", label: "Users", icon: Users },
   { to: "/insights", label: "Insights", icon: BarChart3 },
+  // Next to Insights, but deliberately separate: Insights is scoped to reels,
+  // a funnel's axis is the conversation lifecycle.
+  { to: "/funnels", label: "Funnels", icon: Filter },
   { to: "/activity", label: "Activity", icon: Activity },
 ];
 

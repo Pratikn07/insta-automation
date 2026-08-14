@@ -1,4 +1,4 @@
-import type { FollowConversion, LeaderboardRow } from "./types";
+import type { LeaderboardRow } from "./types";
 
 export type RepeatReasonKey = "reach" | "retention" | "guides";
 
@@ -54,65 +54,6 @@ export function describeFreshness(
     label: `as of ${dateLabel} · ${daysOld} day${daysOld === 1 ? "" : "s"} old`,
     daysOld,
     isStale: daysOld >= staleAfterDays,
-  };
-}
-
-export type FollowerYieldState = "empty" | "measured";
-
-export interface FollowerYieldSummary {
-  state: FollowerYieldState;
-  windowDays: number;
-  converted: number;
-  rechecked: number;
-  pending: number;
-  yieldPct: number | null;
-  headline: string;
-  // Second line: whether the counted followers stayed. Null when nothing has
-  // been re-measured yet, or when the sample is too thin to report — an absent
-  // line is honest, "0 of 0 still following" is alarming noise.
-  retention: string | null;
-}
-
-/**
- * Turn the backend follow-conversion block into a display-ready summary. The
- * yield is a lower bound (single recheck ~3 days after delivery) and describes
- * "followed within the window", not causation — the copy stays honest about that.
- * `empty` until at least one recipient has been rechecked.
- */
-export function summarizeFollowerYield(
-  data: FollowConversion | null | undefined,
-): FollowerYieldSummary | null {
-  if (!data) return null;
-
-  const { windowDays, rechecked, converted, pending } = data;
-  const base = { windowDays, converted, rechecked, pending, yieldPct: data.yieldPct };
-
-  // Only speak when the backend was willing to put a number on it.
-  const retention =
-    data.retentionPct !== null && data.followThroughChecked > 0
-      ? `${data.stillFollowing} of ${data.followThroughChecked} still following ${data.followThroughDays} days later`
-      : null;
-
-  if (rechecked <= 0) {
-    return {
-      ...base,
-      state: "empty",
-      yieldPct: null,
-      retention,
-      headline:
-        pending > 0
-          ? `Measuring ${pending} recent non-follower${pending === 1 ? "" : "s"} — results unlock a few days after delivery`
-          : "No non-follower deliveries to measure yet",
-    };
-  }
-
-  const pct = data.yieldPct ?? round((converted / rechecked) * 100);
-  return {
-    ...base,
-    state: "measured",
-    yieldPct: pct,
-    retention,
-    headline: `${converted} of ${rechecked} non-followers followed after getting their guide`,
   };
 }
 

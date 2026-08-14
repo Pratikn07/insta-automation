@@ -30,6 +30,18 @@ export interface FunnelStage {
    * is the kind of number that destroys trust in a dashboard.
    */
   bypassable?: boolean;
+  /**
+   * The gap between this stage and the one before it is MEASUREMENT COVERAGE,
+   * not people falling out, so no loss may be reported against it.
+   *
+   * The 21-day reading is the case that forced this flag. 1,400 conversations
+   * are eligible and 5 have been re-measured, so a naive renderer prints
+   * "1,395 lost here" — directly above a caveat explaining that the number is
+   * coverage and not churn. A page that contradicts itself in adjacent lines is
+   * worse than one that stays silent, and the same trap waits in any funnel
+   * whose later stages depend on a worker catching up.
+   */
+  coverageOnly?: boolean;
 }
 
 export interface FunnelStageCount extends FunnelStage {
