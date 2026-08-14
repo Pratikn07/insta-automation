@@ -870,3 +870,117 @@ export interface ConversationRecoverySummary {
  * an ineligible one does.
  */
 export type ReadTrackingAvailability = "tracked" | "predates_tracking" | "not_available";
+
+// ── Funnels ───────────────────────────────────────────────────────────────
+// Mirrors src/services/funnels/{types,guideFollowFunnel,dropOff}.ts. Field
+// names are kept identical so the two can be diffed by eye — every percentage
+// on the page is computed server-side by summarizeGuideFollow, never here.
+
+/**
+ * A rate that refuses to lie about its own sample. `pct` is null below the
+ * funnel's minSample; render the counts instead. "15.6%" over 32 people and
+ * over 3,200 are different claims and only one of them is a number.
+ */
+export interface GuardedRate {
+  numerator: number;
+  denominator: number;
+  pct: number | null;
+  belowMinSample: boolean;
+}
+
+export interface FunnelStageCount {
+  key: string;
+  label: string;
+  /** What counts and what does NOT. Surfaced on hover. */
+  definition: string;
+  /**
+   * People reach this stage without passing the one before it, so no step
+   * conversion is meaningful — it can exceed 100%. Someone already following
+   * skips the gate and the reply entirely.
+   */
+  bypassable?: boolean;
+  /**
+   * The gap to the previous stage is measurement coverage, not attrition, so
+   * no loss may be reported against it. Without this the 21-day stage renders
+   * "1,395 lost here" directly above a caveat saying the number is coverage
+   * and not churn.
+   */
+  coverageOnly?: boolean;
+  count: number;
+  ofEntryPct: number | null;
+  ofPrevPct: number | null;
+}
+
+export interface FunnelHeadline {
+  fromStage: string;
+  toStage: string;
+  label: string;
+  rationale: string;
+  rate: GuardedRate;
+}
+
+export interface FunnelEntryPathBreakdown {
+  entryPath: string;
+  entered: number;
+  guideDelivered: number;
+  deliveryRate: GuardedRate;
+}
+
+export interface GuideFollowResult {
+  key: string;
+  name: string;
+  question: string;
+  window: { from: string; to: string };
+  cohortSize: number;
+  stages: FunnelStageCount[];
+  headline: FunnelHeadline;
+  followGateConversion: GuardedRate;
+  stuckAtWall: number;
+  askDistribution: { asks: number; conversations: number; cleared: number }[];
+  expressLane: number;
+  byEntryPath: FunnelEntryPathBreakdown[];
+  retention: GuardedRate;
+  homeTileCohort: { deliveredToNonFollower: number; ofWhichRedelivery: number };
+}
+
+export type DropOffBucket = "no-reply" | "stuck-at-wall";
+
+export interface DropOffRow {
+  conversationId: string;
+  igUserId: string;
+  username: string | null;
+  enteredAt: string;
+  state: string;
+  keyword: string;
+  wallAsks: number;
+  recoveryStatus: string | null;
+  recoveryArm: string | null;
+  seenAt: string | null;
+  suppressionReason: string | null;
+}
+
+export interface DropOffSummary {
+  bucket: DropOffBucket;
+  label: string;
+  definition: string;
+  total: number;
+  byState: { expired: number; stillOpen: number };
+  /**
+   * Three-way on purpose. Folding noReadData into "unseen" would turn an
+   * unknown into an accusation and point the fix at DM copy when the evidence
+   * points at deliverability.
+   */
+  readEvidence: {
+    confirmedSeen: number;
+    trackedNeverConfirmed: number;
+    noReadData: number;
+    confirmedSeenOfTracked: GuardedRate;
+  };
+  recovery: {
+    reminderSent: number;
+    reminderSuppressed: number;
+    inControlArm: number;
+    noReminder: number;
+  };
+  rows: DropOffRow[];
+}

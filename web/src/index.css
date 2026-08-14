@@ -43,6 +43,22 @@
   --color-brand-from: oklch(0.7 0.22 12);
   --color-brand-via: oklch(0.62 0.27 320);
   --color-brand-to: oklch(0.55 0.27 280);
+
+  /* Funnels. ONE hue for every stage bar — never a colour per stage. Position
+     and length already encode order and magnitude; a ramp on top of that
+     encodes rank as hue, which is the classic funnel-chart mistake.
+     Validated as an ordinal pair against this app's resolved background
+     (#0a0a0a, from --color-background): monotone lightness, adjacent gaps
+     >= 0.06, and 4.48:1 contrast at the dark end. */
+  --color-funnel-mark: #2a78d6;
+  --color-funnel-soft: #86b6ef;
+  /* The full cohort behind each bar, so a stage's LOSS is visible, not just
+     its size. Matches --color-muted so it reads as ground, not data. */
+  --color-funnel-track: oklch(0.235 0 0);
+  /* Absence of evidence. Deliberately NOT a hue: 1,107 conversations with no
+     read tracking are unknown, not unseen, and a coloured segment would state
+     a finding the data does not support. */
+  --color-funnel-unknown: #3a3d47;
 }
 
 @layer base {

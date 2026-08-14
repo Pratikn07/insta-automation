@@ -14,6 +14,7 @@ import { aiRouter } from "./ai.routes.js";
 import { dmThreadsRouter } from "./dmThreads.routes.js";
 import { recoveryRemindersRouter } from "./recoveryReminders.routes.js";
 import { historicalRecoveryRouter } from "./historicalRecovery.routes.js";
+import { funnelsRouter } from "./funnels.routes.js";
 import { logger } from "../lib/logger.js";
 
 export const apiRouter = Router();
@@ -40,6 +41,10 @@ apiRouter.use("/recovery-reminders", recoveryRemindersRouter);
 // answers a different question, and mixing the two would let an owner approve 985
 // public comments while thinking they were reviewing today's queue.
 apiRouter.use("/historical-recovery", historicalRecoveryRouter);
+// Funnels are their own mount rather than a tab under /insights: insights is
+// scoped to reels ("which reels resonate"), while a funnel's axis is the
+// conversation lifecycle. Same reason they get their own page.
+apiRouter.use("/funnels", funnelsRouter);
 
 apiRouter.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   const code = err && typeof err === "object" && "code" in err ? (err as { code: string }).code : undefined;

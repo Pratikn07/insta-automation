@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { FollowConversion, LeaderboardRow } from "./types";
-import { rankRepeatCandidates, summarizeFollowerYield } from "./homeDashboard";
+import type { LeaderboardRow } from "./types";
+import { rankRepeatCandidates } from "./homeDashboard";
 
 function reel(overrides: Partial<LeaderboardRow> & Pick<LeaderboardRow, "mediaId">): LeaderboardRow {
   const { mediaId, ...rest } = overrides;
@@ -86,90 +86,5 @@ describe("rankRepeatCandidates", () => {
     ]);
 
     expect(candidates).toHaveLength(3);
-  });
-});
-
-describe("summarizeFollowerYield", () => {
-  function conv(overrides: Partial<FollowConversion> = {}): FollowConversion {
-    return {
-      windowDays: 30,
-      deliveredToNonFollowers: 0,
-      rechecked: 0,
-      converted: 0,
-      pending: 0,
-      yieldPct: null,
-      followThroughDays: 21,
-      followThroughChecked: 0,
-      stillFollowing: 0,
-      unfollowed: 0,
-      retentionPct: null,
-      ...overrides,
-    };
-  }
-
-  it("returns null when data is missing", () => {
-    expect(summarizeFollowerYield(undefined)).toBeNull();
-    expect(summarizeFollowerYield(null)).toBeNull();
-  });
-
-  it("is empty with no rechecks and mentions pending measurement", () => {
-    const summary = summarizeFollowerYield(conv({ deliveredToNonFollowers: 4, pending: 4 }));
-    expect(summary?.state).toBe("empty");
-    expect(summary?.yieldPct).toBeNull();
-    expect(summary?.headline).toContain("4");
-  });
-
-  it("reports a measured yield", () => {
-    const summary = summarizeFollowerYield(
-      conv({ deliveredToNonFollowers: 10, rechecked: 8, converted: 2, pending: 2, yieldPct: 25 }),
-    );
-    expect(summary?.state).toBe("measured");
-    expect(summary?.yieldPct).toBe(25);
-    expect(summary?.converted).toBe(2);
-    expect(summary?.rechecked).toBe(8);
-  });
-
-  it("handles a zero-conversion measured window", () => {
-    const summary = summarizeFollowerYield(conv({ rechecked: 5, converted: 0, yieldPct: 0 }));
-    expect(summary?.state).toBe("measured");
-    expect(summary?.yieldPct).toBe(0);
-  });
-
-  it("derives a percentage when the backend omits it", () => {
-    const summary = summarizeFollowerYield(conv({ rechecked: 4, converted: 1, yieldPct: null }));
-    expect(summary?.yieldPct).toBe(25);
-  });
-
-  it("reports follow-through once enough converts have been re-measured", () => {
-    // The point of the second line: 23.7% means little if those followers left.
-    const s = summarizeFollowerYield(
-      conv({ rechecked: 97, converted: 23, yieldPct: 23.7,
-             followThroughChecked: 12, stillFollowing: 11, unfollowed: 1, retentionPct: 91.7 }),
-    );
-    expect(s?.retention).toContain("11 of 12");
-    expect(s?.retention).toContain("21 days");
-  });
-
-  it("says nothing about follow-through before anything is re-measured", () => {
-    // An absent second line is honest; "0 of 0 still following" is alarming noise.
-    const s = summarizeFollowerYield(conv({ rechecked: 97, converted: 23, yieldPct: 23.7 }));
-    expect(s?.retention).toBeNull();
-  });
-
-  it("stays silent when the sample is too small for a percentage", () => {
-    // retentionPct null = backend judged the sample too thin; do not invent copy.
-    const s = summarizeFollowerYield(
-      conv({ rechecked: 97, converted: 23, yieldPct: 23.7,
-             followThroughChecked: 3, stillFollowing: 2, unfollowed: 1, retentionPct: null }),
-    );
-    expect(s?.retention).toBeNull();
-  });
-
-  it("names the churn plainly when followers do leave", () => {
-    const s = summarizeFollowerYield(
-      conv({ rechecked: 97, converted: 23, yieldPct: 23.7,
-             followThroughChecked: 10, stillFollowing: 4, unfollowed: 6, retentionPct: 40 }),
-    );
-    expect(s?.retention).toContain("4 of 10");
   });
 });

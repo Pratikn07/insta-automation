@@ -1,12 +1,11 @@
-import { ArrowDownRight, ArrowRight, ArrowUpRight, Trophy, UserPlus, Users } from "lucide-react";
-import type { FollowerStock, Stats } from "@/lib/types";
+import { ArrowDownRight, ArrowRight, ArrowUpRight, MessageSquareReply, Trophy, Users } from "lucide-react";
+import type { FollowerStock, GuideFollowResult, Stats } from "@/lib/types";
 import {
   describeStockVsFlow,
   formatSignedCount,
   type FlowTrend,
   type UsWeekOverWeek,
 } from "@/lib/followerFlow";
-import { summarizeFollowerYield } from "@/lib/homeDashboard";
 import { KpiTile } from "./KpiTile";
 
 // The three numbers Home exists to answer: is the US audience growing, how big
@@ -43,20 +42,23 @@ interface FollowerKpiRowProps {
   stock: FollowerStock | null;
   avgPerDay7: number | null;
   stats: Stats | undefined;
+  /** Guide → follow funnel. Feeds the third tile; see the note on it below. */
+  funnel: GuideFollowResult | undefined;
   isFlowLoading: boolean;
   isStatsLoading: boolean;
+  isFunnelLoading: boolean;
 }
 
 export function FollowerKpiRow({
   weekOverWeek,
   stock,
   avgPerDay7,
-  stats,
+  funnel,
   isFlowLoading,
   isStatsLoading,
+  isFunnelLoading,
 }: FollowerKpiRowProps) {
   const milestone = stock ? describeStockVsFlow(stock, avgPerDay7) : null;
-  const yieldSummary = summarizeFollowerYield(stats?.followConversion);
 
   return (
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -105,32 +107,42 @@ export function FollowerKpiRow({
         isLoading={isFlowLoading}
       />
 
+      {/*
+        Was "Guide → follow yield" (converted ÷ rechecked over non-follower
+        deliveries). That tile is dead: the hard follow gate in messageHandler
+        returns early for a confirmed non-follower, so post-gate there are ZERO
+        such deliveries and its denominator drains to nothing as older ones age
+        out of the window.
+
+        It was also pointing at the wrong step. The follow gate converts around
+        75% and sees a few hundred people; the reply step loses thousands. So
+        Home now carries the funnel's own declared headline, and the detail
+        lives one click away.
+      */}
       <KpiTile
-        label="Guide → follow yield"
+        label={funnel?.headline.label ?? "Reply rate"}
         value={
-          yieldSummary?.state === "measured" && yieldSummary.yieldPct !== null
-            ? `${yieldSummary.yieldPct}%`
-            : "—"
+          funnel && funnel.headline.rate.pct !== null
+            ? `${funnel.headline.rate.pct}%`
+            : funnel
+              ? `${numberFormat.format(funnel.headline.rate.numerator)} of ${numberFormat.format(funnel.headline.rate.denominator)}`
+              : "—"
         }
         context={
-          yieldSummary === null
-            ? "Follower yield is temporarily unavailable"
-            : yieldSummary.state === "measured"
-              ? `${yieldSummary.converted} of ${yieldSummary.rechecked} non-followers followed after getting their guide`
-              : yieldSummary.headline
+          funnel
+            ? `${numberFormat.format(funnel.headline.rate.numerator)} of ${numberFormat.format(funnel.headline.rate.denominator)} answered the unlock DM`
+            : "Reply rate is temporarily unavailable"
         }
-        // Retention outranks the "still measuring" count: whether those followers
-        // STAYED is the caveat that decides how much the headline % is worth, so
-        // it must travel with the number rather than being a nice-to-have.
+        // The loss, not the rate, is what a reader can act on — and it is the
+        // largest single leak in the funnel by an order of magnitude.
         note={
-          yieldSummary?.retention ??
-          (yieldSummary?.state === "measured" && yieldSummary.pending > 0
-            ? `${yieldSummary.pending} still measuring`
-            : null)
+          funnel
+            ? `${numberFormat.format(funnel.headline.rate.denominator - funnel.headline.rate.numerator)} never replied · see Funnels`
+            : null
         }
-        Icon={UserPlus}
+        Icon={MessageSquareReply}
         tone="violet"
-        isLoading={isStatsLoading}
+        isLoading={isFunnelLoading || isStatsLoading}
       />
     </div>
   );

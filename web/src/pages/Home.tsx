@@ -5,7 +5,12 @@ import { ArrowUpRight, CalendarDays, Sparkles } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
 import { feedFollowAttributionPath } from "@/lib/feedFollowAttribution";
-import type { FeedFollowAttributionResponse, FollowerFlowResponse, Stats } from "@/lib/types";
+import type {
+  FeedFollowAttributionResponse,
+  FollowerFlowResponse,
+  GuideFollowResult,
+  Stats,
+} from "@/lib/types";
 import { summarizeFollowerFlow, summarizeUsWeekOverWeek } from "@/lib/followerFlow";
 import { FollowerFlowPanel } from "@/components/home/FollowerFlowPanel";
 import { FeedFollowAttributionDrawer } from "@/components/home/FeedFollowAttributionDrawer";
@@ -26,6 +31,12 @@ export function Home() {
   const statsQ = useQuery<Stats>({
     queryKey: ["stats"],
     queryFn: () => api<Stats>("/stats"),
+  });
+  // Default window (30 days) — no params, so this shares a cache key with the
+  // Funnels page's default view rather than re-running the cohort scan.
+  const funnelQ = useQuery<GuideFollowResult>({
+    queryKey: ["funnels", "guide-follow", "default"],
+    queryFn: () => api<GuideFollowResult>("/funnels/guide-follow"),
   });
   const attributionQ = useQuery<FeedFollowAttributionResponse>({
     queryKey: ["insights", "feed-follow-attribution", attributionDay],
@@ -89,8 +100,10 @@ export function Home() {
           stock={flowStock}
           avgPerDay7={flowSummary?.avgPerDay7 ?? null}
           stats={statsQ.data}
+          funnel={funnelQ.data}
           isFlowLoading={flowQ.isLoading}
           isStatsLoading={statsQ.isLoading}
+          isFunnelLoading={funnelQ.isLoading}
         />
       </motion.div>
 

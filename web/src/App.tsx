@@ -12,6 +12,7 @@ import { Assistant } from "@/pages/Assistant";
 import { Activity } from "@/pages/Activity";
 import { Users } from "@/pages/Users";
 import { Insights } from "@/pages/Insights";
+import { Funnels } from "@/pages/Funnels";
 import { HistoricalRecovery } from "@/pages/HistoricalRecovery";
 
 function FullScreenLoader() {
@@ -44,6 +45,7 @@ export default function App() {
             <Route path="assistant" element={<Assistant />} />
             <Route path="users" element={<Users />} />
             <Route path="insights" element={<Insights />} />
+            <Route path="funnels" element={<Funnels />} />
             <Route path="activity" element={<Activity />} />
             <Route path="historical-recovery" element={<HistoricalRecovery />} />
             <Route path="*" element={<Navigate to="/" replace />} />
