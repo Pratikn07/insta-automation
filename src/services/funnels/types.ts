@@ -56,12 +56,32 @@ export interface GuardedRate {
   belowMinSample: boolean;
 }
 
+/**
+ * Which step is THIS funnel's number.
+ *
+ * Declared per funnel rather than hardcoded, because the first real run moved
+ * it: the guide funnel was built assuming the follow gate was the story, and
+ * the data said the gate converts fine (76%) while the reply step quietly
+ * loses an order of magnitude more people. A funnel that leads with the wrong
+ * step sends people to optimise the wrong thing.
+ */
+export interface FunnelHeadline {
+  /** Denominator stage key. */
+  fromStage: string;
+  /** Numerator stage key. */
+  toStage: string;
+  label: string;
+  /** Why this step, and not another one. Shown under the number. */
+  rationale: string;
+}
+
 export interface FunnelDef {
   key: string;
   name: string;
   /** The one question this funnel answers, in plain language. */
   question: string;
   stages: FunnelStage[];
+  headline: FunnelHeadline;
   /** Below this denominator, rates report null instead of a number. */
   minSample: number;
 }

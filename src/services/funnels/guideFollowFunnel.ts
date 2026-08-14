@@ -26,6 +26,7 @@
 
 import {
   type FunnelDef,
+  type FunnelHeadline,
   type GuardedRate,
   type FunnelStageCount,
   guardedRate,
@@ -56,6 +57,17 @@ export const guideFollowDef: FunnelDef = {
   name: "Guide → follow",
   question:
     "Of the people who ask for a guide, how many end up following — and where do the rest fall out?",
+  // Measured, not assumed. Over the first real 30-day run: 1,771 people
+  // received the unlock DM and never answered, against 68 stuck at the follow
+  // wall — a 26x difference. The follow gate converts at ~75%, which is in line
+  // with published follow-gate numbers and is not where the losses are.
+  headline: {
+    fromStage: "gateSent",
+    toStage: "replied",
+    label: "Reply rate",
+    rationale:
+      "Everyone who answers the unlock DM gets the guide almost without exception, so this step is where the funnel actually loses people. The follow gate downstream converts fine and sees a fraction of the volume.",
+  },
   minSample: GUIDE_FOLLOW_MIN_SAMPLE,
   stages: [
     {
@@ -203,6 +215,8 @@ export interface GuideFollowResult {
   window: { from: string; to: string };
   cohortSize: number;
   stages: FunnelStageCount[];
+  /** The funnel's primary metric, per `def.headline`. */
+  headline: FunnelHeadline & { rate: GuardedRate };
   /**
    * THE number this funnel exists for: of the people who hit the follow wall,
    * how many followed and went on to get the guide. This is the true
@@ -287,6 +301,14 @@ export function summarizeGuideFollow(
     window,
     cohortSize: rows.length,
     stages: toStageCounts(guideFollowDef.stages, counts),
+    headline: {
+      ...guideFollowDef.headline,
+      rate: guardedRate(
+        counts[guideFollowDef.headline.toStage] ?? 0,
+        counts[guideFollowDef.headline.fromStage] ?? 0,
+        minSample,
+      ),
+    },
     followGateConversion: guardedRate(clearedWall.length, hitWall.length, minSample),
     stuckAtWall: hitWall.length - clearedWall.length,
     askDistribution,

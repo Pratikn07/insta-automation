@@ -65,6 +65,21 @@ describe("summarizeGuideFollow", () => {
     expect(s.expressLane).toBe(5);
   });
 
+  it("leads with the reply step, which is where the funnel actually loses people", () => {
+    // The funnel was built assuming the follow gate was the story. The first
+    // real run said otherwise, so the headline is declared per funnel and
+    // points at gateSent -> replied.
+    const rows = [
+      ...Array.from({ length: 6 }, () => row({ gateSent: true, doneReceived: true, guideDelivered: true })),
+      ...Array.from({ length: 14 }, () => row({ gateSent: true, doneReceived: false })),
+    ];
+    const s = summarize(rows);
+    expect(s.headline.label).toBe("Reply rate");
+    expect(s.headline.rate.numerator).toBe(6);
+    expect(s.headline.rate.denominator).toBe(20);
+    expect(s.headline.rate.pct).toBe(30);
+  });
+
   it("suppresses a rate below the minimum sample and says so", () => {
     const rows = [
       row({ followRequiredCount: 1, guideDelivered: true }),

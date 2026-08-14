@@ -98,7 +98,11 @@ function printGuideFollow(result: GuideFollowResult): void {
     );
   }
 
-  console.log(`\n  THE NUMBER — follow-gate conversion`);
+  console.log(`\n  THE NUMBER — ${result.headline.label}`);
+  console.log(`    ${rate(result.headline.rate)}`);
+  console.log(`    ${result.headline.rationale}`);
+
+  console.log(`\n  Follow gate (secondary)`);
   console.log(`    ${rate(result.followGateConversion)}`);
   console.log(`    of everyone who hit the follow wall, this many followed and got the guide.`);
   console.log(`    Still stuck at the wall: ${result.stuckAtWall}`);
