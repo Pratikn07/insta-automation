@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "funnel-db": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-postgres", "${FUNNEL_DATABASE_URL_READONLY:-}"],
+      "env": {}
+    }
+  }
+}
