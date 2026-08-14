@@ -19,6 +19,13 @@
 //
 // Everything here is read-only.
 
+// Load .env into process.env. runFunnel deliberately does NOT import
+// config/env (that would demand the whole Meta keyring for a read-only
+// report), so without this the CLI would ignore a perfectly good DATABASE_URL
+// sitting in .env. dotenv is a no-op when there is no .env file, which keeps
+// --print-sql usable in an environment that has none.
+import "dotenv/config";
+
 import { FUNNEL_KEYS, getFunnelDef } from "../src/services/funnels/registry.js";
 import {
   COHORT_SQL,
