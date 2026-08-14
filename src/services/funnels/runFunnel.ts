@@ -26,6 +26,15 @@ import {
   type GuideFollowResult,
   type GuideFollowRow,
 } from "./guideFollowFunnel.js";
+import {
+  DROP_OFF_BREAKDOWN_SQL,
+  DROP_OFF_ROWS_SQL,
+  summarizeDropOff,
+  type DropOffBucket,
+  type DropOffCounts,
+  type DropOffRow,
+  type DropOffSummary,
+} from "./dropOff.js";
 
 /** The minimum a caller must provide. Satisfied by PrismaClient. */
 export interface FunnelDb {
@@ -85,4 +94,51 @@ export async function runGuideFollowFunnel(
     { from: window.from.toISOString(), to: window.to.toISOString() },
     minSample,
   );
+}
+
+/** Default page size for a drop-off list. Enough to act on, small enough to render. */
+export const DROP_OFF_DEFAULT_LIMIT = 100;
+export const DROP_OFF_MAX_LIMIT = 500;
+
+export async function runDropOff(
+  db: FunnelDb,
+  bucket: DropOffBucket,
+  window: FunnelWindow = defaultWindow(),
+  limit: number = DROP_OFF_DEFAULT_LIMIT,
+  minSample: number = GUIDE_FOLLOW_MIN_SAMPLE,
+): Promise<DropOffSummary> {
+  const from = window.from.toISOString();
+  const to = window.to.toISOString();
+  const capped = Math.min(Math.max(limit, 1), DROP_OFF_MAX_LIMIT);
+
+  const [counts, rows] = await Promise.all([
+    db.$queryRawUnsafe<DropOffCounts[]>(
+      DROP_OFF_BREAKDOWN_SQL,
+      from,
+      to,
+      EVENT_LOOKBACK_MARGIN,
+      bucket,
+    ),
+    db.$queryRawUnsafe<DropOffRow[]>(
+      DROP_OFF_ROWS_SQL,
+      from,
+      to,
+      EVENT_LOOKBACK_MARGIN,
+      bucket,
+      capped,
+    ),
+  ]);
+
+  const empty: DropOffCounts = {
+    total: 0,
+    expired: 0,
+    stillOpen: 0,
+    confirmedSeen: 0,
+    trackedNeverConfirmed: 0,
+    noReadData: 0,
+    reminderSent: 0,
+    reminderSuppressed: 0,
+    inControlArm: 0,
+  };
+  return summarizeDropOff(bucket, counts[0] ?? empty, rows, minSample);
 }
