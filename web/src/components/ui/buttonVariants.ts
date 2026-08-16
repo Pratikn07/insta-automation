@@ -6,7 +6,10 @@ export const buttonVariants = cva(
     variants: {
       variant: {
         default: "bg-primary text-primary-foreground shadow hover:bg-primary/90",
-        brand: "bg-brand-gradient text-white shadow hover:opacity-90",
+        // Ink on gold, measured at 4.77:1. White on gold is 1.9:1 and was the
+        // old dark-world pairing; carried over unchanged it would have failed
+        // every contrast check on an ivory ground.
+        brand: "bg-gold text-foreground hover:bg-gold-text hover:text-background",
         outline: "border bg-transparent hover:bg-accent hover:text-accent-foreground",
         secondary: "bg-secondary text-secondary-foreground hover:bg-secondary/80",
         ghost: "hover:bg-accent hover:text-accent-foreground",

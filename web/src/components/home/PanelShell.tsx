@@ -1,10 +1,13 @@
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Card, CardContent } from "@/components/ui/card";
 
-// Shared shell + empty state for the Home panels. The accent color and icon
+// Shared shell + empty state for the Home panels. The accent colour and icon
 // come in as props, so several panels once shared it verbatim; FollowerFlowPanel
 // is the only remaining consumer since the Home declutter.
+//
+// Maison removed the card. What was a filled, rounded, shadowed panel is now a
+// hairline and space: the chart sits directly on the page ground, which is what
+// lets the ivory read as paper rather than as a container full of widgets.
 
 export function PanelShell({
   children,
@@ -18,15 +21,9 @@ export function PanelShell({
   tall?: boolean;
 }) {
   return (
-    <Card
-      className={cn(
-        "rounded-2xl border-white/10 bg-card/85 shadow-xl shadow-black/10",
-        tall && "min-h-[600px]",
-        className,
-      )}
-    >
-      <CardContent className="p-5 sm:p-6">{children}</CardContent>
-    </Card>
+    <section className={cn("border-t pt-7", tall && "min-h-[520px]", className)}>
+      {children}
+    </section>
   );
 }
 
@@ -35,22 +32,20 @@ export function EmptyPanel({
   body,
   action,
   Icon,
-  accentClassName,
 }: {
   title: string;
   body: string;
   action?: React.ReactNode;
   Icon: LucideIcon;
-  accentClassName: string; // e.g. "bg-emerald-400/10 text-emerald-300"
+  /** Retained for callers; Maison tints the mark with the house accent instead. */
+  accentClassName?: string;
 }) {
   return (
-    <div className="flex min-h-[540px] flex-col items-center justify-center px-6 text-center">
-      <div className={cn("mb-4 flex size-12 items-center justify-center rounded-2xl", accentClassName)}>
-        <Icon className="size-6" />
-      </div>
-      <h2 className="text-lg font-semibold">{title}</h2>
-      <p className="mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">{body}</p>
-      {action && <div className="mt-5">{action}</div>}
+    <div className="flex min-h-[460px] flex-col items-center justify-center px-6 text-center">
+      <Icon className="size-6 text-gold-text" aria-hidden />
+      <h2 className="font-display mt-5 text-2xl">{title}</h2>
+      <p className="mt-3 max-w-sm text-sm leading-relaxed text-muted-foreground">{body}</p>
+      {action && <div className="mt-6">{action}</div>}
     </div>
   );
 }

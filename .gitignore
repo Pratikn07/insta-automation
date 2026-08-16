@@ -22,6 +22,10 @@ prisma/migrations/dev.db*
 
 # Local isolated development worktrees
 .worktrees/
+
+# Impeccable decision-page session state. DESIGN.md and .impeccable/design.json
+# are design authority and are tracked; these are per-run scratch.
+.impeccable/questions/
 .vercel
 .expanded-recovery-rollout.state.json
 .expanded-recovery-rollout.state.json.cleanup-required

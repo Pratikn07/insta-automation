@@ -1,0 +1,245 @@
+# Product
+
+<!-- impeccable:product-schema 1 -->
+
+## Platform
+
+web
+
+## Users
+
+**Two people, one shared login, two different jobs.**
+
+Confirmed by the user: they sign in with a single account and want it kept that
+way for now. (`ADMIN_EMAIL` currently allowlists 2 addresses, so the backend
+would permit separate logins — but that is configuration, not how it is used.)
+**Decided: no role separation.** Do not design separate creator and operator
+views, or per-role permissions, unless this is revisited.
+
+**Pratik — CPO/CTO.** Owns analytics and all technical work: the webhook service,
+the background workers, the data model, and the console itself. Reads the console
+to interpret what the numbers mean and to keep the automation healthy. Works in it
+roughly 80% on desktop; occasionally on a phone for quick edits.
+
+**The content creator — the account's main marketer.** Makes the content and owns
+the marketing decisions. She is non-technical relative to this system and should
+never need to know its internals.
+
+- **What she does in the console today:** setup, daily. She posts a reel or
+  carousel, logs in, attaches keyword(s) to that post, and edits sequences. That
+  is the whole of her current usage.
+- **What she is responsible for deciding:** what to film next, whether the last
+  thing worked, what to fix in the funnel, and the day-to-day setup she already
+  does.
+
+**This gap is a confirmed product fact, not a bug report:** the analytics half of
+the console is built for the reader who is not yet reading it. She logs in for
+setup; the decisions the analytics exist to support are hers.
+
+### The audience the product acts on
+
+Not console users — the people on the other side of the automation. US/Western
+parents of toddlers who comment a keyword on a reel. Confirmed by the system's
+own targeting: the Gemini reel prompt scores US-vs-India cultural fit, the
+recovery gate has a Western-only mode, and the brand-voice default is written
+about parents.
+
+## Product Purpose
+
+Turn Instagram engagement on `@tinysoho` into followers and delivered guides — and
+measure honestly whether that is working.
+
+The flow: someone comments a keyword on a reel → the bot replies publicly and DMs
+a gate message → they follow and reply `DONE` → the bot delivers a configured
+sequence (text / image / PDF).
+
+**Two jobs, equally first-class** (confirmed): deciding what to do next to grow,
+and keeping the automation running. Neither is subordinate to the other. Analytics
+are not decoration on an ops tool, and ops are not plumbing under a dashboard.
+
+### Success metric
+
+**US followers gained.** Confirmed as the goal. Everything else the system
+measures — guides delivered, capture rate, 21-day retention, funnel conversion —
+is a supporting detail that explains movement in this number.
+
+Two qualifiers, both confirmed and both binding:
+
+1. **It is one measure, not the organizing principle.** It belongs as a single
+   distinct tile. The console must not be restructured so that every surface
+   becomes a view onto US follower growth. The two first-class jobs above still
+   hold; the score does not outrank them.
+2. **Reporting stays all-country.** The *goal* is US-focused; the *reporting* is
+   not. Visibility across every country Meta reports must be preserved — it
+   exists today in the Home country picker and must not be narrowed to US-only
+   in service of the metric. Note the hard ceiling: Meta reports exactly 45
+   countries (see Capabilities and Constraints), so "all countries" means all
+   reported countries, and `followers_count` remains the true total.
+
+## Positioning
+
+*Derived from the codebase, not yet confirmed by the user — correct if wrong.*
+
+Not a generic comment-to-DM tool. Three things a neighboring product could not
+truthfully claim:
+
+1. **Cohort truth over event counts.** A funnel picks the conversations that
+   *entered* in a window and follows them forward however long they take. Every
+   stage is a boolean per conversation, never a row count — because `markGated`
+   re-arms on every reply and completions land outside the window.
+2. **Measurement honesty enforced in code, not policy.** Rates below `minSample`
+   return `null` and callers render the raw counts instead. Absence of evidence
+   renders as its own state, never as zero and never as a color. Stages reachable
+   without passing the previous one are marked `bypassable` and print no step
+   conversion.
+3. **Content scored against the audience it is trying to win.** Gemini watches
+   each reel and returns a US-cultural-fit profile (accent, setting, cultural
+   references), so "what to film next" is tied to who actually followed.
+
+## Operating Context
+
+**The daily rhythm.** The creator posts → logs in → attaches a keyword to that
+post → the automation runs unattended. The console is always read against a
+machine already in motion: webhooks arrive continuously and background workers
+tick on their own schedules.
+
+**Devices.** ~80% desktop. Phone is real but narrow in scope — quick edits like
+adding a keyword, not analysis.
+
+**Where it runs.**
+
+- API + workers: Railway. Console: Vercel. Data, storage, and auth: Supabase.
+- A second private Railway service (`codex-runtime`) holds the ChatGPT OAuth
+  session on its own volume for AI features.
+- The Vercel project is **not** git-connected. Pushing to `main` does not deploy
+  the frontend; it ships via `vercel --prod` from `web/`.
+- Local dev tunnels to Meta's webhook via ngrok.
+- Analytics days are Pacific, not UTC.
+
+**External truth.** The Meta Graph API is the only source of external reality.
+`docs/meta-verification.md` records what has actually been *observed* from the
+Graph API versus what is documented — absent documentation is not confirmation.
+
+## Capabilities and Constraints
+
+### Console surfaces (12 routes)
+
+| Route | What it is for |
+| --- | --- |
+| `/` Home | Follower growth by day and region, in real counts. Feed-follow attribution, spike candidates. |
+| `/content` | Pick a post, attach a keyword. Reels and carousels. |
+| `/keywords` | The words that trigger a sequence. Scoped per post, so one word can send different guides. |
+| `/sequences`, `/sequences/:id` | The DMs sent after a follower replies `DONE`. Text / image / PDF. |
+| `/conversations` | Every comment that triggered a keyword, with its full event log and AI reply drafts. |
+| `/historical-recovery` | Reviewing and approving contact with people whose requests are weeks old. |
+| `/assistant` | A read-only business advisor on a persistent thread. Can ask and navigate; cannot send, approve, or configure. |
+| `/users` | Everyone who triggered a keyword, and their full journey. |
+| `/insights` | Reel-scoped: leaderboard, recipe (top-vs-bottom US-fit contrast), experiments. |
+| `/funnels` | Conversation-lifecycle-scoped cohort funnels with drop-off drill-down. Deliberately separate from Insights. |
+| `/activity` | Every event the system records, including undeliverable DMs. The diagnostic feed. |
+
+### Backend capabilities
+
+Webhook handlers (comments, messages, seen, reactions, postbacks); gate queue with
+bounded retry; sequence delivery; follow recheck; DM recovery reminders;
+historical recovery campaigns with holdout arms; public recovery dispatch; journey
+reconciliation; AI reply drafts and advisor via the Codex runtime; Gemini reel
+analysis with a daily spend cap; insights, cohort funnels, follower flow, geo
+demographics, feed-follow attribution, spike detection.
+
+### Hard constraints
+
+- **One permission level.** `ADMIN_EMAIL` is a comma-separated allowlist and every
+  allowlisted address gets identical full access. There are no roles today — the
+  creator and the operator see exactly the same console.
+- **Nothing reaches a follower without a person deciding.** Every AI capability
+  ships OFF and is enabled deliberately; turning one off must never disable
+  existing automation. `AI_SEND_ENABLED` is separate from drafting. The Assistant
+  has no send, approve, or settings control anywhere in it, by construction.
+- **Never `z.coerce.boolean` for an env flag** — it parses the string `"false"` as
+  `true`. Use `src/config/booleanFlag.ts`.
+- **Meta demographics report exactly 45 countries.** Summing them undercounts
+  followers by ~5%; use `followers_count` for the true total.
+- **The IG token lives in the `ig_token` table and self-renews every 6h.** The env
+  var is the seed and the expired-token rescue, nothing more.
+- **`100:2534025` must never enter the settings-blocked allowlist.** It is the
+  invalid-comment family, not a recipient-settings rejection, and it is 1,347 of
+  1,356 historical `dm_failed` events. Refused at startup.
+- **Supabase MCP is read-only.** Analyze there; write through a `scripts/*.ts`
+  Prisma one-off that supports `--dry-run` before `--write`.
+- **Rate limits and spend caps are load-bearing**, not tuning: gate retry batch,
+  Gemini daily USD budget, recovery hourly and global daily caps, worker
+  self-throttling on snapshot age.
+
+### Terminology (use these words; they are the product's vocabulary)
+
+*keyword*, *gate* / *gate message*, `DONE`, *sequence*, *resource* / *guide*,
+*conversation*, *journey*, *capture*, *funnel stage*, *bypassable*, *cohort*,
+*DM recovery* (prospective) vs *historical recovery* (weeks-old requests),
+*US-fit score*, *spike*.
+
+### Explicitly undecided
+
+- **Whether this ever opens to other creators.** Not answered. It is explicitly
+  **not** being designed for: build for the single shared login until told
+  otherwise, and do not add multi-tenant seams speculatively.
+- **Positioning** (below) is still derived from code rather than confirmed.
+
+## Brand Commitments
+
+- **Name:** Tiny Soho / `@tinysoho`.
+- **Follower-facing voice, binding:** "Warm, practical, concise, and supportive.
+  Never diagnose or shame a parent." It governs DMs and public replies. The
+  console's own copy should sit in the same register. Held as a working
+  commitment rather than a frozen contract — the user allowed a small chance the
+  wording changes.
+
+The console already has a visual system in code. It is **not** recorded here on
+purpose; run `/impeccable document` if it should be captured as design authority.
+
+## Evidence on Hand
+
+**Real, in production, on one live account:**
+
+- ~1,353 backend tests, 0 skipped.
+- 1,356 historical `dm_failed` events, 1,347 of them the `100:2534025` signature.
+- Gemini origin classification measured on 50 real gate users: the name-token list
+  caught 3, the model caught 22, with no Western false positives.
+- 1,107 conversations with no read tracking — unknown, not unseen.
+- Guide follower retention measured at ~22% yield; 11 of 12 converts stayed 21
+  days.
+
+**Documents:**
+
+- `docs/meta-verification.md` — observed Graph API behavior vs documented.
+- `docs/funnels.md` — the cohort-funnel doctrine.
+- `docs/backlog/2026-08-14-*.md` (2 files) and
+  `docs/feature-requests/2026-08-13-*.md` — swept, unstarted feature requests.
+  Currently untracked in git.
+
+**What does not exist, and must never be fabricated:** customers, testimonials,
+case studies, press, pricing, licensing, or benchmarks. This is a personal
+automation for one account. There are no external users.
+
+## Product Principles
+
+1. **Never assume — verify against the real source.** Every claim traces to
+   production data, the Graph API, research, or code. Line numbers get re-grepped;
+   counts get re-run. Absent documentation is not confirmation.
+2. **A number that cannot be trusted must not be printed as a number.** "15.6%"
+   over 32 people and over 3,200 are different claims, and only one of them is a
+   number. Unknown renders as unknown, never as zero.
+3. **Two jobs, equally first-class.** The growth decision and the running machine.
+   Work that serves one at the other's expense is a regression.
+4. **Nothing reaches a follower without a person deciding.** Automation drafts and
+   proposes; a human sends.
+5. **Two readers, one console.** It must be legible to the creator without her
+   knowing the internals, and complete enough for the operator who built them.
+
+## Accessibility & Inclusion
+
+No product-specific standard has been established. Recorded as observation, not
+requirement: `lang="en"` is set and there are ~61 accessibility affordances in the
+console (`aria-label`, `aria-live`, `focus-visible`), but **no
+`prefers-reduced-motion` handling anywhere**, despite framer-motion animating page
+entrances throughout. A known gap, not yet a commitment.

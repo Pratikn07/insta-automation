@@ -1,0 +1,184 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-16T00:00:00.000Z",
+  "title": "Design System: Tiny Soho",
+  "extensions": {
+    "colorMeta": {
+      "ground": {
+        "role": "neutral",
+        "displayName": "Ivory Stock",
+        "canonical": "#F7F4EE",
+        "tonalRamp": ["#211F1A", "#3B3830", "#565247", "#7A7565", "#A39C89", "#C9C2B0", "#E4DFD2", "#F7F4EE"]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Noir Ink",
+        "canonical": "#14120E",
+        "tonalRamp": ["#14120E", "#2A2721", "#403C33", "#5A5548", "#7C7565", "#A69E8B", "#D0C9B8", "#F0EBDF"]
+      },
+      "muted-ink": {
+        "role": "neutral",
+        "displayName": "Muted Ink",
+        "canonical": "#6E6A5E",
+        "tonalRamp": ["#1B1A16", "#312F28", "#47443A", "#5A574B", "#6E6A5E", "#928D7D", "#B8B2A0", "#DED8C7"]
+      },
+      "gold-display": {
+        "role": "primary",
+        "displayName": "Antique Gold — display",
+        "canonical": "#9C7C38",
+        "tonalRamp": ["#211A0C", "#3B2F16", "#564521", "#715B2C", "#8A6B2C", "#9C7C38", "#C0A165", "#E4D2A6"]
+      },
+      "gold-text": {
+        "role": "primary",
+        "displayName": "Antique Gold — text",
+        "canonical": "#8A6B2C",
+        "tonalRamp": ["#1D1609", "#342811", "#4B3A19", "#624B22", "#8A6B2C", "#A98A4E", "#C9B183", "#E8DCBE"]
+      },
+      "oxblood": {
+        "role": "danger",
+        "displayName": "Oxblood",
+        "canonical": "#7A2E2E",
+        "tonalRamp": ["#1C0A0A", "#331313", "#4A1C1C", "#612525", "#7A2E2E", "#A25252", "#C88888", "#E9C4C4"]
+      },
+      "funnel-mark": {
+        "role": "tertiary",
+        "displayName": "Funnel Mark",
+        "canonical": "#2A4A6B",
+        "tonalRamp": ["#0B1420", "#152538", "#1F3750", "#2A4A6B", "#3E6791", "#6B8AA5", "#9DB4C7", "#D0DCE6"]
+      },
+      "funnel-unknown": {
+        "role": "neutral",
+        "displayName": "Funnel Unknown",
+        "canonical": "#8F8A80",
+        "tonalRamp": ["#1E1D1A", "#343230", "#4A4844", "#605D57", "#75716A", "#8F8A80", "#B5B0A5", "#DBD6CB"]
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "Page headlines only, held to an 18ch measure." },
+      "figure": { "displayName": "Figure", "purpose": "The single scored metric per screen. Gold, display scale." },
+      "title": { "displayName": "Title", "purpose": "Wordmark, drawer and panel headings." },
+      "body": { "displayName": "Body", "purpose": "All running copy at a 46-64ch measure." },
+      "label": { "displayName": "Label", "purpose": "Every field name. Defined once as label-caps so tracking cannot drift." }
+    },
+    "shadows": [],
+    "motion": [
+      { "name": "ease-house", "value": "cubic-bezier(0.19, 1, 0.22, 1)", "purpose": "Exponential ease-out. Navigation slides and drawer entrances." },
+      { "name": "dur-route", "value": "180ms", "purpose": "Route cross-fade in the shell. The only entrance on a page load." },
+      { "name": "dur-nav", "value": "300ms", "purpose": "Navigation item slide on hover." },
+      { "name": "dur-drawer", "value": "280ms", "purpose": "Mobile index drawer." },
+      { "name": "reduced-motion", "value": "all durations collapse to 0", "purpose": "useReducedMotion() is read in the shell and every duration above collapses. Non-negotiable: this is a tool opened many times a day." }
+    ],
+    "breakpoints": [
+      { "name": "sm", "value": "640px" },
+      { "name": "md", "value": "768px" },
+      { "name": "lg", "value": "1024px" },
+      { "name": "content-max", "value": "1152px" },
+      { "name": "index-column", "value": "224px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Brand Button",
+      "kind": "button",
+      "refersTo": "button-brand",
+      "description": "The house action. Ink on gold, measured at 4.77:1 — white on gold is 1.9:1 and fails.",
+      "html": "<button class=\"ds-btn-brand\">Sign in</button>",
+      "css": ".ds-btn-brand { background: #9C7C38; color: #14120E; font-family: Jost, sans-serif; font-weight: 400; font-size: 14px; border: 0; border-radius: 2px; height: 36px; padding: 0 16px; cursor: pointer; transition: background 200ms cubic-bezier(0.19,1,0.22,1), color 200ms; } .ds-btn-brand:hover { background: #8A6B2C; color: #F7F4EE; } .ds-btn-brand:focus-visible { outline: none; box-shadow: 0 0 0 2px #F7F4EE, 0 0 0 4px #8A6B2C; } .ds-btn-brand:active { transform: scale(0.98); }"
+    },
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The default action. Noir ink on ivory text at 17:1.",
+      "html": "<button class=\"ds-btn-primary\">Save changes</button>",
+      "css": ".ds-btn-primary { background: #14120E; color: #F7F4EE; font-family: Jost, sans-serif; font-weight: 400; font-size: 14px; border: 0; border-radius: 2px; height: 36px; padding: 0 16px; cursor: pointer; transition: opacity 200ms; } .ds-btn-primary:hover { opacity: 0.9; } .ds-btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 2px #F7F4EE, 0 0 0 4px #8A6B2C; }"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Transparent ground with a hairline edge. Placeholder clears 4.5:1 rather than fading to a hint.",
+      "html": "<input class=\"ds-input\" placeholder=\"you@email.com\" />",
+      "css": ".ds-input { width: 100%; height: 36px; background: transparent; color: #14120E; font-family: Jost, sans-serif; font-weight: 300; font-size: 14px; border: 1px solid #CFC8B8; border-radius: 2px; padding: 4px 12px; } .ds-input::placeholder { color: #6E6A5E; } .ds-input:focus-visible { outline: none; border-color: #8A6B2C; box-shadow: 0 0 0 1px #F7F4EE, 0 0 0 3px rgba(138,107,44,0.35); }"
+    },
+    {
+      "name": "House Index",
+      "kind": "nav",
+      "refersTo": "nav-item",
+      "description": "Typographic navigation with no icons. The active route is set in Bodoni italic rather than highlighted — the typeface carries state.",
+      "html": "<nav class=\"ds-nav\"><div class=\"ds-nav-group\">Measure</div><a class=\"ds-nav-item ds-nav-item--on\">Home</a><a class=\"ds-nav-item\">Insights</a><a class=\"ds-nav-item\">Funnels</a></nav>",
+      "css": ".ds-nav { width: 224px; border-right: 1px solid #E0DACD; padding: 16px 0; font-family: Jost, sans-serif; } .ds-nav-group { font-size: 10px; letter-spacing: 0.26em; text-transform: uppercase; color: #6E6A5E; padding: 20px 28px 8px; } .ds-nav-item { display: block; padding: 6px 20px 6px 28px; font-size: 13.5px; font-weight: 300; letter-spacing: 0.06em; color: #14120E; text-decoration: none; cursor: pointer; transition: padding 300ms cubic-bezier(0.19,1,0.22,1), color 300ms; } .ds-nav-item:hover { padding-left: 36px; color: #8A6B2C; } .ds-nav-item--on { font-family: 'Bodoni Moda', Didot, serif; font-style: italic; font-size: 15px; letter-spacing: normal; color: #8A6B2C; }"
+    },
+    {
+      "name": "The Figure",
+      "kind": "custom",
+      "refersTo": "figure",
+      "description": "The signature component: hairline, field name in tracked caps, then the number in Bodoni at display scale. Gold marks the one figure that is the score.",
+      "html": "<div class=\"ds-figure\"><div class=\"ds-figure-label\">US followers this week</div><div class=\"ds-figure-value\">1,482</div><p class=\"ds-figure-context\">vs +1,204 last week</p><p class=\"ds-figure-note\">newest 2 still settling</p></div>",
+      "css": ".ds-figure { border-top: 1px solid #E0DACD; padding-top: 16px; font-family: Jost, sans-serif; font-weight: 300; } .ds-figure-label { font-size: 10px; letter-spacing: 0.26em; text-transform: uppercase; color: #6E6A5E; } .ds-figure-value { font-family: 'Bodoni Moda', Didot, serif; font-weight: 400; font-variant-numeric: tabular-nums; letter-spacing: -0.03em; line-height: 0.86; font-size: 62px; color: #9C7C38; margin-top: 12px; } .ds-figure-context { font-size: 13px; line-height: 1.35; color: rgba(20,18,14,0.75); margin: 12px 0 0; } .ds-figure-note { font-size: 11.5px; line-height: 1.35; color: #6E6A5E; margin: 6px 0 0; }"
+    },
+    {
+      "name": "Guarded Figure",
+      "kind": "custom",
+      "refersTo": "figure",
+      "description": "What a figure becomes when its sample cannot support a rate. The counts take the value slot and no percentage is rendered at all.",
+      "html": "<div class=\"ds-figure\"><div class=\"ds-figure-label\">Guide to follow</div><div class=\"ds-figure-value ds-figure-value--counts\">5 of 32</div><p class=\"ds-figure-note\">too few to rate</p></div>",
+      "css": ".ds-figure-value--counts { color: #14120E; font-size: 40px; }"
+    },
+    {
+      "name": "Folio Rule",
+      "kind": "custom",
+      "refersTo": "folio",
+      "description": "The running head. Section name left, state right, closed by a hairline. Replaces the eyebrow-above-heading pattern the world forbids.",
+      "html": "<div class=\"ds-folio\"><span>Growth</span><span>Updated 14 August 2026</span></div>",
+      "css": ".ds-folio { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; border-bottom: 1px solid #E0DACD; padding-bottom: 12px; font-family: Jost, sans-serif; font-size: 10px; font-weight: 300; letter-spacing: 0.26em; text-transform: uppercase; color: #6E6A5E; }"
+    },
+    {
+      "name": "Page Headline",
+      "kind": "custom",
+      "refersTo": "display",
+      "description": "Bodoni at display scale, held to an 18ch measure, with a single italic gold word as the only accent.",
+      "html": "<h1 class=\"ds-headline\">Who you gained. And <em>where</em> they came from.</h1>",
+      "css": ".ds-headline { font-family: 'Bodoni Moda', Didot, serif; font-weight: 400; font-size: 46px; line-height: 1.06; letter-spacing: -0.012em; max-width: 18ch; color: #14120E; margin: 0; } .ds-headline em { font-style: italic; color: #9C7C38; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Maison Record",
+    "overview": "A couture house's record book, not an analytics console. The account's growth is set the way a maison sets a lookbook: ivory stock, noir ink, one thread of antique gold, and enough silence around a figure that the figure means something. The measured numbers are the content — they are given display scale and a serif usually reserved for a magazine cover, because the whole product exists to make a small number of honest figures worth looking at.\n\nThe system's defining refusal is the container. There are no cards. Grouping is done with a 1px hairline and space, never with a filled, rounded, shadowed box. This is the single decision that separates this world from the dashboard it replaced.\n\nThe second refusal is decoration standing in for hierarchy. Emphasis comes from size, weight, and space — never from a tonal glow, a gradient, a coloured chip, or an icon beside a label.",
+    "keyCharacteristics": [
+      "Ivory paper ground (#F7F4EE), never white, never dark",
+      "Bodoni Moda for display and every figure; Jost at weight 300 for everything else",
+      "One accent — antique gold — appearing perhaps twice per screen",
+      "Hairlines and space instead of cards, fills, and shadows",
+      "Near-square corners (1-2px), so nothing reads as a widget",
+      "Tabular figures everywhere, by default rather than per-component"
+    ],
+    "rules": [
+      { "name": "The Two Golds Rule", "body": "#9C7C38 for large figures, #8A6B2C for anything a reader has to read at text size. One is 3.57:1 and one is 4.53:1, and the difference is whether the screen passes.", "section": "colors" },
+      { "name": "The One Thread Rule", "body": "Gold appears at most twice per screen. Its rarity is the entire effect; a third use makes it a theme colour and the maison becomes a brand guideline.", "section": "colors" },
+      { "name": "The Ground Truth Rule", "body": "Every data colour was validated against #F7F4EE. The previous set was validated against #0a0a0a. If the ground changes again, every chart colour is void until re-measured — a palette does not travel between grounds.", "section": "colors" },
+      { "name": "The Didone Ceiling Rule", "body": "Bodoni is for display and figures only. Below about 1.25rem it stops being elegant and starts costing legibility.", "section": "typography" },
+      { "name": "The Tabular Default Rule", "body": "Figures are tabular at the base layer, not per component. Numbers here are compared down columns, and a new component must not be able to ship proportional figures by omission.", "section": "typography" },
+      { "name": "The Hairline-Only Rule", "body": "If two regions need separating, the answer is a 1px #E0DACD rule and more space. Never a border-radius, never a fill, never a shadow, never a 2px accent border on one side.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do group with a 1px #E0DACD hairline and space.",
+      "Do use #8A6B2C for any gold a reader must read at text size, and reserve #9C7C38 for figures and headline accents.",
+      "Do set every measured number in Bodoni with tabular figures.",
+      "Do give one figure per screen the display scale and the gold; make the rest supporting.",
+      "Do carry counts alongside every rate, and render counts instead of a rate when the sample is thin.",
+      "Do honour prefers-reduced-motion on every entrance and transition.",
+      "Do re-measure every data colour if the ground ever changes."
+    ],
+    "donts": [
+      "Don't put content in a card. No filled, bordered, rounded container as a page structure — this is the system's first rule.",
+      "Don't add a drop shadow anywhere.",
+      "Don't put an icon beside a navigation label, or introduce an icon set into the index.",
+      "Don't set Bodoni below 1.25rem.",
+      "Don't use gold as a data series colour, or a country colour as an accent.",
+      "Don't write an eyebrow or kicker above a heading, or number sections (01 / 02) when the order carries no information.",
+      "Don't give a coloured border to one side of a block; the hairline is uniform and 1px.",
+      "Don't animate each section in with the same staggered entrance. Motion is one authored moment per screen, not a template announcing itself."
+    ]
+  }
+}

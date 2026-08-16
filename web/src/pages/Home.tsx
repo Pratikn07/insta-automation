@@ -1,7 +1,5 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { motion } from "framer-motion";
-import { ArrowUpRight, CalendarDays, Sparkles } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
 import { feedFollowAttributionPath } from "@/lib/feedFollowAttribution";
@@ -15,13 +13,19 @@ import { summarizeFollowerFlow, summarizeUsWeekOverWeek } from "@/lib/followerFl
 import { FollowerFlowPanel } from "@/components/home/FollowerFlowPanel";
 import { FeedFollowAttributionDrawer } from "@/components/home/FeedFollowAttributionDrawer";
 import { FollowerKpiRow } from "@/components/home/FollowerKpiRow";
-import { Button } from "@/components/ui/button";
 
-const fadeUp = {
-  initial: { opacity: 0, y: 10 },
-  animate: { opacity: 1, y: 0 },
-};
-
+/**
+ * The growth record's opening page.
+ *
+ * Composition is Maison: a folio rule across the top, the headline at a fixed
+ * measure, then the figures. There is no eyebrow above the headline and no
+ * section numbering — both were in the first comp and both are ornament that
+ * names nothing the reader needs.
+ *
+ * Motion lives in the shell's route transition, not here. A staggered entrance
+ * on every block reads as a template announcing itself; the page should simply
+ * be present when you arrive.
+ */
 export function Home() {
   const [attributionDay, setAttributionDay] = useState<string | null>(null);
   const flowQ = useQuery<FollowerFlowResponse>({
@@ -53,73 +57,65 @@ export function Home() {
   const flowSummary = summarizeFollowerFlow(flowPoints);
   const weekOverWeek = summarizeUsWeekOverWeek(flowPoints);
 
+  // Two shapes, not one string with a prefix baked in: "Updated waiting for the
+  // next snapshot" is what prefixing produced, and in tracked caps it ran off
+  // the right edge of a phone.
   const updatedLabel = flowStock
-    ? new Date(flowStock.capturedAt).toLocaleDateString(undefined, {
-        month: "short",
+    ? `Updated ${new Date(flowStock.capturedAt).toLocaleDateString(undefined, {
+        month: "long",
         day: "numeric",
         year: "numeric",
         timeZone: flowQ.data?.analyticsTimeZone ?? "America/Los_Angeles",
-      })
-    : "Waiting for the next snapshot";
+      })}`
+    : "Awaiting first snapshot";
 
   return (
-    <div className="relative space-y-6 pb-6">
-      <div className="pointer-events-none absolute -left-32 -top-32 -z-10 size-80 rounded-full bg-emerald-400/5 blur-3xl" />
-      <div className="pointer-events-none absolute -right-24 top-24 -z-10 size-72 rounded-full bg-sky-400/5 blur-3xl" />
+    <div className="space-y-10">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-b pb-3">
+        <span className="label-caps">Growth</span>
+        <span className="label-caps">{updatedLabel}</span>
+      </div>
 
-      <motion.header
-        {...fadeUp}
-        transition={{ duration: 0.24 }}
-        className="flex flex-col gap-5 rounded-2xl border border-white/10 bg-gradient-to-br from-white/[0.055] to-transparent p-5 sm:flex-row sm:items-end sm:justify-between sm:p-6"
-      >
-        <div className="max-w-2xl">
-          <div className="mb-3 flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-violet-300">
-            <Sparkles className="size-4" /> Growth snapshot
-          </div>
-          <h1 className="text-3xl font-semibold tracking-[-0.04em] text-white sm:text-4xl">
-            Who you gained.<br className="hidden sm:block" /> And where they came from.
+      <header className="flex flex-col gap-6 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h1 className="font-display max-w-[18ch] text-[2rem] leading-[1.06] tracking-[-0.012em] sm:text-[2.9rem]">
+            Who you gained. And <em className="italic text-gold">where</em> they came from.
           </h1>
-          <p className="mt-3 max-w-xl text-sm leading-relaxed text-muted-foreground">
-            Your followers day by day, by region — in real counts.
+          <p className="mt-5 max-w-[46ch] text-sm leading-relaxed text-muted-foreground">
+            Your followers day by day, by region, in real counts.
           </p>
         </div>
+        {/* self-start, or the rule under it spans the column and reads as a divider. */}
+        <Link
+          to="/insights"
+          className="label-caps self-start border-b border-gold-text pb-1 text-gold-text transition-opacity hover:opacity-70 sm:shrink-0"
+        >
+          Full insights
+        </Link>
+      </header>
 
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-2 rounded-full border border-white/10 bg-black/10 px-3 py-2 text-xs text-muted-foreground">
-            <CalendarDays className="size-3.5" /> Updated {updatedLabel}
-          </div>
-          <Button asChild variant="outline" size="sm" className="rounded-full bg-black/10">
-            <Link to="/insights">Full insights <ArrowUpRight className="size-3.5" /></Link>
-          </Button>
-        </div>
-      </motion.header>
+      <FollowerKpiRow
+        weekOverWeek={weekOverWeek}
+        stock={flowStock}
+        avgPerDay7={flowSummary?.avgPerDay7 ?? null}
+        stats={statsQ.data}
+        funnel={funnelQ.data}
+        isFlowLoading={flowQ.isLoading}
+        isStatsLoading={statsQ.isLoading}
+        isFunnelLoading={funnelQ.isLoading}
+      />
 
-      <motion.div {...fadeUp} transition={{ duration: 0.24, delay: 0.05 }}>
-        <FollowerKpiRow
-          weekOverWeek={weekOverWeek}
-          stock={flowStock}
-          avgPerDay7={flowSummary?.avgPerDay7 ?? null}
-          stats={statsQ.data}
-          funnel={funnelQ.data}
-          isFlowLoading={flowQ.isLoading}
-          isStatsLoading={statsQ.isLoading}
-          isFunnelLoading={funnelQ.isLoading}
-        />
-      </motion.div>
-
-      <motion.div {...fadeUp} transition={{ duration: 0.24, delay: 0.1 }}>
-        <FollowerFlowPanel
-          points={flowPoints}
-          stock={flowStock}
-          summary={flowSummary}
-          isLoading={flowQ.isLoading}
-          isError={flowQ.isError}
-          onRetry={() => void flowQ.refetch()}
-          selectedDay={attributionDay}
-          onDaySelect={setAttributionDay}
-          now={new Date().toISOString()}
-        />
-      </motion.div>
+      <FollowerFlowPanel
+        points={flowPoints}
+        stock={flowStock}
+        summary={flowSummary}
+        isLoading={flowQ.isLoading}
+        isError={flowQ.isError}
+        onRetry={() => void flowQ.refetch()}
+        selectedDay={attributionDay}
+        onDaySelect={setAttributionDay}
+        now={new Date().toISOString()}
+      />
 
       <FeedFollowAttributionDrawer
         day={attributionDay}

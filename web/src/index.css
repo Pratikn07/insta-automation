@@ -3,62 +3,87 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Maison. An ivory growth record, not a dark console.
+   Every colour below is measured against the ground (#F7F4EE), not chosen by eye:
+   body and small text clear 4.5:1, chart marks clear 3:1. Where a value sits just
+   above its floor the ratio is written beside it, because the next person to nudge
+   it needs to know how little room there is. */
 @theme {
-  --font-sans:
-    "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
+  --font-sans: "Jost", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* Display only — figures and headings. Never body, never small sizes: a didone
+     at 13px is decoration that costs legibility. */
+  --font-display: "Bodoni Moda", Didot, "Times New Roman", serif;
 
-  --radius-lg: 0.75rem;
-  --radius-md: 0.5rem;
-  --radius-sm: 0.375rem;
+  /* Maison has no card language, so radii stay near-square. A hairline and space
+     do the grouping that a rounded filled box used to do. */
+  --radius-lg: 2px;
+  --radius-md: 2px;
+  --radius-sm: 1px;
 
-  --color-background: oklch(0.145 0 0);
-  --color-foreground: oklch(0.985 0 0);
+  --color-background: #f7f4ee;
+  --color-foreground: #14120e;
 
-  --color-card: oklch(0.18 0 0);
-  --color-card-foreground: oklch(0.985 0 0);
+  /* The only raised surface in the system. Used sparingly — a drawer, a popover —
+     never as a card wrapper around ordinary page content. */
+  --color-card: #fdfcf8;
+  --color-card-foreground: #14120e;
+  --color-popover: #fdfcf8;
+  --color-popover-foreground: #14120e;
 
-  --color-popover: oklch(0.18 0 0);
-  --color-popover-foreground: oklch(0.985 0 0);
+  --color-primary: #14120e;
+  --color-primary-foreground: #f7f4ee;
 
-  --color-primary: oklch(0.985 0 0);
-  --color-primary-foreground: oklch(0.18 0 0);
+  --color-secondary: #ece7dc;
+  --color-secondary-foreground: #14120e;
 
-  --color-secondary: oklch(0.235 0 0);
-  --color-secondary-foreground: oklch(0.985 0 0);
+  --color-muted: #ece7dc;
+  /* 4.92:1. The obvious ivory-grey (#8A8477) measures 3.39:1 and fails body text. */
+  --color-muted-foreground: #6e6a5e;
 
-  --color-muted: oklch(0.235 0 0);
-  --color-muted-foreground: oklch(0.708 0 0);
+  --color-accent: #ece7dc;
+  --color-accent-foreground: #14120e;
 
-  --color-accent: oklch(0.235 0 0);
-  --color-accent-foreground: oklch(0.985 0 0);
+  --color-destructive: #7a2e2e;
+  --color-destructive-foreground: #f7f4ee;
 
-  --color-destructive: oklch(0.577 0.245 27.325);
-  --color-destructive-foreground: oklch(0.985 0 0);
+  --color-border: #e0dacd;
+  --color-input: #cfc8b8;
+  --color-ring: #8a6b2c;
 
-  --color-border: oklch(1 0 0 / 0.1);
-  --color-input: oklch(1 0 0 / 0.15);
-  --color-ring: oklch(0.708 0 0);
+  /* Antique gold, the single thread of colour in the house.
+     Two values, and they are not interchangeable: the display tone is for figures
+     and headings at large sizes (3.57:1 — legal for large text only), the text tone
+     is for links, active nav and anything small (4.53:1). */
+  --color-gold: #9c7c38;
+  --color-gold-text: #8a6b2c;
 
-  --color-brand-from: oklch(0.7 0.22 12);
-  --color-brand-via: oklch(0.62 0.27 320);
-  --color-brand-to: oklch(0.55 0.27 280);
+  /* Funnels. ONE hue for every stage bar — never a colour per stage. Position and
+     length already encode order and magnitude; a ramp on top of that encodes rank
+     as hue, which is the classic funnel-chart mistake.
+     Re-validated against THIS ground after the world change: the dark-era pair
+     (#2a78d6 / #86b6ef) was measured against #0a0a0a and means nothing here.
+     Monotone lightness, gap 0.175, 8.35:1 at the dark end. */
+  --color-funnel-mark: #2a4a6b;
+  --color-funnel-soft: #6b8aa5; /* 3.30:1 */
+  /* The full cohort behind each bar, so a stage's LOSS is visible, not just its
+     size. Matches the hairline so it reads as ground, not data. */
+  --color-funnel-track: #e0dacd;
+  /* Absence of evidence. Deliberately NOT a hue: 1,107 conversations with no read
+     tracking are unknown, not unseen, and a coloured segment would state a finding
+     the data does not support. */
+  --color-funnel-unknown: #8f8a80;
 
-  /* Funnels. ONE hue for every stage bar — never a colour per stage. Position
-     and length already encode order and magnitude; a ramp on top of that
-     encodes rank as hue, which is the classic funnel-chart mistake.
-     Validated as an ordinal pair against this app's resolved background
-     (#0a0a0a, from --color-background): monotone lightness, adjacent gaps
-     >= 0.06, and 4.48:1 contrast at the dark end. */
-  --color-funnel-mark: #2a78d6;
-  --color-funnel-soft: #86b6ef;
-  /* The full cohort behind each bar, so a stage's LOSS is visible, not just
-     its size. Matches --color-muted so it reads as ground, not data. */
-  --color-funnel-track: oklch(0.235 0 0);
-  /* Absence of evidence. Deliberately NOT a hue: 1,107 conversations with no
-     read tracking are unknown, not unseen, and a coloured segment would state
-     a finding the data does not support. */
-  --color-funnel-unknown: #3a3d47;
+  /* Country marks. Categorical, so they are separated by hue rather than by
+     lightness, and every one clears 3:1 on the ground. Re-derived for ivory; the
+     dark-era set was validated against a #1c1c1c panel that no longer exists. */
+  --color-c1: #2a4a6b;
+  --color-c2: #9c5b21;
+  --color-c3: #1f6b54;
+  --color-c4: #8a6b2c;
+  --color-c5: #8c3b63;
+  --color-c6: #3f6b22;
+  --color-c7: #5a4e9c;
+  --color-c8: #a33a34;
 }
 
 @layer base {
@@ -75,27 +100,41 @@
     background-color: var(--color-background);
     color: var(--color-foreground);
     font-family: var(--font-sans);
+    font-weight: 300;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }
+  /* Figures are compared down columns everywhere in this app. Tabular by default
+     rather than per-component, so a new number can't accidentally ship proportional. */
+  table,
+  [data-figures] {
+    font-variant-numeric: tabular-nums;
+  }
 }
 
+/* The house mark's fill. Kept under its original name because eleven call sites
+   across pages this pass does not touch still reference it, and a rename would
+   silently blank all of them — Tailwind drops unknown classes without an error,
+   which is exactly how the first build of this world shipped an invisible
+   sign-in button. Maison has no gradient: the mark is solid antique gold. */
 @utility bg-brand-gradient {
-  background-image: linear-gradient(
-    135deg,
-    var(--color-brand-from),
-    var(--color-brand-via) 50%,
-    var(--color-brand-to)
-  );
+  background-color: var(--color-gold);
 }
 
-@utility text-brand-gradient {
-  background-image: linear-gradient(
-    135deg,
-    var(--color-brand-from),
-    var(--color-brand-via) 50%,
-    var(--color-brand-to)
-  );
-  background-clip: text;
-  color: transparent;
+@utility font-display {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+}
+
+/* The house label: the small tracked capital used for every field name. One
+   definition, so the tracking can never drift between screens. */
+@utility label-caps {
+  /* 10px, not the 8px the comp used. Tracked caps at 8px look elegant in a
+     screenshot and are genuinely hard to read on a tool opened every day. */
+  font-size: 0.625rem;
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+  color: var(--color-muted-foreground);
 }
