@@ -234,6 +234,24 @@ Below 768px the index becomes a left drawer over a 25% ink scrim, and the runnin
 head regains the page title, because nothing else names where you are once the
 index is closed.
 
+### Named Rules
+
+**The Coarse Pointer Rule.** Every interactive element carries a 44px minimum
+target under `@media (pointer: coarse)`, and only under it. The editorial rhythm
+of this system depends on tight leading, so a mouse keeps the density and a
+thumb gets the target. The first build of this world shipped 27px navigation
+items — elegant on a monitor, and a miss on the phone where keywords actually
+get added.
+
+**The Wayfinding Rule.** Every screen answers four questions: where am I, where
+can I go, what is here, and how do I leave. A screen that cannot answer all four
+is not finished, however well it is set. This is the check the eleven-item flat
+navigation failed, and the reason the index is grouped.
+
+**The Proximity Rule.** A control sits next to the thing it changes. A filter
+that governs one panel belongs to that panel, not to a toolbar at the top of the
+page.
+
 ## Elevation & Depth
 
 **This system has no shadows.** Not "few" — none. Depth is carried by three
@@ -311,6 +329,11 @@ to contain "5 of 32" rather than "15.6%".
   when the sample is thin.
 - **Do** honour `prefers-reduced-motion` on every entrance and transition.
 - **Do** re-measure every data colour if the ground ever changes.
+- **Do** give every interactive element a 44px minimum target under a coarse
+  pointer, and press feedback on pointer-down — hover does not exist on a phone.
+- **Do** check a finished screen against the four wayfinding questions before
+  calling it done.
+- **Do** put a control beside the thing it governs.
 
 ### Don't:
 
@@ -327,3 +350,8 @@ to contain "5 of 32" rather than "15.6%".
   uniform and 1px.
 - **Don't** animate each section in with the same staggered entrance. Motion is
   one authored moment per screen, not a template announcing itself.
+- **Don't** rely on hover to reveal anything a phone user needs. Eighty per cent
+  of use is desktop; the other twenty per cent is where keywords get attached.
+- **Don't** import glass, backdrop blur, or a system font stack. This world was
+  chosen against those, and they will arrive disguised as "making it more
+  Apple-like".

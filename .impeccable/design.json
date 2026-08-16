@@ -159,7 +159,10 @@
       { "name": "The Ground Truth Rule", "body": "Every data colour was validated against #F7F4EE. The previous set was validated against #0a0a0a. If the ground changes again, every chart colour is void until re-measured — a palette does not travel between grounds.", "section": "colors" },
       { "name": "The Didone Ceiling Rule", "body": "Bodoni is for display and figures only. Below about 1.25rem it stops being elegant and starts costing legibility.", "section": "typography" },
       { "name": "The Tabular Default Rule", "body": "Figures are tabular at the base layer, not per component. Numbers here are compared down columns, and a new component must not be able to ship proportional figures by omission.", "section": "typography" },
-      { "name": "The Hairline-Only Rule", "body": "If two regions need separating, the answer is a 1px #E0DACD rule and more space. Never a border-radius, never a fill, never a shadow, never a 2px accent border on one side.", "section": "elevation" }
+      { "name": "The Hairline-Only Rule", "body": "If two regions need separating, the answer is a 1px #E0DACD rule and more space. Never a border-radius, never a fill, never a shadow, never a 2px accent border on one side.", "section": "elevation" },
+      { "name": "The Coarse Pointer Rule", "body": "Every interactive element carries a 44px minimum target under @media (pointer: coarse), and only under it. The editorial rhythm depends on tight leading, so a mouse keeps the density and a thumb gets the target. The first build shipped 27px navigation items — elegant on a monitor, a miss on the phone where keywords actually get added.", "section": "layout" },
+      { "name": "The Wayfinding Rule", "body": "Every screen answers four questions: where am I, where can I go, what is here, and how do I leave. A screen that cannot answer all four is not finished, however well it is set.", "section": "layout" },
+      { "name": "The Proximity Rule", "body": "A control sits next to the thing it changes. A filter that governs one panel belongs to that panel, not to a toolbar at the top of the page.", "section": "layout" }
     ],
     "dos": [
       "Do group with a 1px #E0DACD hairline and space.",
@@ -168,7 +171,10 @@
       "Do give one figure per screen the display scale and the gold; make the rest supporting.",
       "Do carry counts alongside every rate, and render counts instead of a rate when the sample is thin.",
       "Do honour prefers-reduced-motion on every entrance and transition.",
-      "Do re-measure every data colour if the ground ever changes."
+      "Do re-measure every data colour if the ground ever changes.",
+      "Do give every interactive element a 44px minimum target under a coarse pointer, and press feedback on pointer-down — hover does not exist on a phone.",
+      "Do check a finished screen against the four wayfinding questions before calling it done.",
+      "Do put a control beside the thing it governs."
     ],
     "donts": [
       "Don't put content in a card. No filled, bordered, rounded container as a page structure — this is the system's first rule.",
@@ -178,7 +184,9 @@
       "Don't use gold as a data series colour, or a country colour as an accent.",
       "Don't write an eyebrow or kicker above a heading, or number sections (01 / 02) when the order carries no information.",
       "Don't give a coloured border to one side of a block; the hairline is uniform and 1px.",
-      "Don't animate each section in with the same staggered entrance. Motion is one authored moment per screen, not a template announcing itself."
+      "Don't animate each section in with the same staggered entrance. Motion is one authored moment per screen, not a template announcing itself.",
+      "Don't rely on hover to reveal anything a phone user needs. Eighty per cent of use is desktop; the other twenty per cent is where keywords get attached.",
+      "Don't import glass, backdrop blur, or a system font stack. This world was chosen against those, and they will arrive disguised as 'making it more Apple-like'."
     ]
   }
 }

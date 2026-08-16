@@ -74,7 +74,14 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                 onClick={onNavigate}
                 className={({ isActive }) =>
                   cn(
-                    "block py-1.5 pl-7 pr-5 text-[13.5px] tracking-[0.06em] transition-[padding,color] duration-300 ease-out",
+                    "flex items-center py-1.5 pl-7 pr-5 text-[13.5px] tracking-[0.06em] transition-[padding,color,opacity] duration-300 ease-out",
+                    // 44px minimum on touch only. The editorial rhythm of the
+                    // index depends on tight leading, so a coarse pointer gets
+                    // the target and a mouse keeps the density.
+                    "[@media(pointer:coarse)]:min-h-11",
+                    // Press feedback on pointer-down. Hover does not exist on a
+                    // phone, and this is the one place she taps daily.
+                    "active:opacity-60",
                     isActive
                       ? "font-display text-[15px] italic tracking-normal text-gold-text"
                       : "text-foreground hover:pl-9 hover:text-gold-text",

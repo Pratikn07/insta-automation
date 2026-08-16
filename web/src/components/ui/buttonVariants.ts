@@ -16,11 +16,14 @@ export const buttonVariants = cva(
         destructive: "bg-destructive text-destructive-foreground hover:bg-destructive/90",
         link: "text-primary underline-offset-4 hover:underline",
       },
+      // Every size carries a 44px minimum under a coarse pointer. The visual
+      // heights stay as they are on a mouse, so the ivory rhythm is unchanged
+      // where it is read and the target is honoured where it is tapped.
       size: {
-        default: "h-9 px-4 py-2",
-        sm: "h-8 rounded-md px-3 text-xs",
-        lg: "h-10 rounded-md px-6",
-        icon: "size-9",
+        default: "h-9 px-4 py-2 [@media(pointer:coarse)]:min-h-11",
+        sm: "h-8 rounded-md px-3 text-xs [@media(pointer:coarse)]:min-h-11",
+        lg: "h-10 rounded-md px-6 [@media(pointer:coarse)]:min-h-11",
+        icon: "size-9 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11",
       },
     },
     defaultVariants: { variant: "default", size: "default" },
