@@ -65,7 +65,7 @@ export function FollowerKpiRow({
     // takes the wider column and the accent; the other two are supporting facts
     // and are set at supporting scale. An equal 3-up row would say all three
     // matter the same, which PRODUCT.md explicitly says they do not.
-    <div className="grid gap-x-10 gap-y-8 sm:grid-cols-2 lg:grid-cols-[1.35fr_1fr_1fr]">
+    <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2 lg:grid-cols-[1.3fr_1fr_1fr]">
       <KpiTile
         emphasis
         label="US followers this week"

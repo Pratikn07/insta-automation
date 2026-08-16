@@ -18,10 +18,14 @@ export function PanelShell({
   className?: string;
   // Empty/error states still want a generous box; the populated chart panel is
   // much shorter than the old all-in-one panel and a 600px floor left a gap.
+  //
+  // 360px, not 520: a floor that tall pushed the country table off the first
+  // screen whenever the chart was empty, which is exactly when a reader most
+  // wants the rest of the page.
   tall?: boolean;
 }) {
   return (
-    <section className={cn("border-t pt-7", tall && "min-h-[520px]", className)}>
+    <section className={cn("border-t pt-5", tall && "min-h-[360px]", className)}>
       {children}
     </section>
   );
@@ -41,11 +45,11 @@ export function EmptyPanel({
   accentClassName?: string;
 }) {
   return (
-    <div className="flex min-h-[460px] flex-col items-center justify-center px-6 text-center">
-      <Icon className="size-6 text-gold-text" aria-hidden />
-      <h2 className="font-display mt-5 text-2xl">{title}</h2>
-      <p className="mt-3 max-w-sm text-sm leading-relaxed text-muted-foreground">{body}</p>
-      {action && <div className="mt-6">{action}</div>}
+    <div className="flex min-h-[280px] flex-col items-center justify-center px-6 text-center">
+      <Icon className="size-5 text-gold-text" aria-hidden />
+      <h2 className="font-display mt-3 text-xl">{title}</h2>
+      <p className="mt-2 max-w-sm text-[13px] leading-relaxed text-muted-foreground">{body}</p>
+      {action && <div className="mt-4">{action}</div>}
     </div>
   );
 }

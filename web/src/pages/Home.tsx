@@ -70,25 +70,31 @@ export function Home() {
     : "Awaiting first snapshot";
 
   return (
-    <div className="space-y-10">
-      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-b pb-3">
+    // Tightened after seeing it at full size. The first build gave the headline
+    // magazine scale and pushed the figures below a fold of air — which reads well
+    // once and costs a third of the viewport every day after that. The world is
+    // unchanged; only the density is. Editorial character lives in the typeface,
+    // the hairlines and the single gold, not in the amount of empty paper.
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-b pb-2.5">
         <span className="label-caps">Growth</span>
         <span className="label-caps">{updatedLabel}</span>
       </div>
 
-      <header className="flex flex-col gap-6 sm:flex-row sm:items-end sm:justify-between">
+      <header className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
         <div>
-          <h1 className="font-display max-w-[18ch] text-[2rem] leading-[1.06] tracking-[-0.012em] sm:text-[2.9rem]">
+          {/* A title, not a feature. It stops being informative on the second
+              visit, so it may not keep the scale it had on the first. */}
+          <h1 className="font-display text-[1.4rem] leading-[1.15] tracking-[-0.012em] sm:text-[1.75rem]">
             Who you gained. And <em className="italic text-gold">where</em> they came from.
           </h1>
-          <p className="mt-5 max-w-[46ch] text-sm leading-relaxed text-muted-foreground">
+          <p className="mt-1.5 text-[13px] leading-snug text-muted-foreground">
             Your followers day by day, by region, in real counts.
           </p>
         </div>
-        {/* self-start, or the rule under it spans the column and reads as a divider. */}
         <Link
           to="/insights"
-          className="label-caps self-start border-b border-gold-text pb-1 text-gold-text transition-opacity hover:opacity-70 sm:shrink-0"
+          className="label-caps shrink-0 border-b border-gold-text pb-1 text-gold-text transition-opacity hover:opacity-70"
         >
           Full insights
         </Link>

@@ -35,18 +35,27 @@ export function KpiTile({
   trendIcon: TrendIcon = null,
   emphasis = false,
 }: KpiTileProps) {
+  // An em-dash set at figure scale is a 60px-tall hole where a number should be,
+  // and every tile shows one before the first snapshot lands. A placeholder is
+  // not a figure, so it does not get a figure's size.
+  const isPlaceholder = value === "—" || value === "";
+
   return (
-    <div className="border-t pt-4">
+    <div className="border-t pt-3">
       <div className="label-caps">{label}</div>
 
       {isLoading ? (
-        <Skeleton className={cn("mt-4 w-32", emphasis ? "h-14" : "h-9")} />
+        <Skeleton className={cn("mt-2.5 w-28", emphasis ? "h-9" : "h-7")} />
       ) : (
-        <div className="mt-3 flex items-baseline gap-2.5">
+        <div className="mt-2 flex items-baseline gap-2">
           <span
             className={cn(
-              "font-display leading-[0.86]",
-              emphasis ? "text-[3.4rem] text-gold sm:text-[4.2rem]" : "text-[2.1rem]",
+              "font-display leading-[0.9]",
+              isPlaceholder
+                ? "text-[1.5rem] text-muted-foreground"
+                : emphasis
+                  ? "text-[2.4rem] text-gold sm:text-[2.9rem]"
+                  : "text-[1.7rem]",
             )}
           >
             {value}
@@ -58,10 +67,10 @@ export function KpiTile({
       )}
 
       {!isLoading && context && (
-        <p className="mt-3 text-[13px] leading-snug text-foreground/75">{context}</p>
+        <p className="mt-2 text-[12.5px] leading-snug text-foreground/75">{context}</p>
       )}
       {!isLoading && note && (
-        <p className="mt-1.5 text-[11.5px] leading-snug text-muted-foreground">{note}</p>
+        <p className="mt-1 text-[11px] leading-snug text-muted-foreground">{note}</p>
       )}
     </div>
   );
