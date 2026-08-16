@@ -57,6 +57,32 @@ sequence (text / image / PDF).
 and keeping the automation running. Neither is subordinate to the other. Analytics
 are not decoration on an ops tool, and ops are not plumbing under a dashboard.
 
+### The console interprets; it does not only report
+
+Confirmed 2026-08-16, and it changes what this product *is* rather than how it
+looks. The console states a finding — what is true today and what to do about it,
+ranked — instead of presenting numbers and leaving the reading to the user.
+
+This follows directly from the confirmed fact in `## Users`: the analytics are
+built for a reader who does not read them. She opens the console daily for setup
+and leaves. A page of correct figures does not reach her; a sentence does.
+
+**What it commits us to.** The interpretation is a *capability*, not a copy
+exercise, and most of it is backend work: comparing cohorts, attributing a lift
+to its cause, ranking losses by what they cost, and — the hard part — knowing
+when a sample is too thin to say anything at all.
+
+**What it may never become.** A sentence is a claim, and this product does not
+make claims its samples cannot carry. Every clause must be derived from a
+measurement; where it cannot be derived, nothing is printed. An invented or
+smoothed-over finding is worse than a blank, because a blank is honest and a
+reader can act on a wrong sentence.
+
+**Status:** the first version ships derived from data that already exists —
+week-over-week velocity and the funnel's measured loss. The richer version
+(attributing a lift to specific reels, ranking across several signals) is real
+unbuilt work, not a wording problem.
+
 ### Success metric
 
 **US followers gained.** Confirmed as the goal. Everything else the system
@@ -119,6 +145,42 @@ adding a keyword, not analysis.
 **External truth.** The Meta Graph API is the only source of external reality.
 `docs/meta-verification.md` records what has actually been *observed* from the
 Graph API versus what is documented — absent documentation is not confirmation.
+
+### There is no dev environment
+
+Established 2026-08-16 and load-bearing for anyone about to run this locally.
+There is **one** of everything: one database (`DATABASE_URL` points at production
+Supabase), one Instagram account with a live token, and a CORS allowlist pinned
+to the deployed origin. Nothing here is a staging copy.
+
+The consequence is sharper than it sounds. `src/server.ts` starts **seven workers
+unconditionally** — gate queue, snapshots, feed-follow snapshots, Gemini queue,
+follow recheck, follow-through, token refresh — and the listen callback fires a
+token refresh and a snapshot on boot, before any interval elapses. Only the AI
+drafts and recovery workers are flag-gated. So a second server started on a
+laptop is not a second environment; it is a second set of workers acting on
+production beside Railway's, sending real private replies to real people and
+racing the deployed token refresher.
+
+`WORKERS_ENABLED` exists for exactly this. It defaults **true**, so production is
+unchanged by its absence and Railway needs no new variable. Set it false and the
+API, the routes and the database reads all work with no timers:
+
+```
+WORKERS_ENABLED=false npm run dev
+```
+
+**Reads are then safe; writes never are.** Editing a keyword or sequence in the
+console writes to the same production row the live automation reads.
+
+Two related traps, both cost time on 2026-08-16:
+
+- The `.env` `IG_ACCESS_TOKEN` is a **stale seed**, not the live token. The real
+  one lives in the `ig_token` table and self-renews. Any script that bypasses the
+  token store falls back to the seed and gets Graph code 190, which looks
+  exactly like a token crisis and is not one.
+- A local frontend talks to `localhost:3000`, so the console shows empty states
+  whenever the API is not up. Those are connection failures, not empty data.
 
 ## Capabilities and Constraints
 
