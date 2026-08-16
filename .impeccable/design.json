@@ -8,58 +8,148 @@
         "role": "neutral",
         "displayName": "Paper",
         "canonical": "#F7F5EF",
-        "tonalRamp": ["#1C1B16", "#33322A", "#4B493E", "#6B6858", "#948F7C", "#BDB8A6", "#E1DDD1", "#F7F5EF"]
+        "tonalRamp": [
+          "#1C1B16",
+          "#33322A",
+          "#4B493E",
+          "#6B6858",
+          "#948F7C",
+          "#BDB8A6",
+          "#E1DDD1",
+          "#F7F5EF"
+        ]
       },
       "ink": {
         "role": "neutral",
         "displayName": "Ink",
         "canonical": "#171812",
-        "tonalRamp": ["#171812", "#2B2C24", "#404238", "#5A5C4E", "#7C7E6C", "#A6A794", "#D0D1C0", "#EFEFE4"]
+        "tonalRamp": [
+          "#171812",
+          "#2B2C24",
+          "#404238",
+          "#5A5C4E",
+          "#7C7E6C",
+          "#A6A794",
+          "#D0D1C0",
+          "#EFEFE4"
+        ]
       },
       "muted-ink": {
         "role": "neutral",
         "displayName": "Muted Ink",
         "canonical": "#66665F",
-        "tonalRamp": ["#1A1A17", "#2F2F2B", "#45453F", "#5A5A53", "#66665F", "#8C8C83", "#B4B4A9", "#DCDCD1"]
+        "tonalRamp": [
+          "#1A1A17",
+          "#2F2F2B",
+          "#45453F",
+          "#5A5A53",
+          "#66665F",
+          "#8C8C83",
+          "#B4B4A9",
+          "#DCDCD1"
+        ]
       },
       "signal": {
         "role": "primary",
         "displayName": "Moss",
         "canonical": "#2C4A3B",
-        "tonalRamp": ["#0D1712", "#16261E", "#20382C", "#2C4A3B", "#3E6A54", "#5B9177", "#9AC0AE", "#DCE9E2"]
+        "tonalRamp": [
+          "#0D1712",
+          "#16261E",
+          "#20382C",
+          "#2C4A3B",
+          "#3E6A54",
+          "#5B9177",
+          "#9AC0AE",
+          "#DCE9E2"
+        ]
       },
       "urgent": {
         "role": "warning",
         "displayName": "Attention",
         "canonical": "#A8412B",
-        "tonalRamp": ["#25100A", "#3E1B12", "#57251A", "#703222", "#A8412B", "#C46B56", "#DDA091", "#F3D9D1"]
+        "tonalRamp": [
+          "#25100A",
+          "#3E1B12",
+          "#57251A",
+          "#703222",
+          "#A8412B",
+          "#C46B56",
+          "#DDA091",
+          "#F3D9D1"
+        ]
       },
       "destructive": {
         "role": "danger",
         "displayName": "Destructive",
         "canonical": "#8C3A2B",
-        "tonalRamp": ["#1F0D09", "#351611", "#4B1F18", "#61291F", "#8C3A2B", "#B06455", "#D19C90", "#EFD6CF"]
+        "tonalRamp": [
+          "#1F0D09",
+          "#351611",
+          "#4B1F18",
+          "#61291F",
+          "#8C3A2B",
+          "#B06455",
+          "#D19C90",
+          "#EFD6CF"
+        ]
       },
       "funnel-mark": {
         "role": "tertiary",
         "displayName": "Funnel Mark",
         "canonical": "#2A4A6B",
-        "tonalRamp": ["#0B1420", "#152538", "#1F3750", "#2A4A6B", "#3E6791", "#6B8AA5", "#9DB4C7", "#D0DCE6"]
+        "tonalRamp": [
+          "#0B1420",
+          "#152538",
+          "#1F3750",
+          "#2A4A6B",
+          "#3E6791",
+          "#6B8AA5",
+          "#9DB4C7",
+          "#D0DCE6"
+        ]
       },
       "funnel-unknown": {
         "role": "neutral",
         "displayName": "Funnel Unknown",
         "canonical": "#8F8A80",
-        "tonalRamp": ["#1E1D1A", "#343230", "#4A4844", "#605D57", "#75716A", "#8F8A80", "#B5B0A5", "#DBD6CB"]
+        "tonalRamp": [
+          "#1E1D1A",
+          "#343230",
+          "#4A4844",
+          "#605D57",
+          "#75716A",
+          "#8F8A80",
+          "#B5B0A5",
+          "#DBD6CB"
+        ]
       }
     },
     "typographyMeta": {
-      "display": { "displayName": "Display", "purpose": "The page name. One per screen." },
-      "headline": { "displayName": "Headline", "purpose": "Today's read — the only full sentence set large." },
-      "figure": { "displayName": "Figure", "purpose": "Measured values, tabular. Placeholders drop to label scale." },
-      "title": { "displayName": "Title", "purpose": "Section headings above a full-strength rule." },
-      "body": { "displayName": "Body", "purpose": "Running copy at a 54-74ch measure." },
-      "label": { "displayName": "Label", "purpose": "Field names and section markers. Defined once as label-caps." }
+      "display": {
+        "displayName": "Display",
+        "purpose": "The page name. One per screen."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Today's read — the only full sentence set large."
+      },
+      "figure": {
+        "displayName": "Figure",
+        "purpose": "Measured values, tabular. Placeholders drop to label scale."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Section headings above a full-strength rule."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Running copy at a 54-74ch measure."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Field names and section markers. Defined once as label-caps."
+      }
     },
     "shadows": [
       {
@@ -69,18 +159,52 @@
       }
     ],
     "motion": [
-      { "name": "ease-house", "value": "cubic-bezier(0.19, 1, 0.22, 1)", "purpose": "Drawer entrance and rail slides." },
-      { "name": "dur-route", "value": "180ms", "purpose": "Route cross-fade. The only entrance on a page load." },
-      { "name": "dur-drawer", "value": "280ms", "purpose": "Mobile rail drawer." },
-      { "name": "reduced-motion", "value": "all durations collapse to 0", "purpose": "useReducedMotion() is read in the shell and every duration collapses. Non-negotiable on a tool opened many times a day." }
+      {
+        "name": "ease-house",
+        "value": "cubic-bezier(0.19, 1, 0.22, 1)",
+        "purpose": "Drawer entrance and rail slides."
+      },
+      {
+        "name": "dur-route",
+        "value": "180ms",
+        "purpose": "Route cross-fade. The only entrance on a page load."
+      },
+      {
+        "name": "dur-drawer",
+        "value": "280ms",
+        "purpose": "Mobile rail drawer."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "all durations collapse to 0",
+        "purpose": "useReducedMotion() is read in the shell and every duration collapses. Non-negotiable on a tool opened many times a day."
+      }
     ],
     "breakpoints": [
-      { "name": "sm", "value": "640px" },
-      { "name": "md", "value": "768px" },
-      { "name": "lg", "value": "1024px" },
-      { "name": "content-max", "value": "1152px" },
-      { "name": "rail", "value": "208px" },
-      { "name": "strip", "value": "48px" }
+      {
+        "name": "sm",
+        "value": "640px"
+      },
+      {
+        "name": "md",
+        "value": "768px"
+      },
+      {
+        "name": "lg",
+        "value": "1024px"
+      },
+      {
+        "name": "content-max",
+        "value": "1152px"
+      },
+      {
+        "name": "rail",
+        "value": "208px"
+      },
+      {
+        "name": "strip",
+        "value": "48px"
+      }
     ]
   },
   "components": [
@@ -120,9 +244,9 @@
       "name": "Today's Read",
       "kind": "custom",
       "refersTo": "read-panel",
-      "description": "The signature component: the finding as a headline, its consequence, what it rests on, and a control that opens the evidence. Composed from measurements, never authored.",
+      "description": "The signature component: the finding as a headline with its window, its consequence with its own window, what it rests on, and a control that opens the evidence. Delivered on neutral ground — a finding may be bad news.",
       "html": "<section class=\"ds-read\"><span class=\"ds-label\">Today&rsquo;s read</span><h2>US follower growth is 31% faster than last week.</h2><p>1,679 of 2,946 conversations still stop at the reply step — the largest measured loss in the journey.</p><span class=\"ds-label ds-qual\">Compared with the prior 7 days / newest 2 days still settling / 2,946 in the funnel</span><button class=\"ds-ev\">Show the evidence</button></section>",
-      "css": ".ds-read { background:#DCE9E2; color:#171812; padding:24px; font-family:Archivo,sans-serif; } .ds-read h2 { font-size:20px; font-weight:500; line-height:1.375; letter-spacing:-.015em; margin:8px 0 0; } .ds-read p { font-size:13px; line-height:1.625; margin:10px 0 0; max-width:58ch; } .ds-label { font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:#66665F; } .ds-qual { display:block; margin-top:14px; } .ds-ev { display:block; margin-top:12px; background:none; border:0; border-bottom:1px solid currentColor; color:#2C4A3B; font:inherit; font-size:10px; letter-spacing:.14em; text-transform:uppercase; padding:0 0 2px; cursor:pointer; }"
+      "css": ".ds-read { background:#EBE8DF; color:#171812; padding:24px; font-family:Archivo,sans-serif; } .ds-read h2 { font-size:20px; font-weight:500; line-height:1.375; letter-spacing:-.015em; margin:8px 0 0; } .ds-read p { font-size:13px; line-height:1.625; margin:10px 0 0; max-width:58ch; } .ds-label { font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:#66665F; } .ds-qual { display:block; margin-top:14px; } .ds-ev { display:block; margin-top:12px; background:none; border:0; border-bottom:1px solid currentColor; color:#2C4A3B; font:inherit; font-size:10px; letter-spacing:.14em; text-transform:uppercase; padding:0 0 2px; cursor:pointer; }"
     },
     {
       "name": "Attention Row",
@@ -151,29 +275,77 @@
   ],
   "narrative": {
     "northStar": "The Standing Brief",
-    "overview": "A daily brief, not a dashboard. The page opens with the finding — what is true today and what to do about it — and puts the numbers underneath as support. The console it replaced reported figures and left the interpretation to the reader, which is why the person it was built for stopped opening it.\n\nTwo refusals define the system. The first is the card: nothing floats, nothing is enclosed in a rounded shadowed box. Structure comes from one-pixel rules, bordered bands, and rows. The second is the dark chrome panel — a filled dark sidebar beside a light page is the single most reliable way a console announces that it could belong to any product.\n\nThe third rule is not visual at all, and it outranks both. Every sentence on this surface is derived from a measurement, and no measurement is stated more confidently than its sample allows. Unknown is its own state everywhere — never rendered as zero, never as 'healthy', never as an em-dash beside a green chip.",
+    "overview": "A daily brief, not a dashboard. The page opens with the finding — what is true today and what to do about it — and puts the numbers underneath as support. The console it replaced reported figures and left the interpretation to the reader, which is why the person it was built for stopped opening it.\n\nTwo refusals define the system. The first is the container drawn to create hierarchy: grouping is done with rules, bordered bands and rows, not a field of boxes. A bounded surface is reserved for content that is genuinely an object. The second is the dark chrome panel — a filled dark sidebar beside a light page is the single most reliable way a console announces that it could belong to any product.\n\nThe third rule is not visual at all, and it outranks both. Every sentence on this surface is derived from a measurement, and no measurement is stated more confidently than its sample allows. Unknown is its own state everywhere — never rendered as zero, never as 'healthy', never as an em-dash beside a green chip.",
     "keyCharacteristics": [
       "Warm paper ground (#F7F5EF), never white, never dark",
       "Archivo throughout, one family, weight carrying hierarchy",
-      "One accent, moss, meaning 'the system is working' — never a data colour",
+      "One accent, moss, for focus and affirmative state — never a data colour, and never tinting a finding",
       "One attention tone, marking a task rather than a failure",
-      "Rules and rows instead of cards; shadows only on true overlays",
+      "Rules and rows for hierarchy; bounded surfaces only for real objects",
       "Near-square corners (2-3px), so nothing reads as a widget",
       "Tabular figures by default, set at the base layer"
     ],
     "rules": [
-      { "name": "The One Meaning Rule", "body": "Moss means 'working'. It is never a series colour, a chart line, or a decorative fill. An accent that means two things means nothing.", "section": "colors" },
-      { "name": "The Attention-Not-Alarm Rule", "body": "#A8412B marks a task, not a failure. Nothing here should make a person feel caught out; the product's voice forbids it for followers and the same restraint applies to its operator.", "section": "colors" },
-      { "name": "The Ground Truth Rule", "body": "Every colour was measured against #F7F5EF. A previous palette was measured against #0a0a0a and a third against #F7F4EE; none survived the move. If the ground changes again, every value is void until re-measured.", "section": "colors" },
-      { "name": "The Tabular Default Rule", "body": "Figures are tabular at the base layer, not per component. Numbers here are compared down columns, and a new component must not be able to ship proportional figures by omission.", "section": "typography" },
-      { "name": "The Placeholder Is Not A Figure Rule", "body": "An em-dash standing in for a missing number is set at label scale, not figure scale. At figure size it is a 60px hole where a value should be.", "section": "typography" },
-      { "name": "The Coarse Pointer Rule", "body": "Every interactive element carries a 44px minimum target under @media (pointer: coarse), and only under it. A mouse keeps the density and a thumb gets the target.", "section": "layout" },
-      { "name": "The Wayfinding Rule", "body": "Every screen answers four questions: where am I, where can I go, what is here, and how do I leave.", "section": "layout" },
-      { "name": "The Proximity Rule", "body": "A control sits beside the thing it changes.", "section": "layout" },
-      { "name": "The Rules-Not-Boxes Rule", "body": "If two regions need separating, the answer is a 1px rule and more space. Never a radius, never a fill, never a shadow. A card in the document flow is this system's first and most likely regression.", "section": "elevation" }
+      {
+        "name": "The Neutral Finding Rule",
+        "body": "A finding sits on neutral ground. Today's read is delivered on #EBE8DF because the sentence may be bad news, and a surface that celebrates it before the reader has read it is editorialising. Colour may mark where you are and what is well; it may not colour a conclusion.",
+        "section": "colors"
+      },
+      {
+        "name": "The Accent Scope Rule",
+        "body": "Moss is focus and affirmative state — active route, healthy status, affirmative action. It is never a data series, a chart line, or a decorative fill, and it never tints a surface that carries a finding.",
+        "section": "colors"
+      },
+      {
+        "name": "The Attention-Not-Alarm Rule",
+        "body": "#A8412B marks a task, not a failure. Nothing here should make a person feel caught out; the product's voice forbids it for followers and the same restraint applies to its operator.",
+        "section": "colors"
+      },
+      {
+        "name": "The Ground Truth Rule",
+        "body": "Every colour was measured against #F7F5EF. A previous palette was measured against #0a0a0a and a third against #F7F4EE; none survived the move. If the ground changes again, every value is void until re-measured.",
+        "section": "colors"
+      },
+      {
+        "name": "The Tabular Default Rule",
+        "body": "Figures are tabular at the base layer, not per component. Numbers here are compared down columns, and a new component must not be able to ship proportional figures by omission.",
+        "section": "typography"
+      },
+      {
+        "name": "The Placeholder Is Not A Figure Rule",
+        "body": "An em-dash standing in for a missing number is set at label scale, not figure scale. At figure size it is a 60px hole where a value should be.",
+        "section": "typography"
+      },
+      {
+        "name": "The Coarse Pointer Rule",
+        "body": "Every interactive element carries a 44px minimum target under @media (pointer: coarse), and only under it. A mouse keeps the density and a thumb gets the target.",
+        "section": "layout"
+      },
+      {
+        "name": "The Wayfinding Rule",
+        "body": "Every screen answers four questions: where am I, where can I go, what is here, and how do I leave.",
+        "section": "layout"
+      },
+      {
+        "name": "The Proximity Rule",
+        "body": "A control sits beside the thing it changes.",
+        "section": "layout"
+      },
+      {
+        "name": "The Bounded-Object Rule",
+        "body": "Do not use a container to create hierarchy — rules and space do that. Do use a bounded surface when the object itself has a boundary: a message bubble, a step in a sequence, a media thumbnail, a draft awaiting approval. The test: does this box exist because the content is an object, or because I wanted the layout to feel organised? Only the first survives.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Own-Window Rule",
+        "body": "Every clause in a composed sentence names the window it measured. Velocity is 7 days against the prior 7; the funnel clause reports whatever window the funnel actually ran. Joining two cohorts into one unlabelled sentence is the unstated-denominator failure the funnel layer refuses one level below.",
+        "section": "typography"
+      }
     ],
     "dos": [
-      "Do separate with a 1px rule and more space.",
+      "Do separate with a 1px rule and more space before reaching for a container.",
+      "Do deliver findings on neutral ground; the accent never colours a conclusion.",
+      "Do name the window every clause measured, and never join two cohorts into one unlabelled sentence.",
       "Do keep moss for 'working' and nothing else.",
       "Do carry counts alongside every rate, and render counts instead of a rate when the sample is thin.",
       "Do give loading, failed and empty three distinct treatments. A failed request must never render as an empty account.",
@@ -184,10 +356,11 @@
       "Do re-measure every colour if the ground ever changes."
     ],
     "donts": [
-      "Don't put content in a card. No filled, bordered, rounded, shadowed container in the document flow — this is the system's first rule.",
+      "Don't draw a container to create hierarchy. A bounded surface is for an object that genuinely has edges — a message, a sequence step, a media item, a draft.",
+      "Don't tint a surface that carries a finding.",
       "Don't add a shadow to anything that is not a true overlay.",
       "Don't introduce a dark chrome panel, least of all the rail.",
-      "Don't use moss, or any country colour, as a general-purpose accent.",
+      "Don't use moss or a country colour as a general-purpose accent.",
       "Don't state a percentage without a usable baseline, or above a withheld rate.",
       "Don't show a green status beside a value you do not have.",
       "Don't add a second typeface, or reach past weight 500 for emphasis.",

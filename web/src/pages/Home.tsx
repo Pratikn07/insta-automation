@@ -66,9 +66,14 @@ function deriveAttention(stats: Stats | undefined, funnel: GuideFollowResult | u
     const { numerator, denominator } = funnel.headline.rate;
     const lost = denominator - numerator;
     if (lost > 0) {
+      // "Inspect", not "Rewrite". The cohort proves WHERE people stopped; it
+      // does not prove the copy stopped them. Prescribing a rewrite states a
+      // cause the measurement cannot support, and this product's standing rule
+      // is that every claim traces to evidence. Recommend a rewrite only once
+      // message-level or experiment data supports it.
       items.push({
-        title: `Rewrite the ${funnel.headline.label.toLowerCase()} step`,
-        detail: `${nf.format(lost)} of ${nf.format(denominator)} conversations stop here — the largest measured loss in the journey.`,
+        title: `Inspect the ${funnel.headline.label.toLowerCase()} loss`,
+        detail: `${nf.format(lost)} of ${nf.format(denominator)} conversations stop here — the largest measured loss in the journey. What causes it is not yet measured.`,
         tag: "Today",
         to: "/funnels",
         action: "Inspect",
@@ -155,15 +160,25 @@ export function Home() {
       {/* The read and the single best move, as one bordered band. Two panels
           divided by a rule rather than two floating cards. */}
       <section className="grid border border-line lg:grid-cols-[1.55fr_1fr]">
-        <div className="bg-signal-soft p-5 sm:p-6">
+        {/* Neutral ground, deliberately. This panel held the moss tint until the
+            review pointed out that "growth is 40% slower" would then be
+            delivered on a success colour. A finding may be bad news, so the
+            surface it sits on must not editorialise. */}
+        <div className="bg-muted p-5 sm:p-6">
           <span className="label-caps">Today&rsquo;s read</span>
           {read ? (
             <>
               <h2 className="mt-2 text-lg font-medium leading-snug tracking-tight sm:text-xl">
                 {read.headline}
               </h2>
+              <p className="label-caps mt-1.5">{read.headlineWindow}</p>
               {read.because && (
-                <p className="mt-2.5 max-w-[58ch] text-[13px] leading-relaxed">{read.because}</p>
+                <>
+                  <p className="mt-3 max-w-[58ch] text-[13px] leading-relaxed">{read.because}</p>
+                  {read.becauseWindow && (
+                    <p className="label-caps mt-1.5">{read.becauseWindow}</p>
+                  )}
+                </>
               )}
               <p className="label-caps mt-3.5">{read.qualification}</p>
               <button

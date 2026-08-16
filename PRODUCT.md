@@ -170,8 +170,14 @@ API, the routes and the database reads all work with no timers:
 WORKERS_ENABLED=false npm run dev
 ```
 
-**Reads are then safe; writes never are.** Editing a keyword or sequence in the
-console writes to the same production row the live automation reads.
+**It is not fully read-only, and the flag does not claim to be.** One startup
+write survives: stale reply-draft sends are reconciled with an `updateMany`
+against production. It is deliberate — leaving drafts stuck in `sending` is
+worse than the write, and it never contacts Instagram — but it is a write, and
+anyone treating `WORKERS_ENABLED=false` as an inert observer should know that.
+
+**Reads are otherwise safe; writes through the console never are.** Editing a
+keyword or sequence writes to the same production row the live automation reads.
 
 Two related traps, both cost time on 2026-08-16:
 

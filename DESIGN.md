@@ -90,7 +90,7 @@ components:
     backgroundColor: "transparent"
     textColor: "{colors.ink}"
   read-panel:
-    backgroundColor: "{colors.signal-soft}"
+    backgroundColor: "{colors.quiet}"
     textColor: "{colors.ink}"
     padding: "1.5rem"
   chip-healthy:
@@ -115,12 +115,14 @@ today and what to do about it* — and puts the numbers underneath as support. T
 console it replaced reported figures and left the interpretation to the reader,
 which is why the person it was built for stopped opening it.
 
-Two refusals define the system. The first is the card: nothing floats, nothing is
-enclosed in a rounded shadowed box. Structure comes from one-pixel rules,
-bordered bands, and rows. The second is the dark chrome panel — a filled dark
-sidebar beside a light page is the single most reliable way a console announces
-that it could belong to any product. The rail here is the same paper as the page,
-divided by a rule, with the active route marked by a moss edge.
+Two refusals define the system. The first is the container drawn to create
+hierarchy: grouping is done with one-pixel rules, bordered bands, and rows, not
+with a field of boxes. A bounded surface is reserved for content that is
+genuinely an object — a message, a sequence step, a draft. The second is the dark
+chrome panel: a filled dark sidebar beside a light page is the single most
+reliable way a console announces that it could belong to any product. The rail
+here is the same paper as the page, divided by a rule, with the active route
+marked by a moss edge.
 
 The third rule is not visual at all, and it outranks both. **Every sentence on
 this surface is derived from a measurement, and no measurement is stated more
@@ -133,9 +135,10 @@ an em-dash beside a green chip.
 
 - Warm paper ground (`#F7F5EF`), never white, never dark
 - Archivo throughout, one family, weight carrying hierarchy
-- One accent, moss, meaning *the system is working* — never a data colour
+- One accent, moss, for focus and affirmative state — never a data colour,
+  and never tinting a finding
 - One attention tone, and it marks a task rather than a failure
-- Rules and rows instead of cards; shadows only on true overlays
+- Rules and rows for hierarchy; bounded surfaces only for real objects
 - Near-square corners (2–3px), so nothing reads as a widget
 - Tabular figures by default, set at the base layer
 
@@ -147,12 +150,15 @@ because several sit close to their floor.
 
 ### Primary
 
-- **Moss** (`#2C4A3B`): the single accent. **8.96:1.** The active rail edge, the
-  tint behind today's read, healthy status, affirmative actions. It means *this
-  is working*, which is why it never colours a data series — a moss line on a
-  chart would make the accent mean two things at once.
-- **Moss Soft** (`#DCE9E2`): the read panel's ground and the healthy chip. Moss
-  reads **7.81:1** on it.
+- **Moss** (`#2C4A3B`): the single accent. **8.96:1.** It carries **focus and
+  affirmative state** — the active rail edge, healthy status, affirmative
+  actions — and nothing else. It is never a data series colour.
+
+  An earlier draft claimed moss meant one thing, "the system is working", while
+  also tinting the panel that holds today's read. That put a finding like
+  *"growth is 40% slower"* on a success colour. The accent may mark where you
+  are and what is well; it may not colour a conclusion.
+- **Moss Soft** (`#DCE9E2`): the healthy chip only. Moss reads **7.81:1** on it.
 
 ### Secondary
 
@@ -187,8 +193,14 @@ Data colour is a separate vocabulary from interface colour and the two never mix
 
 ### Named Rules
 
-**The One Meaning Rule.** Moss means "working". It is never a series colour, a
-chart line, or a decorative fill. An accent that means two things means nothing.
+**The Neutral Finding Rule.** A finding sits on neutral ground. Today's read is
+delivered on `#EBE8DF` because the sentence may be bad news, and a surface that
+celebrates it before the reader has read it is editorialising. Colour may mark
+*where you are* and *what is well*; it may not colour a conclusion.
+
+**The Accent Scope Rule.** Moss is focus and affirmative state — active route,
+healthy status, affirmative action. It is never a data series, a chart line, or
+a decorative fill, and it never tints a surface that carries a finding.
 
 **The Attention-Not-Alarm Rule.** `#A8412B` marks a task, not a failure. Nothing
 on this surface should make a person feel caught out; the product's voice
@@ -277,9 +289,17 @@ floats should look like it does. Nothing in the document flow qualifies.
 
 ### Named Rules
 
-**The Rules-Not-Boxes Rule.** If two regions need separating, the answer is a
-1px rule and more space. Never a radius, never a fill, never a shadow. A card in
-the document flow is this system's first and most likely regression.
+**The Bounded-Object Rule.** Do not use a container to create hierarchy — that is
+what rules and space are for, and a page of boxes drawn to group unrelated
+figures is this system's first and most likely regression.
+
+Do use a bounded surface when **the object itself has a boundary**: a message
+bubble, a step in a sequence, a media thumbnail, a draft awaiting approval, a
+tile in an editor. Those are things a person picks up and moves, and stripping
+their edges to satisfy a slogan makes them harder to use, not purer.
+
+The test is one question: *does this box exist because the content is an object,
+or because I wanted the layout to feel organised?* Only the first survives.
 
 ## Shapes
 
@@ -342,7 +362,8 @@ whose data failed to load says "No reading" and wears the unknown chip.
 
 ### Do:
 
-- **Do** separate with a 1px rule and more space.
+- **Do** separate with a 1px rule and more space before reaching for a container.
+- **Do** deliver findings on neutral ground; the accent never colours a conclusion.
 - **Do** keep moss for "working" and nothing else.
 - **Do** carry counts alongside every rate, and render counts *instead of* a rate
   when the sample is thin.
@@ -358,11 +379,13 @@ whose data failed to load says "No reading" and wears the unknown chip.
 
 ### Don't:
 
-- **Don't** put content in a card. No filled, bordered, rounded, shadowed
-  container in the document flow — this is the system's first rule.
+- **Don't** draw a container to create hierarchy. Rules and space do that.
+  A bounded surface is for an object that genuinely has edges — a message, a
+  sequence step, a media item, a draft.
 - **Don't** add a shadow to anything that is not a true overlay.
 - **Don't** introduce a dark chrome panel, least of all the rail.
-- **Don't** use moss, or any country colour, as a general-purpose accent.
+- **Don't** tint a surface that carries a finding, or use moss or a country
+  colour as a general-purpose accent.
 - **Don't** state a percentage without a usable baseline, or above a withheld
   rate.
 - **Don't** show a green status beside a value you do not have.

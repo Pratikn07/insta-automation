@@ -227,9 +227,18 @@ app.listen(env.PORT, () => {
     // Loud on purpose. A server silently not running its workers looks healthy
     // and quietly stops doing the job, so the one line that says so must be
     // impossible to miss in the log.
+    //
+    // It said "API only" until a review pointed out that the line below writes:
+    // recoverStaleReplyDraftSends runs an updateMany against production. It
+    // still runs — leaving drafts stuck in `sending` is worse than the write,
+    // and it never contacts Instagram — but a flag that claims to be read-only
+    // while writing is exactly the kind of quiet inaccuracy this codebase
+    // refuses everywhere else.
     logger.warn(
       { errorCode: "workers_disabled" },
-      "WORKERS_ENABLED=false — no background workers, no token refresh, no snapshots. API only.",
+      "WORKERS_ENABLED=false — no background workers, no token refresh, no snapshots, " +
+        "no outbound Instagram calls. One startup DB write remains: stale reply-draft sends " +
+        "are reconciled.",
     );
     recoverStaleReplyDraftSends();
     return;

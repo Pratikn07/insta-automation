@@ -8,9 +8,9 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..125,400;75..125,500;75..125,600&display=swap" rel="stylesheet">
 <style>
-  /* This page obeys the system it documents: paper ground, rules and rows, no
-     cards, no shadows outside a true overlay. If a future edit wraps something
-     here in a raised box, the guide has stopped being an example of itself. */
+  /* This page obeys the system it documents: paper ground, rules and rows for
+     hierarchy, no shadows outside a true overlay. If a future edit wraps a group
+     of unrelated figures in a box, the guide has stopped being an example of itself. */
   :root{
     --paper:#F7F5EF; --ink:#171812; --raised:#FFFEF9; --quiet:#EBE8DF;
     --muted:#66665F; --line:#CAC7BD;
@@ -64,7 +64,9 @@
   @media (pointer:coarse){.rail a{min-height:44px}}
 
   .band{display:grid;grid-template-columns:1.55fr 1fr;border:1px solid var(--line);margin-top:18px}
-  .read{background:var(--signal-soft);padding:22px}
+  /* Neutral, not moss: a finding may be bad news, so its surface must not
+     celebrate it before the reader has read it. */
+  .read{background:var(--quiet);padding:22px}
   .read h3{font-size:1.25rem;font-weight:500;line-height:1.375;letter-spacing:-.015em;margin-top:8px}
   .read p{font-size:.8125rem;line-height:1.625;margin-top:10px;max-width:58ch}
   .ev{margin-top:12px;background:none;border:0;border-bottom:1px solid currentColor;
@@ -114,17 +116,17 @@
 
   <section>
     <h2>Colour</h2>
-    <p class="lede">One accent that means "working", one attention tone that marks a task
-      rather than a failure, and a data vocabulary kept entirely separate from both.</p>
+    <p class="lede">One accent for focus and affirmative state, one attention tone that marks
+      a task rather than a failure, and a data vocabulary kept entirely separate from both.</p>
 
     <p class="label" style="margin-top:28px">Interface</p>
     <table>
       <tr><th>Swatch</th><th>Token</th><th>Value</th><th>On paper</th><th>Role</th></tr>
       <tr><td><span class="sw" style="background:#2C4A3B"></span></td><td>signal</td>
         <td>#2C4A3B</td><td class="pass">8.96:1</td>
-        <td>The only accent. Active rail edge, read tint, healthy, affirmative actions. Never a data colour.</td></tr>
+        <td>The only accent. Active rail edge, healthy status, affirmative actions. Never a data colour, and never tinting a finding.</td></tr>
       <tr><td><span class="sw" style="background:#DCE9E2"></span></td><td>signal-soft</td>
-        <td>#DCE9E2</td><td>1.15:1</td><td>Read panel ground and healthy chip. Moss reads 7.81:1 on it.</td></tr>
+        <td>#DCE9E2</td><td>1.15:1</td><td>The healthy chip. Moss reads 7.81:1 on it.</td></tr>
       <tr><td><span class="sw" style="background:#A8412B"></span></td><td>urgent</td>
         <td>#A8412B</td><td class="pass">5.57:1</td>
         <td>Marks the thing to do next. The obvious #E74A25 measures 3.56:1 and was refused.</td></tr>
@@ -197,7 +199,7 @@
       <button class="btn btn-outline">Cancel</button>
     </div>
     <p class="lede">Brand is paper on moss at 8.96:1 and carries affirmative actions only —
-      never a destructive one, because the accent means "working".</p>
+      never a destructive one, because the accent marks affirmative state.</p>
 
     <p class="label" style="margin-top:32px">Field</p>
     <div class="row"><input class="field" placeholder="you@email.com"></div>
@@ -217,8 +219,10 @@
       <div class="read">
         <span class="label">Today&rsquo;s read</span>
         <h3>US follower growth is 31% faster than last week.</h3>
-        <p>1,679 of 2,946 conversations still stop at the reply step — the largest measured
-          loss in the journey.</p>
+        <span class="label" style="display:block;margin-top:6px">Last 7 days against the 7 before</span>
+        <p>Separately, 1,679 of 2,946 conversations stop at the reply step — the largest
+          measured loss in the journey.</p>
+        <span class="label" style="display:block;margin-top:6px">Funnel cohort, last 30 days</span>
         <span class="label" style="display:block;margin-top:14px">Compared with the prior 7 days / newest 2 days still settling / 2,946 in the funnel</span>
         <button class="ev">Show the evidence</button>
       </div>
@@ -229,16 +233,14 @@
         <button class="btn btn-primary" style="margin-top:14px;width:100%">Inspect the funnel</button>
       </div>
     </div>
-    <p class="lede">The read is never authored. It is composed from measurements by a pure
-      function, and without a usable baseline it states counts and says so rather than
-      inventing a direction.</p>
+    <p class="lede">The read is never authored. It is composed from measurements by a pure function, each clause naming its own window — velocity over 7 days, the funnel over whatever window it actually ran. Without a usable baseline it states counts and says so rather than inventing a direction.</p>
 
     <p class="label" style="margin-top:32px">Attention rows</p>
     <div style="margin-top:6px">
       <a class="act">
         <span class="no">01</span>
-        <span><span class="t">Rewrite the reply step</span>
-          <span class="s">1,679 of 2,946 conversations stop here — the largest measured loss.</span></span>
+        <span><span class="t">Inspect the reply-step loss</span>
+          <span class="s">1,679 of 2,946 conversations stop here. What causes it is not yet measured.</span></span>
         <span class="r"><span class="tag">Now</span><span class="b">Inspect</span></span>
       </a>
       <a class="act">
@@ -297,8 +299,10 @@
       <div>
         <p class="label">Do</p>
         <ul style="list-style:none;margin-top:12px;font-size:.8125rem;line-height:1.95">
-          <li>Separate with a 1px rule and more space.</li>
-          <li>Keep moss for "working" and nothing else.</li>
+          <li>Separate with a rule before reaching for a container.</li>
+          <li>Deliver findings on neutral ground.</li>
+          <li>Name the window every clause measured.</li>
+          <li>Keep moss for focus and affirmative state only.</li>
           <li>Carry counts alongside every rate.</li>
           <li>Give loading, failed and empty three treatments.</li>
           <li>Derive every sentence from a measurement.</li>
@@ -311,9 +315,10 @@
       <div>
         <p class="label">Don&rsquo;t</p>
         <ul style="list-style:none;margin-top:12px;font-size:.8125rem;line-height:1.95">
-          <li>Put content in a card.</li>
+          <li>Draw a container to create hierarchy.</li>
           <li>Shadow anything that is not a true overlay.</li>
           <li>Introduce dark chrome, least of all the rail.</li>
+          <li>Tint a surface that carries a finding.</li>
           <li>Use moss or a country colour as a general accent.</li>
           <li>State a percentage without a usable baseline.</li>
           <li>Show a green status beside a value you do not have.</li>
