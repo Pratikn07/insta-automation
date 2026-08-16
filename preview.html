@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maison — Tiny Soho design system</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:ital,opsz,wght@0,6..96,400;1,6..96,400&family=Jost:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  /* This page obeys the system it documents: ivory ground, hairlines and space
+     instead of cards, no shadows anywhere, Bodoni for display only. If a future
+     edit adds a card here, the guide has stopped being an example. */
+  :root{
+    --ground:#F7F4EE; --ink:#14120E; --raised:#FDFCF8; --quiet:#ECE7DC;
+    --muted:#6E6A5E; --hair:#E0DACD; --edge:#CFC8B8;
+    --gold:#9C7C38; --gold-text:#8A6B2C; --ox:#7A2E2E;
+    --f-mark:#2A4A6B; --f-soft:#6B8AA5; --f-unknown:#8F8A80;
+    --ease:cubic-bezier(0.19,1,0.22,1);
+    --disp:"Bodoni Moda",Didot,"Times New Roman",serif;
+    --ui:"Jost","Futura",-apple-system,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--ground);color:var(--ink);font-family:var(--ui);font-weight:300;
+       -webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums}
+  .page{max-width:1000px;margin:0 auto;padding:56px 32px 120px}
+  .disp{font-family:var(--disp);font-weight:400;letter-spacing:-.03em}
+  .caps{font-size:.625rem;letter-spacing:.26em;text-transform:uppercase;color:var(--muted)}
+  h2{font-family:var(--disp);font-weight:400;font-size:1.9rem;letter-spacing:-.012em}
+  section{border-top:1px solid var(--hair);padding-top:26px;margin-top:64px}
+  .lede{max-width:62ch;font-size:.875rem;line-height:1.625;color:var(--muted);margin-top:14px}
+  table{width:100%;border-collapse:collapse;margin-top:22px}
+  td,th{text-align:left;padding:11px 12px 11px 0;border-bottom:1px solid var(--hair);
+        font-size:.8125rem;vertical-align:middle}
+  th{font-size:.625rem;letter-spacing:.26em;text-transform:uppercase;color:var(--muted);
+     border-bottom:1px solid var(--ink);padding-bottom:7px}
+  .chip{width:46px;height:26px;display:inline-block;vertical-align:middle}
+  .mono{font-variant-numeric:tabular-nums}
+  .pass{color:var(--f-mark)} .warn{color:var(--ox)}
+  .row{display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin-top:22px}
+
+  /* --- components under test --- */
+  .btn{display:inline-flex;align-items:center;justify-content:center;height:36px;padding:0 16px;
+       border:0;border-radius:2px;font-family:var(--ui);font-size:.875rem;font-weight:400;
+       cursor:pointer;transition:background .2s var(--ease),color .2s var(--ease),opacity .2s}
+  .btn:active{transform:scale(.98)}
+  .btn:focus-visible{outline:none;box-shadow:0 0 0 2px var(--ground),0 0 0 4px var(--gold-text)}
+  .btn-default{background:var(--ink);color:var(--ground)}
+  .btn-default:hover{opacity:.9}
+  .btn-brand{background:var(--gold);color:var(--ink)}
+  .btn-brand:hover{background:var(--gold-text);color:var(--ground)}
+  .btn-outline{background:transparent;color:var(--ink);border:1px solid var(--hair)}
+  .btn-outline:hover{background:var(--quiet)}
+  .btn-ghost{background:transparent;color:var(--ink)}
+  .btn-ghost:hover{background:var(--quiet)}
+  @media (pointer:coarse){.btn{min-height:44px}}
+
+  .field{width:100%;max-width:320px;height:36px;background:transparent;color:var(--ink);
+         font-family:var(--ui);font-weight:300;font-size:.875rem;border:1px solid var(--edge);
+         border-radius:2px;padding:4px 12px}
+  .field::placeholder{color:var(--muted)}
+  .field:focus-visible{outline:none;border-color:var(--gold-text);
+        box-shadow:0 0 0 1px var(--ground),0 0 0 3px rgba(138,107,44,.35)}
+
+  .index{width:224px;border-right:1px solid var(--hair);padding:16px 0}
+  .index .grp{padding:20px 28px 8px}
+  .index a{display:flex;align-items:center;padding:6px 20px 6px 28px;font-size:13.5px;
+     letter-spacing:.06em;color:var(--ink);text-decoration:none;cursor:pointer;
+     transition:padding .3s var(--ease),color .3s var(--ease)}
+  .index a:hover{padding-left:36px;color:var(--gold-text)}
+  .index a:active{opacity:.6}
+  .index a.on{font-family:var(--disp);font-style:italic;font-size:15px;letter-spacing:normal;
+     color:var(--gold-text)}
+  @media (pointer:coarse){.index a{min-height:44px}}
+
+  .fig{border-top:1px solid var(--hair);padding-top:16px}
+  .fig .val{font-family:var(--disp);font-weight:400;letter-spacing:-.03em;line-height:.86;
+       font-size:62px;color:var(--gold);margin-top:12px}
+  .fig .val.counts{color:var(--ink);font-size:40px}
+  .fig .ctx{font-size:13px;line-height:1.35;color:rgba(20,18,14,.75);margin-top:12px}
+  .fig .note{font-size:11.5px;line-height:1.35;color:var(--muted);margin-top:6px}
+
+  .folio{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;
+     gap:4px 16px;border-bottom:1px solid var(--hair);padding-bottom:12px}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header>
+    <div class="folio"><span class="caps">Tiny Soho</span><span class="caps">Design system</span></div>
+    <h1 class="disp" style="font-size:3.2rem;line-height:1.04;margin-top:40px">Maison</h1>
+    <p class="lede">The Maison Record. A couture house's record book, not an analytics console.
+      Ivory stock, noir ink, one thread of antique gold, and enough silence around a figure that
+      the figure means something. Every ratio below is measured against the ground, not chosen
+      by eye.</p>
+  </header>
+
+  <section>
+    <h2>Colour</h2>
+    <p class="lede">Two golds that are not interchangeable, and a data vocabulary kept
+      separate from the house one. Gold means <em>the house</em>, never a series.</p>
+
+    <p class="caps" style="margin-top:34px">House</p>
+    <table>
+      <tr><th>Swatch</th><th>Token</th><th>Value</th><th>On ground</th><th>Role</th></tr>
+      <tr><td><span class="chip" style="background:#9C7C38"></span></td><td>gold-display</td>
+          <td class="mono">#9C7C38</td><td class="mono warn">3.57:1</td>
+          <td>Figures and headline accents. <strong>Large text only.</strong></td></tr>
+      <tr><td><span class="chip" style="background:#8A6B2C"></span></td><td>gold-text</td>
+          <td class="mono">#8A6B2C</td><td class="mono pass">4.53:1</td>
+          <td>Links, active nav, any gold read at text size.</td></tr>
+      <tr><td><span class="chip" style="background:#7A2E2E"></span></td><td>oxblood</td>
+          <td class="mono">#7A2E2E</td><td class="mono pass">8.47:1</td><td>Loss and destruction.</td></tr>
+    </table>
+
+    <p class="caps" style="margin-top:40px">Neutral</p>
+    <table>
+      <tr><th>Swatch</th><th>Token</th><th>Value</th><th>On ground</th><th>Role</th></tr>
+      <tr><td><span class="chip" style="background:#F7F4EE;border:1px solid #E0DACD"></span></td>
+          <td>ground</td><td class="mono">#F7F4EE</td><td class="mono">—</td><td>The page. Everything sits directly on it.</td></tr>
+      <tr><td><span class="chip" style="background:#14120E"></span></td><td>ink</td>
+          <td class="mono">#14120E</td><td class="mono pass">17.04:1</td><td>Body and display text.</td></tr>
+      <tr><td><span class="chip" style="background:#6E6A5E"></span></td><td>muted-ink</td>
+          <td class="mono">#6E6A5E</td><td class="mono pass">4.92:1</td>
+          <td>Secondary copy. The obvious #8A8477 measures 3.39:1 and fails.</td></tr>
+      <tr><td><span class="chip" style="background:#FDFCF8;border:1px solid #E0DACD"></span></td>
+          <td>raised</td><td class="mono">#FDFCF8</td><td class="mono">1.07:1</td>
+          <td>Floating chrome only — drawer, popover. Never a card.</td></tr>
+      <tr><td><span class="chip" style="background:#ECE7DC"></span></td><td>quiet</td>
+          <td class="mono">#ECE7DC</td><td class="mono">1.12:1</td><td>Hover beds, inert fills.</td></tr>
+      <tr><td><span class="chip" style="background:#E0DACD"></span></td><td>hairline</td>
+          <td class="mono">#E0DACD</td><td class="mono">1.27:1</td><td>Every rule. 1px, never 2px.</td></tr>
+      <tr><td><span class="chip" style="background:#CFC8B8"></span></td><td>field-edge</td>
+          <td class="mono">#CFC8B8</td><td class="mono">1.52:1</td><td>Input borders.</td></tr>
+    </table>
+
+    <p class="caps" style="margin-top:40px">Data — chart marks, ≥3:1 required</p>
+    <table>
+      <tr><th>Swatch</th><th>Token</th><th>Value</th><th>On ground</th><th>Role</th></tr>
+      <tr><td><span class="chip" style="background:#2A4A6B"></span></td><td>funnel-mark</td>
+          <td class="mono">#2A4A6B</td><td class="mono pass">8.35:1</td><td>Stage bars. One hue for every stage.</td></tr>
+      <tr><td><span class="chip" style="background:#6B8AA5"></span></td><td>funnel-soft</td>
+          <td class="mono">#6B8AA5</td><td class="mono pass">3.30:1</td><td>Second step. Luminance gap 0.175.</td></tr>
+      <tr><td><span class="chip" style="background:#8F8A80"></span></td><td>funnel-unknown</td>
+          <td class="mono">#8F8A80</td><td class="mono pass">3.13:1</td>
+          <td>Absence of evidence. Deliberately not a hue.</td></tr>
+    </table>
+
+    <p class="caps" style="margin-top:40px">Country marks — categorical, separated by hue</p>
+    <div class="row">
+      <span class="chip" style="background:#2A4A6B" title="#2A4A6B 8.35:1"></span>
+      <span class="chip" style="background:#9C5B21" title="#9C5B21 4.87:1"></span>
+      <span class="chip" style="background:#1F6B54" title="#1F6B54 5.82:1"></span>
+      <span class="chip" style="background:#8A6B2C" title="#8A6B2C 4.53:1"></span>
+      <span class="chip" style="background:#8C3B63" title="#8C3B63 6.55:1"></span>
+      <span class="chip" style="background:#3F6B22" title="#3F6B22 5.73:1"></span>
+      <span class="chip" style="background:#5A4E9C" title="#5A4E9C 6.37:1"></span>
+      <span class="chip" style="background:#A33A34" title="#A33A34 5.96:1"></span>
+    </div>
+    <p class="lede">4.53 · 4.87 · 5.73 · 5.82 · 5.96 · 6.37 · 6.55 · 8.35 — every one clears 3:1.
+      Re-derived for ivory; the dark-era set was validated against a #1c1c1c panel that no
+      longer exists.</p>
+  </section>
+
+  <section>
+    <h2>Typography</h2>
+    <p class="lede">Bodoni Moda for display and every figure; Jost at 300 for everything else.
+      Bodoni never goes below 1.25rem — a didone at 13px is decoration charged to the reader.</p>
+
+    <div style="margin-top:36px">
+      <p class="caps">Display · Bodoni 400 · clamp(2rem, 5vw, 2.9rem) · 1.06 · −0.012em</p>
+      <p class="disp" style="font-size:2.9rem;line-height:1.06;letter-spacing:-.012em;max-width:18ch;margin-top:12px">
+        Who you gained. And <em style="font-style:italic;color:var(--gold)">where</em> they came from.</p>
+    </div>
+    <div style="margin-top:40px">
+      <p class="caps">Figure · Bodoni 400 · 3.4–4.2rem · 0.86 · −0.03em</p>
+      <p class="disp" style="font-size:4.2rem;line-height:.86;color:var(--gold);margin-top:12px">1,482</p>
+    </div>
+    <div style="margin-top:40px">
+      <p class="caps">Title · Bodoni 400 · 1.5rem</p>
+      <p class="disp" style="font-size:1.5rem;margin-top:10px">Follower flow</p>
+    </div>
+    <div style="margin-top:40px">
+      <p class="caps">Body · Jost 300 · 0.875rem · 1.625 · 46–64ch</p>
+      <p style="font-size:.875rem;line-height:1.625;max-width:62ch;margin-top:10px">
+        Rates below the minimum sample report their counts instead. Fifteen point six per cent
+        over thirty-two people and over three thousand two hundred are different claims, and only
+        one of them is a number.</p>
+    </div>
+    <div style="margin-top:40px">
+      <p class="caps">Label · Jost 300 · 0.625rem · 0.26em · uppercase</p>
+      <p class="caps" style="margin-top:10px">US followers this week</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Components</h2>
+
+    <p class="caps" style="margin-top:30px">Buttons — hover, focus and press are live</p>
+    <div class="row">
+      <button class="btn btn-default">Save changes</button>
+      <button class="btn btn-brand">Sign in</button>
+      <button class="btn btn-outline">Cancel</button>
+      <button class="btn btn-ghost">Dismiss</button>
+    </div>
+    <p class="lede">Brand is ink on gold at 4.77:1. White on gold is 1.9:1 — the inherited
+      dark-world pairing, and the reason the first build shipped an invisible sign-in button.</p>
+
+    <p class="caps" style="margin-top:40px">Field</p>
+    <div class="row"><input class="field" placeholder="you@email.com"></div>
+
+    <p class="caps" style="margin-top:40px">House index — hover an item</p>
+    <div class="index" style="margin-top:16px">
+      <div class="grp caps">Measure</div>
+      <a class="on">Home</a><a>Insights</a><a>Funnels</a>
+      <div class="grp caps">Publish</div>
+      <a>Content</a><a>Keywords</a>
+    </div>
+    <p class="lede">No icons anywhere. The active route is set in Bodoni italic rather than
+      given a filled pill — the typeface carries state, so the column needs no background.</p>
+
+    <p class="caps" style="margin-top:40px">The figure, and the guarded figure</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:44px;margin-top:16px">
+      <div class="fig">
+        <div class="caps">US followers this week</div>
+        <div class="val">1,482</div>
+        <p class="ctx">vs +1,204 last week</p>
+        <p class="note">newest 2 still settling</p>
+      </div>
+      <div class="fig">
+        <div class="caps">Guide to follow</div>
+        <div class="val counts">5 of 32</div>
+        <p class="note">too few to rate</p>
+      </div>
+    </div>
+    <p class="lede">When a sample cannot support a rate, the counts take the value slot and no
+      percentage is rendered at all — not greyed, not parenthesised, not behind a tooltip. The
+      figure slot must always be able to hold "5 of 32".</p>
+  </section>
+
+  <section>
+    <h2>Elevation, shape and motion</h2>
+    <p class="lede"><strong>This system has no shadows.</strong> Not few — none. Depth is the
+      ivory ground, a barely-raised surface for floating chrome, and 1px hairlines. A drop
+      shadow anywhere is a regression to the dashboard this replaced.</p>
+    <table>
+      <tr><th>Token</th><th>Value</th><th>Use</th></tr>
+      <tr><td>radius-sm / md / lg</td><td class="mono">1px / 2px / 2px</td>
+          <td>Near-square. Enough to take the mechanical edge off, never enough to look soft.</td></tr>
+      <tr><td>ease-house</td><td class="mono">cubic-bezier(0.19, 1, 0.22, 1)</td><td>Nav slides, drawer.</td></tr>
+      <tr><td>dur-route</td><td class="mono">180ms</td><td>Route cross-fade. The only entrance on a page load.</td></tr>
+      <tr><td>dur-nav</td><td class="mono">300ms</td><td>Index item slide on hover.</td></tr>
+      <tr><td>touch target</td><td class="mono">44px @ (pointer: coarse)</td>
+          <td>Coarse pointer only, so a mouse keeps the density.</td></tr>
+      <tr><td>reduced motion</td><td class="mono">all durations → 0</td>
+          <td>Read in the shell. Non-negotiable on a tool opened daily.</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>Guardrails</h2>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:44px;margin-top:22px">
+      <div>
+        <p class="caps">Do</p>
+        <ul style="list-style:none;margin-top:14px;font-size:.8125rem;line-height:1.9">
+          <li>Group with a 1px hairline and space.</li>
+          <li>Use gold-text for anything read at text size.</li>
+          <li>Set every measured number in Bodoni, tabular.</li>
+          <li>Give one figure per screen the gold and the scale.</li>
+          <li>Carry counts alongside every rate.</li>
+          <li>Honour prefers-reduced-motion.</li>
+          <li>44px targets and press feedback on coarse pointers.</li>
+          <li>Re-measure every data colour if the ground changes.</li>
+        </ul>
+      </div>
+      <div>
+        <p class="caps">Don't</p>
+        <ul style="list-style:none;margin-top:14px;font-size:.8125rem;line-height:1.9">
+          <li>Put content in a card.</li>
+          <li>Add a drop shadow anywhere.</li>
+          <li>Put an icon beside a navigation label.</li>
+          <li>Set Bodoni below 1.25rem.</li>
+          <li>Use gold as a data series colour.</li>
+          <li>Write an eyebrow above a heading.</li>
+          <li>Rely on hover for anything a phone user needs.</li>
+          <li>Import glass, backdrop blur, or a system font stack.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <p class="caps" style="margin-top:72px">Full specification in DESIGN.md · tokens in web/src/index.css</p>
+</div>
+</body>
+</html>
