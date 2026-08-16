@@ -6,39 +6,39 @@
     "colorMeta": {
       "ground": {
         "role": "neutral",
-        "displayName": "Ivory Stock",
-        "canonical": "#F7F4EE",
-        "tonalRamp": ["#211F1A", "#3B3830", "#565247", "#7A7565", "#A39C89", "#C9C2B0", "#E4DFD2", "#F7F4EE"]
+        "displayName": "Paper",
+        "canonical": "#F7F5EF",
+        "tonalRamp": ["#1C1B16", "#33322A", "#4B493E", "#6B6858", "#948F7C", "#BDB8A6", "#E1DDD1", "#F7F5EF"]
       },
       "ink": {
         "role": "neutral",
-        "displayName": "Noir Ink",
-        "canonical": "#14120E",
-        "tonalRamp": ["#14120E", "#2A2721", "#403C33", "#5A5548", "#7C7565", "#A69E8B", "#D0C9B8", "#F0EBDF"]
+        "displayName": "Ink",
+        "canonical": "#171812",
+        "tonalRamp": ["#171812", "#2B2C24", "#404238", "#5A5C4E", "#7C7E6C", "#A6A794", "#D0D1C0", "#EFEFE4"]
       },
       "muted-ink": {
         "role": "neutral",
         "displayName": "Muted Ink",
-        "canonical": "#6E6A5E",
-        "tonalRamp": ["#1B1A16", "#312F28", "#47443A", "#5A574B", "#6E6A5E", "#928D7D", "#B8B2A0", "#DED8C7"]
+        "canonical": "#66665F",
+        "tonalRamp": ["#1A1A17", "#2F2F2B", "#45453F", "#5A5A53", "#66665F", "#8C8C83", "#B4B4A9", "#DCDCD1"]
       },
-      "gold-display": {
+      "signal": {
         "role": "primary",
-        "displayName": "Antique Gold — display",
-        "canonical": "#9C7C38",
-        "tonalRamp": ["#211A0C", "#3B2F16", "#564521", "#715B2C", "#8A6B2C", "#9C7C38", "#C0A165", "#E4D2A6"]
+        "displayName": "Moss",
+        "canonical": "#2C4A3B",
+        "tonalRamp": ["#0D1712", "#16261E", "#20382C", "#2C4A3B", "#3E6A54", "#5B9177", "#9AC0AE", "#DCE9E2"]
       },
-      "gold-text": {
-        "role": "primary",
-        "displayName": "Antique Gold — text",
-        "canonical": "#8A6B2C",
-        "tonalRamp": ["#1D1609", "#342811", "#4B3A19", "#624B22", "#8A6B2C", "#A98A4E", "#C9B183", "#E8DCBE"]
+      "urgent": {
+        "role": "warning",
+        "displayName": "Attention",
+        "canonical": "#A8412B",
+        "tonalRamp": ["#25100A", "#3E1B12", "#57251A", "#703222", "#A8412B", "#C46B56", "#DDA091", "#F3D9D1"]
       },
-      "oxblood": {
+      "destructive": {
         "role": "danger",
-        "displayName": "Oxblood",
-        "canonical": "#7A2E2E",
-        "tonalRamp": ["#1C0A0A", "#331313", "#4A1C1C", "#612525", "#7A2E2E", "#A25252", "#C88888", "#E9C4C4"]
+        "displayName": "Destructive",
+        "canonical": "#8C3A2B",
+        "tonalRamp": ["#1F0D09", "#351611", "#4B1F18", "#61291F", "#8C3A2B", "#B06455", "#D19C90", "#EFD6CF"]
       },
       "funnel-mark": {
         "role": "tertiary",
@@ -54,139 +54,145 @@
       }
     },
     "typographyMeta": {
-      "display": { "displayName": "Display", "purpose": "Page headlines only, held to an 18ch measure." },
-      "figure": { "displayName": "Figure", "purpose": "The single scored metric per screen. Gold, display scale." },
-      "title": { "displayName": "Title", "purpose": "Wordmark, drawer and panel headings." },
-      "body": { "displayName": "Body", "purpose": "All running copy at a 46-64ch measure." },
-      "label": { "displayName": "Label", "purpose": "Every field name. Defined once as label-caps so tracking cannot drift." }
+      "display": { "displayName": "Display", "purpose": "The page name. One per screen." },
+      "headline": { "displayName": "Headline", "purpose": "Today's read — the only full sentence set large." },
+      "figure": { "displayName": "Figure", "purpose": "Measured values, tabular. Placeholders drop to label scale." },
+      "title": { "displayName": "Title", "purpose": "Section headings above a full-strength rule." },
+      "body": { "displayName": "Body", "purpose": "Running copy at a 54-74ch measure." },
+      "label": { "displayName": "Label", "purpose": "Field names and section markers. Defined once as label-caps." }
     },
-    "shadows": [],
+    "shadows": [
+      {
+        "name": "overlay",
+        "value": "var(--tw-shadow-2xl)",
+        "purpose": "True overlays only — the drawer and the confirm dialog. Nothing in the document flow carries a shadow."
+      }
+    ],
     "motion": [
-      { "name": "ease-house", "value": "cubic-bezier(0.19, 1, 0.22, 1)", "purpose": "Exponential ease-out. Navigation slides and drawer entrances." },
-      { "name": "dur-route", "value": "180ms", "purpose": "Route cross-fade in the shell. The only entrance on a page load." },
-      { "name": "dur-nav", "value": "300ms", "purpose": "Navigation item slide on hover." },
-      { "name": "dur-drawer", "value": "280ms", "purpose": "Mobile index drawer." },
-      { "name": "reduced-motion", "value": "all durations collapse to 0", "purpose": "useReducedMotion() is read in the shell and every duration above collapses. Non-negotiable: this is a tool opened many times a day." }
+      { "name": "ease-house", "value": "cubic-bezier(0.19, 1, 0.22, 1)", "purpose": "Drawer entrance and rail slides." },
+      { "name": "dur-route", "value": "180ms", "purpose": "Route cross-fade. The only entrance on a page load." },
+      { "name": "dur-drawer", "value": "280ms", "purpose": "Mobile rail drawer." },
+      { "name": "reduced-motion", "value": "all durations collapse to 0", "purpose": "useReducedMotion() is read in the shell and every duration collapses. Non-negotiable on a tool opened many times a day." }
     ],
     "breakpoints": [
       { "name": "sm", "value": "640px" },
       { "name": "md", "value": "768px" },
       { "name": "lg", "value": "1024px" },
       { "name": "content-max", "value": "1152px" },
-      { "name": "index-column", "value": "224px" }
+      { "name": "rail", "value": "208px" },
+      { "name": "strip", "value": "48px" }
     ]
   },
   "components": [
     {
-      "name": "Brand Button",
-      "kind": "button",
-      "refersTo": "button-brand",
-      "description": "The house action. Ink on gold, measured at 4.77:1 — white on gold is 1.9:1 and fails.",
-      "html": "<button class=\"ds-btn-brand\">Sign in</button>",
-      "css": ".ds-btn-brand { background: #9C7C38; color: #14120E; font-family: Jost, sans-serif; font-weight: 400; font-size: 14px; border: 0; border-radius: 2px; height: 36px; padding: 0 16px; cursor: pointer; transition: background 200ms cubic-bezier(0.19,1,0.22,1), color 200ms; } .ds-btn-brand:hover { background: #8A6B2C; color: #F7F4EE; } .ds-btn-brand:focus-visible { outline: none; box-shadow: 0 0 0 2px #F7F4EE, 0 0 0 4px #8A6B2C; } .ds-btn-brand:active { transform: scale(0.98); }"
-    },
-    {
       "name": "Primary Button",
       "kind": "button",
       "refersTo": "button-primary",
-      "description": "The default action. Noir ink on ivory text at 17:1.",
-      "html": "<button class=\"ds-btn-primary\">Save changes</button>",
-      "css": ".ds-btn-primary { background: #14120E; color: #F7F4EE; font-family: Jost, sans-serif; font-weight: 400; font-size: 14px; border: 0; border-radius: 2px; height: 36px; padding: 0 16px; cursor: pointer; transition: opacity 200ms; } .ds-btn-primary:hover { opacity: 0.9; } .ds-btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 2px #F7F4EE, 0 0 0 4px #8A6B2C; }"
+      "description": "The default action. Ink on paper at 16.38:1.",
+      "html": "<button class=\"ds-btn\">Review message two</button>",
+      "css": ".ds-btn { background:#171812; color:#F7F5EF; font-family:Archivo,sans-serif; font-size:13px; font-weight:500; border:0; border-radius:2px; height:36px; padding:0 16px; cursor:pointer; transition:opacity .2s; } .ds-btn:hover{opacity:.9} .ds-btn:active{transform:scale(.98)} .ds-btn:focus-visible{outline:none;box-shadow:0 0 0 2px #F7F5EF,0 0 0 4px #2C4A3B} @media (pointer:coarse){.ds-btn{min-height:44px}}"
+    },
+    {
+      "name": "Brand Button",
+      "kind": "button",
+      "refersTo": "button-brand",
+      "description": "Affirmative actions only. Paper on moss at 8.96:1, never used for anything destructive.",
+      "html": "<button class=\"ds-btn-brand\">Confirm</button>",
+      "css": ".ds-btn-brand { background:#2C4A3B; color:#F7F5EF; font-family:Archivo,sans-serif; font-size:13px; font-weight:500; border:0; border-radius:2px; height:36px; padding:0 16px; cursor:pointer; transition:opacity .2s; } .ds-btn-brand:hover{opacity:.9} @media (pointer:coarse){.ds-btn-brand{min-height:44px}}"
     },
     {
       "name": "Text Field",
       "kind": "input",
       "refersTo": "input",
-      "description": "Transparent ground with a hairline edge. Placeholder clears 4.5:1 rather than fading to a hint.",
+      "description": "Transparent ground, one rule, no shadow. Placeholder clears 4.5:1 rather than fading to a hint.",
       "html": "<input class=\"ds-input\" placeholder=\"you@email.com\" />",
-      "css": ".ds-input { width: 100%; height: 36px; background: transparent; color: #14120E; font-family: Jost, sans-serif; font-weight: 300; font-size: 14px; border: 1px solid #CFC8B8; border-radius: 2px; padding: 4px 12px; } .ds-input::placeholder { color: #6E6A5E; } .ds-input:focus-visible { outline: none; border-color: #8A6B2C; box-shadow: 0 0 0 1px #F7F4EE, 0 0 0 3px rgba(138,107,44,0.35); }"
+      "css": ".ds-input { width:100%; height:36px; background:transparent; color:#171812; font-family:Archivo,sans-serif; font-size:14px; border:1px solid #CAC7BD; border-radius:2px; padding:4px 12px; } .ds-input::placeholder{color:#66665F} .ds-input:focus-visible{outline:none;border-color:#2C4A3B;box-shadow:0 0 0 1px #F7F5EF,0 0 0 3px rgba(44,74,59,.35)}"
     },
     {
-      "name": "House Index",
+      "name": "The Rail",
       "kind": "nav",
-      "refersTo": "nav-item",
-      "description": "Typographic navigation with no icons. The active route is set in Bodoni italic rather than highlighted — the typeface carries state.",
-      "html": "<nav class=\"ds-nav\"><div class=\"ds-nav-group\">Measure</div><a class=\"ds-nav-item ds-nav-item--on\">Home</a><a class=\"ds-nav-item\">Insights</a><a class=\"ds-nav-item\">Funnels</a></nav>",
-      "css": ".ds-nav { width: 224px; border-right: 1px solid #E0DACD; padding: 16px 0; font-family: Jost, sans-serif; } .ds-nav-group { font-size: 10px; letter-spacing: 0.26em; text-transform: uppercase; color: #6E6A5E; padding: 20px 28px 8px; } .ds-nav-item { display: block; padding: 6px 20px 6px 28px; font-size: 13.5px; font-weight: 300; letter-spacing: 0.06em; color: #14120E; text-decoration: none; cursor: pointer; transition: padding 300ms cubic-bezier(0.19,1,0.22,1), color 300ms; } .ds-nav-item:hover { padding-left: 36px; color: #8A6B2C; } .ds-nav-item--on { font-family: 'Bodoni Moda', Didot, serif; font-style: italic; font-size: 15px; letter-spacing: normal; color: #8A6B2C; }"
+      "refersTo": "rail-item",
+      "description": "Light and typographic. The active route takes a moss left edge rather than a filled pill, so the rail never becomes a block of colour.",
+      "html": "<nav class=\"ds-rail\"><div class=\"ds-rail-group\">Daily</div><a class=\"ds-rail-item ds-rail-item--on\">Home</a><a class=\"ds-rail-item\">Content</a><a class=\"ds-rail-item\">Keywords</a></nav>",
+      "css": ".ds-rail { width:208px; border-right:1px solid #EBE8DF; padding:20px 0; font-family:Archivo,sans-serif; } .ds-rail-group { font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:#66665F; padding:16px 20px 6px; } .ds-rail-item { display:flex; align-items:center; min-height:32px; padding:6px 20px; font-size:13px; color:#66665F; text-decoration:none; border-left:2px solid transparent; cursor:pointer; transition:color .2s,background .2s; } .ds-rail-item:hover{background:#EBE8DF;color:#171812} .ds-rail-item--on{color:#171812;font-weight:500;border-left-color:#2C4A3B} @media (pointer:coarse){.ds-rail-item{min-height:44px}}"
     },
     {
-      "name": "The Figure",
+      "name": "Today's Read",
       "kind": "custom",
-      "refersTo": "figure",
-      "description": "The signature component: hairline, field name in tracked caps, then the number in Bodoni at display scale. Gold marks the one figure that is the score.",
-      "html": "<div class=\"ds-figure\"><div class=\"ds-figure-label\">US followers this week</div><div class=\"ds-figure-value\">1,482</div><p class=\"ds-figure-context\">vs +1,204 last week</p><p class=\"ds-figure-note\">newest 2 still settling</p></div>",
-      "css": ".ds-figure { border-top: 1px solid #E0DACD; padding-top: 16px; font-family: Jost, sans-serif; font-weight: 300; } .ds-figure-label { font-size: 10px; letter-spacing: 0.26em; text-transform: uppercase; color: #6E6A5E; } .ds-figure-value { font-family: 'Bodoni Moda', Didot, serif; font-weight: 400; font-variant-numeric: tabular-nums; letter-spacing: -0.03em; line-height: 0.86; font-size: 62px; color: #9C7C38; margin-top: 12px; } .ds-figure-context { font-size: 13px; line-height: 1.35; color: rgba(20,18,14,0.75); margin: 12px 0 0; } .ds-figure-note { font-size: 11.5px; line-height: 1.35; color: #6E6A5E; margin: 6px 0 0; }"
+      "refersTo": "read-panel",
+      "description": "The signature component: the finding as a headline, its consequence, what it rests on, and a control that opens the evidence. Composed from measurements, never authored.",
+      "html": "<section class=\"ds-read\"><span class=\"ds-label\">Today&rsquo;s read</span><h2>US follower growth is 31% faster than last week.</h2><p>1,679 of 2,946 conversations still stop at the reply step — the largest measured loss in the journey.</p><span class=\"ds-label ds-qual\">Compared with the prior 7 days / newest 2 days still settling / 2,946 in the funnel</span><button class=\"ds-ev\">Show the evidence</button></section>",
+      "css": ".ds-read { background:#DCE9E2; color:#171812; padding:24px; font-family:Archivo,sans-serif; } .ds-read h2 { font-size:20px; font-weight:500; line-height:1.375; letter-spacing:-.015em; margin:8px 0 0; } .ds-read p { font-size:13px; line-height:1.625; margin:10px 0 0; max-width:58ch; } .ds-label { font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:#66665F; } .ds-qual { display:block; margin-top:14px; } .ds-ev { display:block; margin-top:12px; background:none; border:0; border-bottom:1px solid currentColor; color:#2C4A3B; font:inherit; font-size:10px; letter-spacing:.14em; text-transform:uppercase; padding:0 0 2px; cursor:pointer; }"
+    },
+    {
+      "name": "Attention Row",
+      "kind": "custom",
+      "refersTo": "attention",
+      "description": "A numbered list, not cards. Index, title, consequence in counts, urgency and an action. Ordered by what is lost; derived only from numbers the API already returns.",
+      "html": "<a class=\"ds-act\"><span class=\"ds-act-no\">01</span><span><span class=\"ds-act-t\">Rewrite the reply step</span><span class=\"ds-act-s\">1,679 of 2,946 conversations stop here — the largest measured loss.</span></span><span class=\"ds-act-r\"><span class=\"ds-act-tag\">Now</span><span class=\"ds-act-btn\">Inspect</span></span></a>",
+      "css": ".ds-act { display:grid; grid-template-columns:26px 1fr auto; gap:12px; align-items:start; border-bottom:1px solid #EBE8DF; padding:12px 0; text-decoration:none; color:#171812; font-family:Archivo,sans-serif; cursor:pointer; transition:padding .2s; } .ds-act:hover{padding-left:6px} .ds-act:active{opacity:.6} .ds-act-no{font-size:12px;color:#66665F;padding-top:2px} .ds-act-t{display:block;font-size:13.5px;font-weight:500} .ds-act-s{display:block;margin-top:4px;font-size:12px;line-height:1.625;color:#66665F} .ds-act-r{text-align:right} .ds-act-tag{display:block;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#A8412B} .ds-act-btn{display:inline-block;margin-top:6px;border:1px solid #CAC7BD;background:#FFFEF9;border-radius:2px;padding:4px 10px;font-size:12px} @media (pointer:coarse){.ds-act{min-height:44px}}"
+    },
+    {
+      "name": "Status Chips",
+      "kind": "chip",
+      "refersTo": "chip-healthy",
+      "description": "Three states and only three. Unknown is not a variant of healthy — a row whose data failed to load wears the grey chip and says 'No reading'.",
+      "html": "<span class=\"ds-chip ds-chip--ok\">Healthy</span> <span class=\"ds-chip ds-chip--warn\">12 gave up</span> <span class=\"ds-chip ds-chip--unknown\">Unknown</span>",
+      "css": ".ds-chip { display:inline-block; font-family:Archivo,sans-serif; font-size:12px; border-radius:2px; padding:2px 8px; } .ds-chip--ok{background:#DCE9E2;color:#2C4A3B} .ds-chip--warn{background:#F3E3DF;color:#8C3A2B} .ds-chip--unknown{background:#EBE8DF;color:#66665F}"
     },
     {
       "name": "Guarded Figure",
       "kind": "custom",
       "refersTo": "figure",
-      "description": "What a figure becomes when its sample cannot support a rate. The counts take the value slot and no percentage is rendered at all.",
-      "html": "<div class=\"ds-figure\"><div class=\"ds-figure-label\">Guide to follow</div><div class=\"ds-figure-value ds-figure-value--counts\">5 of 32</div><p class=\"ds-figure-note\">too few to rate</p></div>",
-      "css": ".ds-figure-value--counts { color: #14120E; font-size: 40px; }"
-    },
-    {
-      "name": "Folio Rule",
-      "kind": "custom",
-      "refersTo": "folio",
-      "description": "The running head. Section name left, state right, closed by a hairline. Replaces the eyebrow-above-heading pattern the world forbids.",
-      "html": "<div class=\"ds-folio\"><span>Growth</span><span>Updated 14 August 2026</span></div>",
-      "css": ".ds-folio { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; border-bottom: 1px solid #E0DACD; padding-bottom: 12px; font-family: Jost, sans-serif; font-size: 10px; font-weight: 300; letter-spacing: 0.26em; text-transform: uppercase; color: #6E6A5E; }"
-    },
-    {
-      "name": "Page Headline",
-      "kind": "custom",
-      "refersTo": "display",
-      "description": "Bodoni at display scale, held to an 18ch measure, with a single italic gold word as the only accent.",
-      "html": "<h1 class=\"ds-headline\">Who you gained. And <em>where</em> they came from.</h1>",
-      "css": ".ds-headline { font-family: 'Bodoni Moda', Didot, serif; font-weight: 400; font-size: 46px; line-height: 1.06; letter-spacing: -0.012em; max-width: 18ch; color: #14120E; margin: 0; } .ds-headline em { font-style: italic; color: #9C7C38; }"
+      "description": "What a figure becomes when its sample cannot support a rate: the counts take the value slot and no percentage is rendered anywhere.",
+      "html": "<div class=\"ds-fig\"><span class=\"ds-label\">Guide to follow</span><div class=\"ds-fig-v\">5 of 32</div><p class=\"ds-fig-n\">below the minimum sample — counts only</p></div>",
+      "css": ".ds-fig { border-top:1px solid #EBE8DF; padding-top:12px; font-family:Archivo,sans-serif; } .ds-fig-v { font-size:22px; font-weight:500; letter-spacing:-.02em; font-variant-numeric:tabular-nums; margin-top:8px; } .ds-fig-n { font-size:11px; color:#66665F; margin:4px 0 0; }"
     }
   ],
   "narrative": {
-    "northStar": "The Maison Record",
-    "overview": "A couture house's record book, not an analytics console. The account's growth is set the way a maison sets a lookbook: ivory stock, noir ink, one thread of antique gold, and enough silence around a figure that the figure means something. The measured numbers are the content — they are given display scale and a serif usually reserved for a magazine cover, because the whole product exists to make a small number of honest figures worth looking at.\n\nThe system's defining refusal is the container. There are no cards. Grouping is done with a 1px hairline and space, never with a filled, rounded, shadowed box. This is the single decision that separates this world from the dashboard it replaced.\n\nThe second refusal is decoration standing in for hierarchy. Emphasis comes from size, weight, and space — never from a tonal glow, a gradient, a coloured chip, or an icon beside a label.",
+    "northStar": "The Standing Brief",
+    "overview": "A daily brief, not a dashboard. The page opens with the finding — what is true today and what to do about it — and puts the numbers underneath as support. The console it replaced reported figures and left the interpretation to the reader, which is why the person it was built for stopped opening it.\n\nTwo refusals define the system. The first is the card: nothing floats, nothing is enclosed in a rounded shadowed box. Structure comes from one-pixel rules, bordered bands, and rows. The second is the dark chrome panel — a filled dark sidebar beside a light page is the single most reliable way a console announces that it could belong to any product.\n\nThe third rule is not visual at all, and it outranks both. Every sentence on this surface is derived from a measurement, and no measurement is stated more confidently than its sample allows. Unknown is its own state everywhere — never rendered as zero, never as 'healthy', never as an em-dash beside a green chip.",
     "keyCharacteristics": [
-      "Ivory paper ground (#F7F4EE), never white, never dark",
-      "Bodoni Moda for display and every figure; Jost at weight 300 for everything else",
-      "One accent — antique gold — appearing perhaps twice per screen",
-      "Hairlines and space instead of cards, fills, and shadows",
-      "Near-square corners (1-2px), so nothing reads as a widget",
-      "Tabular figures everywhere, by default rather than per-component"
+      "Warm paper ground (#F7F5EF), never white, never dark",
+      "Archivo throughout, one family, weight carrying hierarchy",
+      "One accent, moss, meaning 'the system is working' — never a data colour",
+      "One attention tone, marking a task rather than a failure",
+      "Rules and rows instead of cards; shadows only on true overlays",
+      "Near-square corners (2-3px), so nothing reads as a widget",
+      "Tabular figures by default, set at the base layer"
     ],
     "rules": [
-      { "name": "The Two Golds Rule", "body": "#9C7C38 for large figures, #8A6B2C for anything a reader has to read at text size. One is 3.57:1 and one is 4.53:1, and the difference is whether the screen passes.", "section": "colors" },
-      { "name": "The One Thread Rule", "body": "Gold appears at most twice per screen. Its rarity is the entire effect; a third use makes it a theme colour and the maison becomes a brand guideline.", "section": "colors" },
-      { "name": "The Ground Truth Rule", "body": "Every data colour was validated against #F7F4EE. The previous set was validated against #0a0a0a. If the ground changes again, every chart colour is void until re-measured — a palette does not travel between grounds.", "section": "colors" },
-      { "name": "The Didone Ceiling Rule", "body": "Bodoni is for display and figures only. Below about 1.25rem it stops being elegant and starts costing legibility.", "section": "typography" },
+      { "name": "The One Meaning Rule", "body": "Moss means 'working'. It is never a series colour, a chart line, or a decorative fill. An accent that means two things means nothing.", "section": "colors" },
+      { "name": "The Attention-Not-Alarm Rule", "body": "#A8412B marks a task, not a failure. Nothing here should make a person feel caught out; the product's voice forbids it for followers and the same restraint applies to its operator.", "section": "colors" },
+      { "name": "The Ground Truth Rule", "body": "Every colour was measured against #F7F5EF. A previous palette was measured against #0a0a0a and a third against #F7F4EE; none survived the move. If the ground changes again, every value is void until re-measured.", "section": "colors" },
       { "name": "The Tabular Default Rule", "body": "Figures are tabular at the base layer, not per component. Numbers here are compared down columns, and a new component must not be able to ship proportional figures by omission.", "section": "typography" },
-      { "name": "The Hairline-Only Rule", "body": "If two regions need separating, the answer is a 1px #E0DACD rule and more space. Never a border-radius, never a fill, never a shadow, never a 2px accent border on one side.", "section": "elevation" },
-      { "name": "The Coarse Pointer Rule", "body": "Every interactive element carries a 44px minimum target under @media (pointer: coarse), and only under it. The editorial rhythm depends on tight leading, so a mouse keeps the density and a thumb gets the target. The first build shipped 27px navigation items — elegant on a monitor, a miss on the phone where keywords actually get added.", "section": "layout" },
-      { "name": "The Wayfinding Rule", "body": "Every screen answers four questions: where am I, where can I go, what is here, and how do I leave. A screen that cannot answer all four is not finished, however well it is set.", "section": "layout" },
-      { "name": "The Proximity Rule", "body": "A control sits next to the thing it changes. A filter that governs one panel belongs to that panel, not to a toolbar at the top of the page.", "section": "layout" }
+      { "name": "The Placeholder Is Not A Figure Rule", "body": "An em-dash standing in for a missing number is set at label scale, not figure scale. At figure size it is a 60px hole where a value should be.", "section": "typography" },
+      { "name": "The Coarse Pointer Rule", "body": "Every interactive element carries a 44px minimum target under @media (pointer: coarse), and only under it. A mouse keeps the density and a thumb gets the target.", "section": "layout" },
+      { "name": "The Wayfinding Rule", "body": "Every screen answers four questions: where am I, where can I go, what is here, and how do I leave.", "section": "layout" },
+      { "name": "The Proximity Rule", "body": "A control sits beside the thing it changes.", "section": "layout" },
+      { "name": "The Rules-Not-Boxes Rule", "body": "If two regions need separating, the answer is a 1px rule and more space. Never a radius, never a fill, never a shadow. A card in the document flow is this system's first and most likely regression.", "section": "elevation" }
     ],
     "dos": [
-      "Do group with a 1px #E0DACD hairline and space.",
-      "Do use #8A6B2C for any gold a reader must read at text size, and reserve #9C7C38 for figures and headline accents.",
-      "Do set every measured number in Bodoni with tabular figures.",
-      "Do give one figure per screen the display scale and the gold; make the rest supporting.",
+      "Do separate with a 1px rule and more space.",
+      "Do keep moss for 'working' and nothing else.",
       "Do carry counts alongside every rate, and render counts instead of a rate when the sample is thin.",
+      "Do give loading, failed and empty three distinct treatments. A failed request must never render as an empty account.",
+      "Do derive every sentence from a measurement; if it cannot be derived, do not print it.",
+      "Do give every interactive element a 44px target under a coarse pointer, and press feedback on pointer-down.",
       "Do honour prefers-reduced-motion on every entrance and transition.",
-      "Do re-measure every data colour if the ground ever changes.",
-      "Do give every interactive element a 44px minimum target under a coarse pointer, and press feedback on pointer-down — hover does not exist on a phone.",
-      "Do check a finished screen against the four wayfinding questions before calling it done.",
-      "Do put a control beside the thing it governs."
+      "Do load the typeface, and check it in the built output.",
+      "Do re-measure every colour if the ground ever changes."
     ],
     "donts": [
-      "Don't put content in a card. No filled, bordered, rounded container as a page structure — this is the system's first rule.",
-      "Don't add a drop shadow anywhere.",
-      "Don't put an icon beside a navigation label, or introduce an icon set into the index.",
-      "Don't set Bodoni below 1.25rem.",
-      "Don't use gold as a data series colour, or a country colour as an accent.",
-      "Don't write an eyebrow or kicker above a heading, or number sections (01 / 02) when the order carries no information.",
-      "Don't give a coloured border to one side of a block; the hairline is uniform and 1px.",
-      "Don't animate each section in with the same staggered entrance. Motion is one authored moment per screen, not a template announcing itself.",
-      "Don't rely on hover to reveal anything a phone user needs. Eighty per cent of use is desktop; the other twenty per cent is where keywords get attached.",
-      "Don't import glass, backdrop blur, or a system font stack. This world was chosen against those, and they will arrive disguised as 'making it more Apple-like'."
+      "Don't put content in a card. No filled, bordered, rounded, shadowed container in the document flow — this is the system's first rule.",
+      "Don't add a shadow to anything that is not a true overlay.",
+      "Don't introduce a dark chrome panel, least of all the rail.",
+      "Don't use moss, or any country colour, as a general-purpose accent.",
+      "Don't state a percentage without a usable baseline, or above a withheld rate.",
+      "Don't show a green status beside a value you do not have.",
+      "Don't add a second typeface, or reach past weight 500 for emphasis.",
+      "Don't write an eyebrow above a heading, or number sections when the order carries no information.",
+      "Don't rely on hover for anything a phone user needs."
     ]
   }
 }

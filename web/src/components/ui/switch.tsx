@@ -25,7 +25,7 @@ export function Switch({ checked, onCheckedChange, disabled, className, ...props
     >
       <span
         className={cn(
-          "pointer-events-none inline-block size-4 rounded-full bg-white shadow-md transition-transform",
+          "pointer-events-none inline-block size-4 rounded-full bg-background transition-transform",
           checked ? "translate-x-4" : "translate-x-0",
         )}
       />

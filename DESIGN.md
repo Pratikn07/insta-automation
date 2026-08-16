@@ -1,75 +1,77 @@
 ---
 name: Tiny Soho
-description: An ivory growth record for one Instagram account, set as an editorial page rather than a dashboard.
+description: A decision surface for one Instagram account — it opens with what to do next and why, and every figure carries the qualification that makes it safe to act on.
 colors:
-  ground: "#F7F4EE"
-  ink: "#14120E"
-  raised: "#FDFCF8"
-  quiet: "#ECE7DC"
-  muted-ink: "#6E6A5E"
-  hairline: "#E0DACD"
-  field-edge: "#CFC8B8"
-  gold-display: "#9C7C38"
-  gold-text: "#8A6B2C"
-  oxblood: "#7A2E2E"
+  ground: "#F7F5EF"
+  ink: "#171812"
+  raised: "#FFFEF9"
+  quiet: "#EBE8DF"
+  muted-ink: "#66665F"
+  line: "#CAC7BD"
+  signal: "#2C4A3B"
+  signal-soft: "#DCE9E2"
+  urgent: "#A8412B"
+  destructive: "#8C3A2B"
   funnel-mark: "#2A4A6B"
   funnel-soft: "#6B8AA5"
   funnel-unknown: "#8F8A80"
-  country-1: "#2A4A6B"
-  country-2: "#9C5B21"
-  country-3: "#1F6B54"
-  country-4: "#8A6B2C"
-  country-5: "#8C3B63"
+  country-1: "#2C4A3B"
+  country-2: "#8C5A1F"
+  country-3: "#2A4A6B"
+  country-4: "#8C3A2B"
+  country-5: "#5A4E7C"
   country-6: "#3F6B22"
-  country-7: "#5A4E9C"
-  country-8: "#A33A34"
+  country-7: "#1E5F66"
+  country-8: "#8C3B63"
 typography:
   display:
-    fontFamily: "Bodoni Moda, Didot, Times New Roman, serif"
-    fontSize: "clamp(2rem, 5vw, 2.9rem)"
-    fontWeight: 400
-    lineHeight: 1.06
-    letterSpacing: "-0.012em"
-  figure:
-    fontFamily: "Bodoni Moda, Didot, serif"
-    fontSize: "clamp(3.4rem, 7vw, 4.2rem)"
-    fontWeight: 400
-    lineHeight: 0.86
-    letterSpacing: "-0.03em"
-  title:
-    fontFamily: "Bodoni Moda, Didot, serif"
+    fontFamily: "Archivo, ui-sans-serif, system-ui, sans-serif"
     fontSize: "1.5rem"
-    fontWeight: 400
-    lineHeight: 1.15
+    fontWeight: 500
+    lineHeight: 1.2
+    letterSpacing: "-0.02em"
+  headline:
+    fontFamily: "Archivo, ui-sans-serif, sans-serif"
+    fontSize: "1.25rem"
+    fontWeight: 500
+    lineHeight: 1.375
+    letterSpacing: "-0.015em"
+  title:
+    fontFamily: "Archivo, ui-sans-serif, sans-serif"
+    fontSize: "0.9375rem"
+    fontWeight: 500
+  figure:
+    fontFamily: "Archivo, ui-sans-serif, sans-serif"
+    fontSize: "1.8rem"
+    fontWeight: 500
+    lineHeight: 1.25
+    letterSpacing: "-0.02em"
   body:
-    fontFamily: "Jost, ui-sans-serif, system-ui, sans-serif"
-    fontSize: "0.875rem"
-    fontWeight: 300
+    fontFamily: "Archivo, ui-sans-serif, sans-serif"
+    fontSize: "0.8125rem"
+    fontWeight: 400
     lineHeight: 1.625
   label:
-    fontFamily: "Jost, ui-sans-serif, sans-serif"
+    fontFamily: "Archivo, ui-sans-serif, sans-serif"
     fontSize: "0.625rem"
-    fontWeight: 300
-    letterSpacing: "0.26em"
+    fontWeight: 400
+    letterSpacing: "0.14em"
 rounded:
-  sm: "1px"
+  sm: "2px"
   md: "2px"
-  lg: "2px"
+  lg: "3px"
 components:
   button-primary:
     backgroundColor: "{colors.ink}"
     textColor: "{colors.ground}"
     rounded: "{rounded.md}"
-    padding: "0.5rem 1rem"
+    padding: "0 1rem"
     height: "2.25rem"
   button-brand:
-    backgroundColor: "{colors.gold-display}"
-    textColor: "{colors.ink}"
-    rounded: "{rounded.md}"
-    padding: "0.5rem 1rem"
-  button-brand-hover:
-    backgroundColor: "{colors.gold-text}"
+    backgroundColor: "{colors.signal}"
     textColor: "{colors.ground}"
+    rounded: "{rounded.md}"
+    height: "2.25rem"
   button-outline:
     backgroundColor: "transparent"
     textColor: "{colors.ink}"
@@ -80,278 +82,291 @@ components:
     rounded: "{rounded.md}"
     height: "2.25rem"
     padding: "0.25rem 0.75rem"
-  nav-item:
+  rail-item:
+    backgroundColor: "transparent"
+    textColor: "{colors.muted-ink}"
+    padding: "0.375rem 1.25rem"
+  rail-item-active:
     backgroundColor: "transparent"
     textColor: "{colors.ink}"
-    padding: "0.375rem 1.25rem 0.375rem 1.75rem"
-  nav-item-active:
-    backgroundColor: "transparent"
-    textColor: "{colors.gold-text}"
-    typography: "{typography.title}"
+  read-panel:
+    backgroundColor: "{colors.signal-soft}"
+    textColor: "{colors.ink}"
+    padding: "1.5rem"
+  chip-healthy:
+    backgroundColor: "{colors.signal-soft}"
+    textColor: "{colors.signal}"
+    rounded: "{rounded.sm}"
+    padding: "0.125rem 0.5rem"
+  chip-unknown:
+    backgroundColor: "{colors.quiet}"
+    textColor: "{colors.muted-ink}"
+    rounded: "{rounded.sm}"
 ---
 
 # Design System: Tiny Soho
 
 ## Overview
 
-**Creative North Star: "The Maison Record"**
+**Creative North Star: "The Standing Brief"**
 
-A couture house's record book, not an analytics console. The account's growth is
-set the way a maison sets a lookbook: ivory stock, noir ink, one thread of
-antique gold, and enough silence around a figure that the figure means something.
-The measured numbers are the content — they are given display scale and a serif
-usually reserved for a magazine cover, because the whole product exists to make
-a small number of honest figures worth looking at.
+A daily brief, not a dashboard. The page opens with the finding — *what is true
+today and what to do about it* — and puts the numbers underneath as support. The
+console it replaced reported figures and left the interpretation to the reader,
+which is why the person it was built for stopped opening it.
 
-The system's defining refusal is the container. There are no cards. Grouping is
-done with a 1px hairline and space, never with a filled, rounded, shadowed box.
-This is the single decision that separates this world from the dashboard it
-replaced, and it is the first thing to check when a new screen feels wrong: if
-content has been put inside a bordered rectangle, the world has been abandoned.
+Two refusals define the system. The first is the card: nothing floats, nothing is
+enclosed in a rounded shadowed box. Structure comes from one-pixel rules,
+bordered bands, and rows. The second is the dark chrome panel — a filled dark
+sidebar beside a light page is the single most reliable way a console announces
+that it could belong to any product. The rail here is the same paper as the page,
+divided by a rule, with the active route marked by a moss edge.
 
-The second refusal is decoration standing in for hierarchy. Emphasis comes from
-size, weight, and space. It never comes from a tonal glow, a gradient, a coloured
-chip, or an icon beside a label. The house has no icon system in its navigation
-at all — the type carries state, and the active route is set in Bodoni italic
-rather than given a highlight.
+The third rule is not visual at all, and it outranks both. **Every sentence on
+this surface is derived from a measurement, and no measurement is stated more
+confidently than its sample allows.** The read refuses a percentage without a
+usable baseline. The funnel withholds a rate below its minimum sample. Unknown is
+its own state everywhere — never rendered as zero, never as "healthy", never as
+an em-dash beside a green chip.
 
 **Key Characteristics:**
 
-- Ivory paper ground (`#F7F4EE`), never white, never dark
-- Bodoni Moda for display and every figure; Jost at weight 300 for everything else
-- One accent — antique gold — and it appears perhaps twice per screen
-- Hairlines and space instead of cards, fills, and shadows
-- Near-square corners (1–2px), so nothing reads as a widget
-- Tabular figures everywhere, by default rather than per-component
+- Warm paper ground (`#F7F5EF`), never white, never dark
+- Archivo throughout, one family, weight carrying hierarchy
+- One accent, moss, meaning *the system is working* — never a data colour
+- One attention tone, and it marks a task rather than a failure
+- Rules and rows instead of cards; shadows only on true overlays
+- Near-square corners (2–3px), so nothing reads as a widget
+- Tabular figures by default, set at the base layer
 
 ## Colors
 
-Ivory and noir with a single metal. Every value below was measured against the
-ground rather than chosen by eye, and the ratios are recorded because several sit
-close to their floor.
+Warm paper, near-black ink, one accent and one attention tone. Every value is
+measured against the ground rather than chosen, and the ratios are recorded
+because several sit close to their floor.
 
 ### Primary
 
-- **Antique Gold — display** (`#9C7C38`): the house thread. Figures at display
-  scale, the italic accent word in a headline, the rule under the wordmark.
-  **3.57:1 — large text only.** It is not legal for body copy or links.
-- **Antique Gold — text** (`#8A6B2C`): the same metal darkened until small text
-  is legal. **4.53:1.** Links, the active navigation item, small labels that
-  need the accent. These two are not interchangeable; picking the wrong one is
-  the most likely contrast failure in this system.
+- **Moss** (`#2C4A3B`): the single accent. **8.96:1.** The active rail edge, the
+  tint behind today's read, healthy status, affirmative actions. It means *this
+  is working*, which is why it never colours a data series — a moss line on a
+  chart would make the accent mean two things at once.
+- **Moss Soft** (`#DCE9E2`): the read panel's ground and the healthy chip. Moss
+  reads **7.81:1** on it.
+
+### Secondary
+
+- **Attention** (`#A8412B`): **5.57:1.** Marks the thing to do next. Deliberately
+  not a siren red — the brand voice forbids shaming a parent, and the operations
+  surface inherits that: this colour says *do this*, not *you failed*. The
+  obvious choice (`#E74A25`) measures **3.56:1** and was refused; it would have
+  carried the highest-priority label on the page below the legibility floor.
+- **Destructive** (`#8C3A2B`): **6.99:1.** Deletion and irreversible actions only.
 
 ### Neutral
 
-- **Ivory Stock** (`#F7F4EE`): the page ground. Everything sits directly on it.
-- **Noir Ink** (`#14120E`): body and display text. 17.04:1.
-- **Raised Ivory** (`#FDFCF8`): the only surface permitted above the ground, and
-  only for genuinely floating chrome — a drawer, a popover. Never a card.
-- **Quiet Ivory** (`#ECE7DC`): hover beds and inert fills.
-- **Muted Ink** (`#6E6A5E`): secondary copy. **4.92:1.** The obvious ivory-grey
-  (`#8A8477`) measures 3.39:1 and fails; it was in the first comp and was caught
-  by measurement, not by eye.
-- **Hairline** (`#E0DACD`): every rule in the system. 1px, never 2px.
-- **Field Edge** (`#CFC8B8`): input borders, which need to read as an affordance.
+- **Paper** (`#F7F5EF`): the page. Everything sits directly on it.
+- **Ink** (`#171812`): body and headings. **16.38:1.**
+- **Muted Ink** (`#66665F`): secondary copy and labels. **5.31:1.**
+- **Raised** (`#FFFEF9`): controls and floating chrome only, never a card wrapper.
+- **Quiet** (`#EBE8DF`): hover beds, inert fills, and the default border.
+- **Line** (`#CAC7BD`): structural rules and field edges, where a border must be
+  seen rather than felt.
 
 ### Tertiary — data
 
-Data colour is a separate vocabulary from house colour, and the two must never be
-confused: gold means *the house*, never *a series*.
+Data colour is a separate vocabulary from interface colour and the two never mix.
 
-- **Funnel Mark** (`#2A4A6B`) and **Funnel Soft** (`#6B8AA5`): one hue, two
-  steps. 8.35:1 and 3.30:1, luminance gap 0.175.
+- **Funnel Mark** (`#2A4A6B`) **8.41:1** and **Funnel Soft** (`#6B8AA5`)
+  **3.30:1**: one hue, two steps, for every stage of a funnel.
 - **Funnel Unknown** (`#8F8A80`): absence of evidence. Deliberately not a hue.
-- **Country marks** (`#2A4A6B`, `#9C5B21`, `#1F6B54`, `#8A6B2C`, `#8C3B63`,
-  `#3F6B22`, `#5A4E9C`, `#A33A34`): categorical, separated by hue rather than
-  lightness, each clearing 3:1 on the ground.
-- **Oxblood** (`#7A2E2E`): loss and destruction. 8.47:1.
+- **Country marks** (`#2C4A3B`, `#8C5A1F`, `#2A4A6B`, `#8C3A2B`, `#5A4E7C`,
+  `#3F6B22`, `#1E5F66`, `#8C3B63`): categorical, separated by hue. All eight
+  measure between **5.35:1 and 8.96:1** — above the 4.5 text floor, not merely
+  the 3:1 a mark needs, so any of them can also carry its own label.
 
 ### Named Rules
 
-**The Two Golds Rule.** `#9C7C38` for large figures, `#8A6B2C` for anything a
-reader has to read at text size. One is 3.57:1 and one is 4.53:1, and the
-difference is whether the screen passes.
+**The One Meaning Rule.** Moss means "working". It is never a series colour, a
+chart line, or a decorative fill. An accent that means two things means nothing.
 
-**The One Thread Rule.** Gold appears at most twice per screen. Its rarity is the
-entire effect; a third use makes it a theme colour and the maison becomes a brand
-guideline.
+**The Attention-Not-Alarm Rule.** `#A8412B` marks a task, not a failure. Nothing
+on this surface should make a person feel caught out; the product's voice
+forbids it for followers and the same restraint applies to its operator.
 
-**The Ground Truth Rule.** Every data colour in this system was validated against
-`#F7F4EE`. The previous set was validated against `#0a0a0a`. If the ground ever
-changes again, every chart colour is void until re-measured — a palette does not
-travel between grounds.
+**The Ground Truth Rule.** Every colour here was measured against `#F7F5EF`. A
+previous palette was measured against `#0a0a0a`, and a third against `#F7F4EE`;
+none survived the move. If the ground changes again, every value is void until
+re-measured. A palette does not travel between grounds.
 
 ## Typography
 
-**Display Font:** Bodoni Moda (with Didot, Times New Roman)
-**Body Font:** Jost (with system sans fallbacks)
+**One family: Archivo** (with system sans fallbacks), loaded from Google Fonts.
 
-**Character:** A high-contrast didone against a geometric sans in the Futura
-lineage — the pairing a fashion house uses for a cover and its captions. Bodoni
-supplies the drama and does it only where there is room; Jost at weight 300
-carries every functional word without competing.
+**Character:** a workhorse grotesk, chosen because an Operate surface is read for
+minutes at a time by someone deciding something. Hierarchy comes from weight and
+size, never from a second face. Two weights carry the whole system — 400 for
+running text, 500 for anything structural.
+
+**Loading is part of the design.** Two predecessor mocks declared a typeface with
+no `@font-face` and no stylesheet link, so both silently rendered in fallback
+type. A font that is not loaded is not a choice.
 
 ### Hierarchy
 
-- **Display** (Bodoni 400, `clamp(2rem, 5vw, 2.9rem)`, 1.06, `-0.012em`): page
-  headlines, held to an 18ch measure so they break as an editor would break them.
-- **Figure** (Bodoni 400, `3.4–4.2rem`, 0.86, `-0.03em`): the one metric that is
-  the score. Gold. One per screen.
-- **Figure, supporting** (Bodoni 400, `2.1rem`): every other measured number.
-- **Title** (Bodoni 400, `1.5rem`): the wordmark, drawer and panel headings.
-- **Body** (Jost 300, `0.875rem`, 1.625): all running copy, at a 46–64ch measure.
-- **Label** (Jost 300, `0.625rem`, `0.26em`, uppercase): every field name in the
-  system, defined once as `label-caps` so the tracking cannot drift between
-  screens.
+- **Display** (500, 1.5rem, `-0.02em`): the page name. One per screen.
+- **Headline** (500, 1.25rem, 1.375): today's read. The most important sentence
+  on the surface and the only place a full sentence is set large.
+- **Figure** (500, 1.8rem, tabular): the scored metric. Supporting figures at
+  1.4rem, placeholders at 1.125rem in muted ink.
+- **Title** (500, 0.9375rem): section headings above a rule.
+- **Body** (400, 0.8125rem, 1.625): all running copy, at a 54–74ch measure.
+- **Label** (400, 0.625rem, `0.14em`, uppercase): every field name and section
+  marker, defined once as `label-caps` so tracking cannot drift.
 
 ### Named Rules
 
-**The Didone Ceiling Rule.** Bodoni is for display and figures only. Below about
-1.25rem it stops being elegant and starts costing legibility, and a didone at
-13px is decoration charged to the reader.
+**The Tabular Default Rule.** Figures are tabular at the `base` layer, not per
+component. Numbers here are compared down columns, and a new component must not
+be able to ship proportional figures by omission.
 
-**The Tabular Default Rule.** Figures are tabular by default at the `base` layer,
-not per component. Numbers in this product are compared down columns, and a new
-component must not be able to ship proportional figures by omission.
+**The Placeholder Is Not A Figure Rule.** An em-dash standing in for a missing
+number is set at label scale, not figure scale. Rendered at figure size it is a
+60px hole where a value should be, and every tile shows one before the first
+snapshot lands.
 
 ## Layout
 
-A fixed 224px index column against a fluid record. The index carries a right
-hairline and no fill; the record is centred at a 1152px maximum with 40px side
-padding on desktop and 20px on mobile, so the measure stays editorial rather than
-stretching to the monitor.
+A 208px rail against a fluid page. The rail carries a right rule and no fill; the
+page is centred at a 1152px maximum with 40px of side padding on desktop and 20px
+on mobile. The strip above is 48px and carries only identity and the way out.
 
-Vertical rhythm is a 40px page rhythm (`space-y-10`) with 28px inside a section.
-More space sits above a heading than below it. Sections are separated by a
-hairline and a 28px lead, never by a card boundary.
+Vertical rhythm is 24px between page sections and 12–14px inside one. Section
+headings sit above a full-strength ink rule; rows separate on the quiet border.
 
-The KPI row is deliberately unequal: `1.35fr 1fr 1fr` on desktop, collapsing to
-two columns then one. An equal three-up row would claim the three numbers matter
-the same, and the product record says they do not — the US figure is the score
-and the other two are supporting facts.
+Two layouts recur. The **band**: a single bordered rectangle divided internally by
+rules, used where two panels must read as one statement — the read and its best
+next move. The **two-column split** at `1.55fr 1fr`, with the thing you act on
+wider than the thing you monitor.
 
-Below 768px the index becomes a left drawer over a 25% ink scrim, and the running
-head regains the page title, because nothing else names where you are once the
-index is closed.
+Below 768px the rail becomes a left drawer over a scrim, the strip regains the
+page title, and every grid collapses to one column.
 
 ### Named Rules
 
 **The Coarse Pointer Rule.** Every interactive element carries a 44px minimum
-target under `@media (pointer: coarse)`, and only under it. The editorial rhythm
-of this system depends on tight leading, so a mouse keeps the density and a
-thumb gets the target. The first build of this world shipped 27px navigation
-items — elegant on a monitor, and a miss on the phone where keywords actually
-get added.
+target under `@media (pointer: coarse)`, and only under it. The rail's rhythm
+depends on tight leading, so a mouse keeps the density and a thumb gets the
+target.
 
 **The Wayfinding Rule.** Every screen answers four questions: where am I, where
 can I go, what is here, and how do I leave. A screen that cannot answer all four
-is not finished, however well it is set. This is the check the eleven-item flat
-navigation failed, and the reason the index is grouped.
+is not finished.
 
-**The Proximity Rule.** A control sits next to the thing it changes. A filter
-that governs one panel belongs to that panel, not to a toolbar at the top of the
-page.
+**The Proximity Rule.** A control sits beside the thing it changes.
 
 ## Elevation & Depth
 
-**This system has no shadows.** Not "few" — none. Depth is carried by three
-things: the ivory ground, a barely-raised surface (`#FDFCF8`) for genuinely
-floating chrome, and 1px hairlines. A drop shadow anywhere in this world is a
-regression to the dashboard it replaced.
+**In-flow content has no shadows.** Depth is the paper ground, one barely-raised
+surface (`#FFFEF9`) for controls, and rules at two weights — `#EBE8DF` for row
+separation, `#CAC7BD` where a border must be seen.
+
+The single exception is a true overlay. The drawer and the confirm dialog sit
+above the page on a scrim and carry a shadow, because an element that genuinely
+floats should look like it does. Nothing in the document flow qualifies.
 
 ### Named Rules
 
-**The Hairline-Only Rule.** If two regions need separating, the answer is a 1px
-`#E0DACD` rule and more space. It is never a border-radius, never a fill, never a
-shadow, and never a 2px accent border on one side.
+**The Rules-Not-Boxes Rule.** If two regions need separating, the answer is a
+1px rule and more space. Never a radius, never a fill, never a shadow. A card in
+the document flow is this system's first and most likely regression.
 
 ## Shapes
 
-Near-square throughout: 2px on controls and surfaces, 1px on the smallest. The
-radius exists only to take the mechanical edge off a rendered corner, not to
-make anything look soft. Rounded pills, 12px cards, and circular icon beds all
-belong to the previous world.
+Near-square: 2px on controls, 3px at most on a band. Enough to take the
+mechanical edge off a rendered corner, never enough to read as soft. Pills,
+12px cards and circular icon beds belong to the console this replaced.
 
-Rules are 1px and full-strength; there are no dotted, dashed, or double borders.
-The only curve in the system is the drawn line of a chart.
+Borders are 1px and full strength. Chips are the only filled shapes, and they
+exist to carry a status word, not to decorate.
 
 ## Components
 
 ### Buttons
 
-- **Shape:** near-square (2px), 36px tall, 16px horizontal padding
-- **Primary:** noir ink ground with ivory text (17:1) — the default action
-- **Brand:** antique gold ground with *ink* text, measured at 4.77:1. White on
-  gold is 1.9:1; the dark-era pairing would have failed here unchanged
-- **Outline / Ghost:** transparent with a hairline, bedding to quiet ivory on hover
-- **Focus:** a 2px gold-text ring, offset from the ground
+- **Shape:** 2px radius, 36px tall, 16px horizontal padding
+- **Primary:** ink on paper, 16.38:1 — the default action
+- **Brand:** paper on moss, 8.96:1 — affirmative actions only, never destructive
+- **Outline / Ghost:** transparent with a rule, bedding to quiet on hover
+- **Focus:** a 2px moss ring, offset from the ground
+- **Touch:** 44px minimum under a coarse pointer, on every size
 
 ### Inputs
 
-- **Style:** transparent ground, 1px `#CFC8B8` edge, 2px radius, 36px tall
-- **Focus:** 2px gold-text ring with a 1px offset
-- **Placeholder:** muted ink, which clears 4.5:1 rather than fading to a hint
+Transparent ground, 1px `#CAC7BD` edge, 2px radius, 36px tall, no shadow.
+Placeholder in muted ink so it clears 4.5:1 rather than fading to a hint. Focus
+takes a 2px moss ring.
 
-### Navigation
+### The rail
 
-The house index. Typographic, with no icons at all. Group headings are
-`label-caps`; items are Jost 13.5px at `0.06em`. Hover slides the item 8px right
-over 300ms. The active item is set in **Bodoni italic at 15px in gold-text** —
-state is carried by the typeface, so the column needs no highlight, pill, or bar.
+Light, typographic, no icons. Group headings in `label-caps`; items at 13px in
+muted ink. The active item takes ink, medium weight, and a 2px moss left edge —
+state carried by an edge rather than a filled pill, so the rail never becomes a
+block of colour.
 
-### The Figure
+### Today's read
 
-The signature component. A `label-caps` field name, a hairline above it, and the
-number in Bodoni beneath at display scale. The scored figure takes gold and the
-larger size; every other figure takes ink at 2.1rem. Counts and qualifications
-sit below the figure in body and muted sizes — never beside it, never inside a
-parenthesis.
+The signature component. A `label-caps` marker, the finding as a headline, the
+measured consequence beneath it, then the qualification — what it rests on —
+and a control that opens the evidence. It sits on moss-soft inside the band,
+paired with the single best next move across a rule.
 
-### Guarded figures
+**It is never authored.** The sentence is composed from measurements by a pure
+function, and when no comparable baseline exists it states counts and says so
+rather than inventing a direction.
 
-Where a rate cannot be supported by its sample, the counts take the value slot
-and the percentage is not rendered at all — not greyed, not parenthesised, not
-behind a tooltip. This is product doctrine that outranks any visual preference:
-see `GuardedNumber`. The visual system must always leave room for a figure slot
-to contain "5 of 32" rather than "15.6%".
+### Attention rows
+
+A numbered list, not cards. Index, title, consequence in counts, an urgency word
+and an action. Ordered by what is lost, and derived only from numbers the API
+already returns — so an empty list is a real and good state, rendered as a
+sentence rather than as a gap.
+
+### Status chips and the pulse
+
+Three states and only three: healthy on moss-soft, attention on the destructive
+tint, and **unknown on quiet grey**. Unknown is not a variant of healthy. A row
+whose data failed to load says "No reading" and wears the unknown chip.
 
 ## Do's and Don'ts
 
 ### Do:
 
-- **Do** group with a 1px `#E0DACD` hairline and space.
-- **Do** use `#8A6B2C` for any gold a reader must read at text size, and reserve
-  `#9C7C38` for figures and headline accents.
-- **Do** set every measured number in Bodoni with tabular figures.
-- **Do** give one figure per screen the display scale and the gold; make the rest
-  supporting.
+- **Do** separate with a 1px rule and more space.
+- **Do** keep moss for "working" and nothing else.
 - **Do** carry counts alongside every rate, and render counts *instead of* a rate
   when the sample is thin.
+- **Do** give loading, failed and empty three distinct treatments. A failed
+  request must never render as an empty account.
+- **Do** derive every sentence from a measurement; if it cannot be derived, do
+  not print it.
+- **Do** give every interactive element a 44px target under a coarse pointer,
+  and press feedback on pointer-down.
 - **Do** honour `prefers-reduced-motion` on every entrance and transition.
-- **Do** re-measure every data colour if the ground ever changes.
-- **Do** give every interactive element a 44px minimum target under a coarse
-  pointer, and press feedback on pointer-down — hover does not exist on a phone.
-- **Do** check a finished screen against the four wayfinding questions before
-  calling it done.
-- **Do** put a control beside the thing it governs.
+- **Do** load the typeface, and check it in the built output.
+- **Do** re-measure every colour if the ground ever changes.
 
 ### Don't:
 
-- **Don't** put content in a card. No filled, bordered, rounded container as a
-  page structure — this is the system's first rule.
-- **Don't** add a drop shadow anywhere.
-- **Don't** put an icon beside a navigation label, or introduce an icon set into
-  the index.
-- **Don't** set Bodoni below 1.25rem.
-- **Don't** use gold as a data series colour, or a country colour as an accent.
-- **Don't** write an eyebrow or kicker above a heading, or number sections
-  (01 / 02) when the order carries no information.
-- **Don't** give a coloured border to one side of a block; the hairline is
-  uniform and 1px.
-- **Don't** animate each section in with the same staggered entrance. Motion is
-  one authored moment per screen, not a template announcing itself.
-- **Don't** rely on hover to reveal anything a phone user needs. Eighty per cent
-  of use is desktop; the other twenty per cent is where keywords get attached.
-- **Don't** import glass, backdrop blur, or a system font stack. This world was
-  chosen against those, and they will arrive disguised as "making it more
-  Apple-like".
+- **Don't** put content in a card. No filled, bordered, rounded, shadowed
+  container in the document flow — this is the system's first rule.
+- **Don't** add a shadow to anything that is not a true overlay.
+- **Don't** introduce a dark chrome panel, least of all the rail.
+- **Don't** use moss, or any country colour, as a general-purpose accent.
+- **Don't** state a percentage without a usable baseline, or above a withheld
+  rate.
+- **Don't** show a green status beside a value you do not have.
+- **Don't** add a second typeface, or reach past weight 500 for emphasis.
+- **Don't** write an eyebrow above a heading, or number sections when the order
+  carries no information.
+- **Don't** rely on hover for anything a phone user needs.
