@@ -11,6 +11,22 @@ export const FORBIDDEN_SETTINGS_SIGNATURE = "100:2534025";
 export const envSchema = z.object({
   PORT: z.coerce.number().default(3000),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
+  /**
+   * Background workers. Defaults TRUE so production is unchanged by its absence;
+   * the only reason to set it false is a local server run for UI work.
+   *
+   * Seven of the workers start unconditionally, and the listen callback fires a
+   * token refresh and a feed-follow snapshot immediately on boot. Since there is
+   * one database and one Instagram account, a second local server means a second
+   * gate-queue worker sending real private replies, a second token refresher
+   * racing the deployed one, and duplicate Graph and Gemini spend — all against
+   * production, alongside Railway doing the same work.
+   *
+   * booleanFlag, never z.coerce.boolean: coerce treats the STRING "false" as
+   * true, so WORKERS_ENABLED=false would silently start every worker — the exact
+   * failure this flag exists to prevent.
+   */
+  WORKERS_ENABLED: booleanFlag(true),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
 
   META_APP_SECRET: z.string().min(1),
