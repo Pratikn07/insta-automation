@@ -50,19 +50,17 @@ export function KpiTile({
         <div className="mt-2 flex items-baseline gap-2">
           <span
             className={cn(
-              "font-display leading-[0.9]",
+              "font-medium leading-tight tracking-tight tabular-nums",
               isPlaceholder
-                ? "text-[1.5rem] text-muted-foreground"
+                ? "text-lg text-muted-foreground"
                 : emphasis
-                  ? "text-[2.4rem] text-gold sm:text-[2.9rem]"
-                  : "text-[1.7rem]",
+                  ? "text-[1.8rem]"
+                  : "text-[1.4rem]",
             )}
           >
             {value}
           </span>
-          {TrendIcon && (
-            <TrendIcon className="size-4 shrink-0 text-gold-text" aria-hidden />
-          )}
+          {TrendIcon && <TrendIcon className="size-4 shrink-0 text-signal" aria-hidden />}
         </div>
       )}
 

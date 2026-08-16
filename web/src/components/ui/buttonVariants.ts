@@ -6,10 +6,9 @@ export const buttonVariants = cva(
     variants: {
       variant: {
         default: "bg-primary text-primary-foreground shadow hover:bg-primary/90",
-        // Ink on gold, measured at 4.77:1. White on gold is 1.9:1 and was the
-        // old dark-world pairing; carried over unchanged it would have failed
-        // every contrast check on an ivory ground.
-        brand: "bg-gold text-foreground hover:bg-gold-text hover:text-background",
+        // Paper on moss, 8.96:1. The accent means "the system is working", so it
+        // carries the affirmative action and never a destructive one.
+        brand: "bg-signal text-background hover:opacity-90",
         outline: "border bg-transparent hover:bg-accent hover:text-accent-foreground",
         secondary: "bg-secondary text-secondary-foreground hover:bg-secondary/80",
         ghost: "hover:bg-accent hover:text-accent-foreground",

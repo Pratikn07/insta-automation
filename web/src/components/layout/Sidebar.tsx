@@ -2,35 +2,38 @@ import { NavLink } from "react-router-dom";
 import { cn } from "@/lib/utils";
 
 /**
- * The house index.
+ * The rail.
  *
- * Typographic, not iconographic: Maison has no icon system, and a lucide glyph
- * beside each label would be the dashboard tell the whole world is refusing.
- * The active route is set in Bodoni italic rather than given a filled pill —
- * the type carries state, so the column needs no background at all.
+ * Light and integrated rather than a dark chrome panel: the sidebar is where a
+ * console most reliably announces itself as generic, and a filled dark rectangle
+ * beside a light page is the single strongest tell. Here it is the same paper as
+ * the page, separated by one rule, and the active route is marked by a moss edge
+ * rather than a filled pill.
  *
- * Grouped rather than merged. The four headings are the agreed information
- * architecture (Measure / Publish / Audience / System) and they land now because
- * grouping is reversible and costs nothing. The merges behind them — Keywords
- * into Content, Users into People, Insights and Funnels into Analysis — are page
- * work, and Keywords in particular is opened daily; it stays reachable until the
- * page that absorbs it exists.
+ * Typographic, no icons. An icon beside every label adds a column of noise to a
+ * list a daily user learned by position within a week.
+ *
+ * Grouped, not merged. The four headings are the agreed information architecture
+ * and they cost nothing because grouping is reversible. The merges behind them —
+ * Keywords into Content, Users into Conversations, Insights and Funnels into one
+ * Analysis view — are page work, and Keywords is opened daily; nothing leaves the
+ * rail before the page that absorbs it exists.
  */
 const groups: { heading: string; items: { to: string; label: string }[] }[] = [
   {
-    heading: "Measure",
+    heading: "Daily",
     items: [
       { to: "/", label: "Home" },
-      { to: "/insights", label: "Insights" },
-      { to: "/funnels", label: "Funnels" },
-    ],
-  },
-  {
-    heading: "Publish",
-    items: [
       { to: "/content", label: "Content" },
       { to: "/keywords", label: "Keywords" },
       { to: "/sequences", label: "Sequences" },
+    ],
+  },
+  {
+    heading: "Review",
+    items: [
+      { to: "/insights", label: "Insights" },
+      { to: "/funnels", label: "Funnels" },
     ],
   },
   {
@@ -52,20 +55,16 @@ const groups: { heading: string; items: { to: string; label: string }[] }[] = [
 
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   return (
-    <aside className="flex h-full w-56 shrink-0 flex-col overflow-y-auto border-r bg-background pb-8 pt-10">
-      <div className="px-7">
-        <div className="font-display text-2xl uppercase leading-[1.15] tracking-[0.09em]">
-          Tiny
-          <br />
-          Soho
-        </div>
-        <div className="mt-3.5 h-px w-6 bg-gold" />
+    <aside className="flex h-full w-52 shrink-0 flex-col overflow-y-auto border-r bg-background py-5">
+      <div className="flex items-center gap-2 px-5 pb-5">
+        <span className="size-3 shrink-0 rounded-[2px] bg-signal" />
+        <span className="text-sm font-medium tracking-tight">tinysoho</span>
       </div>
 
-      <nav className="mt-7">
+      <nav>
         {groups.map(({ heading, items }) => (
-          <div key={heading} className="mb-1.5">
-            <div className="label-caps px-7 pb-2 pt-5">{heading}</div>
+          <div key={heading}>
+            <div className="label-caps px-5 pb-1.5 pt-4">{heading}</div>
             {items.map(({ to, label }) => (
               <NavLink
                 key={to}
@@ -74,17 +73,15 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                 onClick={onNavigate}
                 className={({ isActive }) =>
                   cn(
-                    "flex items-center py-1.5 pl-7 pr-5 text-[13.5px] tracking-[0.06em] transition-[padding,color,opacity] duration-300 ease-out",
-                    // 44px minimum on touch only. The editorial rhythm of the
-                    // index depends on tight leading, so a coarse pointer gets
-                    // the target and a mouse keeps the density.
+                    "flex min-h-8 items-center border-l-2 px-5 py-1.5 text-[13px] transition-colors",
+                    // 44px on touch only: the rail's rhythm depends on tight
+                    // leading, so a mouse keeps the density and a thumb gets the
+                    // target.
                     "[@media(pointer:coarse)]:min-h-11",
-                    // Press feedback on pointer-down. Hover does not exist on a
-                    // phone, and this is the one place she taps daily.
                     "active:opacity-60",
                     isActive
-                      ? "font-display text-[15px] italic tracking-normal text-gold-text"
-                      : "text-foreground hover:pl-9 hover:text-gold-text",
+                      ? "border-l-signal font-medium text-foreground"
+                      : "border-l-transparent text-muted-foreground hover:bg-muted hover:text-foreground",
                   )
                 }
               >

@@ -46,8 +46,8 @@ export function EmptyPanel({
 }) {
   return (
     <div className="flex min-h-[280px] flex-col items-center justify-center px-6 text-center">
-      <Icon className="size-5 text-gold-text" aria-hidden />
-      <h2 className="font-display mt-3 text-xl">{title}</h2>
+      <Icon className="size-5 text-signal" aria-hidden />
+      <h2 className="mt-3 text-lg font-medium tracking-tight">{title}</h2>
       <p className="mt-2 max-w-sm text-[13px] leading-relaxed text-muted-foreground">{body}</p>
       {action && <div className="mt-4">{action}</div>}
     </div>

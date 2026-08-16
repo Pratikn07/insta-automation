@@ -10,24 +10,89 @@ import type {
   Stats,
 } from "@/lib/types";
 import { summarizeFollowerFlow, summarizeUsWeekOverWeek } from "@/lib/followerFlow";
+import { composeTodaysRead } from "@/lib/todaysRead";
 import { FollowerFlowPanel } from "@/components/home/FollowerFlowPanel";
 import { FeedFollowAttributionDrawer } from "@/components/home/FeedFollowAttributionDrawer";
 import { FollowerKpiRow } from "@/components/home/FollowerKpiRow";
+import { cn } from "@/lib/utils";
+
+const nf = new Intl.NumberFormat("en-US");
+
+interface Attention {
+  title: string;
+  detail: string;
+  tag: "Now" | "Today" | "Watch";
+  to: string;
+  action: string;
+}
 
 /**
- * The growth record's opening page.
+ * What needs attention, derived — never authored.
  *
- * Composition is Maison: a folio rule across the top, the headline at a fixed
- * measure, then the figures. There is no eyebrow above the headline and no
- * section numbering — both were in the first comp and both are ornament that
- * names nothing the reader needs.
+ * Every row below comes from a number the API already returns. There is no
+ * placeholder list and no ranked advice the data cannot support: when nothing
+ * qualifies the section says so, because an empty attention list is a real and
+ * good state for this product, not a gap to fill with something plausible.
  *
- * Motion lives in the shell's route transition, not here. A staggered entrance
- * on every block reads as a template announcing itself; the page should simply
- * be present when you arrive.
+ * Order is by what a person can actually lose: an ambiguous send is a follower
+ * who may never have received their guide, an exhausted gate is one who
+ * definitely did not, and the funnel leak is the largest standing loss.
  */
+function deriveAttention(stats: Stats | undefined, funnel: GuideFollowResult | undefined): Attention[] {
+  const items: Attention[] = [];
+
+  if (stats?.gateQueueSendUncertain) {
+    items.push({
+      title: `Check ${nf.format(stats.gateQueueSendUncertain)} uncertain gate sends`,
+      detail:
+        "The DM may already have landed, so these are never retried automatically. Each one is a person who may never have received their gate.",
+      tag: "Now",
+      to: "/activity",
+      action: "Open",
+    });
+  }
+
+  if (stats?.gateQueueExhausted) {
+    items.push({
+      title: `${nf.format(stats.gateQueueExhausted)} gate deliveries gave up`,
+      detail: "Retries ran out inside the 7-day window. These people asked and never got a reply.",
+      tag: "Now",
+      to: "/activity",
+      action: "Review",
+    });
+  }
+
+  if (funnel) {
+    const { numerator, denominator } = funnel.headline.rate;
+    const lost = denominator - numerator;
+    if (lost > 0) {
+      items.push({
+        title: `Rewrite the ${funnel.headline.label.toLowerCase()} step`,
+        detail: `${nf.format(lost)} of ${nf.format(denominator)} conversations stop here — the largest measured loss in the journey.`,
+        tag: "Today",
+        to: "/funnels",
+        action: "Inspect",
+      });
+    }
+  }
+
+  if (stats?.conversationsAwaiting) {
+    items.push({
+      title: `${nf.format(stats.conversationsAwaiting)} conversations awaiting a reply`,
+      detail: "Waiting on the follower's side. Worth a look if the number keeps climbing.",
+      tag: "Watch",
+      to: "/conversations",
+      action: "Open",
+    });
+  }
+
+  return items;
+}
+
 export function Home() {
   const [attributionDay, setAttributionDay] = useState<string | null>(null);
+  const [evidenceOpen, setEvidenceOpen] = useState(false);
+
   const flowQ = useQuery<FollowerFlowResponse>({
     queryKey: ["insights", "follower-daily-adds"],
     queryFn: () => api<FollowerFlowResponse>("/insights/follower-daily-adds"),
@@ -45,10 +110,7 @@ export function Home() {
   const attributionQ = useQuery<FeedFollowAttributionResponse>({
     queryKey: ["insights", "feed-follow-attribution", attributionDay],
     queryFn: ({ signal }) =>
-      api<FeedFollowAttributionResponse>(
-        feedFollowAttributionPath(attributionDay!),
-        { signal },
-      ),
+      api<FeedFollowAttributionResponse>(feedFollowAttributionPath(attributionDay!), { signal }),
     enabled: attributionDay !== null,
   });
 
@@ -56,49 +118,102 @@ export function Home() {
   const flowStock = flowQ.data?.stock ?? null;
   const flowSummary = summarizeFollowerFlow(flowPoints);
   const weekOverWeek = summarizeUsWeekOverWeek(flowPoints);
+  const read = composeTodaysRead(weekOverWeek, funnelQ.data);
+  const attention = deriveAttention(statsQ.data, funnelQ.data);
+  const best = attention[0] ?? null;
 
-  // Two shapes, not one string with a prefix baked in: "Updated waiting for the
-  // next snapshot" is what prefixing produced, and in tracked caps it ran off
-  // the right edge of a phone.
   const updatedLabel = flowStock
     ? `Updated ${new Date(flowStock.capturedAt).toLocaleDateString(undefined, {
-        month: "long",
+        month: "short",
         day: "numeric",
-        year: "numeric",
         timeZone: flowQ.data?.analyticsTimeZone ?? "America/Los_Angeles",
       })}`
     : "Awaiting first snapshot";
 
   return (
-    // Tightened after seeing it at full size. The first build gave the headline
-    // magazine scale and pushed the figures below a fold of air — which reads well
-    // once and costs a third of the viewport every day after that. The world is
-    // unchanged; only the density is. Editorial character lives in the typeface,
-    // the hairlines and the single gold, not in the amount of empty paper.
     <div className="space-y-6">
-      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-b pb-2.5">
-        <span className="label-caps">Growth</span>
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+        <div>
+          <h1 className="text-2xl font-medium tracking-tight">Home</h1>
+          <p className="mt-0.5 text-[13px] text-muted-foreground">
+            {attention.length === 0
+              ? "Nothing is waiting on you today."
+              : `${attention.length} ${attention.length === 1 ? "decision deserves" : "decisions deserve"} your attention today.`}
+          </p>
+        </div>
         <span className="label-caps">{updatedLabel}</span>
       </div>
 
-      <header className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
-        <div>
-          {/* A title, not a feature. It stops being informative on the second
-              visit, so it may not keep the scale it had on the first. */}
-          <h1 className="font-display text-[1.4rem] leading-[1.15] tracking-[-0.012em] sm:text-[1.75rem]">
-            Who you gained. And <em className="italic text-gold">where</em> they came from.
-          </h1>
-          <p className="mt-1.5 text-[13px] leading-snug text-muted-foreground">
-            Your followers day by day, by region, in real counts.
-          </p>
+      {/* The read and the single best move, as one bordered band. Two panels
+          divided by a rule rather than two floating cards. */}
+      <section className="grid border border-line lg:grid-cols-[1.55fr_1fr]">
+        <div className="bg-signal-soft p-5 sm:p-6">
+          <span className="label-caps">Today&rsquo;s read</span>
+          {read ? (
+            <>
+              <h2 className="mt-2 text-lg font-medium leading-snug tracking-tight sm:text-xl">
+                {read.headline}
+              </h2>
+              {read.because && (
+                <p className="mt-2.5 max-w-[58ch] text-[13px] leading-relaxed">{read.because}</p>
+              )}
+              <p className="label-caps mt-3.5">{read.qualification}</p>
+              <button
+                type="button"
+                onClick={() => setEvidenceOpen((o) => !o)}
+                aria-expanded={evidenceOpen}
+                className="label-caps mt-3 border-b border-current pb-0.5 text-signal transition-opacity hover:opacity-70 [@media(pointer:coarse)]:min-h-11"
+              >
+                {evidenceOpen ? "Hide the evidence" : "Show the evidence"}
+              </button>
+            </>
+          ) : (
+            <p className="mt-2 max-w-[54ch] text-[13px] leading-relaxed">
+              No read yet. Two days of follower geography are needed before this week can be
+              compared with the last; the snapshot worker fills this in on its own.
+            </p>
+          )}
         </div>
-        <Link
-          to="/insights"
-          className="label-caps shrink-0 border-b border-gold-text pb-1 text-gold-text transition-opacity hover:opacity-70"
-        >
-          Full insights
-        </Link>
-      </header>
+
+        <div className="flex flex-col border-line p-5 sm:p-6 lg:border-l">
+          <span className="label-caps">Best next move</span>
+          {best ? (
+            <>
+              <p className="mt-2 flex-1 text-[13px] leading-relaxed">{best.detail}</p>
+              <Link
+                to={best.to}
+                className="mt-4 inline-flex min-h-9 items-center justify-center rounded-sm bg-primary px-4 text-[13px] font-medium text-primary-foreground transition-opacity hover:opacity-90 [@media(pointer:coarse)]:min-h-11"
+              >
+                {best.title}
+              </Link>
+            </>
+          ) : (
+            <p className="mt-2 flex-1 text-[13px] leading-relaxed text-muted-foreground">
+              Nothing is failing and nothing is queued. The automation is running without you.
+            </p>
+          )}
+        </div>
+      </section>
+
+      {evidenceOpen && (
+        <section className="border-t border-foreground pt-3">
+          <span className="label-caps">Evidence</span>
+          <div className="mt-2 max-w-[74ch] space-y-3 text-[13px] leading-relaxed text-muted-foreground">
+            <p>
+              <span className="font-medium text-foreground">What this rests on.</span>{" "}
+              Conversations are counted by the day they entered, not the day an event fired, so
+              someone who replies a week later still counts in the week they arrived. The
+              comparison uses complete days only.
+            </p>
+            <p>
+              <span className="font-medium text-foreground">Why losses are quoted as counts.</span>{" "}
+              A rate below the funnel&rsquo;s minimum sample is withheld everywhere in this
+              product, including in the sentence above. Fifteen per cent over thirty-two people
+              and over three thousand are different claims, and only one of them is a number.
+            </p>
+          </div>
+        </section>
+      )}
 
       <FollowerKpiRow
         weekOverWeek={weekOverWeek}
@@ -110,6 +225,84 @@ export function Home() {
         isStatsLoading={statsQ.isLoading}
         isFunnelLoading={funnelQ.isLoading}
       />
+
+      <div className="grid gap-8 lg:grid-cols-[1.55fr_1fr]">
+        <section>
+          <div className="flex items-baseline justify-between gap-3 border-b border-foreground pb-1.5">
+            <h3 className="text-[15px] font-medium">What needs attention</h3>
+            <span className="label-caps">Ranked by what is lost</span>
+          </div>
+          {attention.length === 0 ? (
+            <p className="mt-3 text-[13px] text-muted-foreground">
+              Nothing qualifies. No failed gates, no exhausted retries, nothing waiting.
+            </p>
+          ) : (
+            attention.map((a, i) => (
+              <Link
+                key={a.title}
+                to={a.to}
+                className="grid grid-cols-[26px_1fr_auto] items-start gap-3 border-b py-3 transition-[padding] duration-200 hover:pl-1.5 active:opacity-60 [@media(pointer:coarse)]:min-h-11"
+              >
+                <span className="pt-0.5 text-xs text-muted-foreground">
+                  {String(i + 1).padStart(2, "0")}
+                </span>
+                <span>
+                  <span className="block text-[13.5px] font-medium">{a.title}</span>
+                  <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
+                    {a.detail}
+                  </span>
+                </span>
+                <span className="text-right">
+                  <span
+                    className={cn(
+                      "label-caps block",
+                      a.tag === "Now" ? "text-urgent" : "text-muted-foreground",
+                    )}
+                  >
+                    {a.tag}
+                  </span>
+                  <span className="mt-1.5 inline-block rounded-sm border border-line bg-card px-2.5 py-1 text-xs">
+                    {a.action}
+                  </span>
+                </span>
+              </Link>
+            ))
+          )}
+        </section>
+
+        <section>
+          <div className="border-b border-foreground pb-1.5">
+            <h3 className="text-[15px] font-medium">System pulse</h3>
+          </div>
+          <p className="mt-2 text-[13px] text-muted-foreground">
+            The parts that keep running after you leave.
+          </p>
+          <PulseRow
+            name="Keywords"
+            stats={statsQ.data}
+            detail={(s) => `${s.activeKeywords} active of ${s.totalKeywords}`}
+          />
+          <PulseRow
+            name="Guides sent today"
+            stats={statsQ.data}
+            detail={(s) => `${nf.format(s.dmsSentToday)} delivered`}
+          />
+          <PulseRow
+            name="Gate queue"
+            stats={statsQ.data}
+            detail={(s) => `${nf.format(s.gateQueuePending)} pending`}
+            warn={(s) => s.gateQueueExhausted > 0}
+            chip={(s) =>
+              s.gateQueueExhausted > 0 ? `${nf.format(s.gateQueueExhausted)} gave up` : undefined
+            }
+          />
+          <PulseRow
+            name="Completed today"
+            stats={statsQ.data}
+            detail={(s) => `${nf.format(s.completedToday)} journeys`}
+          />
+        </section>
+      </div>
 
       <FollowerFlowPanel
         points={flowPoints}
@@ -131,6 +324,56 @@ export function Home() {
         onRetry={() => void attributionQ.refetch()}
         onClose={() => setAttributionDay(null)}
       />
+    </div>
+  );
+}
+
+/**
+ * One line of the system pulse.
+ *
+ * Takes the stats object rather than pre-formatted strings so that "we have no
+ * reading" and "the reading is fine" cannot collapse into the same output. The
+ * first build of this row rendered a green "Healthy" chip beside an em-dash
+ * whenever the stats request failed — announcing the machine was well while
+ * knowing nothing about it, which is the one thing this product must never do.
+ * Unknown is its own state here, exactly as it is in the funnel.
+ */
+function PulseRow({
+  name,
+  stats,
+  detail,
+  chip,
+  warn,
+}: {
+  name: string;
+  stats: Stats | undefined;
+  detail: (s: Stats) => string;
+  chip?: (s: Stats) => string | undefined;
+  warn?: (s: Stats) => boolean;
+}) {
+  const known = stats !== undefined;
+  const isWarn = known && warn ? warn(stats) : false;
+
+  return (
+    <div className="flex items-baseline justify-between gap-3 border-b py-2.5">
+      <span>
+        <span className="block text-[13px] font-medium">{name}</span>
+        <span className="mt-0.5 block text-xs text-muted-foreground">
+          {known ? detail(stats) : "No reading"}
+        </span>
+      </span>
+      <span
+        className={cn(
+          "shrink-0 rounded-sm px-2 py-0.5 text-xs",
+          !known
+            ? "bg-muted text-muted-foreground"
+            : isWarn
+              ? "bg-destructive/10 text-destructive"
+              : "bg-signal-soft text-signal",
+        )}
+      >
+        {!known ? "Unknown" : ((chip && chip(stats)) ?? (isWarn ? "Check" : "Healthy"))}
+      </span>
     </div>
   );
 }
