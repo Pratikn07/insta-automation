@@ -122,13 +122,21 @@ export function Home() {
   const attention = deriveAttention(statsQ.data, funnelQ.data);
   const best = attention[0] ?? null;
 
-  const updatedLabel = flowStock
-    ? `Updated ${new Date(flowStock.capturedAt).toLocaleDateString(undefined, {
-        month: "short",
-        day: "numeric",
-        timeZone: flowQ.data?.analyticsTimeZone ?? "America/Los_Angeles",
-      })}`
-    : "Awaiting first snapshot";
+  // Three states, not two. A failed request previously rendered "Awaiting first
+  // snapshot" — the same words the product uses for a genuinely empty account —
+  // so an outage read as a quiet, expected condition. It cost real debugging
+  // time against a database holding 48 unbroken days of geography.
+  const updatedLabel = flowQ.isError
+    ? "Could not reach the API"
+    : flowStock
+      ? `Updated ${new Date(flowStock.capturedAt).toLocaleDateString(undefined, {
+          month: "short",
+          day: "numeric",
+          timeZone: flowQ.data?.analyticsTimeZone ?? "America/Los_Angeles",
+        })}`
+      : flowQ.isLoading
+        ? "Loading"
+        : "Awaiting first snapshot";
 
   return (
     <div className="space-y-6">
@@ -167,6 +175,18 @@ export function Home() {
                 {evidenceOpen ? "Hide the evidence" : "Show the evidence"}
               </button>
             </>
+          ) : flowQ.isError || funnelQ.isError ? (
+            <p className="mt-2 max-w-[54ch] text-[13px] leading-relaxed">
+              No read available — the API did not answer. This is a connection problem, not an
+              empty account.{" "}
+              <button
+                type="button"
+                onClick={() => void flowQ.refetch()}
+                className="underline underline-offset-2 [@media(pointer:coarse)]:min-h-11"
+              >
+                Try again
+              </button>
+            </p>
           ) : (
             <p className="mt-2 max-w-[54ch] text-[13px] leading-relaxed">
               No read yet. Two days of follower geography are needed before this week can be
