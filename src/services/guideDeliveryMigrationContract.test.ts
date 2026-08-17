@@ -11,6 +11,22 @@ const WORKER_INDEX_NAMES = [
   "guide_delivery_expired_claim_idx",
   "guide_delivery_thread_review_idx",
 ] as const;
+const EXPECTED_DUE_INDEX_PREDICATE =
+  "((claim_token is null) and ((status = 'planned') or ((status = 'failed') and (next_attempt_at is not null))))";
+const PROTECTED_WORKER_INDEX_SHAPES = [
+  {
+    keyColumns: ["next_attempt_at", "created_at", "id"],
+    keyOrders: ["ASC", "ASC", "ASC"],
+  },
+  {
+    keyColumns: ["claim_expires_at", "id"],
+    keyOrders: ["ASC", "ASC"],
+  },
+  {
+    keyColumns: ["thread_id", "created_at"],
+    keyOrders: ["ASC", "DESC"],
+  },
+] as const;
 
 type IndexMetadata = {
   included_columns: string[];
@@ -35,15 +51,65 @@ function normalizeCatalogExpression(value: string | null): string | null {
     .toLowerCase();
 }
 
+function matchesExpectedDueIndexPredicate(value: string | null): boolean {
+  return normalizeCatalogExpression(value) === EXPECTED_DUE_INDEX_PREDICATE;
+}
+
+function hasProtectedWorkerKeyShape(keyColumns: string[], keyOrders: string[]): boolean {
+  return PROTECTED_WORKER_INDEX_SHAPES.some(
+    (shape) =>
+      shape.keyColumns.every((column, position) => keyColumns[position] === column) &&
+      shape.keyOrders.every((order, position) => keyOrders[position] === order),
+  );
+}
+
 function findProtectedWorkerIndexDrift(diff: string): string[] {
-  return WORKER_INDEX_NAMES.filter((indexName) => {
+  const drift = new Set<string>();
+
+  for (const indexName of WORKER_INDEX_NAMES) {
     const escapedName = indexName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const statement = new RegExp(
       String.raw`\b(?:create\s+(?:unique\s+)?index\s+(?:if\s+not\s+exists\s+)?|drop\s+index\s+(?:if\s+exists\s+)?)(?:"${escapedName}"|${escapedName})(?=\s|\(|;|$)`,
       "i",
     );
-    return statement.test(diff);
-  });
+    if (statement.test(diff)) drift.add(indexName);
+  }
+
+  for (const sqlStatement of diff.split(";")) {
+    const create = sqlStatement.match(
+      /\bcreate\s+(?:unique\s+)?index\s+(?:if\s+not\s+exists\s+)?(?:"([^"]+)"|([a-z_][a-z0-9_]*))\s+on\s+(?:(?:"public"|public)\s*\.\s*)?(?:"guide_delivery"|guide_delivery)(?:\s+using\s+[a-z_][a-z0-9_]*)?\s*\(([^)]*)\)([\s\S]*)$/i,
+    );
+    if (!create) continue;
+
+    const [, quotedName, plainName, rawKeys, suffix] = create;
+    if (/\bwhere\b/i.test(suffix)) continue;
+
+    const keyColumns: string[] = [];
+    const keyOrders: string[] = [];
+    for (const rawKey of rawKeys.split(",")) {
+      const key = rawKey.trim().match(/^"?([a-z_][a-z0-9_]*)"?(?:\s+(asc|desc))?/i);
+      if (!key) break;
+      keyColumns.push(key[1].toLowerCase());
+      keyOrders.push((key[2] ?? "ASC").toUpperCase());
+    }
+
+    if (hasProtectedWorkerKeyShape(keyColumns, keyOrders)) {
+      drift.add(quotedName ?? plainName);
+    }
+  }
+
+  return [...drift];
+}
+
+function findFullWorkerIndexLookalikes(indexes: IndexMetadata[]): string[] {
+  return indexes
+    .filter(
+      (index) =>
+        index.table_name === "guide_delivery" &&
+        index.predicate === null &&
+        hasProtectedWorkerKeyShape(index.key_columns, index.key_orders),
+    )
+    .map((index) => index.index_name);
 }
 
 async function loadIndexMetadata(): Promise<IndexMetadata[]> {
@@ -116,8 +182,50 @@ describe("guide delivery Prisma drift guard", () => {
       'CREATE UNIQUE\n INDEX "guide_delivery_expired_claim_idx" ON "guide_delivery" ("id");',
     ],
     ["drop", 'DROP\n INDEX "guide_delivery_thread_review_idx";'],
+    [
+      "renamed full lookalike",
+      'CREATE INDEX "renamed_due_lookup" ON "guide_delivery" ("next_attempt_at", "created_at", "id");',
+    ],
   ])("detects a protected %s statement", (_label, sql) => {
     expect(findProtectedWorkerIndexDrift(sql)).toHaveLength(1);
+  });
+
+  it("permits a renamed partial index with a protected queue key shape", () => {
+    const sql = `
+      CREATE INDEX "renamed_due_lookup"
+        ON "guide_delivery" ("next_attempt_at", "created_at", "id")
+        WHERE "claim_token" IS NULL;
+    `;
+
+    expect(findProtectedWorkerIndexDrift(sql)).toEqual([]);
+  });
+});
+
+describe("guide delivery due-index predicate guard", () => {
+  const exact = `
+      (("claim_token" IS NULL)
+        AND (("status" = 'planned'::guide_delivery_status)
+          OR (("status" = 'failed'::guide_delivery_status)
+            AND ("next_attempt_at" IS NOT NULL))))
+  `;
+
+  it("accepts the exact normalized worker predicate", () => {
+    expect(matchesExpectedDueIndexPredicate(exact)).toBe(true);
+  });
+
+  it.each([
+    ["an extra clause", `(${exact} AND "created_at" <= CURRENT_TIMESTAMP)`],
+    [
+      "altered Boolean grouping",
+      `
+      (("claim_token" IS NULL)
+        AND ((("status" = 'planned'::guide_delivery_status)
+          OR ("status" = 'failed'::guide_delivery_status))
+          AND ("next_attempt_at" IS NOT NULL)))
+      `,
+    ],
+  ])("rejects %s", (_label, predicate) => {
+    expect(matchesExpectedDueIndexPredicate(predicate)).toBe(false);
   });
 });
 
@@ -355,9 +463,7 @@ describeWithDatabase("guide delivery ledger migration", () => {
     });
     expect(
       normalizeCatalogExpression(byName.get("guide_delivery_due_idx")?.predicate ?? null),
-    ).toMatch(
-      /claim_token is null.*status = 'planned'.*status = 'failed'.*next_attempt_at is not null/,
-    );
+    ).toBe(EXPECTED_DUE_INDEX_PREDICATE);
     expect(byName.get("guide_delivery_expired_claim_idx")).toMatchObject({
       included_columns: [],
       is_unique: false,
@@ -380,6 +486,7 @@ describeWithDatabase("guide delivery ledger migration", () => {
     expect(
       normalizeCatalogExpression(byName.get("guide_delivery_thread_review_idx")?.predicate ?? null),
     ).toBe("(status = 'needs_review')");
+    expect(findFullWorkerIndexLookalikes(indexes)).toEqual([]);
   });
 
   it("enforces the named delivery and unit check semantics", async () => {
