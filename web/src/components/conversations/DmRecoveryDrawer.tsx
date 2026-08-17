@@ -274,8 +274,8 @@ export function DmRecoveryDrawer({
         >
           <p className="text-sm font-medium">Cancel this reminder?</p>
           <p className="mt-1 text-xs text-muted-foreground">
-            This will prevent a future public comment on their post. It cannot remove a comment that
-            has already been posted.
+            This prevents a future public-comment attempt. It cannot remove a comment that Instagram
+            already accepted.
           </p>
           <div className="mt-3 flex gap-2">
             <button

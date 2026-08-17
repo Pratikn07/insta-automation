@@ -207,8 +207,8 @@ describe("DmRecoveryDrawer", () => {
       await user.click(await screen.findByRole("button", { name: "Cancel reminder" }));
 
       const dialog = await screen.findByRole("alertdialog");
-      expect(dialog).toHaveTextContent(/prevent/i);
-      expect(dialog).toHaveTextContent(/cannot remove a comment that has already been posted/i);
+      expect(dialog).toHaveTextContent(/prevents a future public-comment attempt/i);
+      expect(dialog).toHaveTextContent(/cannot remove a comment that Instagram already accepted/i);
       expect(cancel).not.toHaveBeenCalled();
     });
 

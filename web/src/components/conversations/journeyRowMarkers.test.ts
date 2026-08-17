@@ -66,7 +66,7 @@ describe("journeyRowMarkers", () => {
     const markers = journeyRowMarkers(
       convo({ recovery: recovery({ status: "cancelled", sentAt: "2026-08-06T11:00:00.000Z" }) }),
     );
-    expect(markers.recovery).toEqual({ label: "Reminder sent", pending: false });
+    expect(markers.recovery).toEqual({ label: "Sent publicly", pending: false });
   });
 
   // The product's central claim: Meta exposes no unread signal, so no surface

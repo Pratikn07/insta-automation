@@ -8,6 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const recoveryList = vi.fn();
 const recoveryCounts = vi.fn();
 const recoveryMetrics = vi.fn();
+const settingsVerifications = vi.fn();
+const activateSettingsVerification = vi.fn();
 const api = vi.fn();
 
 vi.mock("../lib/api", () => ({
@@ -19,6 +21,8 @@ vi.mock("../lib/api", () => ({
     detail: vi.fn(),
     cancel: vi.fn(),
     markReviewed: vi.fn(),
+    settingsVerifications: () => settingsVerifications(),
+    activateSettingsVerification: (id: string) => activateSettingsVerification(id),
   },
 }));
 
@@ -54,6 +58,8 @@ beforeEach(() => {
   recoveryMetrics.mockReset().mockResolvedValue({
     health: { circuitOpen: false, reason: null, dueCount: 0 },
   });
+  settingsVerifications.mockReset().mockResolvedValue({ records: [] });
+  activateSettingsVerification.mockReset().mockResolvedValue(undefined);
 });
 
 describe("DM recovery page", () => {
@@ -63,9 +69,9 @@ describe("DM recovery page", () => {
   it("shows the recovery views on arrival, no lens click needed", async () => {
     renderPage();
 
-    expect(await screen.findByRole("button", { name: /Ready/ })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /Due/ })).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: /Attention/ })).toBeInTheDocument();
-    // The summary describes the tab in view, and Ready is the default. The
+    // The summary describes the tab in view, and Due is the default. The
     // grand total is still one click away under the All tab.
     expect(await screen.findByText("2 people · 3 journeys")).toBeInTheDocument();
   });
@@ -75,17 +81,20 @@ describe("DM recovery page", () => {
     expect(screen.getByRole("heading", { name: "DM recovery" })).toBeInTheDocument();
   });
 
-  // The page exists to keep a sending control off a row of reading controls. It
-  // should say so where someone deciding whether to release a reminder will read
-  // it, not only in the source.
-  it("states that nothing sends on its own", () => {
+  // The page exists to keep a public-posting system off a row of reading
+  // controls. Its operating model must be explicit before someone relies on it.
+  it("states that the reminder is an automatic public comment", () => {
     renderPage();
-    expect(screen.getByText(/Nothing here\s+sends on its own/)).toBeInTheDocument();
+    const explanation = screen.getByText(/Tiny Soho may automatically post one public reminder/i);
+    expect(explanation).toHaveTextContent(/original Instagram comment/i);
+    expect(explanation).toHaveTextContent(/cancel before the worker claims it/i);
+    expect(explanation).not.toHaveTextContent(/nothing here sends on its own/i);
+    expect(explanation).not.toHaveTextContent(/released/i);
   });
 
   it("does not fetch the conversation journeys it no longer shares a page with", async () => {
     renderPage();
-    await screen.findByRole("button", { name: /Ready/ });
+    await screen.findByRole("button", { name: /Due/ });
 
     const paths = api.mock.calls.map((c) => String(c[0]));
     expect(paths.some((p) => p.startsWith("/conversations"))).toBe(false);

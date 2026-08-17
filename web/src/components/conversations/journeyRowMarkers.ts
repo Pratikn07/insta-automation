@@ -33,7 +33,7 @@ export function journeyRowMarkers(c: Conversation): JourneyRowMarkers {
   // Sent is a fact about the past; everything else is a statement about what is
   // still going to happen, and the row has to be honest about which it is.
   if (c.recovery.sentAt !== null) {
-    return { note, recovery: { label: "Reminder sent", pending: false } };
+    return { note, recovery: { label: "Sent publicly", pending: false } };
   }
 
   switch (c.recovery.status) {

@@ -23,8 +23,8 @@ export const CIRCUIT_PAUSED_MESSAGE =
 
 const VIEWS: { value: RecoveryView; label: string }[] = [
   { value: "scheduled", label: "Scheduled" },
-  { value: "ready", label: "Ready" },
-  { value: "sent", label: "Sent" },
+  { value: "ready", label: "Due" },
+  { value: "sent", label: "Sent publicly" },
   { value: "suppressed", label: "Suppressed" },
   { value: "control", label: "Control" },
   { value: "attention", label: "Attention" },

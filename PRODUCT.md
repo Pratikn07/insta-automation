@@ -311,8 +311,8 @@ Home sits above the groups.
   lines of its own machinery with holdout cohorts and experiment measurement.
   That is a distinct job, not a filter on the inbox. The sharper reason emerged
   while building it: every other control in that filter row reads what already
-  happened, and this one releases outbound DMs to real people. A sending control
-  does not belong in a row of reading controls. Asserted in
+  happened, and this one can automatically publish a reminder on the original
+  Instagram comment. A publishing control does not belong in a row of reading controls. Asserted in
   `Conversations.test.tsx` so the pill cannot come back.
 - **DM recovery and historical recovery stay separate destinations, grouped but
   never tabbed.** `HistoricalRecovery.tsx` states the reason and it is a safety

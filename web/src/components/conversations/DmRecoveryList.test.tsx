@@ -145,7 +145,14 @@ beforeEach(() => {
 describe("DmRecoveryList", () => {
   it("shows a view tab per state with its record count", async () => {
     renderList();
-    for (const label of ["Scheduled", "Ready", "Sent", "Suppressed", "Control", "Attention"]) {
+    for (const label of [
+      "Scheduled",
+      "Due",
+      "Sent publicly",
+      "Suppressed",
+      "Control",
+      "Attention",
+    ]) {
       expect(await screen.findByRole("button", { name: new RegExp(label) })).toBeInTheDocument();
     }
   });
@@ -358,7 +365,7 @@ describe("DmRecoveryList", () => {
     expect(
       await screen.findByRole("button", { name: "Scheduled: 6 people, 6 journeys" }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Ready: 2 people, 3 journeys" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Due: 2 people, 3 journeys" })).toBeInTheDocument();
   });
 
   describe("filters", () => {

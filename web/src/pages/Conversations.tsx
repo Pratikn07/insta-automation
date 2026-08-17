@@ -46,7 +46,7 @@ type HistoryMode = "canonical" | "raw";
 // DM thread answer different questions.
 //
 // "recovery" was a third pill here and is now its own route. Every lens below is
-// a way of reading what already happened; recovery releases new outbound DMs, and
+// a way of reading what already happened; recovery can publish a public reminder, and
 // a sending control does not belong in a row of reading controls. See DmRecovery.tsx.
 //
 // "people" arrived the other way, from /users, and the same line explains why: it

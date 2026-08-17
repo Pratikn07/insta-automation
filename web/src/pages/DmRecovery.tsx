@@ -9,9 +9,9 @@ import { Drawer } from "@/components/ui/drawer";
  *
  * It used to be a pill in the Conversations filter row, sitting between "DMs"
  * and the automation-journey filters. Everything either side of it is a way of
- * looking at what already happened. This one schedules and releases outbound
- * reminders to real people who never replied — the only control in that row
- * that sends anything.
+ * looking at what already happened. This one monitors eligibility for an
+ * automatic public reminder on the original Instagram comment — the only
+ * control in that row that can publish anything.
  *
  * Peer tabs are the specific surface on which that goes wrong: the row is
  * learned by position within a week, and by the second week the click is
@@ -34,9 +34,9 @@ export function DmRecovery() {
       <div>
         <h2 className="text-xl font-semibold tracking-tight">DM recovery</h2>
         <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-          Reminders to people who asked for a guide and never replied DONE. Nothing here
-          sends on its own — a reminder waits in Scheduled, becomes Ready when its delay
-          has passed, and goes out only when released.
+          If no read or engagement is confirmed after the waiting period, Tiny Soho may
+          automatically post one public reminder on the original Instagram comment. You can
+          cancel before the worker claims it.
         </p>
       </div>
 

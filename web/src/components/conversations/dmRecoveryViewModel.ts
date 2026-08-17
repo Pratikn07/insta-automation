@@ -76,12 +76,12 @@ function sentView(row: RecoveryReminderRow): { label: string; description: strin
 
   return late
     ? {
-        label: "Reminder sent late after worker delay",
+        label: "Sent publicly—late after worker delay",
         description:
           "The public reminder was posted, but well after it became due. Check worker health — a late reminder is a different experience from a timely one.",
       }
     : {
-        label: "Reminder sent",
+        label: "Sent publicly",
         description: "The public reminder was posted on the original comment.",
       };
 }
@@ -106,7 +106,7 @@ export function recoveryStatusView(row: RecoveryReminderRow, now: Date): Recover
     case "sending":
       return {
         ...base,
-        label: "Posting reminder",
+        label: "Sending",
         description: "A worker holds this record and is posting the public reminder now.",
         tone: "pending",
       };
@@ -149,16 +149,16 @@ export function recoveryStatusView(row: RecoveryReminderRow, now: Date): Recover
     case "send_failed":
       return {
         ...base,
-        label: "Couldn’t post public reminder",
+        label: "Failed—public reminder not posted",
         description: "Instagram rejected the public reply. Nothing was posted.",
         tone: "danger",
       };
     case "send_uncertain":
       return {
         ...base,
-        label: "Send outcome uncertain—check Instagram",
+        label: "Outcome uncertain—check Instagram",
         description:
-          "The reply may or may not have posted, so it is never retried automatically. Check the comment on Instagram before acting.",
+          "The public reply may or may not have posted, so it is never retried automatically. Check the original comment on Instagram before acting.",
         tone: "danger",
       };
     case "waiting":
@@ -172,7 +172,7 @@ export function recoveryStatusView(row: RecoveryReminderRow, now: Date): Recover
           description:
             "Instagram rejected the DM because of the recipient's message-request settings. A public reminder is eligible immediately.",
           tone: "warning",
-          actionState: "Reminder ready",
+          actionState: "Due",
         };
       }
 
@@ -184,7 +184,7 @@ export function recoveryStatusView(row: RecoveryReminderRow, now: Date): Recover
             description: NO_CONFIRMED_READ_TOOLTIP,
             tone: "warning",
             // The evidence and what happens next are separate statements.
-            actionState: "Reminder ready",
+            actionState: "Due",
           }
         : {
             ...base,

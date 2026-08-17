@@ -69,7 +69,7 @@ describe("Conversations lenses", () => {
   });
 
   // The safety boundary, asserted rather than assumed. Every control in this row
-  // reads what already happened; DM recovery releases new outbound DMs to real
+  // reads what already happened; DM recovery can publish a public reminder to real
   // people and now lives on its own route. A pill that reappears here would put a
   // sending control one habitual click from a reading one.
   it("has no DM recovery lens and never fetches recovery", () => {
