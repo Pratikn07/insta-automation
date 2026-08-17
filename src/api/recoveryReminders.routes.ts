@@ -12,6 +12,19 @@ import {
   retireSettingsBlockedVerification,
 } from "../services/settingsBlockedVerificationAdminService.js";
 import { DM_RECOVERY_TIMING_EXPERIMENT_VERSION } from "../services/dmRecoveryTimingExperiment.js";
+import {
+  resolveRecoveryReportingWindow,
+  type RecoveryReportingWindow,
+} from "../services/dmRecoveryReportingWindow.js";
+import { isDayKey, toAnalyticsDayKey } from "../services/analyticsDay.js";
+import {
+  calculateRecoveryTimingMetrics,
+  type TimingMetricRow,
+} from "../services/dmRecoveryTimingMetrics.js";
+import {
+  decodeRecoveryCursor,
+  encodeRecoveryCursor,
+} from "./recoveryRemindersCursor.js";
 
 /**
  * Read models and owner actions for the DM recovery lens.
@@ -69,6 +82,8 @@ const ROW_SELECT = {
   triggerKind: true,
   status: true,
   cohort: true,
+  experimentVersionSnapshot: true,
+  timingArm: true,
   acceptedAt: true,
   eligibleAt: true,
   seenAt: true,
@@ -103,19 +118,65 @@ const ROW_SELECT = {
 
 type SelectedRow = Prisma.DmRecoveryReminderGetPayload<{ select: typeof ROW_SELECT }>;
 
-const listQuerySchema = z.object({
-  view: z.enum(RECOVERY_VIEWS).default("all"),
-  keywordId: z.string().uuid().optional(),
-  cohort: z.enum(["treatment", "control", "not_applicable"]).optional(),
-  limit: z.coerce.number().int().min(1).max(100).default(50),
-  cursor: z.string().uuid().optional(),
-  // The `scheduled` and `ready` views are split by an `eligibleAt` comparison
-  // against now, so a fresh `now` per request moves the boundary mid-pagination
-  // and a row can land on neither page: page 1 sees it as `scheduled`, and by
-  // page 2 it has become `ready` and sorts above the cursor. The client echoes
-  // this back so every page of one run shares page 1's boundary.
-  asOf: z.coerce.date().optional(),
-});
+const dayQuerySchema = z.string().refine(isDayKey);
+const timingArmQuerySchema = z.enum(["two_hour", "six_hour", "no_reminder"]);
+
+function requireCompleteDateScope(
+  value: { from?: string; to?: string; asOf?: Date; timingArm?: string },
+  ctx: z.RefinementCtx,
+): void {
+  const hasFrom = value.from !== undefined;
+  const hasTo = value.to !== undefined;
+  if (hasFrom !== hasTo) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "from_and_to_required" });
+  }
+  if ((hasFrom || value.timingArm !== undefined) && !value.asOf) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "as_of_required" });
+  }
+  if (value.timingArm !== undefined && (!hasFrom || !hasTo)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "range_required" });
+  }
+}
+
+const listQuerySchema = z
+  .object({
+    view: z.enum(RECOVERY_VIEWS).default("all"),
+    keywordId: z.string().uuid().optional(),
+    cohort: z.enum(["treatment", "control", "not_applicable"]).optional(),
+    timingArm: timingArmQuerySchema.optional(),
+    from: dayQuerySchema.optional(),
+    to: dayQuerySchema.optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(50),
+    cursor: z.string().min(1).max(1_024).optional(),
+    // The `scheduled` and `ready` views are split by an `eligibleAt` comparison
+    // against now, so a fresh `now` per request moves the boundary mid-pagination
+    // and a row can land on neither page: page 1 sees it as `scheduled`, and by
+    // page 2 it has become `ready` and sorts above the cursor. The client echoes
+    // this back so every page of one run shares page 1's boundary.
+    asOf: z.coerce.date().optional(),
+  })
+  .superRefine(requireCompleteDateScope);
+
+const countQuerySchema = z
+  .object({
+    timingArm: timingArmQuerySchema.optional(),
+    from: dayQuerySchema.optional(),
+    to: dayQuerySchema.optional(),
+    asOf: z.coerce.date().optional(),
+  })
+  .superRefine(requireCompleteDateScope);
+
+const metricsQuerySchema = z
+  .object({
+    from: dayQuerySchema.optional(),
+    to: dayQuerySchema.optional(),
+    asOf: z.coerce.date().optional(),
+  })
+  .superRefine((value, ctx) => {
+    if ((value.from === undefined) !== (value.to === undefined)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "from_and_to_required" });
+    }
+  });
 
 function iso(value: Date | null): string | null {
   return value ? value.toISOString() : null;
@@ -204,6 +265,16 @@ function serializeRow(
     triggerKind: row.triggerKind,
     status: row.status,
     cohort: row.cohort,
+    experimentVersion: row.experimentVersionSnapshot,
+    timingArm: row.timingArm,
+    timingLabel:
+      row.timingArm === "two_hour"
+        ? "2-hour reminder"
+        : row.timingArm === "six_hour"
+          ? "6-hour reminder"
+          : row.timingArm === "no_reminder"
+            ? "No reminder"
+            : null,
     acceptedAt: iso(row.acceptedAt),
     eligibleAt: row.eligibleAt.toISOString(),
     seenAt: iso(row.seenAt),
@@ -321,11 +392,86 @@ recoveryRemindersRouter.post("/settings-verifications/:id/retire", async (req, r
   }
 });
 
+async function resolveV2ReportingScope(input: {
+  from?: string;
+  to?: string;
+  asOf?: Date;
+}): Promise<RecoveryReportingWindow> {
+  const coverageResult = await prisma.dmRecoveryReminder.aggregate({
+    where: {
+      experimentVersionSnapshot: DM_RECOVERY_TIMING_EXPERIMENT_VERSION,
+      acceptedAt: { not: null },
+    },
+    _min: { acceptedAt: true },
+    _max: { acceptedAt: true },
+  });
+  const minimum = coverageResult._min.acceptedAt;
+  const maximum = coverageResult._max.acceptedAt;
+  const coverage =
+    minimum && maximum
+      ? {
+          from: toAnalyticsDayKey(minimum),
+          to: toAnalyticsDayKey(maximum),
+        }
+      : null;
+  const now = new Date();
+
+  return resolveRecoveryReportingWindow({
+    coverage,
+    requested:
+      input.from && input.to ? { from: input.from, to: input.to } : null,
+    asOf: input.asOf ?? now,
+    now,
+  });
+}
+
+function v2ScopedWhere(
+  window: RecoveryReportingWindow,
+  timingArm?: "two_hour" | "six_hour" | "no_reminder",
+): Prisma.DmRecoveryReminderWhereInput {
+  if (!window.acceptedAt) return { id: { in: [] } };
+  return {
+    experimentVersionSnapshot: DM_RECOVERY_TIMING_EXPERIMENT_VERSION,
+    acceptedAt: window.acceptedAt,
+    ...(timingArm ? { timingArm } : {}),
+  };
+}
+
+function reportingError(
+  error: unknown,
+  res: import("express").Response,
+): void {
+  const reason = error instanceof Error ? error.message : "invalid_query";
+  const allowed = new Set([
+    "invalid_date_range",
+    "range_outside_coverage",
+    "future_as_of",
+    "invalid_as_of",
+    "invalid_cursor",
+    "invalid_cursor_scope",
+  ]);
+  res.status(400).json({ error: allowed.has(reason) ? reason : "invalid_query" });
+}
+
 // Both literals are registered before /:id, or Express captures them as ids.
 recoveryRemindersRouter.get("/metrics", metricsHandler);
 
-recoveryRemindersRouter.get("/counts", async (_req, res) => {
-  const now = new Date();
+recoveryRemindersRouter.get("/counts", async (req, res) => {
+  const parsed = countQuerySchema.safeParse(req.query);
+  if (!parsed.success) return void res.status(400).json({ error: "invalid_query" });
+
+  let scope: RecoveryReportingWindow | null = null;
+  try {
+    if (parsed.data.from && parsed.data.to) {
+      scope = await resolveV2ReportingScope(parsed.data);
+    }
+  } catch (error) {
+    return reportingError(error, res);
+  }
+  const now = scope?.asOf ?? parsed.data.asOf ?? new Date();
+  const scopedWhere = scope
+    ? v2ScopedWhere(scope, parsed.data.timingArm)
+    : {};
 
   const entries = await Promise.all(
     RECOVERY_VIEWS.map(async (view) => {
@@ -333,7 +479,7 @@ recoveryRemindersRouter.get("/counts", async (_req, res) => {
       // sum, and the number of groups is the distinct-people count.
       const groups = await prisma.dmRecoveryReminder.groupBy({
         by: ["igUserId"],
-        where: viewWhere(view, now),
+        where: { ...viewWhere(view, now), ...scopedWhere },
         _count: { _all: true },
       });
       const records = groups.reduce((total, group) => total + group._count._all, 0);
@@ -348,28 +494,68 @@ recoveryRemindersRouter.get("/", async (req, res) => {
   const parsed = listQuerySchema.safeParse(req.query);
   if (!parsed.success) return res.status(400).json({ error: "invalid_query" });
 
-  const { view, keywordId, cohort, limit, cursor, asOf } = parsed.data;
+  const { view, keywordId, cohort, timingArm, from, to, limit, cursor, asOf } =
+    parsed.data;
+  let scope: RecoveryReportingWindow | null = null;
+  try {
+    if (from && to) scope = await resolveV2ReportingScope({ from, to, asOf });
+  } catch (error) {
+    reportingError(error, res);
+    return;
+  }
   // Page 1 establishes the boundary; later pages reuse the one they are handed.
   // Without this the time-split views silently drop rows mid-pagination.
-  const now = asOf ?? new Date();
+  const now = scope?.asOf ?? asOf ?? new Date();
+  let cursorId: string | undefined;
+  if (cursor) {
+    try {
+      if (scope?.effectiveRange) {
+        cursorId = decodeRecoveryCursor(cursor, {
+          from: scope.effectiveRange.from,
+          to: scope.effectiveRange.to,
+          asOf: now.toISOString(),
+        }).id;
+      } else {
+        const legacyCursor = z.string().uuid().safeParse(cursor);
+        if (!legacyCursor.success) throw new Error("invalid_cursor");
+        cursorId = legacyCursor.data;
+      }
+    } catch (error) {
+      reportingError(error, res);
+      return;
+    }
+  }
+  const scopedWhere = scope ? v2ScopedWhere(scope, timingArm) : {};
 
   const rows = await prisma.dmRecoveryReminder.findMany({
     where: {
       ...viewWhere(view, now),
+      ...scopedWhere,
       ...(keywordId ? { keywordId } : {}),
       ...(cohort ? { cohort } : {}),
     },
     select: ROW_SELECT,
-    orderBy: [{ eligibleAt: "desc" }, { id: "desc" }],
+    orderBy: scope
+      ? [{ acceptedAt: "desc" }, { id: "desc" }]
+      : [{ eligibleAt: "desc" }, { id: "desc" }],
     take: limit + 1,
-    ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+    ...(cursorId ? { cursor: { id: cursorId }, skip: 1 } : {}),
   });
 
   const page = rows.slice(0, limit);
   // Cursor is the LAST row of THIS page, because Prisma's `skip: 1` steps over
   // the cursor row itself. Pointing it at the extra limit+1 row made the next
   // page start after that row, dropping it entirely.
-  const nextCursor = rows.length > limit ? (page[page.length - 1]?.id ?? null) : null;
+  const nextId = rows.length > limit ? (page[page.length - 1]?.id ?? null) : null;
+  const nextCursor =
+    nextId && scope?.effectiveRange
+      ? encodeRecoveryCursor({
+          id: nextId,
+          from: scope.effectiveRange.from,
+          to: scope.effectiveRange.to,
+          asOf: now.toISOString(),
+        })
+      : nextId;
 
   const people = page.length
     ? await getIgUsers(page.map((row) => row.igUserId))
@@ -379,6 +565,7 @@ recoveryRemindersRouter.get("/", async (req, res) => {
     rows: page.map((row) => serializeRow(row, people, now)),
     nextCursor,
     asOf: now.toISOString(),
+    range: scope?.effectiveRange ?? null,
   });
 });
 
@@ -631,6 +818,21 @@ const METRICS_SELECT = {
   conversation: { select: { completedAt: true } },
 } as const;
 
+const TIMING_METRICS_SELECT = {
+  ...METRICS_SELECT,
+  experimentVersionSnapshot: true,
+  timingArm: true,
+  acceptedAt: true,
+  lastAttemptAt: true,
+  suppressedAt: true,
+  conversation: {
+    select: {
+      completedAt: true,
+      canonicalIntent: { select: { completedAt: true } },
+    },
+  },
+} as const;
+
 type MetricsRow = Prisma.DmRecoveryReminderGetPayload<{ select: typeof METRICS_SELECT }>;
 
 function within(from: Date, at: Date | null, windowMs: number): boolean {
@@ -672,7 +874,182 @@ function median(values: number[]): number | null {
   return sorted.length % 2 === 0 ? (sorted[mid - 1]! + sorted[mid]!) / 2 : sorted[mid]!;
 }
 
-async function metricsHandler(_req: import("express").Request, res: import("express").Response) {
+function isTimingArm(value: unknown): value is "two_hour" | "six_hour" | "no_reminder" {
+  return value === "two_hour" || value === "six_hour" || value === "no_reminder";
+}
+
+async function buildTimingExperiment(
+  query: z.infer<typeof metricsQuerySchema>,
+): Promise<Record<string, unknown> | null> {
+  const window = await resolveV2ReportingScope(query);
+  if (window.empty || !window.effectiveRange || !window.acceptedAt) return null;
+
+  const rows = await prisma.dmRecoveryReminder.findMany({
+    where: {
+      experimentVersionSnapshot: DM_RECOVERY_TIMING_EXPERIMENT_VERSION,
+      timingArm: { not: null },
+      triggerKind: "no_confirmed_read",
+      acceptedAt: window.acceptedAt,
+    },
+    select: TIMING_METRICS_SELECT,
+  });
+
+  const participants = [...new Set(rows.map((row) => row.igUserId))];
+  const keywords = [...new Set(rows.map((row) => row.keywordId))];
+  const acceptedTimes = rows
+    .map((row) => row.acceptedAt)
+    .filter((value): value is Date => value !== null)
+    .map((value) => value.getTime());
+  const earliestAccepted =
+    acceptedTimes.length === 0 ? null : new Date(Math.min(...acceptedTimes));
+  const latestOutcome =
+    acceptedTimes.length === 0
+      ? null
+      : new Date(Math.max(...acceptedTimes) + 48 * 60 * 60 * 1_000);
+
+  // Query the person and keyword sets together for efficiency, then enforce the
+  // exact pair in memory. A completion for another guide must never count.
+  const siblingCompletions =
+    participants.length && keywords.length && earliestAccepted && latestOutcome
+      ? await prisma.conversation.findMany({
+          where: {
+            igUserId: { in: participants },
+            keywordId: { in: keywords },
+            completedAt: { gte: earliestAccepted, lte: latestOutcome },
+          },
+          select: { igUserId: true, keywordId: true, completedAt: true },
+        })
+      : [];
+
+  const sentDispatches = rows.length
+    ? await prisma.publicRecoveryDispatch.findMany({
+        where: {
+          sourceKind: "prospective",
+          sourceId: { in: rows.map((row) => row.id) },
+          state: "sent",
+        },
+        select: { sourceId: true },
+      })
+    : [];
+  const sentDispatchCounts = new Map<string, number>();
+  for (const dispatch of sentDispatches) {
+    sentDispatchCounts.set(
+      dispatch.sourceId,
+      (sentDispatchCounts.get(dispatch.sourceId) ?? 0) + 1,
+    );
+  }
+
+  const timingRows: TimingMetricRow[] = [];
+  for (const row of rows) {
+    if (!row.acceptedAt || !isTimingArm(row.timingArm)) continue;
+    const completionCandidates = siblingCompletions
+      .filter(
+        (completion) =>
+          completion.igUserId === row.igUserId &&
+          completion.keywordId === row.keywordId &&
+          completion.completedAt !== null,
+      )
+      .map((completion) => ({
+        keywordId: completion.keywordId,
+        completedAt: completion.completedAt!,
+      }));
+    if (row.conversation.completedAt) {
+      completionCandidates.push({
+        keywordId: row.keywordId,
+        completedAt: row.conversation.completedAt,
+      });
+    }
+    if (row.conversation.canonicalIntent?.completedAt) {
+      completionCandidates.push({
+        keywordId: row.keywordId,
+        completedAt: row.conversation.canonicalIntent.completedAt,
+      });
+    }
+
+    timingRows.push({
+      id: row.id,
+      igUserId: row.igUserId,
+      keywordId: row.keywordId,
+      timingArm: row.timingArm,
+      acceptedAt: row.acceptedAt,
+      eligibleAt: row.eligibleAt,
+      status: row.status,
+      attempts: row.attempts,
+      lastAttemptAt: row.lastAttemptAt,
+      sentAt: row.sentAt,
+      repliedAt: row.repliedAt,
+      seenAt: row.seenAt,
+      seenReceivedAt: row.seenReceivedAt,
+      engagedAt: row.engagedAt,
+      engagedReceivedAt: row.engagedReceivedAt,
+      suppressionReason: row.suppressionReason,
+      suppressedAt: row.suppressedAt,
+      completionCandidates,
+      confirmedDuplicateSend: (sentDispatchCounts.get(row.id) ?? 0) > 1,
+    });
+  }
+
+  const configuredEnd = env.DM_RECOVERY_EXPERIMENT_END_AT
+    ? new Date(env.DM_RECOVERY_EXPERIMENT_END_AT)
+    : null;
+  const metrics = calculateRecoveryTimingMetrics({
+    rows: timingRows,
+    asOf: window.asOf,
+    analysis: {
+      isFullExperimentRange: window.isFullCoverage,
+      enrollmentClosedAt:
+        configuredEnd && window.asOf >= configuredEnd ? configuredEnd : null,
+    },
+  });
+
+  return {
+    version: DM_RECOVERY_TIMING_EXPERIMENT_VERSION,
+    reporting: {
+      asOf: window.asOf.toISOString(),
+      coverage: window.coverage,
+      range: window.effectiveRange,
+      resultsCompleteThrough: window.resultsCompleteThrough,
+      stillCollectingFollowers:
+        metrics.arms.two_hour.immature +
+        metrics.arms.six_hour.immature +
+        metrics.arms.no_reminder.immature,
+      fullExperimentRange: window.isFullCoverage,
+    },
+    arms: {
+      twoHour: metrics.arms.two_hour,
+      sixHour: metrics.arms.six_hour,
+      noReminder: metrics.arms.no_reminder,
+    },
+    timingComparison: metrics.comparison,
+    treatmentControlComparisons: metrics.treatmentControlComparisons,
+    allocation: {
+      indexFollowers: metrics.indexFollowers,
+      assignmentDriftFollowers: metrics.assignmentDriftFollowers,
+    },
+    safety: {
+      ...metrics.safety,
+      duplicateSafetyEvent: metrics.duplicateSafetyEvent,
+    },
+    decision: {
+      state: metrics.decision,
+      automaticRollout: false,
+      conservativeDefault:
+        metrics.decision === "inconclusive" ? "six_hour" : null,
+    },
+  };
+}
+
+async function metricsHandler(req: import("express").Request, res: import("express").Response) {
+  const parsedQuery = metricsQuerySchema.safeParse(req.query);
+  if (!parsedQuery.success) {
+    return void res.status(400).json({ error: "invalid_query" });
+  }
+  let timingExperiment: Record<string, unknown> | null;
+  try {
+    timingExperiment = await buildTimingExperiment(parsedQuery.data);
+  } catch (error) {
+    return reportingError(error, res);
+  }
   const startAt = env.DM_RECOVERY_EXPERIMENT_START_AT ?? null;
   const endAt = env.DM_RECOVERY_EXPERIMENT_END_AT ?? null;
 
@@ -859,6 +1236,7 @@ async function metricsHandler(_req: import("express").Request, res: import("expr
     ]);
 
   res.json({
+    timingExperiment,
     experiment: {
       version: env.DM_RECOVERY_EXPERIMENT_VERSION,
       startAt,
