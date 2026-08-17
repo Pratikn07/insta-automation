@@ -1,4 +1,5 @@
 import { supabase } from "./supabase";
+import type { DayRange } from "./dateRange";
 import type {
   RecoveryCounts,
   RecoveryMetrics,
@@ -83,11 +84,18 @@ export const recoveryApi = {
   list: (query: string) =>
     // `asOf` is the eligibleAt boundary this page was read at. Echo it back with
     // the cursor so a paginated run stays on one boundary.
-    api<{ rows: RecoveryReminderRow[]; nextCursor: string | null; asOf: string }>(
+    api<{
+      rows: RecoveryReminderRow[];
+      nextCursor: string | null;
+      asOf: string;
+      range: DayRange | null;
+    }>(
       `/recovery-reminders${query ? `?${query}` : ""}`,
     ),
-  counts: () => api<RecoveryCounts>("/recovery-reminders/counts"),
-  metrics: () => api<RecoveryMetrics>("/recovery-reminders/metrics"),
+  counts: (query = "") =>
+    api<RecoveryCounts>(`/recovery-reminders/counts${query ? `?${query}` : ""}`),
+  metrics: (query = "") =>
+    api<RecoveryMetrics>(`/recovery-reminders/metrics${query ? `?${query}` : ""}`),
   settingsVerifications: () =>
     api<{ records: SettingsBlockedVerificationRecord[] }>(
       "/recovery-reminders/settings-verifications",
