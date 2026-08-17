@@ -49,7 +49,6 @@ const groups: { heading: string; items: { to: string; label: string }[] }[] = [
     heading: "Audience",
     items: [
       { to: "/conversations", label: "Conversations" },
-      { to: "/users", label: "Users" },
       // The two recovery destinations, adjacent and last. Both keep the qualifier:
       // they are different mechanisms with very different blast radius, and one
       // unqualified "Recovery" beside the other would invite the wrong click.

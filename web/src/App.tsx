@@ -11,7 +11,6 @@ import { Conversations } from "@/pages/Conversations";
 import { DmRecovery } from "@/pages/DmRecovery";
 import { Assistant } from "@/pages/Assistant";
 import { Activity } from "@/pages/Activity";
-import { Users } from "@/pages/Users";
 import { Insights } from "@/pages/Insights";
 import { Funnels } from "@/pages/Funnels";
 import { HistoricalRecovery } from "@/pages/HistoricalRecovery";
@@ -48,7 +47,10 @@ export default function App() {
                 would be the wrong thing to guess at. */}
             <Route path="dm-recovery" element={<DmRecovery />} />
             <Route path="assistant" element={<Assistant />} />
-            <Route path="users" element={<Users />} />
+            {/* /users folded into Conversations as the People lens — same dataset
+                indexed by person, same lineage drawer. The URL keeps working
+                rather than 404ing a bookmark. */}
+            <Route path="users" element={<Navigate to="/conversations" replace />} />
             <Route path="insights" element={<Insights />} />
             <Route path="funnels" element={<Funnels />} />
             <Route path="activity" element={<Activity />} />

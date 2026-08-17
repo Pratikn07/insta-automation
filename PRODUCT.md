@@ -267,10 +267,16 @@ Home sits above the groups.
   different units, reels versus conversation cohorts. Home is where their
   evidence is already combined into one interpretation; that is the right place
   for the join, not a merged page.
-- **People becomes a view inside Conversations.** It is an index over the same
-  data: `users.routes.ts` sources its directory from `Conversation.igUserId`, the
-  page is ~109 lines of list and search, and it opens the same `UserLineage`
-  drawer Conversations opens. `/users` stays as a redirect.
+- **People becomes a view inside Conversations.** *Built — the People lens;
+  `/users` redirects.* It is an index over the same data: `users.routes.ts`
+  sources its directory from `Conversation.igUserId`, the page was ~109 lines of
+  list and search, and it opens the same `UserLineage` drawer Conversations
+  opens.
+- **Why People folds in and DM recovery folds out, in the same change.** The test
+  is not how related the data is — both are the same conversations. It is what
+  the control does. Every lens in that filter row reads what already happened;
+  People reads, recovery sends. Recorded because the two moves look contradictory
+  and the next person to reorganise this row will need the rule, not the outcome.
 - **DM recovery leaves Conversations and becomes its own destination.** *Built —
   `/dm-recovery`.* It was a fourth lens inside an 892-line page, carrying ~679
   lines of its own machinery with holdout cohorts and experiment measurement.
@@ -300,11 +306,15 @@ Home sits above the groups.
   (The `cmdk` dependency is not evidence either way: it is used for the country
   picker and nothing else.)
 
-**Eleven destinations is the honest count, and it does not shrink.** Removing
-Users and adding DM recovery is net zero. The gain is that every destination is
-now one distinct job rather than two overlapping ones — coherence, not brevity.
-A count reduction is only worth taking when the receiving surface genuinely
-absorbs the destination it removes.
+**Eleven destinations is the honest count, and it did not shrink.** Removing
+Users and adding DM recovery was net zero, as predicted. The gain is that every
+destination is now one distinct job rather than two overlapping ones —
+coherence, not brevity. A count reduction is only worth taking when the receiving
+surface genuinely absorbs the destination it removes.
+
+*Audience group built 2026-08-16: `/dm-recovery` added, `/users` folded into the
+Conversations People lens and left as a redirect. Measure, Publish and System
+were unchanged by that work.*
 
 ### Terminology (use these words; they are the product's vocabulary)
 

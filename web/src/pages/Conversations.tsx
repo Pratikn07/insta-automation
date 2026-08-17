@@ -32,6 +32,7 @@ import { EmptyState, LoadFailed } from "@/components/EmptyState";
 import { UserLineage } from "@/components/UserLineage";
 import { IncomingBubble, OutgoingBubble, StepBubble } from "@/components/ChatBubbles";
 import { DmThreadList } from "@/components/conversations/DmThreadList";
+import { PeopleDirectory } from "@/components/conversations/PeopleDirectory";
 import { DmThreadDrawer } from "@/components/conversations/DmThreadDrawer";
 import { cn, displayUser, formatAbsolute } from "@/lib/utils";
 import { prettyKind } from "@/lib/eventLog";
@@ -47,7 +48,11 @@ type HistoryMode = "canonical" | "raw";
 // "recovery" was a third pill here and is now its own route. Every lens below is
 // a way of reading what already happened; recovery releases new outbound DMs, and
 // a sending control does not belong in a row of reading controls. See DmRecovery.tsx.
-type Lens = "needs_reply" | "dms" | "journeys";
+//
+// "people" arrived the other way, from /users, and the same line explains why: it
+// is this dataset indexed by person rather than by event, and it reads. Related
+// data is not the test — what the control does is.
+type Lens = "needs_reply" | "dms" | "people" | "journeys";
 
 // Plain-English tab labels. "DONE" is internal jargon (the word the user types) —
 // a marketer tracks outcomes: who's waiting, who got it, and who we never got a
@@ -103,10 +108,13 @@ export function Conversations() {
     enabled: lens === "needs_reply" || lens === "dms",
   });
 
+  // Only the two DM lenses render a thread drawer, so only they need to know
+  // whether sending is enabled. This said `lens !== "journeys"` when those were
+  // the only two, and adding People would have quietly widened it.
   const capabilitiesQ = useQuery<AiCapabilities>({
     queryKey: ["ai-capabilities"],
     queryFn: () => api<AiCapabilities>("/ai/capabilities"),
-    enabled: lens !== "journeys",
+    enabled: lens === "needs_reply" || lens === "dms",
   });
 
   const conversationsQ = useInfiniteQuery({
@@ -189,6 +197,7 @@ export function Conversations() {
           [
             { value: "needs_reply", label: "Needs reply" },
             { value: "dms", label: "DMs" },
+            { value: "people", label: "People" },
           ] as const
         ).map((l) => (
           <button
@@ -247,7 +256,9 @@ export function Conversations() {
         </div>
       )}
 
-      {lens !== "journeys" ? (
+      {lens === "people" ? (
+        <PeopleDirectory onSelect={setLineageUser} />
+      ) : lens !== "journeys" ? (
         <DmThreadList
           rows={dmThreadsQ.data?.items ?? []}
           isLoading={dmThreadsQ.isLoading}

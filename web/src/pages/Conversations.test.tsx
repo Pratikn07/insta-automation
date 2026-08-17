@@ -75,13 +75,33 @@ describe("Conversations lenses", () => {
   it("has no DM recovery lens and never fetches recovery", () => {
     renderPage();
 
-    for (const label of ["Needs reply", "DMs"]) {
+    for (const label of ["Needs reply", "DMs", "People"]) {
       expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
     }
     expect(screen.queryByRole("button", { name: /recovery/i })).not.toBeInTheDocument();
     expect(recoveryList).not.toHaveBeenCalled();
     expect(recoveryCounts).not.toHaveBeenCalled();
   });
+
+  // People arrived from /users. It reads the same conversations indexed by
+  // person, so unlike recovery it belongs in this row.
+  it("loads the directory on the People lens", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole("button", { name: "People" }));
+
+    await waitFor(() =>
+      expect(api.mock.calls.some((c) => String(c[0]).startsWith("/users"))).toBe(true),
+    );
+    expect(screen.getByPlaceholderText("Search by @username or name…")).toBeInTheDocument();
+  });
+
+  // Not tested: that /ai/capabilities is disabled on the People lens. The page
+  // opens on Needs reply, which fetches it legitimately, and React Query serves
+  // the cached result thereafter — so the assertion passes identically with the
+  // guard right or wrong. The narrowed `enabled` still belongs in the source; a
+  // test that cannot fail for the reason it claims does not belong here.
 
   // The old label asserted the person chose not to answer. A journey can end
   // here because the gate DM never landed, which is a different fact.

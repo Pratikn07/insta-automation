@@ -4,16 +4,26 @@ import { useState } from "react";
 import { api } from "@/lib/api";
 import type { UserDirItem } from "@/lib/types";
 import { Card, CardContent } from "@/components/ui/card";
-import { Drawer } from "@/components/ui/drawer";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState, LoadFailed } from "@/components/EmptyState";
-import { UserLineage } from "@/components/UserLineage";
 import { FollowBadge } from "@/components/FollowBadge";
 import { displayUser } from "@/lib/utils";
 
-export function Users() {
+/**
+ * People: the same conversations, indexed by person instead of by event.
+ *
+ * This was the /users page. It is a lens rather than a destination because it is
+ * not a different subject — `users.routes.ts` builds the directory from
+ * Conversation.igUserId, and clicking a row opens the same UserLineage drawer a
+ * conversation row opens. Two rail entries for one dataset made the reader choose
+ * an entry point before knowing which one held their answer.
+ *
+ * It is a lens where DM recovery is not, and the line between them is what the
+ * control does, not how related the data is: everything in this filter row reads
+ * what already happened. Nothing here sends.
+ */
+export function PeopleDirectory({ onSelect }: { onSelect: (igUserId: string) => void }) {
   const [q, setQ] = useState("");
-  const [selected, setSelected] = useState<UserDirItem | null>(null);
 
   const usersQ = useQuery<{ items: UserDirItem[] }>({
     queryKey: ["users", q],
@@ -27,15 +37,7 @@ export function Users() {
   const items = usersQ.data?.items ?? [];
 
   return (
-    <div className="space-y-5">
-      <div>
-        <h2 className="text-xl font-semibold tracking-tight">Users</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Everyone who triggered a keyword. Click a user to see their full journey —
-          comment, gate DM, replies, and the sequence we delivered.
-        </p>
-      </div>
-
+    <div className="space-y-4">
       <div className="relative max-w-sm">
         <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
         <input
@@ -57,7 +59,7 @@ export function Users() {
       ) : items.length === 0 ? (
         <EmptyState
           icon={<UsersIcon className="size-5" />}
-          title={q ? "No matches" : "No users yet"}
+          title={q ? "No matches" : "No people yet"}
           description={
             q
               ? "Try a different name or username."
@@ -72,7 +74,7 @@ export function Users() {
                 <CardContent className="p-0">
                   <button
                     type="button"
-                    onClick={() => setSelected(u)}
+                    onClick={() => onSelect(u.igUserId)}
                     className="flex w-full items-center gap-4 p-4 text-left"
                   >
                     <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
@@ -97,15 +99,6 @@ export function Users() {
           ))}
         </ul>
       )}
-
-      <Drawer
-        open={selected !== null}
-        onClose={() => setSelected(null)}
-        title={selected ? displayUser(selected.igUserId, selected) : undefined}
-        description={selected?.name ?? selected?.igUserId}
-      >
-        {selected && <UserLineage igUserId={selected.igUserId} />}
-      </Drawer>
     </div>
   );
 }
