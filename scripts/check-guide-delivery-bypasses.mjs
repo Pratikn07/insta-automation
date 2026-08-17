@@ -63,55 +63,92 @@ function scriptKind(file) {
   return [".ts", ".mts", ".cts"].includes(extension) ? ts.ScriptKind.TS : ts.ScriptKind.JS;
 }
 
-function collectConstBindings(sourceFile) {
-  const bindings = new Map();
-  const visit = (node) => {
-    if (
-      ts.isVariableDeclaration(node) &&
-      ts.isIdentifier(node.name) &&
-      node.initializer &&
-      (node.parent.flags & ts.NodeFlags.Const) !== 0
-    ) {
-      bindings.set(node.name.text, node.initializer);
-    }
-    ts.forEachChild(node, visit);
+function checkerForSource(sourceFile) {
+  const options = {
+    allowJs: true,
+    allowNonTsExtensions: true,
+    module: ts.ModuleKind.NodeNext,
+    noLib: true,
+    noResolve: true,
+    target: ts.ScriptTarget.Latest,
   };
-  visit(sourceFile);
-  return bindings;
+  const sameFile = (file) => path.resolve(file) === path.resolve(sourceFile.fileName);
+  const host = {
+    fileExists: sameFile,
+    readFile: (file) => (sameFile(file) ? sourceFile.text : undefined),
+    getSourceFile: (file) => (sameFile(file) ? sourceFile : undefined),
+    getDefaultLibFileName: () => "",
+    writeFile: () => {},
+    getCurrentDirectory: () => path.dirname(sourceFile.fileName),
+    getDirectories: () => [],
+    getCanonicalFileName: (file) => file,
+    useCaseSensitiveFileNames: () => true,
+    getNewLine: () => "\n",
+  };
+  return ts.createProgram([sourceFile.fileName], options, host).getTypeChecker();
 }
 
-function staticString(node, bindings, resolving = new Set()) {
+function isRuntimeDeclaration(declaration) {
+  let current = declaration;
+  while (current && !ts.isSourceFile(current)) {
+    if (current.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.DeclareKeyword)) {
+      return false;
+    }
+    current = current.parent;
+  }
+  return !current?.isDeclarationFile;
+}
+
+function bindingState(identifier, checker) {
+  const symbol = checker.getSymbolAtLocation(identifier);
+  if (!symbol) return "unbound";
+  const declarations = (symbol.declarations ?? []).filter(isRuntimeDeclaration);
+  if (declarations.length === 0) return "unbound";
+  return declarations.length === 1 ? "bound" : "ambiguous";
+}
+
+function staticString(node, checker, resolving = new Set()) {
   if (!node) return null;
   if (ts.isStringLiteralLike(node)) return node.text;
-  if (ts.isParenthesizedExpression(node)) return staticString(node.expression, bindings, resolving);
+  if (ts.isParenthesizedExpression(node)) return staticString(node.expression, checker, resolving);
   if (
     ts.isAsExpression(node) ||
     ts.isTypeAssertionExpression(node) ||
     ts.isNonNullExpression(node) ||
     ts.isSatisfiesExpression(node)
   ) {
-    return staticString(node.expression, bindings, resolving);
+    return staticString(node.expression, checker, resolving);
   }
   if (ts.isIdentifier(node)) {
-    if (resolving.has(node.text)) return null;
-    const initializer = bindings.get(node.text);
-    if (!initializer) return null;
+    const symbol = checker.getSymbolAtLocation(node);
+    if (!symbol || resolving.has(symbol)) return null;
+    const declarations = (symbol.declarations ?? []).filter(isRuntimeDeclaration);
+    if (declarations.length !== 1) return null;
+    const declaration = declarations[0];
+    if (
+      !ts.isVariableDeclaration(declaration) ||
+      !ts.isIdentifier(declaration.name) ||
+      !declaration.initializer ||
+      (declaration.parent.flags & ts.NodeFlags.Const) === 0
+    ) {
+      return null;
+    }
     const nextResolving = new Set(resolving);
-    nextResolving.add(node.text);
-    return staticString(initializer, bindings, nextResolving);
+    nextResolving.add(symbol);
+    return staticString(declaration.initializer, checker, nextResolving);
   }
   if (
     ts.isBinaryExpression(node) &&
     node.operatorToken.kind === ts.SyntaxKind.PlusToken
   ) {
-    const left = staticString(node.left, bindings, resolving);
-    const right = staticString(node.right, bindings, resolving);
+    const left = staticString(node.left, checker, resolving);
+    const right = staticString(node.right, checker, resolving);
     return left === null || right === null ? null : left + right;
   }
   if (ts.isTemplateExpression(node)) {
     let value = node.head.text;
     for (const span of node.templateSpans) {
-      const expression = staticString(span.expression, bindings, resolving);
+      const expression = staticString(span.expression, checker, resolving);
       if (expression === null) return null;
       value += expression + span.literal.text;
     }
@@ -126,10 +163,10 @@ function isSenderModule(value) {
   return /(?:^|\/)sequencesender(?:\.(?:js|ts))?$/.test(normalized);
 }
 
-function moduleReference(node, bindings) {
+function moduleReference(node, checker) {
   if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
     return node.moduleSpecifier
-      ? { expression: node.moduleSpecifier, value: staticString(node.moduleSpecifier, bindings) }
+      ? { loader: "static", value: staticString(node.moduleSpecifier, checker) }
       : null;
   }
   if (
@@ -137,15 +174,22 @@ function moduleReference(node, bindings) {
     ts.isExternalModuleReference(node.moduleReference)
   ) {
     const expression = node.moduleReference.expression;
-    return { expression, value: staticString(expression, bindings) };
+    return { loader: "static", value: staticString(expression, checker) };
   }
   if (!ts.isCallExpression(node) || node.arguments.length === 0) return null;
   const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
-  const isRequire = ts.isIdentifier(node.expression) && node.expression.text === "require";
+  const requireState =
+    ts.isIdentifier(node.expression) && node.expression.text === "require"
+      ? bindingState(node.expression, checker)
+      : "bound";
+  const isRequire = requireState === "unbound";
+  if (requireState === "ambiguous") {
+    return { loader: "ambiguous", value: null };
+  }
   if (!isDynamicImport && !isRequire) return null;
   return {
-    expression: node.arguments[0],
-    value: staticString(node.arguments[0], bindings),
+    loader: isDynamicImport ? "dynamic import" : "require",
+    value: staticString(node.arguments[0], checker),
   };
 }
 
@@ -216,19 +260,18 @@ function exactSenderDefinition(node) {
   );
 }
 
-function computedName(node, bindings) {
+function computedName(node, checker) {
   if (ts.isElementAccessExpression(node)) {
-    return staticString(node.argumentExpression, bindings);
+    return staticString(node.argumentExpression, checker);
   }
   if (ts.isComputedPropertyName(node)) {
-    return staticString(node.expression, bindings);
+    return staticString(node.expression, checker);
   }
   return null;
 }
 
-function inspectSource(relative, sourceFile) {
+function inspectSource(relative, sourceFile, checker) {
   const findings = new Set();
-  const bindings = collectConstBindings(sourceFile);
   const permittedIdentifiers = new Set();
   let permittedImportCount = 0;
   let permittedCallCount = 0;
@@ -236,8 +279,10 @@ function inspectSource(relative, sourceFile) {
   const report = (message) => findings.add(`${relative}: ${message}`);
 
   const visit = (node) => {
-    const reference = moduleReference(node, bindings);
-    if (reference && isSenderModule(reference.value)) {
+    const reference = moduleReference(node, checker);
+    if (reference && reference.loader !== "static" && reference.value === null) {
+      report(`${reference.loader} module path is not statically resolvable`);
+    } else if (reference && isSenderModule(reference.value)) {
       const importedIdentifier = relative === HANDLER_PATH ? exactSenderImport(node) : null;
       if (importedIdentifier) {
         permittedImportCount += 1;
@@ -245,6 +290,15 @@ function inspectSource(relative, sourceFile) {
       } else {
         report("legacy sequenceSender module reference outside the permitted static import");
       }
+    }
+
+    if (
+      ts.isIdentifier(node) &&
+      node.text === "require" &&
+      bindingState(node, checker) !== "bound" &&
+      !(ts.isCallExpression(node.parent) && node.parent.expression === node)
+    ) {
+      report("CommonJS loader alias or wrapper is not permitted");
     }
 
     if (relative === HANDLER_PATH && exactSenderCall(node, sourceFile)) {
@@ -271,7 +325,7 @@ function inspectSource(relative, sourceFile) {
       report("legacy sender identifier used outside its permitted shape");
     }
 
-    const name = computedName(node, bindings);
+    const name = computedName(node, checker);
     if (name === SENDER_EXPORT) {
       report("computed legacy sender member reference");
     }
@@ -322,7 +376,8 @@ function bypasses(root) {
       findings.add(`${relative}: parse failed`);
       continue;
     }
-    for (const finding of inspectSource(relative, sourceFile)) findings.add(finding);
+    const checker = checkerForSource(sourceFile);
+    for (const finding of inspectSource(relative, sourceFile, checker)) findings.add(finding);
   }
   return [...findings].sort();
 }

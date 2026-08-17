@@ -170,6 +170,87 @@ describe("guide-delivery bypass detector", () => {
     expect(output).toContain("scripts/rogue.mjs");
   });
 
+  it("rejects a CommonJS loader identifier alias", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "guide-delivery-bypass-"));
+    temporaryRoots.push(root);
+    mkdirSync(path.join(root, "scripts"), { recursive: true });
+    writeFileSync(
+      path.join(root, "scripts", "rogue.cjs"),
+      'const senderPath = "../src/services/sequence" + "Sender.js";\n' +
+        "const load = require;\n" +
+        "const [hiddenSend] = Object.values(load(senderPath));\n" +
+        'hiddenSend({ igUserId: "1", messages: [], source: "guide_automation" });\n',
+    );
+
+    const result = runDetector(root);
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.status).toBe(1);
+    expect(output).toContain("scripts/rogue.cjs");
+  });
+
+  it("rejects a local dynamic-import wrapper", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "guide-delivery-bypass-"));
+    temporaryRoots.push(root);
+    mkdirSync(path.join(root, "scripts"), { recursive: true });
+    writeFileSync(
+      path.join(root, "scripts", "rogue.mjs"),
+      "const load = (candidate) => import(candidate);\n" +
+        'const senderPath = "../src/services/sequence" + "Sender.js";\n' +
+        "const [hiddenSend] = Object.values(await load(senderPath));\n" +
+        'await hiddenSend({ igUserId: "1", messages: [], source: "guide_automation" });\n',
+    );
+
+    const result = runDetector(root);
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.status).toBe(1);
+    expect(output).toContain("scripts/rogue.mjs");
+  });
+
+  it("resolves an outer sender path despite a safe nested shadow", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "guide-delivery-bypass-"));
+    temporaryRoots.push(root);
+    mkdirSync(path.join(root, "scripts"), { recursive: true });
+    writeFileSync(
+      path.join(root, "scripts", "rogue.cjs"),
+      'const senderPath = "../src/services/sequence" + "Sender.js";\n' +
+        "function unrelated() {\n" +
+        '  const senderPath = "./safe.js";\n' +
+        "  return senderPath;\n" +
+        "}\n" +
+        "const [hiddenSend] = Object.values(require(senderPath));\n" +
+        'hiddenSend({ igUserId: "1", messages: [], source: "guide_automation" });\n',
+    );
+
+    const result = runDetector(root);
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.status).toBe(1);
+    expect(output).toContain("scripts/rogue.cjs");
+  });
+
+  it("does not apply a nested sender-path shadow to a safe outer loader call", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "guide-delivery-bypass-"));
+    temporaryRoots.push(root);
+    mkdirSync(path.join(root, "scripts"), { recursive: true });
+    writeFileSync(
+      path.join(root, "scripts", "safe.cjs"),
+      'const modulePath = "./safe.js";\n' +
+        "function unrelated() {\n" +
+        '  const modulePath = "../src/services/sequence" + "Sender.js";\n' +
+        "  return modulePath;\n" +
+        "}\n" +
+        "require(modulePath);\n",
+    );
+
+    const result = runDetector(root);
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.status, output).toBe(0);
+    expect(output).toContain("guide_delivery_bypass_check_passed");
+  });
+
   it("scans executable TSX source for hidden sender imports", () => {
     const root = mkdtempSync(path.join(tmpdir(), "guide-delivery-bypass-"));
     temporaryRoots.push(root);
