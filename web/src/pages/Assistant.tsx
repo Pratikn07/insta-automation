@@ -220,7 +220,7 @@ export function Assistant() {
           <div ref={endRef} />
 
           {askError && (
-            <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700">
+            <div className="flex items-start gap-2 rounded-md border border-caution bg-caution-soft p-3 text-sm text-caution">
               <AlertCircle className="mt-0.5 size-4 shrink-0" />
               <span>{askError}</span>
             </div>

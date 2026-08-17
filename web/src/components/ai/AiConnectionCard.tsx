@@ -135,7 +135,7 @@ export function AiConnectionCard() {
         {view.kind === "connected" && (
           <div className="space-y-3">
             <p className="flex items-center gap-2 text-sm font-medium">
-              <Check className="size-4 text-emerald-600" />
+              <Check className="size-4 text-signal" />
               ChatGPT connected
               {view.status.account?.planType ? ` — ${view.status.account.planType}` : ""}
             </p>

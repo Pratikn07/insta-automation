@@ -29,8 +29,8 @@ function TokenAlarm({ health }: { health: TokenHealth }) {
     <div
       className={`flex items-start gap-2.5 rounded-xl border px-3 py-2.5 sm:col-span-4 ${
         critical
-          ? "border-rose-400/25 bg-rose-400/10 text-rose-200"
-          : "border-amber-300/25 bg-amber-300/10 text-amber-200"
+          ? "border-urgent bg-urgent-soft text-urgent"
+          : "border-caution bg-caution-soft text-caution"
       }`}
     >
       <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
@@ -50,7 +50,7 @@ export function AutomationHealthStrip({ stats, isLoading }: AutomationHealthStri
 
   if (!stats) {
     return (
-      <Card className="rounded-2xl border-white/10 bg-card/60">
+      <Card className="rounded-2xl border-border bg-card/60">
         <CardContent className="p-4 text-sm text-muted-foreground">Automation health is temporarily unavailable.</CardContent>
       </Card>
     );
@@ -64,18 +64,18 @@ export function AutomationHealthStrip({ stats, isLoading }: AutomationHealthStri
   const uncertain = stats.gateQueueSendUncertain ?? 0;
 
   const items = [
-    { label: "Sequences today", value: stats.completedToday, Icon: CheckCircle2, tone: "text-emerald-300 bg-emerald-400/10" },
-    { label: "Awaiting reply", value: stats.conversationsAwaiting, Icon: Clock3, tone: "text-amber-200 bg-amber-300/10" },
+    { label: "Sequences today", value: stats.completedToday, Icon: CheckCircle2, tone: "text-signal bg-signal-soft" },
+    { label: "Awaiting reply", value: stats.conversationsAwaiting, Icon: Clock3, tone: "text-caution bg-caution-soft" },
     uncertain > 0
-      ? { label: "Needs review", value: uncertain, Icon: AlertTriangle, tone: "text-rose-200 bg-rose-400/10" }
-      : { label: "Retries queued", value: stats.gateQueuePending, Icon: RefreshCw, tone: "text-violet-200 bg-violet-400/10" },
+      ? { label: "Needs review", value: uncertain, Icon: AlertTriangle, tone: "text-urgent bg-urgent-soft" }
+      : { label: "Retries queued", value: stats.gateQueuePending, Icon: RefreshCw, tone: "text-funnel-mark bg-mark-soft" },
   ];
 
   return (
-    <Card className="rounded-2xl border-white/10 bg-card/60">
+    <Card className="rounded-2xl border-border bg-card/60">
       <CardContent className="grid gap-4 p-4 sm:grid-cols-[1.1fr_repeat(3,1fr)] sm:items-center">
         <div className="flex items-center gap-3">
-          <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-white/5 text-muted-foreground">
+          <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground">
             <Send className="size-4" />
           </div>
           <div>
@@ -84,7 +84,7 @@ export function AutomationHealthStrip({ stats, isLoading }: AutomationHealthStri
           </div>
         </div>
         {items.map(({ label, value, Icon, tone }) => (
-          <div key={label} className="flex items-center gap-3 rounded-xl border border-white/5 bg-white/[0.02] px-3 py-2.5">
+          <div key={label} className="flex items-center gap-3 rounded-xl border border-border bg-card/40 px-3 py-2.5">
             <div className={`flex size-8 shrink-0 items-center justify-center rounded-lg ${tone}`}><Icon className="size-3.5" /></div>
             <div>
               <div className="text-lg font-semibold tabular-nums leading-none">{value}</div>

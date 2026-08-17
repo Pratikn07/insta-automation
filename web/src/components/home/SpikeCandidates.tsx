@@ -40,9 +40,9 @@ export function SpikeCandidates({ points }: { points: FollowerDailyAddsPoint[] }
   if (spikeDays.length === 0) return null;
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-black/15 p-4">
+    <div className="rounded-2xl border border-border bg-card/40 p-4">
       <div className="mb-1 flex items-center gap-2 text-xs font-medium text-foreground">
-        <Zap className="size-3.5 text-amber-300" /> Candidates behind your biggest days
+        <Zap className="size-3.5 text-caution" /> Candidates behind your biggest days
       </div>
       <p className="mb-3 text-[11px] leading-relaxed text-muted-foreground">
         Reels that gained the most reach while each spike happened. Meta gives no
@@ -51,7 +51,7 @@ export function SpikeCandidates({ points }: { points: FollowerDailyAddsPoint[] }
 
       <div className="space-y-3">
         {spikeDays.map((point) => (
-          <div key={point.day} className="rounded-xl border border-white/10 bg-black/20 p-3">
+          <div key={point.day} className="rounded-xl border border-border bg-card/40 p-3">
             <div className="mb-2 flex items-baseline justify-between gap-3">
               <span className="text-xs font-semibold text-white">
                 {dayLabel(point.day)}{" "}
@@ -59,13 +59,13 @@ export function SpikeCandidates({ points }: { points: FollowerDailyAddsPoint[] }
                   {formatSignedCount(point.spike.net)} followers
                 </span>
               </span>
-              <span className="shrink-0 rounded-full border border-amber-300/25 bg-amber-300/10 px-2 py-0.5 text-[10px] font-semibold text-amber-200">
+              <span className="shrink-0 rounded-full border border-caution bg-caution-soft px-2 py-0.5 text-[10px] font-semibold text-caution">
                 {point.spike.multiple}× usual
               </span>
             </div>
 
             {point.spike.confidence === "low" && (
-              <p className="mb-2 text-[10px] leading-snug text-amber-200/80">
+              <p className="mb-2 text-[10px] leading-snug text-caution">
                 Several reels overlapped — no single one stands out.
               </p>
             )}
@@ -99,7 +99,7 @@ export function SpikeCandidates({ points }: { points: FollowerDailyAddsPoint[] }
                     </p>
                   </div>
 
-                  <span className="shrink-0 text-[11px] font-semibold tabular-nums text-sky-300">
+                  <span className="shrink-0 text-[11px] font-semibold tabular-nums text-funnel-mark">
                     {c.sharePct}%
                   </span>
 

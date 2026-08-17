@@ -59,7 +59,7 @@ const TONE_CLASS: Record<string, string> = {
   positive: "text-signal",
   pending: "text-funnel-mark",
   warning: "text-caution",
-  danger: "text-red-400",
+  danger: "text-urgent",
   neutral: "text-muted-foreground",
 };
 

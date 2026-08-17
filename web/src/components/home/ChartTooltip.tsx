@@ -56,19 +56,19 @@ export function ChartTooltip({
     <div
       aria-hidden="true"
       style={position}
-      className="pointer-events-none absolute z-20 rounded-xl border border-white/15 bg-neutral-950/95 p-3 shadow-xl shadow-black/40 backdrop-blur"
+      className="pointer-events-none absolute z-20 rounded-xl border border-line bg-popover p-3 shadow-lg"
     >
       <div className="flex items-baseline justify-between gap-3">
-        <span className="text-xs font-semibold text-white">{model.heading}</span>
+        <span className="text-xs font-semibold text-foreground">{model.heading}</span>
         {model.totalLabel && (
-          <span className="text-xs font-semibold tabular-nums text-sky-300">
+          <span className="text-xs font-semibold tabular-nums text-funnel-mark">
             {model.totalLabel}
           </span>
         )}
       </div>
 
       {(model.rows.length > 0 || model.emptyLabel) && (
-        <div className="mt-2 space-y-1 border-t border-white/10 pt-2">
+        <div className="mt-2 space-y-1 border-t border-border pt-2">
           {model.rows.map((row) => (
             <div key={row.key} className="flex items-center gap-2 text-[11px]">
               <span
@@ -86,9 +86,9 @@ export function ChartTooltip({
       )}
 
       {model.notes.length > 0 && (
-        <div className="mt-2 space-y-0.5 border-t border-white/10 pt-2">
+        <div className="mt-2 space-y-0.5 border-t border-border pt-2">
           {model.notes.map((note) => (
-            <p key={note} className="text-[10px] leading-snug text-amber-200/80">
+            <p key={note} className="text-[10px] leading-snug text-caution">
               {note}
             </p>
           ))}
@@ -96,7 +96,7 @@ export function ChartTooltip({
       )}
 
       {actionHint && (
-        <p className="mt-2 border-t border-white/10 pt-2 text-[10px] font-medium text-sky-200/80">
+        <p className="mt-2 border-t border-border pt-2 text-[10px] font-medium text-funnel-mark">
           {actionHint}
         </p>
       )}

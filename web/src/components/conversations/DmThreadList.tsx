@@ -83,7 +83,7 @@ export function DmThreadList({ rows, isLoading, onSelect }: DmThreadListProps) {
               </div>
               <p className="mt-0.5 truncate text-sm text-muted-foreground">{preview}</p>
               {row.draft && state !== "needs_review" && (
-                <p className="mt-0.5 truncate text-xs text-muted-foreground/80">
+                <p className="mt-0.5 truncate text-xs text-muted-foreground">
                   {draftStatusLabel(row.draft.status, row.draft.kind)}
                   {row.draft.workingText ? ` — ${row.draft.workingText}` : ""}
                 </p>

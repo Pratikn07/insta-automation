@@ -391,7 +391,7 @@ function ConversationRow({ c, onClick }: { c: Conversation; onClick: () => void 
             {/* An old journey has no receipts because none were ever collected.
                 Without this the older half of the table reads as failures. */}
             {markers.note && (
-              <p className="mt-0.5 text-[11px] text-muted-foreground/80">{markers.note}</p>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">{markers.note}</p>
             )}
           </div>
           {markers.recovery && (

@@ -85,7 +85,7 @@ export function UserLineage({ igUserId }: { igUserId: string }) {
         {threadEvents.length === 0 ? (
           <p className="text-sm text-muted-foreground">No messages recorded.</p>
         ) : (
-          <div className="flex flex-col gap-2 rounded-lg bg-neutral-950 p-3">
+          <div className="flex flex-col gap-2 rounded-lg bg-muted p-3">
             {threadEvents.map((e) =>
               USER_KINDS.has(e.kind) ? (
                 <OutgoingBubble key={e.id} text={bubbleText(e)} />

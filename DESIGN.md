@@ -218,6 +218,20 @@ previous palette was measured against `#0a0a0a`, and a third against `#F7F4EE`;
 none survived the move. If the ground changes again, every value is void until
 re-measured. A palette does not travel between grounds.
 
+**The No-Quieter-Tier Rule.** `--color-muted-foreground` (**5.31:1**) is the
+quiet tier, and it is quiet by design — it has 0.81 of headroom above the 4.5
+floor and nothing to spare. An opacity modifier on it is always illegal:
+`/70` measures **2.90:1**, `/80` **3.50:1**, `/90` **4.30:1**. All three were
+in the codebase and all three failed. Removed.
+
+This is specific to that token. `text-foreground/75` measures **7.56:1** and
+`/85` **10.66:1**, both fine — dark ink can be dimmed, the quiet tier cannot.
+When a third level of hierarchy is wanted below muted, it comes from size or
+weight, not from fading text that is already as faint as it may legally be.
+
+Tailwind will not warn you: it applies opacity to any colour utility silently,
+and the result looks intentional. Measure the blend, not the token.
+
 ## Typography
 
 **One family: Archivo** (with system sans fallbacks), loaded from Google Fonts.

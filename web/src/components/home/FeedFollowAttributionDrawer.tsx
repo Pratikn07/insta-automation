@@ -74,8 +74,8 @@ function CollectionStatus({ copy }: { copy: FeedCollectionCopy }) {
     <div
       className={cn(
         "rounded-xl border px-4 py-3",
-        copy.tone === "good" && "border-emerald-500/25 bg-emerald-500/5",
-        copy.tone === "caution" && "border-amber-500/25 bg-amber-500/5",
+        copy.tone === "good" && "border-signal bg-signal-soft",
+        copy.tone === "caution" && "border-caution bg-caution-soft",
         copy.tone === "muted" && "bg-muted/30",
       )}
     >

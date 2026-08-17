@@ -207,11 +207,21 @@ function Leaderboard() {
   );
 }
 
+// Three bands and an absence. Solid fills carrying paper-coloured text, measured:
+// signal 8.96:1, caution 5.85:1, urgent 5.57:1.
+//
+// The unscored case is muted rather than a grey fill. funnel-unknown (#8f8a80)
+// is the system's colour for absence of evidence, but text on it measures 3.15:1
+// — below the floor — and a badge that says "no score yet" has to be readable to
+// say it. Grey ground with grey text carries the same meaning and can be read.
+//
+// A low score gets urgent, which the system defines as attention rather than
+// alarm: this reel needs rethinking, not that it failed.
 function scoreColor(score: number | null): string {
-  if (score === null) return "bg-black/55 text-white/80";
-  if (score >= 67) return "bg-emerald-500/90 text-white";
-  if (score >= 40) return "bg-amber-500/90 text-white";
-  return "bg-rose-500/90 text-white";
+  if (score === null) return "bg-muted text-muted-foreground";
+  if (score >= 67) return "bg-signal text-primary-foreground";
+  if (score >= 40) return "bg-caution text-primary-foreground";
+  return "bg-urgent text-primary-foreground";
 }
 
 function ReelCard({ row }: { row: LeaderboardRow }) {
@@ -267,12 +277,12 @@ function ReelCard({ row }: { row: LeaderboardRow }) {
         <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
           {row.reach !== null && <span>{row.reach.toLocaleString()} reach</span>}
           {row.captureRatePct !== null && (
-            <span className="text-sky-400" title="Share of reach that entered the DM funnel">
+            <span className="text-funnel-mark" title="Share of reach that entered the DM funnel">
               {formatCaptureRate(row.captureRatePct)} capture
             </span>
           )}
           {row.conversion.completed > 0 && (
-            <span className="text-emerald-400">{row.conversion.completed} delivered</span>
+            <span className="text-funnel-mark">{row.conversion.completed} delivered</span>
           )}
         </div>
       </div>
@@ -402,7 +412,7 @@ function ReelDetailDrawer({ mediaId }: { mediaId: string }) {
           <span className="text-muted-foreground">→</span>
           <Funnel n={d.conversion.gateDelivered} label="gate delivered" />
           <span className="text-muted-foreground">→</span>
-          <Funnel n={d.conversion.completed} label="guides delivered" tone="text-emerald-400" />
+          <Funnel n={d.conversion.completed} label="guides delivered" tone="text-funnel-mark" />
         </div>
       </Section>
     </div>
@@ -490,7 +500,7 @@ function Recipe() {
   return (
     <div className="space-y-5">
       {/* Honesty banner: US-fit is a tone label, not a performance predictor. */}
-      <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-200/90">
+      <div className="rounded-lg border border-caution bg-caution-soft p-3 text-xs text-caution">
         <span className="font-medium">US-fit describes who a reel is aimed at — not how far it travels.</span>{" "}
         Across your {data.scoredCount} scored reels, US-fit and reach are essentially uncorrelated
         {data.usFitReachCorr !== null ? ` (r = ${data.usFitReachCorr})` : ""}. The contrast below is
@@ -500,7 +510,7 @@ function Recipe() {
       {/* The style takeaway, up top */}
       <div className="rounded-lg border bg-card/40 p-4">
         <h3 className="mb-2 flex items-center gap-1.5 text-sm font-medium">
-          <ListChecks className="size-4 text-emerald-400" /> What makes a reel read as US-aimed
+          <ListChecks className="size-4 text-signal" /> What makes a reel read as US-aimed
         </h3>
         {data.checklist.length === 0 ? (
           <p className="text-xs text-muted-foreground">
@@ -510,7 +520,7 @@ function Recipe() {
           <ul className="space-y-1.5">
             {data.checklist.map((c, i) => (
               <li key={i} className="flex gap-2 text-xs text-muted-foreground">
-                <span className="mt-0.5 text-emerald-400">✓</span>
+                <span className="mt-0.5 text-signal">✓</span>
                 <span>{c}</span>
               </li>
             ))}
@@ -553,7 +563,7 @@ function GateAudiencePanel() {
       <h3 className="mb-1 flex items-center gap-1.5 text-sm font-medium">
         <ListChecks className="size-4 text-muted-foreground" /> Gate audience by reel (keyword-commenters)
       </h3>
-      <div className="mb-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-2.5 text-[11px] text-amber-200/90">
+      <div className="mb-3 rounded-md border border-caution bg-caution-soft p-2.5 text-[11px] text-caution">
         Origin is inferred from each person's name/username — a <span className="font-medium">proxy, not real geography</span>.
         And this counts only people who <span className="font-medium">commented a keyword</span> (a habit that skews South
         Asian); your silent followers — where most US followers are — aren't here. Read it as "who plays the keyword game
@@ -578,14 +588,26 @@ function GateAudiencePanel() {
                     {r.total} commenters · {r.followers} followed
                   </span>
                 </div>
-                {/* Simple US vs SA vs other bar */}
+                {/* US vs SA vs other. Country marks from the categorical series,
+                    which is what that series is for — separated by hue, not by
+                    lightness, so neither segment reads as the larger one.
+
+                    It was green for US and amber for South Asian, which colours a
+                    geography as good and a geography as a warning. The rule is
+                    that colour may mark where you are, not grade a conclusion,
+                    and an audience segment is not a verdict. The labels still say
+                    which is which; only the valence is gone.
+
+                    c1 skipped deliberately: its hex is the accent's, so a US
+                    segment in c1 would have kept exactly the reading this change
+                    removes. */}
                 <div className="mt-1.5 flex h-2 overflow-hidden rounded-full bg-muted">
-                  <div className="bg-emerald-400" style={{ width: `${usPct}%` }} title={`US/Western ${usPct}%`} />
-                  <div className="bg-amber-500" style={{ width: `${saPct}%` }} title={`South Asian ${saPct}%`} />
+                  <div className="bg-c3" style={{ width: `${usPct}%` }} title={`US/Western ${usPct}%`} />
+                  <div className="bg-c2" style={{ width: `${saPct}%` }} title={`South Asian ${saPct}%`} />
                 </div>
                 <div className="mt-1 text-[11px] text-muted-foreground">
-                  <span className="text-emerald-400">US/Western {r.usWestern}</span> ·{" "}
-                  <span className="text-amber-400">S. Asian {r.southAsian}</span>
+                  <span className="text-c3">US/Western {r.usWestern}</span> ·{" "}
+                  <span className="text-c2">S. Asian {r.southAsian}</span>
                   {r.other + r.unknown > 0 && <span> · other/unknown {r.other + r.unknown}</span>}
                 </div>
               </div>
@@ -598,7 +620,11 @@ function GateAudiencePanel() {
 }
 
 function RecipeColumn({ group, tone }: { group: RecipeGroup; tone: "us" | "india" }) {
-  const accent = tone === "us" ? "text-emerald-400" : "text-muted-foreground";
+  // Emphasis, not category colour: US is the column this account is optimising
+  // for, so it carries full weight and India recedes. Colouring the heading would
+  // grade one audience against the other, which is the reading the bar above
+  // just had removed.
+  const accent = tone === "us" ? "text-foreground" : "text-muted-foreground";
   const refs = tone === "us" ? group.usRefs : group.indiaRefs;
   return (
     <div className="space-y-3 rounded-lg border bg-card/40 p-4">
@@ -668,9 +694,9 @@ function RecipeColumn({ group, tone }: { group: RecipeGroup; tone: "us" | "india
 
 // ── Experiments (Tab 3) ──────────────────────────────────────────────────────
 const STATUS_TONE: Record<Experiment["status"], string> = {
-  running: "text-sky-400 bg-sky-400/10",
-  confirmed: "text-emerald-400 bg-emerald-400/10",
-  busted: "text-rose-400 bg-rose-400/10",
+  running: "text-funnel-mark bg-mark-soft",
+  confirmed: "text-signal bg-signal-soft",
+  busted: "text-urgent bg-urgent-soft",
   inconclusive: "text-muted-foreground bg-muted/40",
 };
 
@@ -718,7 +744,7 @@ function CaptureLeadersCard({ rows, isLoading }: { rows: LeaderboardRow[]; isLoa
                 <p className="mt-0.5 text-[11px] text-muted-foreground">{l.reason}</p>
               </div>
               <div className="shrink-0 text-right">
-                <div className="text-sm font-semibold text-sky-400">
+                <div className="text-sm font-semibold text-funnel-mark">
                   {formatCaptureRate(l.captureRatePct)}
                 </div>
                 <div className="text-[10px] text-muted-foreground">{l.completed} delivered</div>
@@ -752,8 +778,8 @@ function NextTestCard({ experiments }: { experiments: Experiment[] }) {
 }
 
 const PATTERN_BADGE: Record<LearnedPattern["label"], { text: string; cls: string }> = {
-  repeat: { text: "Repeat", cls: "bg-emerald-500/15 text-emerald-400" },
-  rethink: { text: "Rethink", cls: "bg-rose-500/15 text-rose-400" },
+  repeat: { text: "Repeat", cls: "bg-signal-soft text-signal" },
+  rethink: { text: "Rethink", cls: "bg-urgent-soft text-urgent" },
   collecting: { text: "Collecting", cls: "bg-muted text-muted-foreground" },
 };
 
@@ -887,8 +913,15 @@ function RecentAudienceMetric({
   in14: number | null;
 }) {
   const delta = us14 !== null && us90 !== null ? Math.round((us14 - us90) * 10) / 10 : null;
+  // The one place on this page where colour grades a direction, and it is allowed
+  // to: US share is the account's stated success metric, so up is unambiguously
+  // the thing being aimed at. Elsewhere — the geography bar, the recipe columns —
+  // there is no such agreed direction and colour stays out of it.
+  //
+  // A null delta is muted, not zero-coloured: no 90d baseline is an absence of
+  // comparison, not a flat result.
   const tone =
-    delta === null ? "text-muted-foreground" : delta >= 0 ? "text-emerald-400" : "text-rose-400";
+    delta === null ? "text-muted-foreground" : delta >= 0 ? "text-signal" : "text-urgent";
   return (
     <div className="rounded-md border bg-background/40 p-3">
       <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</div>
@@ -944,7 +977,7 @@ function RecentAudiencePanel({ points }: { points: GeoWindowPoint[] }) {
           </div>
           <p className="mt-3 text-[11px] text-muted-foreground">
             14-day window ≈ your ~last two weeks of reels. When the 14d US% sits{" "}
-            <span className="text-rose-400">below</span> the 90d baseline, recent content skewed less
+            <span className="text-urgent">below</span> the 90d baseline, recent content skewed less
             US than your norm. Account-level (Meta gives no per-reel geo) — attribute to whichever
             reel dominated the window's reach.
           </p>
@@ -980,10 +1013,10 @@ function UsReachChart({ points }: { points: UsReachTrendPoint[] }) {
     .join(" ");
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="h-28 w-full" preserveAspectRatio="none">
-      <path d={path} fill="none" stroke="currentColor" strokeWidth={2} className="text-emerald-400" />
+      <path d={path} fill="none" stroke="currentColor" strokeWidth={2} className="text-funnel-mark" />
       {points.map((p, i) =>
         p.usPct === null ? null : (
-          <circle key={i} cx={xs(i)} cy={ys(p.usPct)} r={2.5} className="fill-emerald-400" />
+          <circle key={i} cx={xs(i)} cy={ys(p.usPct)} r={2.5} className="fill-funnel-mark" />
         ),
       )}
     </svg>
@@ -1086,7 +1119,7 @@ function ExperimentCard({ exp, onChange }: { exp: Experiment; onChange: () => vo
         <div className="min-w-0">
           <div className="flex items-center gap-1.5">
             {isAuto && (
-              <span className="shrink-0 rounded bg-sky-400/15 px-1.5 py-0.5 text-[10px] font-medium text-sky-300">
+              <span className="shrink-0 rounded bg-mark-soft px-1.5 py-0.5 text-[10px] font-medium text-funnel-mark">
                 AUTO
               </span>
             )}
@@ -1128,8 +1161,8 @@ function ExperimentCard({ exp, onChange }: { exp: Experiment; onChange: () => vo
           className={cn(
             "rounded-md border p-2.5 text-[11px]",
             exp.attributionConfidence === "high"
-              ? "border-emerald-500/30 bg-emerald-500/5 text-emerald-200/90"
-              : "border-amber-500/30 bg-amber-500/5 text-amber-200/90",
+              ? "border-signal bg-signal-soft text-signal"
+              : "border-caution bg-caution-soft text-caution",
           )}
         >
           {exp.attributionConfidence === "high" ? (

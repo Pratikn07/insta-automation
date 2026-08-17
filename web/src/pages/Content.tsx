@@ -195,7 +195,7 @@ function FilterTabs({
               <span
                 className={cn(
                   "text-xs tabular-nums",
-                  active ? "text-muted-foreground" : "text-muted-foreground/70",
+                  active ? "text-muted-foreground" : "text-muted-foreground",
                 )}
               >
                 {counts[key]}
