@@ -26,6 +26,7 @@ import {
   resolveActiveSettingsBlockedVerification,
   settingsBlockedVerificationRejectionReason,
 } from "../services/settingsBlockedVerificationService.js";
+import { bindUpcomingAutomationFromComment } from "../services/upcomingAutomationCommentBinding.js";
 
 /**
  * Human-readable scope for a media-attached keyword, from the webhook's
@@ -103,6 +104,24 @@ export async function handleComment(comment: CommentValue): Promise<void> {
   // to first-word only — see scannableCommentTokens.
   const candidates = extractCandidates(comment.text);
   if (candidates.length === 0) return;
+
+  // A native-scheduled post has no local keyword until Meta publishes it. If a
+  // comment intersects a reserved word, bind from the real caption first so the
+  // same first comment can continue through the ordinary post-scoped flow.
+  const upcoming = await bindUpcomingAutomationFromComment({
+    candidates,
+    mediaId: comment.media?.id,
+    commentId: comment.id,
+  });
+  if (upcoming.blockLegacyFallback) {
+    await logEvent("comment_ignored", {
+      commentId: comment.id,
+      candidate: candidates.join(" "),
+      mediaId: comment.media?.id ?? null,
+      reason: "upcoming_automation_unresolved",
+    });
+    return;
+  }
 
   const match = await findKeywordForComment(comment.text, comment.media?.id);
   if (!match) {

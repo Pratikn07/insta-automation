@@ -22,6 +22,7 @@ import { seedTokenFromEnv } from "./meta/tokenStore.js";
 import { runTokenRefreshTick } from "./meta/tokenRefresher.js";
 import { apiRouter } from "./api/router.js";
 import { buildDeploymentHealth } from "./services/deploymentHealth.js";
+import { startUpcomingAutomationScheduler } from "./services/upcomingAutomationScheduler.js";
 
 const app = express();
 
@@ -201,6 +202,11 @@ startDmRecoveryScheduler({
   clearInterval: globalThis.clearInterval,
   runTick: runOriginEnrichmentTick,
 });
+
+// Local preparations are safe to manage while discovery is disabled. Enabling
+// this starts an immediate catch-up scan and then a non-overlapping one-minute
+// scan; each tick no-ops before calling Meta when there is nothing waiting.
+startUpcomingAutomationScheduler(env.UPCOMING_AUTOMATIONS_ENABLED);
 
 app.listen(env.PORT, () => {
   logger.info({ port: env.PORT, env: env.NODE_ENV }, "insta-automation listening");

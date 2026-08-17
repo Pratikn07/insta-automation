@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const extractCandidates = vi.fn();
 const findKeywordForComment = vi.fn();
+const bindUpcomingAutomationFromComment = vi.fn();
 const markGated = vi.fn();
 const replyToComment = vi.fn();
 const sendTrackedPrivateReply = vi.fn();
@@ -40,6 +41,9 @@ const VERIFIED_SETTINGS_EVIDENCE = {
 vi.mock("../services/keywordService.js", () => ({
   extractCandidates,
   findKeywordForComment,
+}));
+vi.mock("../services/upcomingAutomationCommentBinding.js", () => ({
+  bindUpcomingAutomationFromComment,
 }));
 vi.mock("../services/conversationService.js", () => ({ openConversationIn, markGated }));
 // The resolver is contract-tested against real Postgres; here the handler's own
@@ -119,6 +123,7 @@ beforeEach(() => {
   for (const fn of [
     extractCandidates,
     findKeywordForComment,
+    bindUpcomingAutomationFromComment,
     openConversationIn,
     resolveJourneyIntent,
     recordJourneyPublicAcknowledgement,
@@ -155,6 +160,10 @@ beforeEach(() => {
       gateMessage: "PRIVATE-DM-SENTINEL",
     },
   });
+  bindUpcomingAutomationFromComment.mockResolvedValue({
+    kind: "none",
+    blockLegacyFallback: false,
+  });
   openConversationIn.mockResolvedValue({ id: "conversation-1" });
   // Default: a first-time request, which is the only disposition that may send.
   resolveJourneyIntent.mockResolvedValue({
@@ -172,6 +181,93 @@ beforeEach(() => {
   scheduleSettingsBlockedRecovery.mockResolvedValue({ id: "rec-2", status: "waiting" });
   scheduleTrackingUnavailableRecovery.mockResolvedValue({ id: "rec-3", status: "tracking_unavailable" });
   resolveActiveSettingsBlockedVerification.mockResolvedValue(VERIFIED_SETTINGS_EVIDENCE);
+});
+
+describe("upcoming automation webhook fast path", () => {
+  const COMMENT = {
+    id: "comment-upcoming-1",
+    text: "HIGHCHAIR",
+    from: { id: "ig-parent", username: "parent" },
+    media: { id: "scheduled-reel-1", media_product_type: "REELS" },
+  };
+
+  it("binds the first live comment before matching and completes the normal guide flow", async () => {
+    extractCandidates.mockReturnValue(["HIGHCHAIR"]);
+    bindUpcomingAutomationFromComment.mockResolvedValue({
+      kind: "bound",
+      blockLegacyFallback: false,
+    });
+    findKeywordForComment.mockResolvedValue({
+      mode: "post_strict",
+      matchedToken: "HIGHCHAIR",
+      keyword: {
+        id: "bound-keyword",
+        keyword: "HIGHCHAIR",
+        mediaId: "scheduled-reel-1",
+        publicReply: "Your high-chair guide is on its way.",
+        gateMessage: "Follow and reply DONE for the high-chair guide.",
+      },
+    });
+    sendTrackedPrivateReply.mockResolvedValue({
+      instagramMessageId: "mid-1",
+      dmMessageId: "dm-1",
+      acceptedAt: new Date("2026-08-27T17:31:00.000Z"),
+    });
+
+    await handleComment(COMMENT);
+
+    expect(bindUpcomingAutomationFromComment).toHaveBeenCalledWith({
+      candidates: ["HIGHCHAIR"],
+      mediaId: "scheduled-reel-1",
+      commentId: "comment-upcoming-1",
+    });
+    expect(bindUpcomingAutomationFromComment.mock.invocationCallOrder[0]).toBeLessThan(
+      findKeywordForComment.mock.invocationCallOrder[0]!,
+    );
+    expect(replyToComment).toHaveBeenCalledWith(
+      "comment-upcoming-1",
+      "Your high-chair guide is on its way.",
+    );
+    expect(sendTrackedPrivateReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        commentId: "comment-upcoming-1",
+        text: "Follow and reply DONE for the high-chair guide.",
+      }),
+    );
+  });
+
+  it("never reaches a legacy global guide after an upcoming caption rejection", async () => {
+    extractCandidates.mockReturnValue(["HIGHCHAIR"]);
+    bindUpcomingAutomationFromComment.mockResolvedValue({
+      kind: "rejected",
+      blockLegacyFallback: true,
+    });
+    // This is exactly the dangerous fallback: same word, historical guide.
+    findKeywordForComment.mockResolvedValue({
+      mode: "global_fallback",
+      matchedToken: "HIGHCHAIR",
+      keyword: {
+        id: "legacy-keyword",
+        keyword: "HIGHCHAIR",
+        mediaId: null,
+        publicReply: "Wrong public reply",
+        gateMessage: "Wrong guide",
+      },
+    });
+
+    await handleComment(COMMENT);
+
+    expect(findKeywordForComment).not.toHaveBeenCalled();
+    expect(claimComment).not.toHaveBeenCalled();
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(sendTrackedPrivateReply).not.toHaveBeenCalled();
+    expect(logEvent).toHaveBeenCalledWith("comment_ignored", {
+      commentId: "comment-upcoming-1",
+      candidate: "HIGHCHAIR",
+      mediaId: "scheduled-reel-1",
+      reason: "upcoming_automation_unresolved",
+    });
+  });
 });
 
 describe("handleComment Graph failure privacy", () => {
