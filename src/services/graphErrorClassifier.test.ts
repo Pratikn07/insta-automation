@@ -2,6 +2,7 @@ import { AxiosError, AxiosHeaders } from "axios";
 import { describe, expect, it } from "vitest";
 import { describeGraphError, type GraphErrorMetadata } from "./eventLogger.js";
 import {
+  classifyDirectMessageSend,
   classifyPrivateGateFailure,
   classifyPublicReplyFailure,
   classifySourceReadFailure,
@@ -50,6 +51,52 @@ function transportError(code: string): AxiosError {
 }
 
 describe("graphErrorClassifier", () => {
+  describe("classifyDirectMessageSend", () => {
+    it.each([
+      [graphMetadata({ httpStatus: 429 }), "definite_transient"],
+      [graphMetadata({ httpStatus: 400, graphCode: 4 }), "definite_transient"],
+      [graphMetadata({ httpStatus: 500, graphCode: 2 }), "definite_transient"],
+      [transportMetadata("ECONNREFUSED"), "definite_transient"],
+      [transportMetadata("ENOTFOUND"), "definite_transient"],
+      [transportMetadata("EAI_AGAIN"), "definite_transient"],
+      [graphMetadata({ httpStatus: 401 }), "definite_permanent"],
+      [graphMetadata({ httpStatus: 403, graphCode: 10 }), "definite_permanent"],
+      [graphMetadata({ httpStatus: 400, graphCode: 100 }), "definite_permanent"],
+      [graphMetadata({ httpStatus: 404 }), "definite_permanent"],
+      [graphMetadata({ httpStatus: 408 }), "uncertain"],
+      [transportMetadata("ECONNABORTED"), "uncertain"],
+      [transportMetadata("ETIMEDOUT"), "uncertain"],
+      [transportMetadata("ECONNRESET"), "uncertain"],
+      [transportMetadata("ERR_CANCELED"), "uncertain"],
+      [transportMetadata(null), "uncertain"],
+      [graphMetadata({ httpStatus: 502 }), "uncertain"],
+      [graphMetadata({ httpStatus: 503 }), "uncertain"],
+      [graphMetadata({ httpStatus: 504 }), "uncertain"],
+      [graphMetadata({ category: "unknown_error" }), "uncertain"],
+    ])("classifies a direct-message outcome %#", (metadata, expected) => {
+      expect(classifyDirectMessageSend(metadata)).toBe(expected);
+    });
+
+    it("treats a structured Graph 5xx as a definite rejection but a proxy 5xx as uncertain", () => {
+      expect(
+        classifyDirectMessageSend(graphMetadata({ httpStatus: 503, graphCode: 2 })),
+      ).toBe("definite_transient");
+      expect(classifyDirectMessageSend(graphMetadata({ httpStatus: 503 }))).toBe("uncertain");
+    });
+
+    it("treats any parsed non-transient Graph error as a definite permanent rejection", () => {
+      expect(
+        classifyDirectMessageSend(graphMetadata({ httpStatus: 200, graphCode: 100 })),
+      ).toBe("definite_permanent");
+    });
+
+    it("uses only the closed transport allowlist exposed by describeGraphError", () => {
+      const unknownTransport = describeGraphError(transportError("PRIVATE_TRANSPORT_SENTINEL"));
+      expect(unknownTransport.transportCode).toBeNull();
+      expect(classifyDirectMessageSend(unknownTransport)).toBe("uncertain");
+    });
+  });
+
   describe("parseGraphSignatures", () => {
     it("parses valid code:subcode strings and de-duplicates", () => {
       const parsed = parseGraphSignatures("10:12345, 200:54321, invalid, 10:12345");

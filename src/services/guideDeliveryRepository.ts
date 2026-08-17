@@ -101,8 +101,19 @@ export type MarkGuideUnitRetryableInput = GuideUnitFailureCheckpointInput & {
   nextAttemptAt: Date;
 };
 
-export type MarkGuideUnitFailedInput = GuideUnitFailureCheckpointInput;
+export type MarkGuideUnitFailedInput = GuideUnitFailureCheckpointInput & {
+  /** A terminal attempt may still have been a definite transient rejection. */
+  failureDisposition?: "permanent" | "transient";
+};
 export type MarkGuideUnitUncertainInput = GuideUnitFailureCheckpointInput;
+
+export type MarkGuideDeliveryWindowClosedInput = {
+  deliveryId: string;
+  claimToken: string;
+  now: Date;
+  unitId?: string;
+  attempt?: number;
+};
 
 export type ReleaseGuideDeliveryClaimInput = {
   deliveryId: string;
@@ -126,6 +137,7 @@ export interface GuideDeliveryRepository {
   markUnitRetryable(input: MarkGuideUnitRetryableInput): Promise<boolean>;
   markUnitFailed(input: MarkGuideUnitFailedInput): Promise<boolean>;
   markUnitUncertain(input: MarkGuideUnitUncertainInput): Promise<boolean>;
+  markWindowClosed(input: MarkGuideDeliveryWindowClosedInput): Promise<boolean>;
   releaseClaim(input: ReleaseGuideDeliveryClaimInput): Promise<boolean>;
   reconcileExpiredClaims(now: Date): Promise<ExpiredClaimReconciliation>;
 }
@@ -980,6 +992,10 @@ export function createGuideDeliveryRepository(
     async markUnitFailed(input) {
       validateFailureCode(input.failureCode);
       requireGraphErrorMetadata(input.error);
+      const failureDisposition = input.failureDisposition ?? "permanent";
+      if (failureDisposition !== "permanent" && failureDisposition !== "transient") {
+        throw new Error("invalid guide delivery failure disposition");
+      }
       return database.$transaction(async (tx) => {
         const delivery = await lockClaimedDelivery(tx, input.deliveryId, input.claimToken);
         if (!delivery) return false;
@@ -991,7 +1007,7 @@ export function createGuideDeliveryRepository(
           UPDATE "guide_delivery_unit" AS unit
           SET
             "status" = 'failed',
-            "failure_disposition" = 'permanent',
+            "failure_disposition" = ${failureDisposition}::"guide_delivery_failure_disposition",
             "error_category" = ${input.error.category},
             "error_http_status" = ${input.error.httpStatus},
             "error_graph_code" = ${input.error.graphCode},
@@ -1094,6 +1110,88 @@ export function createGuideDeliveryRepository(
             payload: {
               ...unitEvent(delivery, unit, input.attempt, input.now),
               error: safeErrorEvent(input.error),
+            },
+          },
+        });
+        return true;
+      });
+    },
+
+    async markWindowClosed(input) {
+      const hasUnit = input.unitId !== undefined;
+      const hasAttempt = input.attempt !== undefined;
+      if (
+        hasUnit !== hasAttempt ||
+        (hasAttempt && (!Number.isInteger(input.attempt) || input.attempt! < 1))
+      ) {
+        throw new Error("invalid guide delivery window checkpoint");
+      }
+
+      return database.$transaction(async (tx) => {
+        const delivery = await lockClaimedDelivery(tx, input.deliveryId, input.claimToken);
+        if (!delivery) return false;
+        const units = await lockAndLoadUnits(tx, input.deliveryId);
+        const closingUnit = hasUnit
+          ? units.find((candidate) => candidate.id === input.unitId) ?? null
+          : null;
+
+        if (hasUnit) {
+          if (
+            !closingUnit ||
+            closingUnit.status !== "sending" ||
+            closingUnit.attempts !== input.attempt
+          ) {
+            return false;
+          }
+          const unitUpdated = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+            UPDATE "guide_delivery_unit" AS unit
+            SET
+              "status" = 'failed',
+              "failure_disposition" = 'permanent',
+              "updated_at" = ${input.now}
+            FROM "guide_delivery" AS delivery
+            WHERE unit."id" = ${closingUnit.id}::uuid
+              AND unit."delivery_id" = delivery."id"
+              AND unit."status" = 'sending'
+              AND unit."attempts" = ${input.attempt}
+              AND delivery."id" = ${input.deliveryId}::uuid
+              AND delivery."claim_token" = ${input.claimToken}::uuid
+              AND delivery."status" = 'sending'
+            RETURNING unit."id"
+          `);
+          if (unitUpdated.length !== 1) return false;
+        } else if (units.some((unit) => unit.status === "sending")) {
+          return false;
+        }
+
+        const deliveryUpdated = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          UPDATE "guide_delivery" AS delivery
+          SET
+            "status" = 'failed',
+            "failure_code" = 'messaging_window_closed',
+            "next_attempt_at" = NULL,
+            "claim_token" = NULL,
+            "claimed_at" = NULL,
+            "claim_expires_at" = NULL,
+            "updated_at" = ${input.now}
+          WHERE delivery."id" = ${input.deliveryId}::uuid
+            AND delivery."claim_token" = ${input.claimToken}::uuid
+            AND delivery."status" = 'sending'
+          RETURNING delivery."id"
+        `);
+        if (deliveryUpdated.length !== 1) {
+          throw new Error("guide delivery window checkpoint lost claim");
+        }
+        await tx.eventLog.create({
+          data: {
+            kind: "guide_delivery_window_closed",
+            payload: {
+              ...eventIdentity(delivery),
+              unitId: closingUnit?.id ?? null,
+              position: closingUnit?.position ?? null,
+              unitKind: closingUnit?.kind ?? null,
+              attempt: closingUnit?.attempts ?? null,
+              at: input.now.toISOString(),
             },
           },
         });

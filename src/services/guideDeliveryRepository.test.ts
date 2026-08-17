@@ -284,4 +284,134 @@ describe("guide delivery repository transition guards", () => {
     ).rejects.toThrow("invalid graph error metadata");
     expect(transaction).not.toHaveBeenCalled();
   });
+
+  it("preserves a definite transient disposition when the final bounded attempt becomes terminal", async () => {
+    const { database, queries } = createRecordingDatabase();
+    const repository = createGuideDeliveryRepository({ database, maxAttempts: 3 });
+
+    await repository.markUnitFailed({
+      deliveryId: DELIVERY_ID,
+      unitId: UNIT_ID,
+      claimToken: STALE_TOKEN,
+      attempt: 2,
+      failureCode: "provider_retry_exhausted",
+      failureDisposition: "transient",
+      error: SAFE_ERROR,
+      now: NOW,
+    } as never);
+
+    const unitUpdate = queries.find((query) => {
+      const sql = normalizedSql(query);
+      return sql.startsWith("update") && sql.includes('guide_delivery_unit" as unit');
+    });
+    expect(unitUpdate).toBeDefined();
+    expect(unitUpdate?.values).toContain("transient");
+  });
+
+  it("rejects a non-allowlisted terminal failure disposition before opening a transaction", async () => {
+    const { database } = createRecordingDatabase();
+    const transaction = database.$transaction as unknown as ReturnType<typeof vi.fn>;
+    const repository = createGuideDeliveryRepository({ database, maxAttempts: 3 });
+
+    await expect(
+      repository.markUnitFailed({
+        deliveryId: DELIVERY_ID,
+        unitId: UNIT_ID,
+        claimToken: STALE_TOKEN,
+        attempt: 2,
+        failureCode: "provider_retry_exhausted",
+        failureDisposition: "PRIVATE-DISPOSITION-SENTINEL",
+        error: SAFE_ERROR,
+        now: NOW,
+      } as never),
+    ).rejects.toThrow("invalid guide delivery failure disposition");
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it("fences a no-provider window closure and terminalizes the delivery", async () => {
+    const { database, queries, tx } = createRecordingDatabase("pending");
+    tx.$queryRaw.mockImplementation(async (query: unknown) => {
+      const captured = captureQuery(query);
+      queries.push(captured);
+      const sql = normalizedSql(captured);
+      if (sql.startsWith("select") && sql.includes('from "guide_delivery" as delivery')) {
+        return [
+          {
+            id: DELIVERY_ID,
+            conversationId: "50000000-0000-4000-8000-000000000001",
+            resourceId: "60000000-0000-4000-8000-000000000001",
+            triggerKind: "inbound_reply",
+            triggerId: "70000000-0000-4000-8000-000000000001",
+            status: "sending",
+            failureCode: null,
+            nextAttemptAt: null,
+            claimToken: STALE_TOKEN,
+            sendWindowExpiresAt: new Date("2026-08-18T12:00:00.000Z"),
+          },
+        ];
+      }
+      if (sql.includes('update "guide_delivery" as delivery')) return [{ id: DELIVERY_ID }];
+      return [];
+    });
+    const repository = createGuideDeliveryRepository({ database, maxAttempts: 3 });
+
+    await (repository as never as {
+      markWindowClosed(input: {
+        deliveryId: string;
+        claimToken: string;
+        now: Date;
+      }): Promise<boolean>;
+    }).markWindowClosed({
+      deliveryId: DELIVERY_ID,
+      claimToken: STALE_TOKEN,
+      now: NOW,
+    });
+
+    const deliveryUpdate = queries.find((query) => {
+      const sql = normalizedSql(query);
+      return sql.startsWith("update") && sql.includes('guide_delivery" as delivery');
+    });
+    expect(deliveryUpdate).toBeDefined();
+    expectDeliveryFence(deliveryUpdate!);
+    expect(normalizedSql(deliveryUpdate!)).toContain("messaging_window_closed");
+  });
+
+  it("rolls back a begun-unit window checkpoint if the delivery fence is lost", async () => {
+    const { database, queries, tx } = createRecordingDatabase();
+    tx.$queryRaw.mockImplementation(async (query: unknown) => {
+      const captured = captureQuery(query);
+      queries.push(captured);
+      const sql = normalizedSql(captured);
+      if (sql.startsWith("select") && sql.includes('from "guide_delivery" as delivery')) {
+        return [
+          {
+            id: DELIVERY_ID,
+            conversationId: "50000000-0000-4000-8000-000000000001",
+            resourceId: "60000000-0000-4000-8000-000000000001",
+            triggerKind: "inbound_reply",
+            triggerId: "70000000-0000-4000-8000-000000000001",
+            status: "sending",
+            failureCode: null,
+            nextAttemptAt: null,
+            claimToken: STALE_TOKEN,
+            sendWindowExpiresAt: new Date("2026-08-18T12:00:00.000Z"),
+          },
+        ];
+      }
+      if (sql.includes('update "guide_delivery_unit" as unit')) return [{ id: UNIT_ID }];
+      return [];
+    });
+    const repository = createGuideDeliveryRepository({ database, maxAttempts: 3 });
+
+    await expect(
+      repository.markWindowClosed({
+        deliveryId: DELIVERY_ID,
+        claimToken: STALE_TOKEN,
+        unitId: UNIT_ID,
+        attempt: 2,
+        now: NOW,
+      }),
+    ).rejects.toThrow("window checkpoint lost claim");
+    expect(tx.eventLog.create).not.toHaveBeenCalled();
+  });
 });
