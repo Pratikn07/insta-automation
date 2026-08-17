@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
-import { Layers, MessageSquare, Plus, Tag, Trash2 } from "lucide-react";
+import { CircleAlert, Layers, MessageSquare, Plus, Tag, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
@@ -138,6 +138,12 @@ function SequenceCard({ r, onDelete }: { r: Resource; onDelete: () => void }) {
             </div>
             {r.description && (
               <p className="mt-2 line-clamp-2 text-sm text-muted-foreground">{r.description}</p>
+            )}
+            {(r.invalidMessageCount ?? 0) > 0 && (
+              <span className="mt-2 inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-1 text-xs font-medium text-amber-900 dark:bg-amber-950/50 dark:text-amber-200">
+                <CircleAlert className="size-3.5" />
+                {r.invalidMessageCount} {r.invalidMessageCount === 1 ? "message needs" : "messages need"} attention
+              </span>
             )}
           </Link>
           <Button

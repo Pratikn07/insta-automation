@@ -7,6 +7,7 @@ export interface Resource {
   description: string | null;
   createdAt: string;
   _count?: { messages: number; keywords: number };
+  invalidMessageCount?: number;
 }
 
 export interface ResourceMessage {

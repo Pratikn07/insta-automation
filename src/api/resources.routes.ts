@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
+import { isInstagramGuideTextTooLong } from "../../shared/guideMessagePolicy.js";
 
 export const resourcesRouter = Router();
 
@@ -15,9 +16,17 @@ resourcesRouter.get("/", async (_req, res) => {
     orderBy: { createdAt: "desc" },
     include: {
       _count: { select: { messages: true, keywords: true } },
+      messages: { select: { body: true } },
     },
   });
-  res.json(rows);
+  res.json(
+    rows.map(({ messages, ...resource }) => ({
+      ...resource,
+      invalidMessageCount: messages.filter(
+        (message) => message.body !== null && isInstagramGuideTextTooLong(message.body),
+      ).length,
+    })),
+  );
 });
 
 resourcesRouter.get("/:id", async (req, res) => {
@@ -29,7 +38,12 @@ resourcesRouter.get("/:id", async (req, res) => {
     },
   });
   if (!row) return res.status(404).json({ error: "not_found" });
-  res.json(row);
+  res.json({
+    ...row,
+    invalidMessageCount: row.messages.filter(
+      (message) => message.body !== null && isInstagramGuideTextTooLong(message.body),
+    ).length,
+  });
 });
 
 resourcesRouter.post("/", async (req, res) => {
