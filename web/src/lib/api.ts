@@ -9,6 +9,44 @@ import type {
 
 const apiBase = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
 
+/**
+ * Nothing in this client may hang indefinitely.
+ *
+ * With the API stopped, a query was observed sitting in `pending` well past its
+ * retry budget instead of settling into an error — so the page held skeletons
+ * forever and the error state never rendered. `fetch` itself rejects in ~3ms on
+ * a refused connection, so the stall is upstream of it, in the Supabase auth
+ * call that resolves the bearer token.
+ *
+ * Rather than depend on every dependency settling, the whole request is bounded.
+ * A timeout produces a real rejection, which produces a real error state, which
+ * is the difference between "we could not load this" and a spinner that never
+ * stops. Generous enough not to fire on a slow cohort scan.
+ */
+const REQUEST_TIMEOUT_MS = 20_000;
+
+export class TimeoutError extends Error {
+  constructor(path: string) {
+    super(`Request to ${path} timed out after ${REQUEST_TIMEOUT_MS / 1000}s`);
+    this.name = "TimeoutError";
+  }
+}
+
+/** Rejects if the wrapped promise has not settled in time. */
+async function withTimeout<T>(work: Promise<T>, path: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new TimeoutError(path)), REQUEST_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export class ApiError extends Error {
   status: number;
   body: unknown;
@@ -56,6 +94,10 @@ async function fetchOnce(path: string, init: RequestInit, token: string | undefi
 }
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
+  return withTimeout(request<T>(path, init), path);
+}
+
+async function request<T>(path: string, init: RequestInit): Promise<T> {
   let token = await getAccessToken(false);
   let res = await fetchOnce(path, init, token);
 
