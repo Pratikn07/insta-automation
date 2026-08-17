@@ -172,6 +172,30 @@ describe("DmRecoveryList", () => {
     expect(container.textContent).not.toMatch(/\bUnread\b/);
   });
 
+  it("renders Due as the automation state beside the read evidence", async () => {
+    list.mockResolvedValue({
+      rows: [row({ eligibleAt: "2020-01-01T00:00:00.000Z" })],
+      nextCursor: null,
+    });
+    renderList();
+
+    const reminder = await screen.findByRole("button", { name: /@sarah/ });
+    expect(reminder).toHaveTextContent("Due");
+    expect(reminder).toHaveTextContent("No confirmed read");
+  });
+
+  it("renders Scheduled before the eligibility time", async () => {
+    list.mockResolvedValue({
+      rows: [row({ eligibleAt: "2099-01-01T00:00:00.000Z" })],
+      nextCursor: null,
+    });
+    renderList();
+
+    expect(await screen.findByRole("button", { name: /@sarah/ })).toHaveTextContent(
+      "Scheduled",
+    );
+  });
+
   it("refetches with the selected view", async () => {
     const user = userEvent.setup();
     renderList();

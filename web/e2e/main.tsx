@@ -164,6 +164,7 @@ function json(body: unknown, status = 200): Response {
 
 const RECOVERY_CANCELLED = new Set<string>();
 const RECOVERY_REVIEWED = new Set<string>();
+const RECOVERY_NOW_MS = Date.parse("2026-08-07T06:00:00.000Z");
 
 function recoveryRow(over: Record<string, unknown> = {}) {
   return {
@@ -195,6 +196,15 @@ function recoveryRow(over: Record<string, unknown> = {}) {
 
 const RECOVERY_ROWS: Record<string, Record<string, unknown>[]> = {
   "recovery-ready": [recoveryRow()],
+  "recovery-scheduled": [
+    recoveryRow({ eligibleAt: "2026-08-08T10:00:00.000Z" }),
+  ],
+  "recovery-sending": [
+    recoveryRow({ status: "sending", lastAttemptAt: "2026-08-07T05:59:58.000Z", attempts: 1 }),
+  ],
+  "recovery-failed": [
+    recoveryRow({ status: "send_failed", lastErrorCategory: "graph_rejected", attempts: 1 }),
+  ],
   "recovery-seen": [
     recoveryRow({ status: "suppressed", suppressionReason: "seen", seenAt: "2026-08-06T09:00:00.000Z" }),
   ],
@@ -253,8 +263,12 @@ function recoveryCounts() {
   };
   return {
     all: { records: rows.length, people },
-    scheduled: of((r) => r.status === "waiting" && r.eligibleAt! > "2026-08-07"),
-    ready: of((r) => r.status === "waiting"),
+    scheduled: of(
+      (r) => r.status === "waiting" && Date.parse(String(r.eligibleAt)) > RECOVERY_NOW_MS,
+    ),
+    ready: of(
+      (r) => r.status === "waiting" && Date.parse(String(r.eligibleAt)) <= RECOVERY_NOW_MS,
+    ),
     sent: of((r) => r.status === "sent"),
     suppressed: of((r) => r.status === "suppressed"),
     control: of((r) => r.status === "control"),
@@ -740,7 +754,12 @@ function installFetchStub(): void {
       const view = new URL(url, window.location.origin).searchParams.get("view") ?? "all";
       const rows = currentRecoveryRows().filter((r) => {
         if (view === "all") return true;
-        if (view === "ready") return r.status === "waiting";
+        if (view === "scheduled") {
+          return r.status === "waiting" && Date.parse(String(r.eligibleAt)) > RECOVERY_NOW_MS;
+        }
+        if (view === "ready") {
+          return r.status === "waiting" && Date.parse(String(r.eligibleAt)) <= RECOVERY_NOW_MS;
+        }
         if (view === "attention") {
           return ["send_failed", "send_uncertain", "tracking_unavailable"].includes(
             r.status as string,

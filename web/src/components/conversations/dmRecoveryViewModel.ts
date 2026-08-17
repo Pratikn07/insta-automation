@@ -39,6 +39,8 @@ const CANCELLABLE: ReadonlySet<string> = new Set([
   "waiting",
   "control",
   "tracking_unavailable",
+  // Meta definitively rejected the previous attempt. Cancellation cannot undo
+  // that attempt; it prevents the retryable row from making a future one.
   "send_failed",
 ]);
 

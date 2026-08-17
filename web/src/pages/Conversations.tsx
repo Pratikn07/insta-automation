@@ -107,6 +107,7 @@ export function Conversations() {
   const [selected, setSelected] = useState<Conversation | null>(null);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [lineageUser, setLineageUser] = useState<string | null>(null);
+  const now = new Date();
 
   const selectLens = (nextLens: Lens) => {
     setSearchParams((current) => {
@@ -308,7 +309,7 @@ export function Conversations() {
                 exit={{ opacity: 0, y: -4 }}
                 transition={{ duration: 0.18, delay: Math.min(i * 0.015, 0.3) }}
               >
-                <ConversationRow c={c} onClick={() => setSelected(c)} />
+                <ConversationRow c={c} now={now} onClick={() => setSelected(c)} />
               </motion.li>
             ))}
           </AnimatePresence>
@@ -368,9 +369,9 @@ function isRetrying(c: Conversation): boolean {
   return c.state === "awaiting_done" && c.delivery === "retrying";
 }
 
-function ConversationRow({ c, onClick }: { c: Conversation; onClick: () => void }) {
+function ConversationRow({ c, now, onClick }: { c: Conversation; now: Date; onClick: () => void }) {
   const meta = rowBadge(c);
-  const markers = journeyRowMarkers(c);
+  const markers = journeyRowMarkers(c, now);
   return (
     <Card className="group transition-colors hover:bg-accent/40">
       <CardContent className="p-0">

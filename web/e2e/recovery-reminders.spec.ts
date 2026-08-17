@@ -24,16 +24,39 @@ test.describe("evidence language", () => {
 
   test("a due reminder reports no confirmed read, never Unread", async ({ page }) => {
     await openRecovery(page, "recovery-ready");
-    await page.getByRole("button", { name: /Due/ }).click();
+    await page.getByRole("button", { name: /^Due:/ }).click();
 
     await expect(page.getByText("No confirmed read").first()).toBeVisible();
     // The claim the whole feature is built to avoid.
     await expect(page.getByText(/^Unread$/)).toHaveCount(0);
   });
 
+  test("a future reminder is visibly Scheduled", async ({ page }) => {
+    await openRecovery(page, "recovery-scheduled");
+    await page.getByRole("button", { name: /^Scheduled/ }).click();
+
+    await expect(page.getByRole("button", { name: /@sarah/ })).toContainText("Scheduled");
+  });
+
+  test("a claimed public-comment attempt is visibly Sending", async ({ page }) => {
+    await openRecovery(page, "recovery-sending");
+    await page.getByRole("button", { name: /^All/ }).click();
+
+    await expect(page.getByRole("button", { name: /@sarah/ })).toContainText("Sending");
+  });
+
+  test("a definitive rejection is visibly Failed", async ({ page }) => {
+    await openRecovery(page, "recovery-failed");
+    await page.getByRole("button", { name: /^Attention/ }).click();
+
+    await expect(page.getByRole("button", { name: /@sarah/ })).toContainText(
+      "Failed—public reminder not posted",
+    );
+  });
+
   test("the drawer explains why a receipt may be missing", async ({ page }) => {
     await openRecovery(page, "recovery-ready");
-    await page.getByRole("button", { name: /Due/ }).click();
+    await page.getByRole("button", { name: /^Due:/ }).click();
     await page.getByRole("button", { name: /@sarah/ }).click();
 
     await expect(
@@ -70,7 +93,7 @@ test.describe("evidence language", () => {
 
   test("a settings rejection takes trigger-specific copy", async ({ page }) => {
     await openRecovery(page, "recovery-settings");
-    await page.getByRole("button", { name: /Due/ }).click();
+    await page.getByRole("button", { name: /^Due:/ }).click();
     await expect(page.getByText("Settings blocked")).toBeVisible();
   });
 
@@ -109,7 +132,7 @@ test.describe("the drawer", () => {
 
   test("links to the original post in a new tab", async ({ page }) => {
     await openRecovery(page, "recovery-ready");
-    await page.getByRole("button", { name: /Due/ }).click();
+    await page.getByRole("button", { name: /^Due:/ }).click();
     await page.getByRole("button", { name: /@sarah/ }).click();
 
     const link = page.getByRole("dialog").getByRole("link", { name: "View post" });
@@ -119,7 +142,7 @@ test.describe("the drawer", () => {
 
   test("offers no way to force a send", async ({ page }) => {
     await openRecovery(page, "recovery-ready");
-    await page.getByRole("button", { name: /Due/ }).click();
+    await page.getByRole("button", { name: /^Due:/ }).click();
     await page.getByRole("button", { name: /@sarah/ }).click();
 
     await expect(page.getByRole("button", { name: /send now/i })).toHaveCount(0);
@@ -129,7 +152,7 @@ test.describe("the drawer", () => {
 test.describe("owner actions", () => {
   test("cancelling posts, confirms, and refreshes the row", async ({ page }) => {
     await openRecovery(page, "recovery-ready");
-    await page.getByRole("button", { name: /Due/ }).click();
+    await page.getByRole("button", { name: /^Due:/ }).click();
     await page.getByRole("button", { name: /@sarah/ }).click();
 
     await page.getByRole("button", { name: "Cancel reminder" }).click();
@@ -149,7 +172,7 @@ test.describe("owner actions", () => {
 
   test("dismissing the dialog leaves the reminder alone", async ({ page }) => {
     await openRecovery(page, "recovery-ready");
-    await page.getByRole("button", { name: /Due/ }).click();
+    await page.getByRole("button", { name: /^Due:/ }).click();
     await page.getByRole("button", { name: /@sarah/ }).click();
 
     await page.getByRole("button", { name: "Cancel reminder" }).click();
@@ -187,7 +210,7 @@ test.describe("health and the rest of the page", () => {
       ),
     ).toBeVisible();
     await expect(page.getByText(/auth_or_permission/)).toBeVisible();
-    await page.getByRole("button", { name: /Due/ }).click();
+    await page.getByRole("button", { name: /^Due:/ }).click();
     await expect(page.getByRole("button", { name: /@sarah/ })).toBeVisible();
   });
 

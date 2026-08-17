@@ -251,10 +251,13 @@ demographics, feed-follow attribution, spike detection.
 - **One permission level.** `ADMIN_EMAIL` is a comma-separated allowlist and every
   allowlisted address gets identical full access. There are no roles today — the
   creator and the operator see exactly the same console.
-- **Nothing reaches a follower without a person deciding.** Every AI capability
-  ships OFF and is enabled deliberately; turning one off must never disable
-  existing automation. `AI_SEND_ENABLED` is separate from drafting. The Assistant
-  has no send, approve, or settings control anywhere in it, by construction.
+- **A person defines every sending policy; AI never decides to send.** Every AI
+  capability ships OFF and is enabled deliberately; AI-authored copy requires
+  human approval. Template-driven gate, sequence, and recovery automation may
+  execute only after the owner configures it, and turning AI off must never
+  disable that existing automation. `AI_SEND_ENABLED` is separate from drafting.
+  The Assistant has no send, approve, or settings control anywhere in it, by
+  construction.
 - **Never `z.coerce.boolean` for an env flag** — it parses the string `"false"` as
   `true`. Use `src/config/booleanFlag.ts`.
 - **Meta demographics report exactly 45 countries.** Summing them undercounts
@@ -405,8 +408,9 @@ automation for one account. There are no external users.
    number. Unknown renders as unknown, never as zero.
 3. **Two jobs, equally first-class.** The growth decision and the running machine.
    Work that serves one at the other's expense is a regression.
-4. **Nothing reaches a follower without a person deciding.** Automation drafts and
-   proposes; a human sends.
+4. **Human authority over sending.** A person configures every template and
+   automation policy. AI drafts and proposes; a human approves AI-authored copy.
+   Configured template automation may execute within its recorded safety gates.
 5. **Two readers, one console.** It must be legible to the creator without her
    knowing the internals, and complete enough for the operator who built them.
 

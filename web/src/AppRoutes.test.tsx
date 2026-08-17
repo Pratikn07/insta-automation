@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Outlet, useLocation } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { NAV_DESTINATIONS } from "@/lib/navigation";
 
 vi.mock("@/components/layout/AppShell", () => ({ AppShell: () => <Outlet /> }));
 vi.mock("@/pages/Home", () => ({ Home: () => null }));
@@ -23,20 +24,45 @@ function LocationProbe() {
   return <output aria-label="location">{`${location.pathname}${location.search}`}</output>;
 }
 
+async function renderRoute(initialEntry: string) {
+  const { AppRoutes } = await import("./AppRoutes");
+  return render(
+    <MemoryRouter initialEntries={[initialEntry]}>
+      <AppRoutes />
+      <LocationProbe />
+    </MemoryRouter>,
+  );
+}
+
+afterEach(cleanup);
+
 describe("legacy routes", () => {
   it("preserves the People intent when redirecting /users", async () => {
-    const { AppRoutes } = await import("./AppRoutes");
-    render(
-      <MemoryRouter initialEntries={["/users"]}>
-        <AppRoutes />
-        <LocationProbe />
-      </MemoryRouter>,
-    );
+    await renderRoute("/users");
 
     await waitFor(() =>
       expect(screen.getByLabelText("location")).toHaveTextContent(
         "/conversations?lens=people",
       ),
     );
+  });
+
+  it("preserves the old /reels bookmark as Content", async () => {
+    await renderRoute("/reels");
+    await waitFor(() =>
+      expect(screen.getByLabelText("location")).toHaveTextContent("/content"),
+    );
+  });
+});
+
+describe("authenticated destinations", () => {
+  it.each(NAV_DESTINATIONS)("matches $path for $label", async ({ path }) => {
+    await renderRoute(path);
+    expect(screen.getByLabelText("location")).toHaveTextContent(path);
+  });
+
+  it("matches sequence editor detail routes", async () => {
+    await renderRoute("/sequences/sequence-1");
+    expect(screen.getByLabelText("location")).toHaveTextContent("/sequences/sequence-1");
   });
 });

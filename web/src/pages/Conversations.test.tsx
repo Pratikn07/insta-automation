@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter, useLocation } from "react-router-dom";
+import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -30,6 +30,16 @@ function LocationProbe() {
   return <output aria-label="location">{`${location.pathname}${location.search}`}</output>;
 }
 
+function HistoryControls() {
+  const navigate = useNavigate();
+  return (
+    <>
+      <button type="button" onClick={() => navigate(-1)}>History back</button>
+      <button type="button" onClick={() => navigate(1)}>History forward</button>
+    </>
+  );
+}
+
 function renderPage(initialEntry = "/conversations") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -37,6 +47,7 @@ function renderPage(initialEntry = "/conversations") {
       <QueryClientProvider client={client}>
         <Conversations />
         <LocationProbe />
+        <HistoryControls />
       </QueryClientProvider>
     </MemoryRouter>,
   );
@@ -115,6 +126,48 @@ describe("Conversations lenses", () => {
       expect(api.mock.calls.some((call) => String(call[0]).startsWith("/users"))).toBe(true),
     );
     expect(screen.getByPlaceholderText("Search by @username or name…")).toBeInTheDocument();
+  });
+
+  it("falls back safely for an unknown lens", () => {
+    renderPage("/conversations?lens=unknown");
+    expect(screen.getByRole("button", { name: "Needs reply" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+
+  it("preserves unrelated search parameters when changing lens", async () => {
+    renderPage("/conversations?source=bookmark");
+
+    await userEvent.click(screen.getByRole("button", { name: "People" }));
+    const location = screen.getByLabelText("location").textContent ?? "";
+    const search = new URL(location, "https://tinysoho.test").searchParams;
+    expect(search.get("source")).toBe("bookmark");
+    expect(search.get("lens")).toBe("people");
+  });
+
+  it("restores lenses through browser history", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole("button", { name: "People" }));
+    await user.click(screen.getByRole("button", { name: "DMs" }));
+    await user.click(screen.getByRole("button", { name: "History back" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "People" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      ),
+    );
+
+    await user.click(screen.getByRole("button", { name: "History forward" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "DMs" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      ),
+    );
   });
 
   // Not tested: that /ai/capabilities is disabled on the People lens. The page

@@ -331,13 +331,20 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
                       {row.keyword.keyword} · {formatAbsolute(row.eligibleAt)}
                     </span>
                   </span>
-                  <span
-                    className={cn(
-                      "shrink-0 rounded-full px-2 py-0.5 text-xs font-medium",
-                      TONE_CLASS[state.tone],
-                    )}
-                  >
-                    {state.label}
+                  <span className="flex shrink-0 flex-col items-end gap-1">
+                    {state.actionState ? (
+                      <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-foreground">
+                        {state.actionState}
+                      </span>
+                    ) : null}
+                    <span
+                      className={cn(
+                        "rounded-full px-2 py-0.5 text-xs font-medium",
+                        TONE_CLASS[state.tone],
+                      )}
+                    >
+                      {state.label}
+                    </span>
                   </span>
                   {row.triggerKind === "settings_blocked" &&
                   row.settingsEvidence &&

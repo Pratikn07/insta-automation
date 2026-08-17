@@ -118,6 +118,9 @@ export function DmRecoveryDrawer({
             <span>Original post unavailable</span>
           )}
         </p>
+        {state.actionState ? (
+          <p className="label-caps text-foreground">{state.actionState}</p>
+        ) : null}
         <p className="font-medium">{state.label}</p>
         <p className="text-xs text-muted-foreground">{state.description}</p>
       </header>

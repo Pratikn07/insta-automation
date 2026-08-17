@@ -126,6 +126,18 @@ describe("DmRecoveryDrawer", () => {
     expect(document.body.textContent).not.toMatch(/\bUnread\b/);
   });
 
+  it("shows Due separately from the missing-read evidence", async () => {
+    renderDrawer({ eligibleAt: "2020-01-01T00:00:00.000Z" });
+
+    expect(await screen.findByText("Due")).toBeInTheDocument();
+    expect(screen.getByText("No confirmed read")).toBeInTheDocument();
+  });
+
+  it("shows Scheduled before eligibility", async () => {
+    renderDrawer({ eligibleAt: "2099-01-01T00:00:00.000Z" });
+    expect(await screen.findByText("Scheduled")).toBeInTheDocument();
+  });
+
   it("shows read evidence when it exists", async () => {
     // The API builds the timeline from the same stored timestamps, so a row
     // with seenAt always carries a matching entry.

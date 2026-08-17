@@ -25,7 +25,7 @@ export type JourneyRowMarkers = {
  * unread signal, so a journey row may report that a reminder is scheduled or
  * that tracking was unavailable — never that someone did not read something.
  */
-export function journeyRowMarkers(c: Conversation): JourneyRowMarkers {
+export function journeyRowMarkers(c: Conversation, now: Date): JourneyRowMarkers {
   const note = c.readTracking === "predates_tracking" ? PREDATES_TRACKING_TEXT : null;
 
   if (!c.recovery) return { note, recovery: null };
@@ -37,18 +37,24 @@ export function journeyRowMarkers(c: Conversation): JourneyRowMarkers {
   }
 
   switch (c.recovery.status) {
-    case "waiting":
+    case "waiting": {
+      const due = Date.parse(c.recovery.eligibleAt) <= now.getTime();
+      return { note, recovery: { label: due ? "Due" : "Scheduled", pending: true } };
+    }
     case "sending":
-      return { note, recovery: { label: "Reminder scheduled", pending: true } };
+      return { note, recovery: { label: "Sending", pending: true } };
     case "control":
       return { note, recovery: { label: "Control—no reminder", pending: false } };
     case "send_failed":
+      return { note, recovery: { label: "Failed—needs review", pending: false } };
     case "send_uncertain":
+      return { note, recovery: { label: "Outcome uncertain—needs review", pending: false } };
     case "tracking_unavailable":
       return { note, recovery: { label: "Reminder needs review", pending: false } };
+    case "suppressed":
+      return { note, recovery: { label: "Suppressed—no reminder", pending: false } };
+    case "cancelled":
     default:
-      // cancelled, suppressed, and anything added later: a reminder existed but
-      // will not arrive, and the row should not imply one is coming.
-      return { note, recovery: { label: "No reminder", pending: false } };
+      return { note, recovery: { label: "Cancelled—no reminder", pending: false } };
   }
 }
