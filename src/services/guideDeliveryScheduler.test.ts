@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { spawn } from "node:child_process";
+import path from "node:path";
 
 const loggerError = vi.fn();
 vi.mock("../lib/logger.js", () => ({ logger: { error: loggerError, info: vi.fn(), warn: vi.fn() } }));
-const { bindGuideDeliverySchedulerShutdown, startGuideDeliveryScheduler } = await import("./guideDeliveryScheduler.js");
+const { startGuideDeliveryScheduler } = await import("./guideDeliveryScheduler.js");
 
 beforeEach(() => loggerError.mockReset());
 
@@ -52,17 +54,60 @@ describe("guide delivery scheduler", () => {
     expect(JSON.stringify(loggerError.mock.calls)).not.toContain("private failure");
   });
 
-  it("quiesces the retained scheduler interval on either graceful shutdown signal", () => {
-    const listeners = new Map<string, () => void>();
-    const processLike = {
-      once: vi.fn((signal: string, callback: () => void) => listeners.set(signal, callback)),
-    };
-    const stop = vi.fn();
+  it("closes a real HTTP server and preserves SIGTERM termination after quiescing work", async () => {
+    const modulePath = path.resolve("src/services/guideDeliveryScheduler.ts");
+    const child = spawn(
+      process.execPath,
+      [
+        path.resolve("node_modules/tsx/dist/cli.mjs"),
+        "-e",
+        `
+          import { createServer } from "node:http";
+          import { writeSync } from "node:fs";
+          import { bindGuideDeliveryServerShutdown } from ${JSON.stringify(modulePath)};
+          const interval = setInterval(() => undefined, 1_000);
+          const server = createServer((_req, res) => res.end("ok"));
+          bindGuideDeliveryServerShutdown({
+            server,
+            stopOwnedWork: () => {
+              clearInterval(interval);
+              writeSync(1, "STOPPED\\n");
+            },
+          });
+          server.listen(0, () => console.log("READY"));
+        `,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    let output = "";
+    child.stdout.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+    child.stderr.on("data", (chunk: Buffer) => { output += chunk.toString(); });
 
-    bindGuideDeliverySchedulerShutdown(stop, processLike);
-    expect(processLike.once).toHaveBeenCalledTimes(2);
-    listeners.get("SIGTERM")!();
-    listeners.get("SIGINT")!();
-    expect(stop).toHaveBeenCalledOnce();
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error(`child did not start: ${output}`)), 2_000);
+      child.stdout.on("data", () => {
+        if (output.includes("READY")) {
+          clearTimeout(timeout);
+          resolve();
+        }
+      });
+    });
+    child.kill("SIGTERM");
+    const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        child.kill("SIGKILL");
+        reject(new Error(`child did not terminate after SIGTERM: ${output}`));
+      }, 2_000);
+      child.once("exit", (code, signal) => {
+        clearTimeout(timeout);
+        resolve({ code, signal });
+      });
+    });
+
+    // tsx's Node wrapper converts the re-delivered signal into its conventional
+    // process status; either way this proves the child did not remain alive on
+    // the HTTP listener or interval after graceful cleanup.
+    expect(exit).toEqual({ code: 143, signal: null });
+    expect(output).toContain("STOPPED");
   });
 });

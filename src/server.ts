@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import type { Server } from "node:http";
 import { env } from "./config/env.js";
 import { logger } from "./lib/logger.js";
 import { captureRawBody, handleVerification, verifyMetaSignature } from "./meta/verifyWebhook.js";
@@ -18,7 +19,7 @@ import { runDmRecoveryTick } from "./services/dmRecoveryWorker.js";
 import { runHistoricalRecoveryTick } from "./services/historicalRecoveryWorker.js";
 import { runOriginEnrichmentTick } from "./services/originEnrichmentWorker.js";
 import {
-  bindGuideDeliverySchedulerShutdown,
+  bindGuideDeliveryServerShutdown,
   startGuideDeliveryScheduler,
 } from "./services/guideDeliveryScheduler.js";
 import { runGuideDeliveryTick } from "./services/guideDeliveryWorker.js";
@@ -30,11 +31,6 @@ import { buildDeploymentHealth } from "./services/deploymentHealth.js";
 
 const app = express();
 let stopGuideDeliveryScheduler: (() => void) | undefined;
-
-bindGuideDeliverySchedulerShutdown(() => {
-  stopGuideDeliveryScheduler?.();
-  stopGuideDeliveryScheduler = undefined;
-});
 
 const allowedOrigins = (env.WEB_ORIGIN ?? "http://localhost:5173")
   .split(",")
@@ -108,7 +104,7 @@ function recoverStaleReplyDraftSends(): void {
  * is the normal path; setting it false is for a local server run to exercise
  * the API and the UI without the timers.
  */
-function startBackgroundWorkers(): void {
+function startBackgroundWorkers(server: Server): void {
   const EXPIRY_INTERVAL_MS = 60 * 60 * 1000;
   setInterval(() => {
     expireOldConversations()
@@ -201,6 +197,13 @@ function startBackgroundWorkers(): void {
       clearInterval: globalThis.clearInterval,
       runTick: runGuideDeliveryTick,
     });
+    bindGuideDeliveryServerShutdown({
+      server,
+      stopOwnedWork: () => {
+        stopGuideDeliveryScheduler?.();
+        stopGuideDeliveryScheduler = undefined;
+      },
+    });
   } else {
     logger.info({ errorCode: "guide_delivery_disabled" }, "Guide delivery worker disabled");
   }
@@ -240,7 +243,7 @@ function startBackgroundWorkers(): void {
   });
 }
 
-app.listen(env.PORT, () => {
+const server = app.listen(env.PORT, () => {
   logger.info(
     { port: env.PORT, env: env.NODE_ENV, workers: env.WORKERS_ENABLED },
     "insta-automation listening",
@@ -281,7 +284,7 @@ app.listen(env.PORT, () => {
   // Make sure ig_token exists (and honours a hand-pasted env override) before
   // any worker tick fires. Non-throwing: getAccessToken falls back to env.
   void seedTokenFromEnv().then(() => {
-    startBackgroundWorkers();
+    startBackgroundWorkers(server);
     void runTokenRefreshTick();
     void runFeedFollowSnapshotTick();
   });
