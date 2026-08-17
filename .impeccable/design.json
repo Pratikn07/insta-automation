@@ -345,6 +345,11 @@
         "name": "The Foreign Surface Rule",
         "body": "A preview of somebody else's interface is not ours to restyle. The phone mockup and its chat bubbles simulate an Instagram DM and stay Instagram-coloured on an ivory page. Recolouring them would make the preview misrepresent what the follower actually receives. Treat it as a screenshot: framed by our chrome, never repainted.",
         "section": "components"
+      },
+      {
+        "name": "The Legible Caution Rule",
+        "body": "A caution that cannot be read is not a caution. The Caveat component carried the two sentences that stop a reader misreading the funnel, in an amber measuring 1.14:1 on paper. Caution prose uses #7A5A0C at 5.85:1. Check the warning colours first when a ground changes — they are the ones nobody looks at until they matter.",
+        "section": "colors"
       }
     ],
     "dos": [
@@ -369,9 +374,9 @@
       "Don't state a percentage without a usable baseline, or above a withheld rate.",
       "Don't show a green status beside a value you do not have.",
       "Don't add a second typeface, or reach past weight 500 for emphasis.",
-      "Don't write an eyebrow above a heading, or number sections when the order carries no information.",
       "Don't rely on hover for anything a phone user needs.",
-      "Don't restyle a preview of another product's surface into this system. A phone mockup of an Instagram DM stays Instagram-coloured."
+      "Don't restyle a preview of another product's surface into this system. A phone mockup of an Instagram DM stays Instagram-coloured.",
+      "Don't write a decorative kicker above a heading. A short label that identifies the subject is not a kicker — the test is whether removing the line loses information."
     ]
   }
 }

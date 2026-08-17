@@ -22,17 +22,25 @@ export interface GuardedNumberProps {
   className?: string;
 }
 
+/**
+ * One colour was used at all three sizes: funnel-soft, which measures 3.32:1 on
+ * paper. That clears the 3:1 a LARGE figure needs and fails the 4.5:1 that
+ * 16px text needs, so the same token was legal on the hero and illegal on the
+ * inline row it also styled. The mark colour (funnel-mark, 8.41:1) is legible at
+ * every size, so the rate now uses one value that is right everywhere rather
+ * than one that happens to pass at the top of the page.
+ */
 const SIZES = {
   hero: {
-    value: "text-6xl sm:text-7xl font-semibold tracking-[-0.045em]",
-    counts: "mt-3 text-base text-foreground/85",
+    value: "text-[2.6rem] sm:text-[3rem] font-medium tracking-[-0.03em]",
+    counts: "mt-3 text-[13px] text-foreground/85",
   },
   kpi: {
-    value: "text-3xl font-semibold tracking-[-0.03em]",
+    value: "text-2xl font-medium tracking-[-0.02em]",
     counts: "mt-1 text-xs text-muted-foreground",
   },
   inline: {
-    value: "text-base font-semibold tracking-[-0.01em]",
+    value: "text-base font-medium tracking-[-0.01em]",
     counts: "mt-0.5 text-[11px] text-muted-foreground",
   },
 } as const;
@@ -56,7 +64,7 @@ export function GuardedNumber({ rate, unit, size = "kpi", className }: GuardedNu
 
   return (
     <div className={className}>
-      <div className={cn(s.value, "tabular-nums text-[color:var(--color-funnel-soft)]")}>
+      <div className={cn(s.value, "tabular-nums text-funnel-mark")}>
         {rate.pct}%
       </div>
       <p className={s.counts}>

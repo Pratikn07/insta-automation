@@ -55,6 +55,11 @@
      highest-priority label on the page. */
   --color-urgent: #a8412b; /* 5.57:1 */
 
+  /* Caveat prose. A caution that cannot be read is not a caution: the amber this
+     replaced (#FDE68A) measured 1.14:1 on paper, and it carried the two
+     sentences that stop a reader misreading the funnel. */
+  --color-caution: #7a5a0c; /* 5.85:1 */
+
   --color-destructive: #8c3a2b; /* 6.99:1 */
   --color-destructive-foreground: #f7f5ef;
 

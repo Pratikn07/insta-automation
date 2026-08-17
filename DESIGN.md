@@ -206,6 +206,13 @@ a decorative fill, and it never tints a surface that carries a finding.
 on this surface should make a person feel caught out; the product's voice
 forbids it for followers and the same restraint applies to its operator.
 
+**The Legible Caution Rule.** A caution that cannot be read is not a caution.
+The `Caveat` component — which carries "this is not X% retention" and "the grey
+block is an absence of evidence" — was rendering in an amber that measures
+**1.14:1** on paper. Caution prose is `#7A5A0C` (**5.85:1**). When a ground
+changes, check the warning colours first: they are the ones nobody looks at
+until the moment they matter.
+
 **The Ground Truth Rule.** Every colour here was measured against `#F7F5EF`. A
 previous palette was measured against `#0a0a0a`, and a third against `#F7F4EE`;
 none survived the move. If the ground changes again, every value is void until
@@ -408,6 +415,10 @@ whose data failed to load says "No reading" and wears the unknown chip.
   rate.
 - **Don't** show a green status beside a value you do not have.
 - **Don't** add a second typeface, or reach past weight 500 for emphasis.
-- **Don't** write an eyebrow above a heading, or number sections when the order
-  carries no information.
+- **Don't** write a decorative kicker above a heading, or number sections when
+  the order carries no information. A short label that *identifies* the subject
+  is not a kicker and is welcome — "Biggest leak · no reply" above a heading
+  tells the reader which leak, and Funnels would be harder to scan without it.
+  The test is whether removing the line loses information. If it does not, it
+  was decoration.
 - **Don't** rely on hover for anything a phone user needs.

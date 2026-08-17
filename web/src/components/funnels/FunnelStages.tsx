@@ -47,7 +47,7 @@ export function FunnelStages({ stages, cohortSize, renderLoss, notes }: FunnelSt
                 </span>
                 {stage.bypassable && (
                   <span
-                    className="rounded-full border px-2 py-px text-[10px] font-semibold uppercase tracking-[0.06em] text-muted-foreground"
+                    className="rounded-sm border px-2 py-px text-[10px] uppercase tracking-[0.06em] text-muted-foreground"
                     title="People reach this stage without passing the one above, so no step conversion is shown."
                   >
                     joinable
@@ -56,7 +56,7 @@ export function FunnelStages({ stages, cohortSize, renderLoss, notes }: FunnelSt
               </span>
 
               <span className="flex shrink-0 items-baseline gap-3.5 whitespace-nowrap">
-                <span className="text-lg font-semibold tabular-nums tracking-[-0.02em]">
+                <span className="text-lg font-medium tabular-nums tracking-[-0.02em]">
                   {stage.count.toLocaleString()}
                 </span>
                 <span
