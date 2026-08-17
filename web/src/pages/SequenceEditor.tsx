@@ -29,7 +29,7 @@ import {
 import { useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { toast } from "sonner";
-import { api, ApiError } from "@/lib/api";
+import { api, apiErrorCode, ApiError } from "@/lib/api";
 import type { MessageType, Resource, ResourceMessage } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -43,7 +43,13 @@ import { MediaUpload } from "@/components/MediaUpload";
 import { PhoneMockup } from "@/components/PhoneMockup";
 import { SaveStatus } from "@/components/SaveStatus";
 import { cn } from "@/lib/utils";
-import { messageBudget } from "@/lib/messageLimits";
+import {
+  countInstagramCodePoints,
+  GUIDE_MESSAGE_LIMIT_GUIDANCE,
+  INSTAGRAM_GUIDE_TEXT_LIMIT,
+  INSTAGRAM_GUIDE_WARNING_AT,
+  MESSAGE_BODY_TOO_LONG_ERROR,
+} from "@shared/guideMessagePolicy";
 
 const STEP_TYPES: { value: MessageType; label: string; icon: typeof TypeIcon }[] = [
   { value: "text", label: "Text", icon: TypeIcon },
@@ -130,6 +136,10 @@ function SequenceEditorForm({
   const [items, setItems] = useState<ResourceMessage[]>(initialMessages);
 
   const [confirmDelete, setConfirmDelete] = useState<ResourceMessage | null>(null);
+  const needsAttention = items.some(
+    (message) =>
+      countInstagramCodePoints(message.body ?? "") > INSTAGRAM_GUIDE_TEXT_LIMIT,
+  );
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -242,7 +252,7 @@ function SequenceEditorForm({
               className="h-auto border-transparent bg-transparent px-0 text-2xl font-medium tracking-tight focus-visible:ring-0"
               placeholder="Sequence name"
             />
-            {id && <SaveStatus sequenceId={id} />}
+            {id && <SaveStatus sequenceId={id} needsAttention={needsAttention} />}
           </div>
           <Textarea
             value={description}
@@ -355,6 +365,7 @@ function SortableStep({
   };
   const qc = useQueryClient();
   const savedBody = useRef(step.body);
+  const [serverErrorCode, setServerErrorCode] = useState<string | null>(null);
 
   const patchMutation = useMutation({
     mutationKey: ["sequence-save", step.resourceId],
@@ -367,14 +378,23 @@ function SortableStep({
       if (data.body !== undefined) savedBody.current = data.body ?? null;
       qc.invalidateQueries({ queryKey: ["resource-messages", step.resourceId] });
     },
-    onError: (err) =>
-      toast.error(err instanceof ApiError ? err.message : "Update failed"),
+    onError: (err) => {
+      if (apiErrorCode(err) === MESSAGE_BODY_TOO_LONG_ERROR) {
+        setServerErrorCode(MESSAGE_BODY_TOO_LONG_ERROR);
+        return;
+      }
+      toast.error(err instanceof ApiError ? err.message : "Update failed");
+    },
   });
 
   const Icon =
     step.type === "text" ? TypeIcon : step.type === "image" ? ImageIcon : FileText;
 
-  const budget = messageBudget(step.body ?? "");
+  const body = step.body ?? "";
+  const codePoints = countInstagramCodePoints(body);
+  const overLimit = codePoints > INSTAGRAM_GUIDE_TEXT_LIMIT;
+  const warning = codePoints >= INSTAGRAM_GUIDE_WARNING_AT && !overLimit;
+  const hasLengthError = overLimit || serverErrorCode === MESSAGE_BODY_TOO_LONG_ERROR;
 
   return (
     <li ref={setNodeRef} style={style}>
@@ -426,26 +446,28 @@ function SortableStep({
                   <Label>
                     {step.type === "text" ? "Message" : "Caption (optional)"}
                   </Label>
-                  {/* Characters. This read bytes for one day, which would have
-                      shown "1,005 / 1,000 — over" on the first step of a guide
-                      that delivers to ~194 people a month. See
-                      lib/messageLimits.ts for what settled it. */}
                   <span
                     className={cn(
                       "label-caps tabular-nums",
-                      budget.level === "over" && "text-urgent",
+                      warning && "text-caution",
+                      overLimit && "text-urgent",
                     )}
                     aria-live="polite"
                   >
-                    {budget.chars.toLocaleString()} / {budget.limit.toLocaleString()} characters
+                    {codePoints.toLocaleString()} / {INSTAGRAM_GUIDE_TEXT_LIMIT.toLocaleString()} characters
                   </span>
                 </div>
                 <Textarea
-                  value={step.body ?? ""}
-                  onChange={(e) => onChange({ ...step, body: e.target.value })}
+                  value={body}
+                  onChange={(e) => {
+                    if (serverErrorCode === MESSAGE_BODY_TOO_LONG_ERROR) {
+                      setServerErrorCode(null);
+                    }
+                    onChange({ ...step, body: e.target.value });
+                  }}
                   onBlur={() => {
-                    const value = step.body ?? "";
-                    const next = value.trim() ? value : null;
+                    if (overLimit) return;
+                    const next = body.trim() ? body : null;
                     if (next !== savedBody.current) patchMutation.mutate({ body: next });
                   }}
                   rows={step.type === "text" ? 3 : 2}
@@ -454,12 +476,15 @@ function SortableStep({
                       ? "What you want them to read."
                       : "Optional caption sent with the file."
                   }
-                  className={cn(budget.level === "over" && "border-urgent")}
+                  aria-invalid={hasLengthError || undefined}
+                  className={cn(
+                    warning && "border-caution",
+                    overLimit && "border-urgent",
+                  )}
                 />
-                {budget.level === "over" && (
+                {hasLengthError && (
                   <p className="text-xs leading-relaxed text-urgent">
-                    {budget.over.toLocaleString()} characters over Instagram&rsquo;s limit — this
-                    step will not send.
+                    {GUIDE_MESSAGE_LIMIT_GUIDANCE}
                   </p>
                 )}
               </div>
