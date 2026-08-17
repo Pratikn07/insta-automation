@@ -55,14 +55,17 @@ test("server capability enables the existing owner approval action", async ({ pa
 });
 
 test("follow-up scheduled countdown crosses its eligibility boundary", async ({ page }) => {
-  await page.clock.install({ time: new Date("2026-08-05T21:59:30.000Z") });
+  // Keep Date fixed while ordinary timers continue through navigation. An
+  // installed clock advances with wall time, so a busy parallel run can render
+  // 24s instead of the intended 30s before hydration finishes.
+  await page.clock.setFixedTime(new Date("2026-08-05T21:59:30.000Z"));
   await page.goto("/e2e/index.html?scenario=follow-up-scheduled");
 
   await expect(page.getByText("Follow-up scheduled")).toBeVisible();
   await expect(page.getByText("Ready in 30s")).toBeVisible();
   await expect(page.getByText(/Eligible at/)).toBeVisible();
 
-  await page.clock.fastForward(30_000);
+  await page.clock.setFixedTime(new Date("2026-08-05T22:00:00.000Z"));
   await expect(page.getByText("Ready now")).toBeVisible();
 });
 
