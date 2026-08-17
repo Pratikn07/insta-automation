@@ -93,7 +93,10 @@ function sentView(row: RecoveryReminderRow): { label: string; description: strin
  */
 export function recoveryStatusView(row: RecoveryReminderRow, now: Date): RecoveryStatusView {
   const attention = NEEDS_REVIEW.has(row.status);
-  const canCancel = CANCELLABLE.has(row.status) && row.sentAt === null;
+  const immutableExperimentControl =
+    row.experimentVersion === "read-recovery-timing-v2" && row.timingArm === "no_reminder";
+  const canCancel =
+    CANCELLABLE.has(row.status) && row.sentAt === null && !immutableExperimentControl;
   const canMarkReviewed = attention && row.reviewedAt === null;
 
   const base = { attention, canCancel, canMarkReviewed, actionState: null as string | null };
@@ -111,6 +114,15 @@ export function recoveryStatusView(row: RecoveryReminderRow, now: Date): Recover
         tone: "pending",
       };
     case "control":
+      if (immutableExperimentControl) {
+        return {
+          ...base,
+          label: "No-reminder experiment arm",
+          description:
+            "This guide request is intentionally held back for measurement. No public reminder will be sent, and the assignment cannot be changed.",
+          tone: "neutral",
+        };
+      }
       return {
         ...base,
         label: "Control group—reminder intentionally withheld",

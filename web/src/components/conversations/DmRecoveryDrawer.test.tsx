@@ -202,6 +202,35 @@ describe("DmRecoveryDrawer", () => {
     }
   });
 
+  it("shows persisted timing details for a treatment arm", async () => {
+    renderDrawer({
+      experimentVersion: "read-recovery-timing-v2",
+      timingArm: "six_hour",
+      timingLabel: "6-hour reminder",
+    });
+
+    expect(await screen.findByText("Timing experiment")).toBeInTheDocument();
+    expect(screen.getByText(/read-recovery-timing-v2/)).toBeInTheDocument();
+    expect(screen.getByText(/6-hour reminder/)).toBeInTheDocument();
+    expect(screen.getByText(/Guide request accepted/i)).toBeInTheDocument();
+    expect(screen.getByText(/Reminder eligible/i)).toBeInTheDocument();
+  });
+
+  it("offers neither send nor cancel for the immutable no-reminder arm", async () => {
+    renderDrawer({
+      status: "control",
+      cohort: "control",
+      experimentVersion: "read-recovery-timing-v2",
+      timingArm: "no_reminder",
+      timingLabel: "No reminder",
+    });
+
+    expect(await screen.findByText("No-reminder experiment arm")).toBeInTheDocument();
+    expect(screen.getByText(/intentionally held back for measurement/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /send now/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel reminder" })).not.toBeInTheDocument();
+  });
+
   describe("cancelling", () => {
     it("asks for confirmation that names what cancelling can and cannot do", async () => {
       const user = userEvent.setup();

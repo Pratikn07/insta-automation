@@ -122,6 +122,30 @@ export function DmRecoveryDrawer({
         <p className="text-xs text-muted-foreground">{state.description}</p>
       </header>
 
+      {row.experimentVersion ? (
+        <section className="space-y-2 rounded-md border px-3 py-2 text-xs">
+          <h3 className="font-semibold">Timing experiment</h3>
+          <p>
+            <span className="text-muted-foreground">Version · </span>
+            {row.experimentVersion}
+          </p>
+          <p>
+            <span className="text-muted-foreground">Timing · </span>
+            {row.timingLabel ?? "Assignment unavailable"}
+          </p>
+          <p>
+            <span className="text-muted-foreground">Guide request accepted · </span>
+            {row.acceptedAt ? formatAbsolute(row.acceptedAt) : "Acceptance time unavailable"}
+          </p>
+          {row.timingArm === "two_hour" || row.timingArm === "six_hour" ? (
+            <p>
+              <span className="text-muted-foreground">Reminder eligible · </span>
+              {formatAbsolute(row.eligibleAt)}
+            </p>
+          ) : null}
+        </section>
+      ) : null}
+
       <section className="space-y-2">
         <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           What happened

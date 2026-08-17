@@ -1,17 +1,20 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api, recoveryApi } from "../../lib/api";
+import { resolvePreset, type DayRange, type RangePreset } from "../../lib/dateRange";
 import type {
   Keyword,
-  RecoveryCohort,
   RecoveryCounts,
   RecoveryMetrics,
   RecoveryReminderRow,
+  RecoveryTimingArm,
   RecoveryView,
   SettingsBlockedVerificationRecord,
 } from "../../lib/types";
 import { cn, formatAbsolute } from "../../lib/utils";
+import { RangeFilter } from "../home/RangeFilter";
 import { recoveryStatusView, type RecoveryTone } from "./dmRecoveryViewModel";
+import { DmRecoveryTimingSummary } from "./DmRecoveryTimingSummary";
 
 /**
  * Shown while the circuit is open. Deliberately reassuring: an open circuit
@@ -45,11 +48,24 @@ function pct(value: number | null): string {
   return value === null ? "—" : `${value.toFixed(1)}%`;
 }
 
+type RequestedRange = {
+  range: DayRange;
+  preset: RangePreset | null;
+  asOf: string;
+};
+
+function scopeQuery(range: DayRange, asOf: string, timingArm?: RecoveryTimingArm): string {
+  const params = new URLSearchParams({ from: range.from, to: range.to, asOf });
+  if (timingArm) params.set("timingArm", timingArm);
+  return params.toString();
+}
+
 export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void }) {
   const queryClient = useQueryClient();
   const [view, setView] = useState<RecoveryView>("ready");
   const [keywordId, setKeywordId] = useState<string>("");
-  const [cohort, setCohort] = useState<"" | RecoveryCohort>("");
+  const [timingArm, setTimingArm] = useState<"" | RecoveryTimingArm>("");
+  const [requestedRange, setRequestedRange] = useState<RequestedRange | null>(null);
   const now = new Date();
 
   const keywordsQ = useQuery<Keyword[]>({
@@ -57,16 +73,32 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
     queryFn: () => api<Keyword[]>("/keywords"),
   });
 
-  const countsQ = useQuery<RecoveryCounts>({
-    queryKey: ["recovery-reminders", "counts"],
-    queryFn: () => recoveryApi.counts(),
+  // Health rides along with metrics rather than its own endpoint, so the banner
+  // and the experiment readout can never disagree about the circuit. It also
+  // owns the server-clamped range and fixed asOf used by every other request.
+  const metricsRequestQuery = requestedRange
+    ? scopeQuery(requestedRange.range, requestedRange.asOf)
+    : "";
+  const metricsQ = useQuery<RecoveryMetrics>({
+    queryKey: ["recovery-reminders", "metrics", metricsRequestQuery],
+    queryFn: () => recoveryApi.metrics(metricsRequestQuery),
   });
 
-  // Health rides along with metrics rather than its own endpoint, so the banner
-  // and the experiment readout can never disagree about the circuit.
-  const metricsQ = useQuery<RecoveryMetrics>({
-    queryKey: ["recovery-reminders", "metrics"],
-    queryFn: () => recoveryApi.metrics(),
+  const timingExperiment = metricsQ.data?.timingExperiment ?? null;
+  const reporting = timingExperiment?.reporting ?? null;
+  const scopedQuery = reporting
+    ? scopeQuery(reporting.range, reporting.asOf, timingArm || undefined)
+    : "";
+  const scopeKey = reporting
+    ? `${reporting.range.from}:${reporting.range.to}:${reporting.asOf}`
+    : metricsQ.isSuccess
+      ? "legacy"
+      : `pending:${metricsRequestQuery}`;
+
+  const countsQ = useQuery<RecoveryCounts>({
+    queryKey: ["recovery-reminders", "counts", scopeKey, timingArm],
+    queryFn: () => recoveryApi.counts(scopedQuery),
+    enabled: metricsQ.isSuccess,
   });
 
   const settingsVerificationsQ = useQuery<{ records: SettingsBlockedVerificationRecord[] }>({
@@ -89,23 +121,26 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
     // tab's rows under the new tab's badge.
     // Every filter belongs in the key: a narrowed result under the previous
     // filter's badge is the same lie as the wrong tab's rows.
-    queryKey: ["recovery-reminders", "list", view, keywordId, cohort],
-    initialPageParam: null as { cursor: string; asOf: string } | null,
+    queryKey: [
+      "recovery-reminders",
+      "list",
+      scopeKey,
+      view,
+      keywordId,
+      timingArm,
+    ],
+    initialPageParam: null as string | null,
     queryFn: ({ pageParam }) => {
-      const params = new URLSearchParams({ view });
+      const params = new URLSearchParams(scopedQuery);
+      params.set("view", view);
       if (keywordId) params.set("keywordId", keywordId);
-      if (cohort) params.set("cohort", cohort);
       if (pageParam) {
-        params.set("cursor", pageParam.cursor);
-        // The scheduled/ready split is an eligibleAt comparison against a
-        // timestamp. Replaying page 1's keeps every page of this run on the same
-        // boundary; letting it advance drops the rows that cross it.
-        params.set("asOf", pageParam.asOf);
+        params.set("cursor", pageParam);
       }
       return recoveryApi.list(params.toString());
     },
-    getNextPageParam: (last: { nextCursor: string | null; asOf: string }) =>
-      last.nextCursor ? { cursor: last.nextCursor, asOf: last.asOf } : null,
+    getNextPageParam: (last: { nextCursor: string | null }) => last.nextCursor,
+    enabled: metricsQ.isSuccess,
   });
 
   const health = metricsQ.data?.health;
@@ -120,6 +155,22 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
   // change is not describing what is on screen.
   const active = countsQ.data?.[view];
 
+  const requestPreset = (preset: RangePreset) => {
+    if (!timingExperiment) return;
+    const range = resolvePreset(preset, timingExperiment.reporting.coverage);
+    if (!range) return;
+    setRequestedRange({ range, preset, asOf: timingExperiment.reporting.asOf });
+  };
+
+  const requestCustomRange = (range: DayRange) => {
+    if (!timingExperiment) return;
+    setRequestedRange({
+      range,
+      preset: null,
+      asOf: timingExperiment.reporting.asOf,
+    });
+  };
+
   return (
     <div className="space-y-4">
       {health?.circuitOpen ? (
@@ -132,6 +183,27 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
             Reason: <span className="font-medium">{health.reason ?? "unknown"}</span> · {health.dueCount} waiting
           </p>
         </div>
+      ) : null}
+
+      {timingExperiment ? (
+        <>
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2">
+            <p className="text-xs font-medium">Guide request date</p>
+            <RangeFilter
+              coverage={timingExperiment.reporting.coverage}
+              value={timingExperiment.reporting.range}
+              activePreset={requestedRange?.preset ?? "30d"}
+              onPresetSelect={requestPreset}
+              onRangeSelect={requestCustomRange}
+            />
+          </div>
+          <DmRecoveryTimingSummary metrics={timingExperiment} />
+        </>
+      ) : metricsQ.isSuccess ? (
+        <p className="rounded-lg border border-dashed px-3 py-4 text-sm text-muted-foreground">
+          No recovery timing requests yet. The dashboard will start the 30-day view after the
+          first eligible guide request enters the timing experiment.
+        </p>
       ) : null}
 
       <div className="flex flex-wrap items-center gap-2">
@@ -191,21 +263,24 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
             ))}
           </select>
         </label>
-        <label className="text-xs text-muted-foreground">
-          Cohort{" "}
-          <select
-            value={cohort}
-            onChange={(e) => setCohort(e.target.value as "" | RecoveryCohort)}
-            className="rounded-md border bg-background px-2 py-1 text-xs"
-          >
-            <option value="">Both cohorts</option>
-            <option value="treatment">Treatment</option>
-            <option value="control">Control</option>
-          </select>
-        </label>
+        {timingExperiment ? (
+          <label className="text-xs text-muted-foreground">
+            Timing{" "}
+            <select
+              value={timingArm}
+              onChange={(e) => setTimingArm(e.target.value as "" | RecoveryTimingArm)}
+              className="rounded-md border bg-background px-2 py-1 text-xs"
+            >
+              <option value="">All timings</option>
+              <option value="two_hour">2-hour reminder</option>
+              <option value="six_hour">6-hour reminder</option>
+              <option value="no_reminder">No reminder</option>
+            </select>
+          </label>
+        ) : null}
       </div>
 
-      {experiment && accuracy ? (
+      {!timingExperiment && experiment && accuracy ? (
         // The cohort split only pays for itself if the comparison is visible.
         <dl className="grid grid-cols-2 gap-3 rounded-lg border px-3 py-2 text-xs sm:grid-cols-4">
           <div>
@@ -322,6 +397,11 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
                     <span className="block truncate text-xs text-muted-foreground">
                       {row.keyword.keyword} · {formatAbsolute(row.eligibleAt)}
                     </span>
+                    {row.timingLabel ? (
+                      <span className="mt-0.5 block text-xs font-medium text-sky-300">
+                        {row.timingLabel}
+                      </span>
+                    ) : null}
                   </span>
                   <span
                     className={cn(
