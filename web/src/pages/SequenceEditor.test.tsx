@@ -175,7 +175,7 @@ describe("SequenceEditor Instagram message limits", () => {
     expect(body).toHaveValue(tooLong);
     expect(body).toHaveAttribute("aria-invalid", "true");
     expect(screen.getByText(/Instagram allows 1,000 characters per message/)).toBeVisible();
-    expect(screen.getByText("Needs attention — message too long")).toBeInTheDocument();
+    expect(await screen.findByText("Needs attention — message too long")).toBeInTheDocument();
     expect(screen.queryByText("All changes saved")).not.toBeInTheDocument();
     expect(firstMessage().patchCalls()).toHaveLength(0);
 
@@ -184,6 +184,24 @@ describe("SequenceEditor Instagram message limits", () => {
     });
     await waitFor(() => expect(messageReads).toBe(2));
     expect(firstMessage().body()).toHaveValue(tooLong);
+  });
+
+  it("does not let a prior save error mask an over-limit draft's attention state", async () => {
+    const user = userEvent.setup();
+    patchErrorCode = "temporary_save_error";
+    renderEditor();
+    const body = await screen.findByPlaceholderText("What you want them to read.");
+
+    await user.clear(body);
+    await user.paste("A valid draft that cannot save yet.");
+    fireEvent.blur(body);
+    await screen.findByText("Couldn't save — retry");
+
+    await user.clear(body);
+    await user.paste("a".repeat(1_001));
+
+    expect(await screen.findByText("Needs attention — message too long")).toBeInTheDocument();
+    expect(screen.queryByText("Couldn't save — retry")).not.toBeInTheDocument();
   });
 
   it("uses code points for emoji at the exact boundary", async () => {

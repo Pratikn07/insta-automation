@@ -40,10 +40,10 @@ export function SaveStatus({
 
   const state: "saving" | "error" | "needs_attention" | "saved" | "idle" = saving
     ? "saving"
-    : errored
-      ? "error"
-      : needsAttention
+    : needsAttention
         ? "needs_attention"
+      : errored
+        ? "error"
       : hasActivity
         ? "saved"
         : "idle";
