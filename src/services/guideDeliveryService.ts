@@ -326,14 +326,17 @@ export function createGuideDeliveryService(dependencies: GuideDeliveryServiceDep
         }
       }
 
+      const renewedClaimExpiresAt = new Date(
+        beforeBegin.getTime() + dependencies.claimLeaseMs,
+      );
       const begun = await dependencies.repository.beginUnit({
         deliveryId: delivery.id,
         claimToken: delivery.claimToken,
         now: beforeBegin,
+        claimExpiresAt: renewedClaimExpiresAt,
       });
       if (!begun) {
-        const result = await dependencies.finalizeGuideDelivery(delivery.id, delivery.claimToken);
-        return result === "completed" ? "completed" : "already_processing";
+        return "already_processing";
       }
 
       const immediatelyBeforeProvider = dependencies.now();
@@ -346,6 +349,9 @@ export function createGuideDeliveryService(dependencies: GuideDeliveryServiceDep
           now: immediatelyBeforeProvider,
         });
         return recorded ? "needs_review" : "already_processing";
+      }
+      if (isWindowClosed(immediatelyBeforeProvider, renewedClaimExpiresAt)) {
+        return "already_processing";
       }
 
       let receipt: MetaSendResult;

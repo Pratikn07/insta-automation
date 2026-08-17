@@ -77,6 +77,7 @@ export type BeginGuideUnitInput = {
   deliveryId: string;
   claimToken: string;
   now: Date;
+  claimExpiresAt: Date;
 };
 
 type GuideUnitCheckpointInput = {
@@ -157,6 +158,7 @@ type LockedDelivery = {
   failureCode: string | null;
   nextAttemptAt: Date | null;
   claimToken: string | null;
+  claimExpiresAt: Date | null;
   sendWindowExpiresAt: Date;
 };
 
@@ -298,6 +300,7 @@ async function lockDelivery(
       delivery."failure_code" AS "failureCode",
       delivery."next_attempt_at" AS "nextAttemptAt",
       delivery."claim_token" AS "claimToken",
+      delivery."claim_expires_at" AS "claimExpiresAt",
       delivery."send_window_expires_at" AS "sendWindowExpiresAt"
     FROM "guide_delivery" AS delivery
     WHERE delivery."id" = ${deliveryId}::uuid
@@ -322,6 +325,7 @@ async function lockClaimedDelivery(
       delivery."failure_code" AS "failureCode",
       delivery."next_attempt_at" AS "nextAttemptAt",
       delivery."claim_token" AS "claimToken",
+      delivery."claim_expires_at" AS "claimExpiresAt",
       delivery."send_window_expires_at" AS "sendWindowExpiresAt"
     FROM "guide_delivery" AS delivery
     WHERE delivery."id" = ${deliveryId}::uuid
@@ -805,6 +809,7 @@ export function createGuideDeliveryRepository(
     },
 
     async beginUnit(input) {
+      validateLease(input.now, input.claimExpiresAt);
       return database.$transaction(async (tx) => {
         const delivery = await lockClaimedDelivery(tx, input.deliveryId, input.claimToken);
         if (!delivery) return null;
@@ -815,6 +820,19 @@ export function createGuideDeliveryRepository(
         const ownerAuthorized =
           unit.ownerRetryAuthorizedAt !== null && unit.ownerRetryConsumedAt === null;
         if (unit.attempts >= maxAttempts && !ownerAuthorized) return null;
+
+        const renewed = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          UPDATE "guide_delivery" AS delivery
+          SET
+            "claim_expires_at" = ${input.claimExpiresAt},
+            "updated_at" = ${input.now}
+          WHERE delivery."id" = ${input.deliveryId}::uuid
+            AND delivery."claim_token" = ${input.claimToken}::uuid
+            AND delivery."status" = 'sending'
+            AND delivery."claim_expires_at" > ${input.now}
+          RETURNING delivery."id"
+        `);
+        if (renewed.length !== 1) return null;
 
         const updated = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
           UPDATE "guide_delivery_unit" AS unit
@@ -854,6 +872,7 @@ export function createGuideDeliveryRepository(
             AND delivery."id" = ${input.deliveryId}::uuid
             AND delivery."claim_token" = ${input.claimToken}::uuid
             AND delivery."status" = 'sending'
+            AND delivery."claim_expires_at" = ${input.claimExpiresAt}
           RETURNING unit."id"
         `);
         if (updated.length !== 1) return null;

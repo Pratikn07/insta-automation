@@ -132,6 +132,7 @@ type HarnessOptions = {
     mediaUrl: string | null;
   }>;
   maxAttempts?: number;
+  claimLeaseMs?: number;
 };
 
 function harness(options: HarnessOptions = {}) {
@@ -321,7 +322,7 @@ function harness(options: HarnessOptions = {}) {
       now: () => now,
       logger,
       maxAttempts,
-      claimLeaseMs: 5 * 60_000,
+      claimLeaseMs: options.claimLeaseMs ?? 5 * 60_000,
       retryDelayMs: 60_000,
     });
   }
@@ -561,6 +562,79 @@ describe("deliverGuideForTrigger", () => {
       failureCode: "messaging_window_closed",
       nextAttemptAt: null,
     });
+  });
+
+  it("renews the claim for each begun unit before crossing the provider boundary", async () => {
+    const test = harness({
+      claimLeaseMs: 1_000,
+      messages: [
+        { id: "first", order: 0, type: "text", body: "One", mediaUrl: null },
+        { id: "second", order: 1, type: "text", body: "Two", mediaUrl: null },
+      ],
+    });
+    const originalClaim = vi.mocked(test.repository.claimById).getMockImplementation()!;
+    vi.mocked(test.repository.claimById).mockImplementation(async (request) => {
+      const claimed = await originalClaim(request);
+      if (claimed) {
+        claimed.claimedAt = request.now;
+        claimed.claimExpiresAt = request.claimExpiresAt;
+      }
+      return claimed;
+    });
+    const originalBegin = vi.mocked(test.repository.beginUnit).getMockImplementation()!;
+    vi.mocked(test.repository.beginUnit).mockImplementation(async (request) => {
+      const begun = await originalBegin(request);
+      if (!begun) return null;
+      if (test.delivery()) {
+        test.delivery()!.claimExpiresAt = request.claimExpiresAt;
+      }
+      if (begun.position === 1) {
+        test.setNow(new Date(START.getTime() + 1_100));
+      }
+      return begun;
+    });
+    test.sendText
+      .mockImplementationOnce(async () => {
+        test.setNow(new Date(START.getTime() + 900));
+        return { messageId: "mid-one" };
+      })
+      .mockImplementationOnce(async () => {
+        expect(test.delivery()?.claimExpiresAt).toEqual(
+          new Date(START.getTime() + 1_900),
+        );
+        return { messageId: "mid-two" };
+      });
+
+    await expect(test.service()(input)).resolves.toBe("completed");
+    expect(vi.mocked(test.repository.beginUnit).mock.calls).toEqual([
+      [
+        expect.objectContaining({
+          now: START,
+          claimExpiresAt: new Date(START.getTime() + 1_000),
+        }),
+      ],
+      [
+        expect.objectContaining({
+          now: new Date(START.getTime() + 900),
+          claimExpiresAt: new Date(START.getTime() + 1_900),
+        }),
+      ],
+    ]);
+  });
+
+  it("does not call the provider if the renewed lease expires after beginUnit returns", async () => {
+    const test = harness({ claimLeaseMs: 1_000 });
+    const originalBegin = vi.mocked(test.repository.beginUnit).getMockImplementation()!;
+    vi.mocked(test.repository.beginUnit).mockImplementation(async (request) => {
+      const begun = await originalBegin(request);
+      test.setNow(new Date(START.getTime() + 1_001));
+      return begun;
+    });
+
+    await expect(test.service()(input)).resolves.toBe("already_processing");
+    expect(test.sendText).not.toHaveBeenCalled();
+    expect(test.sendMedia).not.toHaveBeenCalled();
+    expect(test.delivery()?.units[0]).toMatchObject({ status: "sending", attempts: 1 });
   });
 
   it("does not continue or replay in-process when a success checkpoint loses its fence", async () => {

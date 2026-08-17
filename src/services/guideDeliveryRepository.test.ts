@@ -217,6 +217,7 @@ describe("guide delivery repository transition guards", () => {
         deliveryId: DELIVERY_ID,
         claimToken: STALE_TOKEN,
         now: NOW,
+        claimExpiresAt: RETRY_AT,
       }),
     ).resolves.toBeNull();
 

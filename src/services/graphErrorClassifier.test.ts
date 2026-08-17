@@ -46,6 +46,17 @@ function graphResponseError(status: number, code: number, subcode?: number): Axi
   } as never);
 }
 
+function unverifiedProxyError(status: number, code: number): AxiosError {
+  const config = { headers: new AxiosHeaders() } as never;
+  return new AxiosError("Proxy response", "ERR_BAD_RESPONSE", config, {}, {
+    status,
+    statusText: "",
+    headers: {},
+    config,
+    data: { error: { code } },
+  } as never);
+}
+
 function transportError(code: string): AxiosError {
   return new AxiosError("network", code, { headers: new AxiosHeaders() } as never, {});
 }
@@ -94,6 +105,28 @@ describe("graphErrorClassifier", () => {
       const unknownTransport = describeGraphError(transportError("PRIVATE_TRANSPORT_SENTINEL"));
       expect(unknownTransport.transportCode).toBeNull();
       expect(classifyDirectMessageSend(unknownTransport)).toBe("uncertain");
+    });
+
+    it.each([
+      ["gateway-shaped code", unverifiedProxyError(502, 502)],
+      ["Graph-like rate-limit code", unverifiedProxyError(500, 4)],
+    ])("keeps an unverified proxy %s uncertain", (_label, error) => {
+      const metadata = describeGraphError(error);
+
+      expect(metadata).toMatchObject({
+        category: "graph_response",
+        traceId: null,
+      });
+      expect(classifyDirectMessageSend(metadata)).toBe("uncertain");
+    });
+
+    it("preserves definite classification for verified Meta error envelopes", () => {
+      expect(classifyDirectMessageSend(describeGraphError(graphResponseError(500, 2)))).toBe(
+        "definite_transient",
+      );
+      expect(classifyDirectMessageSend(describeGraphError(graphResponseError(400, 100)))).toBe(
+        "definite_permanent",
+      );
     });
   });
 

@@ -32,6 +32,10 @@ let prisma: PrismaClient;
 let repository: GuideDeliveryRepository;
 const fixtureResourceIds = new Set<string>();
 
+function renewedLease(now: Date): Date {
+  return new Date(now.getTime() + 60_000);
+}
+
 function successfulPlan(
   messageIds: readonly [string, string],
   firstText = "First immutable snapshot",
@@ -318,11 +322,55 @@ describeWithDatabase("guide delivery repository PostgreSQL contract", () => {
       deliveryId: claim.id,
       claimToken: claim.claimToken,
       now: BASE_TIME,
+      claimExpiresAt: renewedLease(BASE_TIME),
     });
     const persisted = await prisma.guideDeliveryUnit.findUnique({ where: { id: unit!.id } });
 
     expect(unit).toMatchObject({ status: "sending", attempts: 1, sendingAt: BASE_TIME });
     expect(persisted).toMatchObject({ status: "sending", attempts: 1, sendingAt: BASE_TIME });
+  });
+
+  it("refuses to begin a unit once the current claim lease has expired", async () => {
+    const fixture = await createFixture();
+    const { claim } = await createAndClaim(fixture);
+    const expiredAt = new Date(BASE_TIME.getTime() + 60_000);
+
+    const unit = await repository.beginUnit({
+      deliveryId: claim.id,
+      claimToken: claim.claimToken,
+      now: expiredAt,
+      claimExpiresAt: new Date(expiredAt.getTime() + 60_000),
+    });
+
+    expect(unit).toBeNull();
+    await expect(
+      prisma.guideDeliveryUnit.findFirst({
+        where: { deliveryId: claim.id },
+        orderBy: { position: "asc" },
+      }),
+    ).resolves.toMatchObject({ status: "pending", attempts: 0 });
+    await expect(prisma.guideDelivery.findUnique({ where: { id: claim.id } })).resolves.toMatchObject({
+      claimExpiresAt: expiredAt,
+    });
+  });
+
+  it("atomically renews the claim lease while beginning a unit", async () => {
+    const fixture = await createFixture();
+    const { claim } = await createAndClaim(fixture);
+    const beginAt = new Date(BASE_TIME.getTime() + 30_000);
+    const renewedUntil = new Date(BASE_TIME.getTime() + 90_000);
+
+    const unit = await repository.beginUnit({
+      deliveryId: claim.id,
+      claimToken: claim.claimToken,
+      now: beginAt,
+      claimExpiresAt: renewedUntil,
+    });
+
+    expect(unit).toMatchObject({ status: "sending", attempts: 1, sendingAt: beginAt });
+    await expect(prisma.guideDelivery.findUnique({ where: { id: claim.id } })).resolves.toMatchObject({
+      claimExpiresAt: renewedUntil,
+    });
   });
 
   it("does not let a stale fencing token mark a sending unit sent", async () => {
@@ -332,6 +380,7 @@ describeWithDatabase("guide delivery repository PostgreSQL contract", () => {
       deliveryId: claim.id,
       claimToken: claim.claimToken,
       now: BASE_TIME,
+      claimExpiresAt: renewedLease(BASE_TIME),
     });
 
     await expect(
@@ -357,6 +406,7 @@ describeWithDatabase("guide delivery repository PostgreSQL contract", () => {
       deliveryId: claim.id,
       claimToken: claim.claimToken,
       now: BASE_TIME,
+      claimExpiresAt: renewedLease(BASE_TIME),
     });
     const confirmedAt = new Date(BASE_TIME.getTime() + 1_000);
 
@@ -388,6 +438,7 @@ describeWithDatabase("guide delivery repository PostgreSQL contract", () => {
       deliveryId: claim.id,
       claimToken: claim.claimToken,
       now: BASE_TIME,
+      claimExpiresAt: renewedLease(BASE_TIME),
     });
 
     await expect(
@@ -439,6 +490,7 @@ describeWithDatabase("guide delivery repository PostgreSQL contract", () => {
       deliveryId: claim.id,
       claimToken: claim.claimToken,
       now: BASE_TIME,
+      claimExpiresAt: renewedLease(BASE_TIME),
     });
 
     await expect(
@@ -478,6 +530,7 @@ describeWithDatabase("guide delivery repository PostgreSQL contract", () => {
       deliveryId: claim.id,
       claimToken: claim.claimToken,
       now: BASE_TIME,
+      claimExpiresAt: renewedLease(BASE_TIME),
     });
 
     await expect(
@@ -523,6 +576,7 @@ describeWithDatabase("guide delivery repository PostgreSQL contract", () => {
       deliveryId: planned.id,
       claimToken: firstClaim!.claimToken,
       now: BASE_TIME,
+      claimExpiresAt: renewedLease(BASE_TIME),
     });
     await cappedRepository.markUnitRetryable({
       deliveryId: planned.id,
@@ -545,6 +599,7 @@ describeWithDatabase("guide delivery repository PostgreSQL contract", () => {
         deliveryId: planned.id,
         claimToken: cappedClaim!.claimToken,
         now: new Date(BASE_TIME.getTime() + 2_000),
+        claimExpiresAt: new Date(BASE_TIME.getTime() + 62_000),
       }),
     ).resolves.toBeNull();
     await cappedRepository.releaseClaim({
@@ -566,6 +621,7 @@ describeWithDatabase("guide delivery repository PostgreSQL contract", () => {
       deliveryId: planned.id,
       claimToken: ownerClaim!.claimToken,
       now: authorizedAt,
+      claimExpiresAt: renewedLease(authorizedAt),
     });
 
     expect(ownerAttempt).toMatchObject({ attempts: 2, ownerRetryConsumedAt: authorizedAt });
@@ -594,6 +650,7 @@ describeWithDatabase("guide delivery repository PostgreSQL contract", () => {
         deliveryId: planned.id,
         claimToken: afterOwnerClaim!.claimToken,
         now: new Date(ownerFailureAt.getTime() + 2_000),
+        claimExpiresAt: new Date(ownerFailureAt.getTime() + 62_000),
       }),
     ).resolves.toBeNull();
   });
@@ -638,6 +695,7 @@ describeWithDatabase("guide delivery repository PostgreSQL contract", () => {
         deliveryId: planned.id,
         claimToken: firstClaim!.claimToken,
         now: new Date(sendNow.getTime() + position * 1_000),
+        claimExpiresAt: new Date(sendNow.getTime() + 60_000 + position * 1_000),
       });
       await repository.markUnitSent({
         deliveryId: planned.id,
@@ -672,6 +730,7 @@ describeWithDatabase("guide delivery repository PostgreSQL contract", () => {
       deliveryId: claim.id,
       claimToken: claim.claimToken,
       now: BASE_TIME,
+      claimExpiresAt: renewedLease(BASE_TIME),
     });
     await prisma.guideDeliveryUnit.update({
       where: { id: unit!.id },
@@ -698,6 +757,7 @@ describeWithDatabase("guide delivery repository PostgreSQL contract", () => {
       deliveryId: claim.id,
       claimToken: claim.claimToken,
       now: BASE_TIME,
+      claimExpiresAt: renewedLease(BASE_TIME),
     });
 
     const reconciliation = await repository.reconcileExpiredClaims(
@@ -725,6 +785,7 @@ describeWithDatabase("guide delivery repository PostgreSQL contract", () => {
         deliveryId: sent.claim.id,
         claimToken: sent.claim.claimToken,
         now: new Date(BASE_TIME.getTime() + position * 1_000),
+        claimExpiresAt: new Date(BASE_TIME.getTime() + 60_000 + position * 1_000),
       });
       await repository.markUnitSent({
         deliveryId: sent.claim.id,
@@ -773,6 +834,7 @@ describeWithDatabase("guide delivery repository PostgreSQL contract", () => {
       deliveryId: claim.id,
       claimToken: claim.claimToken,
       now: BASE_TIME,
+      claimExpiresAt: renewedLease(BASE_TIME),
     });
     await prisma.guideDeliveryUnit.update({
       where: { id: unit!.id },

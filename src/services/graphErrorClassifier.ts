@@ -44,6 +44,10 @@ export function parseGraphSignatures(value: string): ReadonlySet<string> {
  * limit, which both retried a permanently failing send and made the
  * settings-blocked allowlist unreachable, because this check runs first.
  */
+function hasVerifiedGraphEnvelope(metadata: GraphErrorMetadata): boolean {
+  return metadata.category === "graph_response" && metadata.traceId !== null;
+}
+
 function isRateLimit(metadata: GraphErrorMetadata): boolean {
   if (metadata.httpStatus === 429) return true;
 
@@ -77,15 +81,23 @@ const NEVER_DELIVERED_TRANSPORT: ReadonlySet<string> = new Set([
 export function classifyDirectMessageSend(
   metadata: GraphErrorMetadata,
 ): DirectMessageSendDisposition {
-  if (isRateLimit(metadata)) return "definite_transient";
+  const verifiedGraphEnvelope = hasVerifiedGraphEnvelope(metadata);
+
+  if (
+    metadata.httpStatus === 429 ||
+    (verifiedGraphEnvelope && isRateLimit(metadata))
+  ) {
+    return "definite_transient";
+  }
 
   if (
     metadata.httpStatus === 401 ||
     metadata.httpStatus === 403 ||
-    metadata.graphCode === 10 ||
-    metadata.graphCode === 102 ||
-    metadata.graphCode === 190 ||
-    metadata.graphCode === 200
+    (verifiedGraphEnvelope &&
+      (metadata.graphCode === 10 ||
+        metadata.graphCode === 102 ||
+        metadata.graphCode === 190 ||
+        metadata.graphCode === 200))
   ) {
     return "definite_permanent";
   }
@@ -99,7 +111,7 @@ export function classifyDirectMessageSend(
 
   if (metadata.category !== "graph_response") return "uncertain";
 
-  const structuredGraphRejection = metadata.graphCode !== null;
+  const structuredGraphRejection = verifiedGraphEnvelope && metadata.graphCode !== null;
   if (
     structuredGraphRejection &&
     (metadata.graphCode === 1 ||
