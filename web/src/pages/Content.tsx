@@ -72,7 +72,7 @@ export function Content() {
   return (
     <div className="space-y-5">
       <div>
-        <h2 className="text-xl font-semibold tracking-tight">Content</h2>
+        <h1 className="text-2xl font-medium tracking-tight">Content</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Pick a post and attach a keyword. Comments on that post trigger its sequence.
         </p>
@@ -208,6 +208,13 @@ function FilterTabs({
   );
 }
 
+/**
+ * A post tile keeps its border. It is a bounded object — a picked-up, clicked,
+ * filtered thing with a real edge — which is exactly the case the Bounded-Object
+ * rule exists to protect. The badges over the image keep their dark scrim and
+ * white text too: they sit on photography, not on paper, and a paper-coloured
+ * chip would vanish against a bright thumbnail.
+ */
 function MediaThumb({ item, count }: { item: MediaItem; count: number }) {
   const { icon: KindIcon, noun } = KIND[item.kind];
   return (
@@ -230,7 +237,7 @@ function MediaThumb({ item, count }: { item: MediaItem; count: number }) {
         )}
         <div className="absolute left-2 top-2">
           <span
-            className="inline-flex items-center rounded-full bg-black/55 p-1 text-white/90 backdrop-blur"
+            className="inline-flex items-center rounded-sm bg-black/55 p-1 text-white/90 backdrop-blur"
             title={noun}
             aria-label={noun}
           >
@@ -240,8 +247,8 @@ function MediaThumb({ item, count }: { item: MediaItem; count: number }) {
         <div className="absolute right-2 top-2">
           <span
             className={cn(
-              "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium backdrop-blur",
-              count > 0 ? "bg-brand-gradient text-white" : "bg-black/55 text-white/90",
+              "inline-flex items-center gap-1 rounded-sm px-2 py-0.5 text-[10px] font-medium backdrop-blur",
+              count > 0 ? "bg-signal text-background" : "bg-black/55 text-white/90",
             )}
           >
             <Tag className="size-2.5" />
@@ -319,9 +326,7 @@ function MediaDrawer({
 
       <div className="space-y-2">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-medium">
-            Keywords <span className="text-muted-foreground">({keywords.length})</span>
-          </h3>
+          <h3 className="label-caps">Keywords ({keywords.length})</h3>
           <Button size="sm" variant="brand" onClick={() => setAttaching(true)}>
             <Plus className="size-4" />
             Attach keyword
@@ -329,21 +334,21 @@ function MediaDrawer({
         </div>
 
         {keywords.length === 0 ? (
-          <div className="rounded-md border border-dashed bg-card/30 px-4 py-8 text-center text-sm text-muted-foreground">
+          <p className="border-t py-6 text-[13px] text-muted-foreground">
             No keywords on this {noun} yet. Attach one to start automating replies.
-          </div>
+          </p>
         ) : (
           <ul className="space-y-2">
             {keywords.map((k) => (
               <li key={k.id} className="flex items-center gap-3 rounded-md border bg-card/40 p-3">
-                <div className="flex size-8 shrink-0 items-center justify-center rounded bg-brand-gradient/15">
+                <div className="flex size-7 shrink-0 items-center justify-center rounded-sm bg-signal-soft text-signal">
                   <Tag className="size-3.5" />
                 </div>
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="font-mono text-sm font-semibold">{k.keyword}</span>
+                    <span className="font-mono text-sm font-medium">{k.keyword}</span>
                     {!k.active && (
-                      <span className="rounded-full border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                      <span className="rounded-sm border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
                         Paused
                       </span>
                     )}

@@ -184,7 +184,9 @@ Two related traps, both cost time on 2026-08-16:
 - The `.env` `IG_ACCESS_TOKEN` is a **stale seed**, not the live token. The real
   one lives in the `ig_token` table and self-renews. Any script that bypasses the
   token store falls back to the seed and gets Graph code 190, which looks
-  exactly like a token crisis and is not one.
+  exactly like a token crisis and is not one. The server seeds the token cache on
+  boot whether or not workers are enabled, for the same reason: a cold cache
+  serves the stale seed, and the first Graph calls would fail.
 - A local frontend talks to `localhost:3000`, so the console shows empty states
   whenever the API is not up. Those are connection failures, not empty data.
 

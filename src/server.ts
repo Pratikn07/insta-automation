@@ -240,15 +240,25 @@ app.listen(env.PORT, () => {
         "no outbound Instagram calls. One startup DB write remains: stale reply-draft sends " +
         "are reconciled.",
     );
+    // Seed regardless of the flag. This is initialisation, not a worker: the
+    // token cache in tokenStore is cold at boot and getAccessToken falls back to
+    // env.IG_ACCESS_TOKEN until it warms. On a machine whose .env holds an old
+    // seed — which is the normal case, since the live token lives in the DB and
+    // rotates itself — that fallback makes the first Graph calls fail with code
+    // 190 and the console render as though the account had no content.
+    //
+    // Putting this behind WORKERS_ENABLED was a mistake when the flag was added:
+    // it made a workers-off server unable to reliably talk to Instagram, which
+    // is precisely the server someone runs to look at the UI.
+    void seedTokenFromEnv();
     recoverStaleReplyDraftSends();
     return;
   }
 
-  startBackgroundWorkers();
-
   // Make sure ig_token exists (and honours a hand-pasted env override) before
   // any worker tick fires. Non-throwing: getAccessToken falls back to env.
   void seedTokenFromEnv().then(() => {
+    startBackgroundWorkers();
     void runTokenRefreshTick();
     void runFeedFollowSnapshotTick();
   });
