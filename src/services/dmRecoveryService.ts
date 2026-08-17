@@ -13,6 +13,12 @@ import {
   RECOVERY_TEMPLATE_VERSION,
 } from "./dmRecoveryPolicy.js";
 import {
+  assignRecoveryTimingArm,
+  DM_RECOVERY_TIMING_EXPERIMENT_VERSION,
+  timingScheduleForArm,
+  type RecoveryTimingArm,
+} from "./dmRecoveryTimingExperiment.js";
+import {
   lockAndValidateSettingsBlockedVerificationEvidence,
   type SettingsBlockedVerificationEvidence,
 } from "./settingsBlockedVerificationService.js";
@@ -141,6 +147,45 @@ function decideExperimentCohort(
   };
 }
 
+function acceptedInsideConfiguredWindow(acceptedAt: Date): boolean {
+  const startRaw = env.DM_RECOVERY_EXPERIMENT_START_AT;
+  const endRaw = env.DM_RECOVERY_EXPERIMENT_END_AT;
+  if (!startRaw || !endRaw) return false;
+
+  const acceptedTime = acceptedAt.getTime();
+  return (
+    acceptedTime >= new Date(startRaw).getTime() &&
+    acceptedTime < new Date(endRaw).getTime()
+  );
+}
+
+function excludedV2WindowDecision(acceptedAt: Date): CohortDecision {
+  const startRaw = env.DM_RECOVERY_EXPERIMENT_START_AT;
+  const endRaw = env.DM_RECOVERY_EXPERIMENT_END_AT;
+
+  if (!startRaw || !endRaw) {
+    return {
+      status: "control",
+      cohort: "control",
+      lastErrorCategory: "experiment_not_configured",
+    };
+  }
+
+  if (acceptedAt.getTime() < new Date(startRaw).getTime()) {
+    return {
+      status: "control",
+      cohort: "control",
+      lastErrorCategory: "experiment_not_started",
+    };
+  }
+
+  return {
+    status: "control",
+    cohort: "control",
+    lastErrorCategory: "experiment_awaiting_review",
+  };
+}
+
 /**
  * Statuses whose rows still carry meaning for the experiment.
  *
@@ -173,11 +218,6 @@ export async function scheduleAcceptedGateRecovery(
     });
   }
 
-  const { status, cohort, lastErrorCategory } = decideExperimentCohort(
-    input.igUserId,
-    input.acceptedAt,
-  );
-
   // Freeze the origin verdict onto the row. The send-time check reads ig_users
   // live, which is correct for deciding, but ig_users is rewritten continuously
   // and a verdict is retired when the name behind it changes — so the live value
@@ -188,10 +228,52 @@ export async function scheduleAcceptedGateRecovery(
   // by market and the control arm is not. Comparing them then compares two
   // different populations and understates the reminder's effect.
   const audience = await readAudienceOriginSnapshot(input.igUserId);
-
-  const delayMs = env.DM_RECOVERY_DELAY_HOURS * 60 * 60 * 1000;
-  const eligibleAt = new Date(input.acceptedAt.getTime() + delayMs);
+  const isV2 =
+    env.DM_RECOVERY_EXPERIMENT_VERSION ===
+    DM_RECOVERY_TIMING_EXPERIMENT_VERSION;
+  const insideWindow = acceptedInsideConfiguredWindow(input.acceptedAt);
+  const inMarket =
+    !env.DM_RECOVERY_WESTERN_ONLY || audience.origin !== "south_asian";
   const publicReplyText = renderRecoveryCopy("no_confirmed_read", input.keywordSnapshot);
+
+  let status: DmRecoveryStatus;
+  let cohort: "treatment" | "control" | "not_applicable";
+  let eligibleAt: Date;
+  let lastErrorCategory: string | null;
+  let experimentVersionSnapshot: string | null = null;
+  let timingArm: RecoveryTimingArm | null = null;
+  let terminalSuppression: {
+    suppressedAt: Date;
+    suppressionReason: "audience_out_of_market";
+  } | null = null;
+
+  if (isV2 && insideWindow && inMarket) {
+    timingArm = assignRecoveryTimingArm(input.igUserId);
+    const schedule = timingScheduleForArm(timingArm, input.acceptedAt);
+    status = schedule.status;
+    cohort = schedule.cohort;
+    eligibleAt = schedule.eligibleAt;
+    lastErrorCategory = null;
+    experimentVersionSnapshot = DM_RECOVERY_TIMING_EXPERIMENT_VERSION;
+  } else if (isV2 && insideWindow) {
+    status = "suppressed";
+    cohort = "not_applicable";
+    eligibleAt = new Date(input.acceptedAt.getTime());
+    lastErrorCategory = null;
+    terminalSuppression = {
+      suppressedAt: input.acceptedAt,
+      suppressionReason: "audience_out_of_market",
+    };
+  } else {
+    const decision = isV2
+      ? excludedV2WindowDecision(input.acceptedAt)
+      : decideExperimentCohort(input.igUserId, input.acceptedAt);
+    status = decision.status;
+    cohort = decision.cohort;
+    lastErrorCategory = decision.lastErrorCategory;
+    const delayMs = env.DM_RECOVERY_DELAY_HOURS * 60 * 60 * 1_000;
+    eligibleAt = new Date(input.acceptedAt.getTime() + delayMs);
+  }
 
   const createData = {
     conversationId: input.conversationId,
@@ -207,11 +289,14 @@ export async function scheduleAcceptedGateRecovery(
     triggerKind: "no_confirmed_read" as const,
     status,
     cohort,
+    experimentVersionSnapshot,
+    timingArm,
     acceptedAt: input.acceptedAt,
     eligibleAt,
     lastErrorCategory,
     audienceOrigin: audience.origin,
     audienceOriginConfidence: audience.confidence,
+    ...(terminalSuppression ?? {}),
   };
 
   const row = await prisma.dmRecoveryReminder.upsert({
@@ -227,6 +312,8 @@ export async function scheduleAcceptedGateRecovery(
       triggerKind: row.triggerKind,
       status: row.status,
       cohort: row.cohort,
+      experimentVersion: row.experimentVersionSnapshot,
+      timingArm: row.timingArm,
     },
     "Recovery reminder created",
   );
@@ -239,7 +326,8 @@ export async function scheduleAcceptedGateRecovery(
         eventCode: "dm_recovery_control_assigned",
         id: row.id,
         reason: row.lastErrorCategory ?? "holdout",
-        experimentVersion: env.DM_RECOVERY_EXPERIMENT_VERSION,
+        experimentVersion: row.experimentVersionSnapshot,
+        timingArm: row.timingArm,
       },
       "Recovery reminder withheld as control",
     );
@@ -271,6 +359,8 @@ export async function scheduleSettingsBlockedRecovery(
     triggerKind: "settings_blocked" as const,
     status: "waiting" as const,
     cohort: "not_applicable" as const,
+    experimentVersionSnapshot: null,
+    timingArm: null,
     acceptedAt: null,
     eligibleAt: input.verification.classifiedAt,
     lastErrorCategory: null,
@@ -333,6 +423,8 @@ export async function scheduleTrackingUnavailableRecovery(
     triggerKind: "no_confirmed_read" as const,
     status: "tracking_unavailable" as const,
     cohort: "not_applicable" as const,
+    experimentVersionSnapshot: null,
+    timingArm: null,
     acceptedAt: null,
     // The status keeps this row away from the worker, which only ever selects
     // `waiting`. eligibleAt therefore records when the untrackable outcome was
