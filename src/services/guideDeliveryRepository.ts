@@ -14,7 +14,6 @@ import type {
 } from "./guideDeliveryPlanner.js";
 
 const DEFAULT_MAX_ATTEMPTS = 3;
-const COMPLETION_RECOVERY_LEASE_MS = 5 * 60_000;
 const GRAPH_ERROR_CATEGORIES = new Set([
   "graph_response",
   "graph_transport",
@@ -130,6 +129,12 @@ export type ExpiredClaimReconciliation = {
   completionPending: ClaimedGuideDelivery[];
 };
 
+export type ReconcileExpiredClaimsInput = {
+  now: Date;
+  limit: number;
+  claimLeaseMs: number;
+};
+
 export interface GuideDeliveryRepository {
   createOrLoadPlan(input: CreateGuideDeliveryPlanInput): Promise<PlannedDeliveryRecord>;
   claimById(input: ClaimGuideDeliveryInput): Promise<ClaimedGuideDelivery | null>;
@@ -141,7 +146,7 @@ export interface GuideDeliveryRepository {
   markUnitUncertain(input: MarkGuideUnitUncertainInput): Promise<boolean>;
   markWindowClosed(input: MarkGuideDeliveryWindowClosedInput): Promise<boolean>;
   releaseClaim(input: ReleaseGuideDeliveryClaimInput): Promise<boolean>;
-  reconcileExpiredClaims(now: Date): Promise<ExpiredClaimReconciliation>;
+  reconcileExpiredClaims(input: ReconcileExpiredClaimsInput): Promise<ExpiredClaimReconciliation>;
 }
 
 type RepositoryOptions = {
@@ -1267,7 +1272,10 @@ export function createGuideDeliveryRepository(
       });
     },
 
-    async reconcileExpiredClaims(now) {
+    async reconcileExpiredClaims(input) {
+      validateBatchLimit(input.limit);
+      validateLease(input.now, new Date(input.now.getTime() + input.claimLeaseMs));
+      const now = input.now;
       const result: ExpiredClaimReconciliation = {
         needsReviewDeliveryIds: [],
         releasedDeliveryIds: [],
@@ -1275,7 +1283,7 @@ export function createGuideDeliveryRepository(
         completionPending: [],
       };
 
-      while (true) {
+      for (let reconciled = 0; reconciled < input.limit; reconciled += 1) {
         const completionClaimToken = randomUUID();
         const outcome = await database.$transaction(async (tx) => {
           const rows = await tx.$queryRaw<LockedDelivery[]>(Prisma.sql`
@@ -1352,7 +1360,7 @@ export function createGuideDeliveryRepository(
           }
 
           if (allUnitsSent(units)) {
-            const claimExpiresAt = new Date(now.getTime() + COMPLETION_RECOVERY_LEASE_MS);
+            const claimExpiresAt = new Date(now.getTime() + input.claimLeaseMs);
             const reclaimed = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
               UPDATE "guide_delivery" AS delivery
               SET

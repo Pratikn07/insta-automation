@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const loggerError = vi.fn();
 vi.mock("../lib/logger.js", () => ({ logger: { error: loggerError, info: vi.fn(), warn: vi.fn() } }));
-const { startGuideDeliveryScheduler } = await import("./guideDeliveryScheduler.js");
+const { bindGuideDeliverySchedulerShutdown, startGuideDeliveryScheduler } = await import("./guideDeliveryScheduler.js");
 
 beforeEach(() => loggerError.mockReset());
 
@@ -50,5 +50,19 @@ describe("guide delivery scheduler", () => {
       "Guide delivery tick rejected",
     );
     expect(JSON.stringify(loggerError.mock.calls)).not.toContain("private failure");
+  });
+
+  it("quiesces the retained scheduler interval on either graceful shutdown signal", () => {
+    const listeners = new Map<string, () => void>();
+    const processLike = {
+      once: vi.fn((signal: string, callback: () => void) => listeners.set(signal, callback)),
+    };
+    const stop = vi.fn();
+
+    bindGuideDeliverySchedulerShutdown(stop, processLike);
+    expect(processLike.once).toHaveBeenCalledTimes(2);
+    listeners.get("SIGTERM")!();
+    listeners.get("SIGINT")!();
+    expect(stop).toHaveBeenCalledOnce();
   });
 });

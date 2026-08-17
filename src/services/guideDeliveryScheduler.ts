@@ -7,6 +7,25 @@ export type GuideDeliverySchedulerOptions = {
   runTick: () => Promise<unknown>;
 };
 
+export type GuideDeliveryShutdownProcess = {
+  once(signal: "SIGINT" | "SIGTERM", listener: () => void): unknown;
+};
+
+/** Stops the interval once, letting an in-flight tick finish without another run. */
+export function bindGuideDeliverySchedulerShutdown(
+  stop: () => void,
+  processLike: GuideDeliveryShutdownProcess = process,
+): void {
+  let stopped = false;
+  const quiesce = () => {
+    if (stopped) return;
+    stopped = true;
+    stop();
+  };
+  processLike.once("SIGTERM", quiesce);
+  processLike.once("SIGINT", quiesce);
+}
+
 /** Starts one local, non-overlapping reconciliation loop. */
 export function startGuideDeliveryScheduler(options: GuideDeliverySchedulerOptions): () => void {
   let running = false;

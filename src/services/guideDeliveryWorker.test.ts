@@ -54,6 +54,11 @@ describe("guide delivery worker", () => {
     const due = claimed("due");
     const test = harness({ completionPending: [complete], claimed: [due] });
     await test.worker();
+    expect(test.repository.reconcileExpiredClaims).toHaveBeenCalledWith({
+      now: NOW,
+      limit: 10,
+      claimLeaseMs: 300_000,
+    });
     expect(test.finalize).toHaveBeenCalledWith("all-sent", "all-sent-claim");
     expect(test.repository.claimDueBatch).toHaveBeenCalledWith({
       now: NOW,
@@ -68,6 +73,14 @@ describe("guide delivery worker", () => {
     await test.worker();
     expect(test.processClaimedGuideDelivery).not.toHaveBeenCalled();
     expect(test.finalize).not.toHaveBeenCalled();
+  });
+
+  it("bounds recovery finalization while still claiming a fresh due batch", async () => {
+    const completions = Array.from({ length: 11 }, (_, index) => claimed(`complete-${index}`));
+    const test = harness({ completionPending: completions });
+    await test.worker();
+    expect(test.finalize).toHaveBeenCalledTimes(10);
+    expect(test.repository.claimDueBatch).toHaveBeenCalledOnce();
   });
 
   it("continues processing later claims when one delivery throws", async () => {

@@ -49,9 +49,13 @@ export function createGuideDeliveryWorker(options: GuideDeliveryWorkerOptions) {
     if (!options.enabled) return;
 
     const now = options.now();
-    const reconciliation = await options.repository.reconcileExpiredClaims(now);
+    const reconciliation = await options.repository.reconcileExpiredClaims({
+      now,
+      limit: options.batchSize,
+      claimLeaseMs: options.leaseMs,
+    });
 
-    for (const delivery of reconciliation.completionPending) {
+    for (const delivery of reconciliation.completionPending.slice(0, options.batchSize)) {
       try {
         await options.finalize(delivery.id, delivery.claimToken);
       } catch {

@@ -760,9 +760,11 @@ describeWithDatabase("guide delivery repository PostgreSQL contract", () => {
       claimExpiresAt: renewedLease(BASE_TIME),
     });
 
-    const reconciliation = await repository.reconcileExpiredClaims(
-      new Date(BASE_TIME.getTime() + 61_000),
-    );
+    const reconciliation = await repository.reconcileExpiredClaims({
+      now: new Date(BASE_TIME.getTime() + 61_000),
+      limit: 10,
+      claimLeaseMs: 60_000,
+    });
 
     expect(reconciliation.needsReviewDeliveryIds).toContain(claim.id);
     await expect(prisma.guideDelivery.findUnique({ where: { id: claim.id } })).resolves.toMatchObject({
@@ -798,9 +800,11 @@ describeWithDatabase("guide delivery repository PostgreSQL contract", () => {
       });
     }
 
-    const reconciliation = await repository.reconcileExpiredClaims(
-      new Date(BASE_TIME.getTime() + 61_000),
-    );
+    const reconciliation = await repository.reconcileExpiredClaims({
+      now: new Date(BASE_TIME.getTime() + 61_000),
+      limit: 10,
+      claimLeaseMs: 120_000,
+    });
 
     expect(reconciliation.releasedDeliveryIds).toContain(untouched.claim.id);
     expect(reconciliation.completionPending.map((delivery) => delivery.id)).toContain(sent.claim.id);
@@ -809,6 +813,7 @@ describeWithDatabase("guide delivery repository PostgreSQL contract", () => {
     );
     expect(completion).toMatchObject({ status: "sending" });
     expect(completion!.claimToken).not.toBe(sent.claim.claimToken);
+    expect(completion!.claimExpiresAt).toEqual(new Date(BASE_TIME.getTime() + 181_000));
     expect(completion!.units.every((unit) => unit.status === "sent")).toBe(true);
     await expect(
       prisma.guideDelivery.findMany({
@@ -841,9 +846,11 @@ describeWithDatabase("guide delivery repository PostgreSQL contract", () => {
       data: { status: "failed", failureDisposition: "permanent" },
     });
 
-    const reconciliation = await repository.reconcileExpiredClaims(
-      new Date(BASE_TIME.getTime() + 61_000),
-    );
+    const reconciliation = await repository.reconcileExpiredClaims({
+      now: new Date(BASE_TIME.getTime() + 61_000),
+      limit: 10,
+      claimLeaseMs: 60_000,
+    });
 
     expect(reconciliation.terminalDeliveryIds).toContain(claim.id);
     await expect(prisma.guideDelivery.findUnique({ where: { id: claim.id } })).resolves.toMatchObject({
@@ -854,5 +861,24 @@ describeWithDatabase("guide delivery repository PostgreSQL contract", () => {
     await expect(prisma.guideDeliveryUnit.findUnique({ where: { id: unit!.id } })).resolves.toMatchObject(
       { status: "failed", failureDisposition: "permanent" },
     );
+  });
+
+  it("bounds stale reconciliation so due claims are not starved by a large backlog", async () => {
+    const first = await createAndClaim(await createFixture());
+    const second = await createAndClaim(await createFixture());
+    const now = new Date(BASE_TIME.getTime() + 61_000);
+
+    const reconciliation = await repository.reconcileExpiredClaims({
+      now,
+      limit: 1,
+      claimLeaseMs: 60_000,
+    });
+
+    expect(reconciliation.releasedDeliveryIds).toHaveLength(1);
+    const statuses = await prisma.guideDelivery.findMany({
+      where: { id: { in: [first.claim.id, second.claim.id] } },
+      select: { status: true },
+    });
+    expect(statuses.map((delivery) => delivery.status)).toContain("sending");
   });
 });

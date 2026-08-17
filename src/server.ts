@@ -17,7 +17,10 @@ import { startDmRecoveryScheduler } from "./services/dmRecoveryScheduler.js";
 import { runDmRecoveryTick } from "./services/dmRecoveryWorker.js";
 import { runHistoricalRecoveryTick } from "./services/historicalRecoveryWorker.js";
 import { runOriginEnrichmentTick } from "./services/originEnrichmentWorker.js";
-import { startGuideDeliveryScheduler } from "./services/guideDeliveryScheduler.js";
+import {
+  bindGuideDeliverySchedulerShutdown,
+  startGuideDeliveryScheduler,
+} from "./services/guideDeliveryScheduler.js";
 import { runGuideDeliveryTick } from "./services/guideDeliveryWorker.js";
 import { internalAiRouter } from "./api/internalAi.routes.js";
 import { seedTokenFromEnv } from "./meta/tokenStore.js";
@@ -26,6 +29,12 @@ import { apiRouter } from "./api/router.js";
 import { buildDeploymentHealth } from "./services/deploymentHealth.js";
 
 const app = express();
+let stopGuideDeliveryScheduler: (() => void) | undefined;
+
+bindGuideDeliverySchedulerShutdown(() => {
+  stopGuideDeliveryScheduler?.();
+  stopGuideDeliveryScheduler = undefined;
+});
 
 const allowedOrigins = (env.WEB_ORIGIN ?? "http://localhost:5173")
   .split(",")
@@ -185,7 +194,8 @@ function startBackgroundWorkers(): void {
   setInterval(recoverStaleReplyDraftSends, REPLY_DRAFT_RECOVERY_INTERVAL_MS);
 
   if (env.GUIDE_DELIVERY_ENABLED) {
-    startGuideDeliveryScheduler({
+    stopGuideDeliveryScheduler?.();
+    stopGuideDeliveryScheduler = startGuideDeliveryScheduler({
       intervalMs: env.GUIDE_DELIVERY_WORKER_INTERVAL_MS,
       setInterval: globalThis.setInterval,
       clearInterval: globalThis.clearInterval,
