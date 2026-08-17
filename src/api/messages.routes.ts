@@ -6,16 +6,45 @@ export const messagesRouter = Router();
 
 const messageTypeSchema = z.enum(["text", "image", "pdf"]);
 
+/**
+ * Instagram measures a message in BYTES, not characters: "Message text must be
+ * UTF-8 and be a 1000 bytes or less" (Meta, Instagram Messaging API). An emoji
+ * costs 4 bytes and a bullet or curly quote costs 3, so a `.max(n)` on string
+ * length — which is what this schema used to carry, at 2000 — permitted roughly
+ * double the deliverable size and let undeliverable steps reach the sender.
+ *
+ * Measured against production on 2026-08-16: 10 stored steps exceed 1,000 bytes
+ * and six of those are under 1,000 characters, so the old check passed every one
+ * of them. The failure surfaced only at send time, as a Graph error, after a
+ * real person had already asked for the guide.
+ *
+ * Rejecting here rather than truncating: silently shortening a parent's guide is
+ * worse than refusing to save it, and the editor shows the same budget live so
+ * this should never be the first time anyone hears about it.
+ */
+export const IG_TEXT_BYTE_LIMIT = 1000;
+
+const withinInstagramLimit = (value: string) =>
+  Buffer.byteLength(value, "utf8") <= IG_TEXT_BYTE_LIMIT;
+
+const limitMessage = (value: string) =>
+  `Message is ${Buffer.byteLength(value, "utf8").toLocaleString()} bytes; Instagram's limit is ` +
+  `${IG_TEXT_BYTE_LIMIT.toLocaleString()}. Emoji cost 4 bytes each, bullets and curly quotes 3.`;
+
+const messageBody = z.string().refine(withinInstagramLimit, (value) => ({
+  message: limitMessage(value),
+}));
+
 const createSchema = z.object({
   resourceId: z.string().uuid(),
   type: messageTypeSchema,
-  body: z.string().max(2000).optional(),
+  body: messageBody.optional(),
   mediaUrl: z.string().url().optional(),
 });
 
 const updateSchema = z.object({
   type: messageTypeSchema.optional(),
-  body: z.string().max(2000).nullable().optional(),
+  body: messageBody.nullable().optional(),
   mediaUrl: z.string().url().nullable().optional(),
 });
 

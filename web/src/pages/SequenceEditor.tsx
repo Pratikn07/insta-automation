@@ -42,6 +42,7 @@ import { MediaUpload } from "@/components/MediaUpload";
 import { PhoneMockup } from "@/components/PhoneMockup";
 import { SaveStatus } from "@/components/SaveStatus";
 import { cn } from "@/lib/utils";
+import { messageBudget } from "@/lib/messageBytes";
 
 const STEP_TYPES: { value: MessageType; label: string; icon: typeof TypeIcon }[] = [
   { value: "text", label: "Text", icon: TypeIcon },
@@ -358,6 +359,8 @@ function SortableStep({
   const Icon =
     step.type === "text" ? TypeIcon : step.type === "image" ? ImageIcon : FileText;
 
+  const budget = messageBudget(step.body ?? "");
+
   return (
     <li ref={setNodeRef} style={style}>
       <motion.div layout>
@@ -404,9 +407,24 @@ function SortableStep({
               )}
 
               <div className="space-y-1.5">
-                <Label>
-                  {step.type === "text" ? "Message" : "Caption (optional)"}
-                </Label>
+                <div className="flex items-baseline justify-between gap-3">
+                  <Label>
+                    {step.type === "text" ? "Message" : "Caption (optional)"}
+                  </Label>
+                  {/* Bytes, not characters. Instagram's limit is 1,000 UTF-8
+                      bytes and an emoji costs 4 of them, so a character count
+                      would read "972 / 1000 — fine" on a message that cannot be
+                      delivered. See lib/messageBytes.ts. */}
+                  <span
+                    className={cn(
+                      "label-caps tabular-nums",
+                      budget.level === "over" && "text-urgent",
+                    )}
+                    aria-live="polite"
+                  >
+                    {budget.bytes.toLocaleString()} / {budget.limit.toLocaleString()} bytes
+                  </span>
+                </div>
                 <Textarea
                   value={step.body ?? ""}
                   onChange={(e) => onChange({ ...step, body: e.target.value })}
@@ -421,7 +439,17 @@ function SortableStep({
                       ? "What you want them to read."
                       : "Optional caption sent with the file."
                   }
+                  className={cn(budget.level === "over" && "border-urgent")}
                 />
+                {budget.level === "over" && (
+                  <p className="text-xs leading-relaxed text-urgent">
+                    {budget.over.toLocaleString()} bytes over Instagram&rsquo;s limit — this step
+                    will not send. {budget.overhead > 0 && (
+                      <>Emoji and bullets account for {budget.overhead.toLocaleString()} of the
+                      weight; each emoji costs 4 bytes.</>
+                    )}
+                  </p>
+                )}
               </div>
             </div>
           </CardContent>
