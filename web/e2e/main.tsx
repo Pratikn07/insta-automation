@@ -1,10 +1,11 @@
 import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { DmThreadDrawer } from "@/components/conversations/DmThreadDrawer";
 import { Assistant } from "@/pages/Assistant";
 import { Conversations } from "@/pages/Conversations";
+import { DmRecovery } from "@/pages/DmRecovery";
 import { HistoricalRecovery } from "@/pages/HistoricalRecovery";
 import "../src/index.css";
 
@@ -12,8 +13,8 @@ import "../src/index.css";
  * Test-only harness for the Playwright journeys.
  *
  * It mounts the REAL components — no reimplementation — and replaces only
- * `window.fetch` with deterministic handlers for the exact `/api/dm-threads` and
- * `/api/ai` paths the tests touch. Anything else 404s loudly rather than silently
+ * `window.fetch` with deterministic handlers for the exact `/api` paths the
+ * tests touch. Anything else 404s loudly rather than silently
  * passing, so a journey cannot appear to work against a route that does not exist.
  *
  * This file is never imported by src/main.tsx and index.html does not reference
@@ -647,6 +648,10 @@ function installFetchStub(): void {
       });
     }
 
+    if (path === "/keywords" && method === "GET") {
+      return json([]);
+    }
+
     // ── Historical recovery dashboard ───────────────────────────────────
     if (path === "/historical-recovery/campaigns" && method === "GET") {
       return json({ sendingEnabled: true, campaigns: historicalCampaignRows() });
@@ -933,7 +938,9 @@ export function Harness() {
   if (scenario?.startsWith("recovery-")) {
     return (
       <div className="p-4">
-        <Conversations />
+        <Routes>
+          <Route path="/dm-recovery" element={<DmRecovery />} />
+        </Routes>
       </div>
     );
   }
@@ -954,10 +961,13 @@ const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
 });
 
+const harnessScenario = new URLSearchParams(window.location.search).get("scenario");
+const initialEntry = harnessScenario?.startsWith("recovery-") ? "/dm-recovery" : "/";
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[initialEntry]}>
         <Harness />
       </MemoryRouter>
     </QueryClientProvider>
