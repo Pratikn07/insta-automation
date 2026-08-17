@@ -9,9 +9,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Drawer } from "@/components/ui/drawer";
 import { EmptyState } from "@/components/EmptyState";
 import { KeywordForm } from "@/components/KeywordForm";
+import { UpcomingAutomations } from "@/components/UpcomingAutomations";
 import { cn } from "@/lib/utils";
 
 type Filter = "all" | MediaKind;
+type ContentView = "published" | "upcoming";
 
 // Per-kind presentation. Reels and carousels differ only in wording and icon —
 // the keyword flow behind them is identical, which is why they share one page.
@@ -36,6 +38,7 @@ export function Content() {
 
   const [selected, setSelected] = useState<MediaItem | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
+  const [view, setView] = useState<ContentView>("published");
 
   // Group keywords by the post they're attached to, so each card can show a
   // count and the drawer can list them — one source of truth, no extra fetch.
@@ -74,76 +77,119 @@ export function Content() {
       <div>
         <h2 className="text-xl font-semibold tracking-tight">Content</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Pick a post and attach a keyword. Comments on that post trigger its sequence.
+          {view === "published"
+            ? "Pick a post and attach a keyword. Comments on that post trigger its sequence."
+            : "Prepare a keyword and guide before an Instagram-scheduled post goes live."}
         </p>
       </div>
 
-      {!isLoading && !mediaQ.isError && all.length > 0 && (
-        <FilterTabs value={filter} onChange={setFilter} counts={counts} />
-      )}
+      <ContentViewTabs value={view} onChange={setView} />
 
-      {mediaQ.isError ? (
-        <EmptyState
-          icon={<LayoutGrid className="size-5" />}
-          title="Couldn't load your posts"
-          description="Instagram didn't return your content. The access token may have expired — try again shortly."
-          action={
-            <Button variant="outline" onClick={() => mediaQ.refetch()}>
-              Retry
-            </Button>
-          }
-        />
-      ) : isLoading ? (
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-          {Array.from({ length: 8 }).map((_, i) => (
-            <Skeleton key={i} className="aspect-[4/5] rounded-lg" />
-          ))}
-        </div>
-      ) : items.length === 0 ? (
-        <EmptyState
-          icon={<LayoutGrid className="size-5" />}
-          title={filter === "all" ? "No posts found" : `No ${KIND[filter].plural.toLowerCase()} yet`}
-          description={
-            filter === "all"
-              ? "Once the account has posts, they'll show up here ready for keywords."
-              : `This account has no ${KIND[filter].noun}s. Switch to All to see everything.`
-          }
-        />
+      {view === "upcoming" ? (
+        <UpcomingAutomations resources={resourcesQ.data ?? []} />
       ) : (
-        <div key={filter} className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-          {items.map((item, i) => (
-            <motion.button
-              key={item.id}
-              type="button"
-              layout
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              // Stagger only the first rows. With 147 posts an uncapped i*0.03
-              // would leave the last card fading in ~4s after the first.
-              transition={{ duration: 0.2, delay: Math.min(i, 11) * 0.03 }}
-              onClick={() => setSelected(item)}
-              className="group text-left"
-            >
-              <MediaThumb item={item} count={keywordsByMedia.get(item.id)?.length ?? 0} />
-            </motion.button>
-          ))}
-        </div>
-      )}
+        <>
+          {!isLoading && !mediaQ.isError && all.length > 0 && (
+            <FilterTabs value={filter} onChange={setFilter} counts={counts} />
+          )}
 
-      <Drawer
-        open={selected !== null}
-        onClose={() => setSelected(null)}
-        title={selected ? (selected.kind === "reel" ? "Reel" : "Carousel") : undefined}
-        description="Keywords attached to this post. Comments matching them trigger a DM."
-      >
-        {selected && (
-          <MediaDrawer
-            item={selected}
-            keywords={keywordsByMedia.get(selected.id) ?? []}
-            resources={resourcesQ.data ?? []}
-          />
-        )}
-      </Drawer>
+          {mediaQ.isError ? (
+            <EmptyState
+              icon={<LayoutGrid className="size-5" />}
+              title="Couldn't load your posts"
+              description="Instagram didn't return your content. The access token may have expired — try again shortly."
+              action={
+                <Button variant="outline" onClick={() => mediaQ.refetch()}>
+                  Retry
+                </Button>
+              }
+            />
+          ) : isLoading ? (
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+              {Array.from({ length: 8 }).map((_, i) => (
+                <Skeleton key={i} className="aspect-[4/5] rounded-lg" />
+              ))}
+            </div>
+          ) : items.length === 0 ? (
+            <EmptyState
+              icon={<LayoutGrid className="size-5" />}
+              title={filter === "all" ? "No posts found" : `No ${KIND[filter].plural.toLowerCase()} yet`}
+              description={
+                filter === "all"
+                  ? "Once the account has posts, they'll show up here ready for keywords."
+                  : `This account has no ${KIND[filter].noun}s. Switch to All to see everything.`
+              }
+            />
+          ) : (
+            <div key={filter} className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+              {items.map((item, i) => (
+                <motion.button
+                  key={item.id}
+                  type="button"
+                  layout
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  // Stagger only the first rows. With 147 posts an uncapped i*0.03
+                  // would leave the last card fading in ~4s after the first.
+                  transition={{ duration: 0.2, delay: Math.min(i, 11) * 0.03 }}
+                  onClick={() => setSelected(item)}
+                  className="group text-left"
+                >
+                  <MediaThumb item={item} count={keywordsByMedia.get(item.id)?.length ?? 0} />
+                </motion.button>
+              ))}
+            </div>
+          )}
+
+          <Drawer
+            open={selected !== null}
+            onClose={() => setSelected(null)}
+            title={selected ? (selected.kind === "reel" ? "Reel" : "Carousel") : undefined}
+            description="Keywords attached to this post. Comments matching them trigger a DM."
+          >
+            {selected && (
+              <MediaDrawer
+                item={selected}
+                keywords={keywordsByMedia.get(selected.id) ?? []}
+                resources={resourcesQ.data ?? []}
+              />
+            )}
+          </Drawer>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ContentViewTabs({
+  value,
+  onChange,
+}: {
+  value: ContentView;
+  onChange: (view: ContentView) => void;
+}) {
+  return (
+    <div role="tablist" aria-label="Content view" className="flex items-center gap-2 border-b">
+      {([
+        ["published", "Published"],
+        ["upcoming", "Upcoming"],
+      ] as const).map(([key, label]) => (
+        <button
+          key={key}
+          type="button"
+          role="tab"
+          aria-selected={value === key}
+          onClick={() => onChange(key)}
+          className={cn(
+            "-mb-px border-b-2 px-1 pb-2 text-sm font-medium transition-colors",
+            value === key
+              ? "border-foreground text-foreground"
+              : "border-transparent text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {label}
+        </button>
+      ))}
     </div>
   );
 }
