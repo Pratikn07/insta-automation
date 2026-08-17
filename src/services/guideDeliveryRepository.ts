@@ -5,6 +5,7 @@ import {
   type GuideDeliveryUnit,
   type PrismaClient,
 } from "@prisma/client";
+import { env } from "../config/env.js";
 import { prisma } from "../lib/prisma.js";
 import type { GraphErrorMetadata, TransportCode } from "./eventLogger.js";
 import type {
@@ -1462,4 +1463,6 @@ export function createGuideDeliveryRepository(
   };
 }
 
-export const guideDeliveryRepository = createGuideDeliveryRepository();
+export const guideDeliveryRepository = createGuideDeliveryRepository({
+  maxAttempts: env.GUIDE_DELIVERY_MAX_ATTEMPTS,
+});

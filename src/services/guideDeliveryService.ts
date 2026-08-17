@@ -1,4 +1,5 @@
 import type { DmMessageSource } from "@prisma/client";
+import { env } from "../config/env.js";
 import { logger } from "../lib/logger.js";
 import { prisma } from "../lib/prisma.js";
 import type { MetaSendResult } from "../types/meta.js";
@@ -23,9 +24,6 @@ import {
 } from "./guideDeliveryRepository.js";
 
 const STEP_DELAY_MS = 800;
-const DEFAULT_CLAIM_LEASE_MS = 5 * 60_000;
-const DEFAULT_MAX_ATTEMPTS = 3;
-const DEFAULT_RETRY_DELAY_MS = 60_000;
 
 const UNKNOWN_ERROR_METADATA: GraphErrorMetadata = {
   category: "unknown_error",
@@ -531,9 +529,9 @@ const defaultService = createGuideDeliveryService({
   sleep,
   now: () => new Date(),
   logger,
-  maxAttempts: DEFAULT_MAX_ATTEMPTS,
-  claimLeaseMs: DEFAULT_CLAIM_LEASE_MS,
-  retryDelayMs: DEFAULT_RETRY_DELAY_MS,
+  maxAttempts: env.GUIDE_DELIVERY_MAX_ATTEMPTS,
+  claimLeaseMs: env.GUIDE_DELIVERY_LEASE_MS,
+  retryDelayMs: env.GUIDE_DELIVERY_RETRY_BASE_MS,
 });
 
 export const deliverGuideForTrigger = defaultService;

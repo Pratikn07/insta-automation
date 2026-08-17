@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { envSchema, FORBIDDEN_SETTINGS_SIGNATURE } from "./env.js";
+import {
+  envSchema,
+  FORBIDDEN_SETTINGS_SIGNATURE,
+  guideDeliveryCohortIgUserIds,
+} from "./env.js";
 
 const baseEnv = {
   META_APP_SECRET: "mock_secret",
@@ -12,6 +16,56 @@ const baseEnv = {
 };
 
 describe("env configuration schema for DM recovery", () => {
+  it("defaults guide delivery to a disabled, bounded rollout", () => {
+    const parsed = envSchema.parse(baseEnv);
+    expect(parsed).toMatchObject({
+      GUIDE_DELIVERY_BATCH_SIZE: 10,
+      GUIDE_DELIVERY_LEASE_MS: 300_000,
+      GUIDE_DELIVERY_MAX_ATTEMPTS: 3,
+      GUIDE_DELIVERY_RETRY_BASE_MS: 60_000,
+      GUIDE_DELIVERY_WORKER_INTERVAL_MS: 60_000,
+      GUIDE_DELIVERY_ENABLED: false,
+      GUIDE_DELIVERY_ROLLOUT_PERCENT: 0,
+      GUIDE_DELIVERY_COHORT_IG_USER_IDS: "",
+    });
+  });
+
+  it("requires an explicit cohort or percentage before guide delivery can be enabled", () => {
+    expect(envSchema.safeParse({ ...baseEnv, GUIDE_DELIVERY_ENABLED: "true" }).success).toBe(false);
+    expect(
+      envSchema.safeParse({
+        ...baseEnv,
+        GUIDE_DELIVERY_ENABLED: "true",
+        GUIDE_DELIVERY_COHORT_IG_USER_IDS: " 123, , 456 ",
+      }).success,
+    ).toBe(true);
+    expect(
+      envSchema.safeParse({
+        ...baseEnv,
+        GUIDE_DELIVERY_ENABLED: "true",
+        GUIDE_DELIVERY_ROLLOUT_PERCENT: "1",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("parses controlled guide recipients as trimmed, non-empty stable IDs", () => {
+    expect([...guideDeliveryCohortIgUserIds(" 123, , 456, 123 ")]).toEqual(["123", "456"]);
+  });
+
+  it.each([
+    ["GUIDE_DELIVERY_BATCH_SIZE", "0"],
+    ["GUIDE_DELIVERY_BATCH_SIZE", "51"],
+    ["GUIDE_DELIVERY_LEASE_MS", "59999"],
+    ["GUIDE_DELIVERY_MAX_ATTEMPTS", "0"],
+    ["GUIDE_DELIVERY_MAX_ATTEMPTS", "11"],
+    ["GUIDE_DELIVERY_RETRY_BASE_MS", "9999"],
+    ["GUIDE_DELIVERY_WORKER_INTERVAL_MS", "9999"],
+    ["GUIDE_DELIVERY_ROLLOUT_PERCENT", "-1"],
+    ["GUIDE_DELIVERY_ROLLOUT_PERCENT", "101"],
+  ])("rejects invalid guide delivery setting %s=%s", (key, value) => {
+    expect(envSchema.safeParse({ ...baseEnv, [key]: value }).success).toBe(false);
+  });
+
   it("parses default DM recovery configuration correctly", () => {
     const parsed = envSchema.parse(baseEnv);
     expect(parsed).toMatchObject({

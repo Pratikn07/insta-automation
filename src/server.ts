@@ -17,6 +17,8 @@ import { startDmRecoveryScheduler } from "./services/dmRecoveryScheduler.js";
 import { runDmRecoveryTick } from "./services/dmRecoveryWorker.js";
 import { runHistoricalRecoveryTick } from "./services/historicalRecoveryWorker.js";
 import { runOriginEnrichmentTick } from "./services/originEnrichmentWorker.js";
+import { startGuideDeliveryScheduler } from "./services/guideDeliveryScheduler.js";
+import { runGuideDeliveryTick } from "./services/guideDeliveryWorker.js";
 import { internalAiRouter } from "./api/internalAi.routes.js";
 import { seedTokenFromEnv } from "./meta/tokenStore.js";
 import { runTokenRefreshTick } from "./meta/tokenRefresher.js";
@@ -181,6 +183,17 @@ function startBackgroundWorkers(): void {
   }
 
   setInterval(recoverStaleReplyDraftSends, REPLY_DRAFT_RECOVERY_INTERVAL_MS);
+
+  if (env.GUIDE_DELIVERY_ENABLED) {
+    startGuideDeliveryScheduler({
+      intervalMs: env.GUIDE_DELIVERY_WORKER_INTERVAL_MS,
+      setInterval: globalThis.setInterval,
+      clearInterval: globalThis.clearInterval,
+      runTick: runGuideDeliveryTick,
+    });
+  } else {
+    logger.info({ errorCode: "guide_delivery_disabled" }, "Guide delivery worker disabled");
+  }
 
   startDmRecoveryScheduler({
     enabled: env.DM_RECOVERY_ENABLED,
