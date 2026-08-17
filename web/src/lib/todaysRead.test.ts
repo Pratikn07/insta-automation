@@ -1,41 +1,116 @@
 import { describe, expect, it } from "vitest";
-import { composeTodaysRead, funnelWindowDays, velocityChange } from "./todaysRead";
-import type { UsWeekOverWeek } from "./followerFlow";
-import type { GuideFollowResult } from "./types";
+import {
+  composeTodaysRead,
+  funnelWindowDays,
+  largestMeasuredFunnelLoss,
+} from "./todaysRead";
+import type { ComparableWeekResult } from "./followerFlow";
+import type { FunnelStageCount, GuideFollowResult } from "./types";
 
-const week = (over: Partial<UsWeekOverWeek> = {}): UsWeekOverWeek =>
-  ({
-    thisWeek: 248,
-    lastWeek: 189,
+function stage(
+  key: string,
+  label: string,
+  count: number,
+  options: Pick<FunnelStageCount, "bypassable" | "coverageOnly"> = {},
+): FunnelStageCount {
+  return {
+    key,
+    label,
+    definition: `${label} definition`,
+    count,
+    ofEntryPct: null,
+    ofPrevPct: null,
+    ...options,
+  };
+}
+
+function rankedFunnel(): GuideFollowResult {
+  return {
+    key: "guide-follow",
+    name: "Guide → follow",
+    question: "Where do followers stop?",
+    window: { from: "2026-07-17T00:00:00.000Z", to: "2026-08-16T00:00:00.000Z" },
+    cohortSize: 100,
+    stages: [
+      stage("entered", "Entered", 100),
+      stage("gateSent", "Gate sent", 92),
+      stage("replied", "Replied", 40),
+      stage("guideDelivered", "Guide delivered", 35),
+      stage("followingD21", "Following at day 21", 5, { coverageOnly: true }),
+    ],
+    headline: {
+      fromStage: "entered",
+      toStage: "gateSent",
+      label: "Gate-send rate",
+      rationale: "Intentionally not the largest loss",
+      rate: { numerator: 92, denominator: 100, pct: 92, belowMinSample: false },
+    },
+    followGateConversion: {
+      numerator: 35,
+      denominator: 40,
+      pct: 87.5,
+      belowMinSample: false,
+    },
+    stuckAtWall: 0,
+    askDistribution: [],
+    expressLane: 0,
+    byEntryPath: [],
+    retention: { numerator: 5, denominator: 5, pct: 100, belowMinSample: false },
+    homeTileCohort: { deliveredToNonFollower: 0, ofWhichRedelivery: 0 },
+  };
+}
+
+function readyWeek(
+  overrides: Partial<Extract<ComparableWeekResult, { status: "ready" }>> = {},
+): ComparableWeekResult {
+  return {
+    status: "ready",
+    current: {
+      from: "2026-08-08",
+      to: "2026-08-14",
+      days: [
+        "2026-08-08",
+        "2026-08-09",
+        "2026-08-10",
+        "2026-08-11",
+        "2026-08-12",
+        "2026-08-13",
+        "2026-08-14",
+      ],
+      us: 248,
+      coveredDays: 7,
+    },
+    prior: {
+      from: "2026-08-01",
+      to: "2026-08-07",
+      days: [
+        "2026-08-01",
+        "2026-08-02",
+        "2026-08-03",
+        "2026-08-04",
+        "2026-08-05",
+        "2026-08-06",
+        "2026-08-07",
+      ],
+      us: 189,
+      coveredDays: 7,
+    },
+    changePct: 31,
     trend: "accelerating",
-    provisionalDays: 0,
-    ...over,
-  }) as UsWeekOverWeek;
+    ...overrides,
+  };
+}
 
-const funnel = (
-  pct: number | null,
-  numerator = 1267,
-  denominator = 2946,
-  window = { from: "2026-07-17T00:00:00.000Z", to: "2026-08-16T00:00:00.000Z" },
-) =>
-  ({
-    window,
-    headline: { label: "Reply rate", rate: { numerator, denominator, pct } },
-  }) as GuideFollowResult;
-
-describe("velocityChange", () => {
-  it("rounds the percent change against the prior week", () => {
-    expect(velocityChange(248, 189)).toBe(31);
-  });
-
-  it("returns null without a baseline", () => {
-    expect(velocityChange(248, null)).toBeNull();
-  });
-
-  it("refuses a ratio against zero rather than reporting an infinite rise", () => {
-    expect(velocityChange(248, 0)).toBeNull();
-  });
-});
+function insufficientWeek(
+  reason: Extract<ComparableWeekResult, { status: "insufficient" }>["reason"],
+): ComparableWeekResult {
+  return {
+    status: "insufficient",
+    reason,
+    currentCoveredDays: 6,
+    priorCoveredDays: 7,
+  };
+}
 
 describe("funnelWindowDays", () => {
   it("reads the funnel's own window rather than assuming 30", () => {
@@ -58,67 +133,100 @@ describe("funnelWindowDays", () => {
   });
 });
 
-describe("composeTodaysRead", () => {
-  it("returns null when there is no follower geography to read", () => {
-    expect(composeTodaysRead(null, funnel(43))).toBeNull();
+describe("largestMeasuredFunnelLoss", () => {
+  it("ranks the largest eligible absolute stage loss", () => {
+    expect(largestMeasuredFunnelLoss(rankedFunnel())).toMatchObject({
+      fromStage: "gateSent",
+      toStage: "replied",
+      denominator: 92,
+      numerator: 40,
+      lost: 52,
+    });
   });
 
-  it("states the change when a comparable week exists", () => {
-    const read = composeTodaysRead(week(), funnel(43))!;
-    expect(read.headline).toBe("US follower growth is 31% faster than last week.");
+  it("excludes bypassable and coverage-only transitions", () => {
+    const result = rankedFunnel();
+    result.stages[1]!.count = 100;
+    result.stages[2]!.bypassable = true;
+    result.stages[4]!.count = 0;
+    expect(largestMeasuredFunnelLoss(result)?.toStage).toBe("guideDelivered");
+  });
+
+  it("keeps stage order as the tie-breaker", () => {
+    const result = rankedFunnel();
+    result.stages = [
+      stage("entered", "Entered", 100),
+      stage("gateSent", "Gate sent", 80),
+      stage("replied", "Replied", 60),
+    ];
+    expect(largestMeasuredFunnelLoss(result)?.toStage).toBe("gateSent");
+  });
+});
+
+describe("composeTodaysRead", () => {
+  it("prints no interpretation for insufficient comparison evidence", () => {
+    expect(composeTodaysRead(insufficientWeek("provisional_day"), rankedFunnel())).toBeNull();
+  });
+
+  it("states the change when complete comparable weeks exist", () => {
+    const read = composeTodaysRead(readyWeek(), rankedFunnel())!;
+    expect(read.headline).toBe("US follower growth is 31% faster than the prior settled week.");
   });
 
   it("names a fall as slower rather than hiding the direction", () => {
-    const read = composeTodaysRead(week({ thisWeek: 150, lastWeek: 200 }), undefined)!;
+    const read = composeTodaysRead(
+      readyWeek({ changePct: -25, trend: "slowing" }),
+      undefined,
+    )!;
     expect(read.headline).toContain("25% slower");
   });
 
-  it("falls back to counts, and never a percentage, without a baseline", () => {
-    const read = composeTodaysRead(week({ lastWeek: null }), undefined)!;
-    expect(read.headline).toBe("You gained 248 US followers this week.");
+  it("uses a settled count, and never a percentage, when the prior total is not positive", () => {
+    const read = composeTodaysRead(readyWeek({ changePct: null }), undefined)!;
+    expect(read.headline).toBe("The latest settled week added 248 US followers.");
     expect(read.headline).not.toContain("%");
-    expect(read.qualification).toContain("No comparable prior week");
   });
 
-  it("labels each clause with its own window", () => {
-    const read = composeTodaysRead(week(), funnel(43))!;
-    expect(read.headlineWindow).toBe("Last 7 days against the 7 before");
-    expect(read.becauseWindow).toBe("Funnel cohort, last 30 days");
+  it("derives the week qualification from actual dates", () => {
+    const read = composeTodaysRead(readyWeek(), rankedFunnel())!;
+    expect(read.headlineWindow).toBe("Aug 8–14 against Aug 1–7");
+    expect(read.qualification).toContain("14 settled calendar days");
   });
 
-  it("reads a non-default funnel window off the result", () => {
-    const short = funnel(43, 1267, 2946, {
-      from: "2026-08-09T00:00:00.000Z",
-      to: "2026-08-16T00:00:00.000Z",
-    });
-    expect(composeTodaysRead(week(), short)!.becauseWindow).toBe("Funnel cohort, last 7 days");
+  it("ranks the funnel stages instead of trusting the predefined headline", () => {
+    const read = composeTodaysRead(readyWeek(), rankedFunnel())!;
+    expect(read.because).toContain("52 of 92");
+    expect(read.because).toContain("gate sent and replied");
+    expect(read.because).not.toContain("gate-send rate");
   });
 
-  it("keeps the clauses separate rather than joining two cohorts with a conjunction", () => {
-    const read = composeTodaysRead(week(), funnel(43))!;
+  it("labels the funnel clause with its own real window", () => {
+    const short = rankedFunnel();
+    short.window = { from: "2026-08-09T00:00:00.000Z", to: "2026-08-16T00:00:00.000Z" };
+    expect(composeTodaysRead(readyWeek(), short)!.becauseWindow).toBe(
+      "Funnel cohort, last 7 days",
+    );
+  });
+
+  it("keeps the clauses separate rather than presenting two cohorts as one finding", () => {
+    const read = composeTodaysRead(readyWeek(), rankedFunnel())!;
     expect(read.because).toMatch(/^Separately,/);
     expect(read.because).not.toMatch(/^but /i);
   });
 
-  it("quotes the funnel's loss in counts, not as a rate", () => {
-    const read = composeTodaysRead(week(), funnel(43))!;
-    expect(read.because).toContain("1,679 of 2,946");
-    expect(read.because).not.toContain("%");
-  });
-
-  it("omits the clause and its window together when nothing is being lost", () => {
-    const read = composeTodaysRead(week(), funnel(100, 2946, 2946))!;
+  it("omits the clause and its window together when no eligible stage loses people", () => {
+    const result = rankedFunnel();
+    result.stages = [stage("entered", "Entered", 100), stage("delivered", "Delivered", 100)];
+    const read = composeTodaysRead(readyWeek(), result)!;
     expect(read.because).toBeNull();
     expect(read.becauseWindow).toBeNull();
   });
 
-  it("says the sample is below minimum when the funnel withholds its rate", () => {
-    const read = composeTodaysRead(week(), funnel(null, 5, 32))!;
-    expect(read.qualification).toContain("below the minimum sample");
-  });
-
-  it("declares settling days so the reader can discount them", () => {
-    const read = composeTodaysRead(week({ provisionalDays: 2 }), undefined)!;
-    expect(read.qualification).toContain("newest 2 days still settling");
+  it("states when the funnel's guarded headline sample is below minimum", () => {
+    const result = rankedFunnel();
+    result.headline.rate = { numerator: 5, denominator: 32, pct: null, belowMinSample: true };
+    expect(composeTodaysRead(readyWeek(), result)!.qualification).toContain(
+      "below the minimum sample",
+    );
   });
 });

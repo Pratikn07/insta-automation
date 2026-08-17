@@ -3,12 +3,12 @@ import type { FollowerDailyAddsPoint, FollowerStock } from "./types";
 import {
   axisTicks,
   chartGeometry,
+  compareSettledUsWeeks,
   describeStockVsFlow,
   formatSignedCount,
   ratePerDay,
   summarizeFollowerFlow,
   summarizeFollowerFlowForRange,
-  summarizeUsWeekOverWeek,
 } from "./followerFlow";
 import { describeFreshness } from "./homeDashboard";
 
@@ -55,6 +55,26 @@ function nullPoint(basis: FollowerDailyAddsPoint["basis"]): FollowerDailyAddsPoi
 
 function series(...points: FollowerDailyAddsPoint[]): FollowerDailyAddsPoint[] {
   return points;
+}
+
+function settledDay(day: string, us: number): FollowerDailyAddsPoint {
+  return point({
+    day,
+    capturedAt: `${day}T23:00:00.000Z`,
+    us,
+    total: us,
+    reportedTotalDelta: us,
+    spanDays: 1,
+    basis: "diff",
+    stale: false,
+    provisional: false,
+  });
+}
+
+function settledFortnight(): FollowerDailyAddsPoint[] {
+  return Array.from({ length: 14 }, (_, index) =>
+    settledDay(`2026-08-${String(index + 1).padStart(2, "0")}`, index < 7 ? 10 : 20),
+  );
 }
 
 describe("ratePerDay", () => {
@@ -371,92 +391,87 @@ describe("chartGeometry", () => {
   });
 });
 
-describe("summarizeUsWeekOverWeek", () => {
-  it("compares real US counts across two 7-day windows", () => {
-    dayCounter = 0;
-    const pts = series(
-      ...Array.from({ length: 7 }, () => point({ us: 20, total: 20 })), // last week: 140
-      ...Array.from({ length: 7 }, () => point({ us: 26, total: 26 })), // this week: 182
-    );
-    const s = summarizeUsWeekOverWeek(pts)!;
-    expect(s.thisWeek).toBe(182);
-    expect(s.lastWeek).toBe(140);
-    expect(s.deltaCount).toBe(42);
-    expect(s.coveredDays).toBe(7);
+describe("compareSettledUsWeeks", () => {
+  it("compares two exact contiguous settled Pacific weeks", () => {
+    expect(compareSettledUsWeeks(settledFortnight())).toMatchObject({
+      status: "ready",
+      current: { from: "2026-08-08", to: "2026-08-14", coveredDays: 7, us: 140 },
+      prior: { from: "2026-08-01", to: "2026-08-07", coveredDays: 7, us: 70 },
+      changePct: 100,
+      trend: "accelerating",
+    });
   });
 
-  it("counts still-settling days and reports how many there are", () => {
-    dayCounter = 0;
-    const pts = series(
-      ...Array.from({ length: 7 }, () => point({ us: 20, total: 20 })),
-      ...Array.from({ length: 5 }, () => point({ us: 30, total: 30 })),
-      point({ us: 8, total: 8, provisional: true }),
-      point({ us: 7, total: 7, provisional: true }),
-    );
-    const s = summarizeUsWeekOverWeek(pts)!;
-    // 150 + 8 + 7 = 165 — the provisional days count, matching the chart legend.
-    expect(s.thisWeek).toBe(165);
-    expect(s.provisionalDays).toBe(2);
+  it.each([
+    ["missing_day", (points: FollowerDailyAddsPoint[]) => points.filter((x) => x.day !== "2026-08-10")],
+    [
+      "provisional_day",
+      (points: FollowerDailyAddsPoint[]) =>
+        points.map((x) => (x.day === "2026-08-14" ? { ...x, provisional: true } : x)),
+    ],
+    [
+      "multi_day_span",
+      (points: FollowerDailyAddsPoint[]) =>
+        points.map((x) =>
+          x.day === "2026-08-14"
+            ? { ...x, basis: "multi_day_span" as const, spanDays: 2 }
+            : x,
+        ),
+    ],
+  ])("withholds for %s", (reason, change) => {
+    expect(compareSettledUsWeeks(change(settledFortnight()))).toMatchObject({
+      status: "insufficient",
+      reason,
+    });
   });
 
-  it("withholds the comparison when the prior window is short", () => {
-    dayCounter = 0;
-    const pts = series(
-      ...Array.from({ length: 3 }, () => point({ us: 20, total: 20 })),
-      ...Array.from({ length: 7 }, () => point({ us: 30, total: 30 })),
-    );
-    const s = summarizeUsWeekOverWeek(pts)!;
-    expect(s.thisWeek).toBe(210);
-    expect(s.lastWeek).toBeNull();
-    expect(s.deltaCount).toBeNull();
-    expect(s.trend).toBe("steady");
+  it("withholds a duplicated date rather than silently selecting one", () => {
+    const points = settledFortnight();
+    points.push({ ...points.at(-1)! });
+    expect(compareSettledUsWeeks(points)).toMatchObject({
+      status: "insufficient",
+      reason: "duplicate_day",
+    });
   });
 
-  it("reads a 15%-or-greater rise as accelerating and a fall as slowing", () => {
-    dayCounter = 0;
-    const rising = series(
-      ...Array.from({ length: 7 }, () => point({ us: 100, total: 100 })),
-      ...Array.from({ length: 7 }, () => point({ us: 116, total: 116 })),
+  it("does not backshift around provisional newest days", () => {
+    const points = settledFortnight().map((x) =>
+      x.day >= "2026-08-13" ? { ...x, provisional: true } : x,
     );
-    // band = max(700 × 0.15, 1) = 105; 812 − 700 = 112 ≥ 105.
-    expect(summarizeUsWeekOverWeek(rising)!.trend).toBe("accelerating");
-
-    dayCounter = 0;
-    const falling = series(
-      ...Array.from({ length: 7 }, () => point({ us: 100, total: 100 })),
-      ...Array.from({ length: 7 }, () => point({ us: 80, total: 80 })),
-    );
-    // 560 − 700 = −140 ≤ −105.
-    expect(summarizeUsWeekOverWeek(falling)!.trend).toBe("slowing");
-
-    dayCounter = 0;
-    const flat = series(
-      ...Array.from({ length: 7 }, () => point({ us: 100, total: 100 })),
-      ...Array.from({ length: 7 }, () => point({ us: 105, total: 105 })),
-    );
-    // 735 − 700 = 35 < 105.
-    expect(summarizeUsWeekOverWeek(flat)!.trend).toBe("steady");
+    expect(compareSettledUsWeeks(points)).toMatchObject({
+      status: "insufficient",
+      reason: "provisional_day",
+    });
   });
 
-  it("handles a net-negative US week without flipping the trend sign", () => {
-    dayCounter = 0;
-    const pts = series(
-      ...Array.from({ length: 7 }, () => point({ us: 10, total: 10 })),
-      ...Array.from({ length: 7 }, () => point({ us: -5, total: -5 })),
-    );
-    const s = summarizeUsWeekOverWeek(pts)!;
-    expect(s.thisWeek).toBe(-35);
-    expect(s.lastWeek).toBe(70);
-    expect(s.deltaCount).toBe(-105);
-    expect(s.trend).toBe("slowing");
+  it("withholds when the account has less than fourteen calendar days of history", () => {
+    expect(compareSettledUsWeeks(settledFortnight().slice(3))).toMatchObject({
+      status: "insufficient",
+      reason: "not_enough_history",
+      currentCoveredDays: 7,
+      priorCoveredDays: 4,
+    });
   });
 
-  it("returns null when no day in the window is measured", () => {
-    dayCounter = 0;
-    expect(
-      summarizeUsWeekOverWeek(series(nullPoint("no_prior_day"), nullPoint("stale"))),
-    ).toBeNull();
-  });
+  it.each(["no_prior_day", "no_snapshot", "pending", "stale"] as const)(
+    "treats a %s point as missing measured evidence",
+    (basis) => {
+      const points = settledFortnight();
+      points[5] = {
+        ...points[5]!,
+        basis,
+        us: null,
+        total: null,
+        reportedTotalDelta: null,
+        spanDays: null,
+        stale: basis === "pending" || basis === "stale",
+      };
+      expect(compareSettledUsWeeks(points)).toMatchObject({
+        status: "insufficient",
+        reason: "missing_day",
+      });
+    },
+  );
 });
 
 describe("describeFreshness", () => {

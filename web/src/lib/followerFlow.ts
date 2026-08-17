@@ -182,7 +182,7 @@ export function summarizeFollowerFlow(
  * the prior points cover fewer (the account simply doesn't go back that far),
  * `trendComparable` is false and the caller hides the badge. Comparing against a
  * partial baseline makes a shorter history look like a collapse — the same
- * reason summarizeUsWeekOverWeek withholds `lastWeek`.
+ * reason the Home comparison requires two complete settled weeks.
  */
 export function summarizeFollowerFlowForRange(
   rangePoints: FollowerDailyAddsPoint[],
@@ -227,60 +227,150 @@ export function summarizeFollowerFlowForRange(
   };
 }
 
-export interface UsWeekOverWeek {
-  thisWeek: number;
-  lastWeek: number | null;
-  deltaCount: number | null;
-  trend: FlowTrend;
-  coveredDays: number;
-  provisionalDays: number;
-}
-
 const WEEK_DAYS = 7;
 
+export interface ComparableWeek {
+  from: string;
+  to: string;
+  days: string[];
+  us: number;
+  coveredDays: 7;
+}
+
+export type ComparableWeekResult =
+  | {
+      status: "ready";
+      current: ComparableWeek;
+      prior: ComparableWeek;
+      changePct: number | null;
+      trend: FlowTrend;
+    }
+  | {
+      status: "insufficient";
+      reason:
+        | "missing_day"
+        | "provisional_day"
+        | "multi_day_span"
+        | "duplicate_day"
+        | "not_enough_history";
+      currentCoveredDays: number;
+      priorCoveredDays: number;
+    };
+
+function shiftDay(day: string, delta: number): string {
+  const date = new Date(`${day}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + delta);
+  return date.toISOString().slice(0, 10);
+}
+
+function expectedDays(to: string, count: number): string[] {
+  return Array.from({ length: count }, (_, index) => shiftDay(to, index - count + 1));
+}
+
+function isSettledComparisonDay(point: FollowerDailyAddsPoint | undefined): boolean {
+  return (
+    point !== undefined &&
+    point.basis === "diff" &&
+    point.spanDays === 1 &&
+    point.us !== null &&
+    !point.stale &&
+    !point.provisional
+  );
+}
+
 /**
- * Net US followers gained this week against last week, in real counts.
+ * Compare the latest two exact seven-day Pacific calendar windows.
  *
- * Answers "is my US audience growing?" without percentage-point arithmetic.
- * Both windows reuse sumRegions, so this tile and the region legend under the
- * chart are computed identically and can never disagree on screen.
- *
- * Provisional (still-settling) days are counted, matching
- * summarizeFollowerFlow's includeProvisional: true — excluding them would make
- * this tile contradict the legend beside it, and would bend the trend by
- * stripping a larger share of the newer window than the older one. The count
- * is surfaced as provisionalDays so the UI can disclose it instead.
- *
- * lastWeek is null (and trend "steady") until the prior window covers a full
- * 7 days — a partial prior window makes the comparison misleading, so we
- * withhold it rather than print a number that reads as a real decline.
+ * Descriptive charts may show provisional and catch-up data with caveats. An
+ * interpretive sentence cannot: one missing or unsettled date withholds the
+ * entire comparison rather than silently shortening or backshifting a window.
  */
-export function summarizeUsWeekOverWeek(
+export function compareSettledUsWeeks(
   points: FollowerDailyAddsPoint[],
-): UsWeekOverWeek | null {
-  const current = sumRegions(points, WEEK_DAYS);
-  if (current.coveredDays === 0) return null;
-
-  // Slice off the current window by point count (sumRegions windows by points),
-  // then measure the 7 points before it.
-  const priorPoints = points.slice(0, Math.max(points.length - WEEK_DAYS, 0));
-  const prior = sumRegions(priorPoints, WEEK_DAYS);
-  const lastWeek = prior.coveredDays >= WEEK_DAYS ? prior.us : null;
-
-  let trend: FlowTrend = "steady";
-  if (lastWeek !== null) {
-    const band = Math.max(Math.abs(lastWeek) * TREND_RATIO, 1);
-    if (current.us - lastWeek >= band) trend = "accelerating";
-    else if (current.us - lastWeek <= -band) trend = "slowing";
+): ComparableWeekResult {
+  const sorted = [...points].sort((a, b) => a.day.localeCompare(b.day));
+  const newestDay = sorted.at(-1)?.day;
+  if (!newestDay) {
+    return {
+      status: "insufficient",
+      reason: "not_enough_history",
+      currentCoveredDays: 0,
+      priorCoveredDays: 0,
+    };
   }
 
+  const days = expectedDays(newestDay, WEEK_DAYS * 2);
+  const priorDays = days.slice(0, WEEK_DAYS);
+  const currentDays = days.slice(WEEK_DAYS);
+
+  const pointsByDay = new Map<string, FollowerDailyAddsPoint>();
+  const duplicateDays = new Set<string>();
+  for (const point of sorted) {
+    if (pointsByDay.has(point.day)) duplicateDays.add(point.day);
+    else pointsByDay.set(point.day, point);
+  }
+
+  const settledCount = (windowDays: string[]) =>
+    windowDays.filter((day) => isSettledComparisonDay(pointsByDay.get(day))).length;
+  const coverage = () => ({
+    currentCoveredDays: settledCount(currentDays),
+    priorCoveredDays: settledCount(priorDays),
+  });
+
+  const earliestDay = sorted[0]!.day;
+  if (earliestDay > days[0]!) {
+    return { status: "insufficient", reason: "not_enough_history", ...coverage() };
+  }
+
+  if (days.some((day) => duplicateDays.has(day))) {
+    return { status: "insufficient", reason: "duplicate_day", ...coverage() };
+  }
+
+  const expectedPoints = days.map((day) => pointsByDay.get(day));
+  const hasMissingEvidence = expectedPoints.some(
+    (point) =>
+      point === undefined ||
+      point.us === null ||
+      point.spanDays === null ||
+      point.stale ||
+      (point.basis !== "diff" && point.basis !== "multi_day_span"),
+  );
+  if (hasMissingEvidence) {
+    return { status: "insufficient", reason: "missing_day", ...coverage() };
+  }
+
+  if (
+    expectedPoints.some(
+      (point) => point!.basis === "multi_day_span" || point!.spanDays !== 1,
+    )
+  ) {
+    return { status: "insufficient", reason: "multi_day_span", ...coverage() };
+  }
+
+  if (expectedPoints.some((point) => point!.provisional)) {
+    return { status: "insufficient", reason: "provisional_day", ...coverage() };
+  }
+
+  const buildWeek = (windowDays: string[]): ComparableWeek => ({
+    from: windowDays[0]!,
+    to: windowDays.at(-1)!,
+    days: windowDays,
+    us: windowDays.reduce((total, day) => total + pointsByDay.get(day)!.us!, 0),
+    coveredDays: WEEK_DAYS,
+  });
+  const prior = buildWeek(priorDays);
+  const current = buildWeek(currentDays);
+  const delta = current.us - prior.us;
+  const band = Math.max(Math.abs(prior.us) * TREND_RATIO, 1);
+  const trend: FlowTrend =
+    delta >= band ? "accelerating" : delta <= -band ? "slowing" : "steady";
+
   return {
-    thisWeek: current.us,
-    lastWeek,
-    deltaCount: lastWeek === null ? null : round(current.us - lastWeek, 0),
+    status: "ready",
+    current,
+    prior,
+    changePct: prior.us > 0 ? round((delta / prior.us) * 100, 0) : null,
     trend,
-    coveredDays: current.coveredDays,
-    provisionalDays: current.provisionalDays,
   };
 }
 

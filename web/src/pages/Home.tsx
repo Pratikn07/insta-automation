@@ -9,8 +9,14 @@ import type {
   GuideFollowResult,
   Stats,
 } from "@/lib/types";
-import { summarizeFollowerFlow, summarizeUsWeekOverWeek } from "@/lib/followerFlow";
+import { compareSettledUsWeeks, summarizeFollowerFlow } from "@/lib/followerFlow";
 import { composeTodaysRead } from "@/lib/todaysRead";
+import {
+  deriveHomeAttentionState,
+  type HomeAttentionState,
+  type HomeSource,
+  type SourceState,
+} from "@/lib/homeAttention";
 import { FollowerFlowPanel } from "@/components/home/FollowerFlowPanel";
 import { FeedFollowAttributionDrawer } from "@/components/home/FeedFollowAttributionDrawer";
 import { FollowerKpiRow } from "@/components/home/FollowerKpiRow";
@@ -18,80 +24,45 @@ import { cn } from "@/lib/utils";
 
 const nf = new Intl.NumberFormat("en-US");
 
-interface Attention {
-  title: string;
-  detail: string;
-  tag: "Now" | "Today" | "Watch";
-  to: string;
-  action: string;
+function queryState<T>(query: {
+  isError: boolean;
+  isPending: boolean;
+  data?: T;
+}): SourceState<T> {
+  if (query.isError) return { status: "error" };
+  if (query.isPending || query.data === undefined) return { status: "loading" };
+  return { status: "success", data: query.data };
 }
 
-/**
- * What needs attention, derived — never authored.
- *
- * Every row below comes from a number the API already returns. There is no
- * placeholder list and no ranked advice the data cannot support: when nothing
- * qualifies the section says so, because an empty attention list is a real and
- * good state for this product, not a gap to fill with something plausible.
- *
- * Order is by what a person can actually lose: an ambiguous send is a follower
- * who may never have received their guide, an exhausted gate is one who
- * definitely did not, and the funnel leak is the largest standing loss.
- */
-function deriveAttention(stats: Stats | undefined, funnel: GuideFollowResult | undefined): Attention[] {
-  const items: Attention[] = [];
-
-  if (stats?.gateQueueSendUncertain) {
-    items.push({
-      title: `Check ${nf.format(stats.gateQueueSendUncertain)} uncertain gate sends`,
-      detail:
-        "The DM may already have landed, so these are never retried automatically. Each one is a person who may never have received their gate.",
-      tag: "Now",
-      to: "/activity",
-      action: "Open",
-    });
+function attentionHeader(state: HomeAttentionState): string {
+  switch (state.status) {
+    case "checking":
+      return "Checking what needs attention…";
+    case "ready_with_attention":
+      return `${state.items.length} ${state.items.length === 1 ? "decision deserves" : "decisions deserve"} your attention today.`;
+    case "ready_clear":
+      return "Nothing is waiting on you today.";
+    case "incomplete":
+      return "The check is incomplete.";
   }
+}
 
-  if (stats?.gateQueueExhausted) {
-    items.push({
-      title: `${nf.format(stats.gateQueueExhausted)} gate deliveries gave up`,
-      detail: "Retries ran out inside the 7-day window. These people asked and never got a reply.",
-      tag: "Now",
-      to: "/activity",
-      action: "Review",
-    });
+function comparisonUnavailableCopy(
+  comparison: ReturnType<typeof compareSettledUsWeeks>,
+): string {
+  if (comparison.status === "ready") return "";
+  switch (comparison.reason) {
+    case "not_enough_history":
+      return "Waiting for two complete settled weeks of follower measurements.";
+    case "missing_day":
+      return "A daily follower measurement is missing, so no week-to-week claim is available.";
+    case "provisional_day":
+      return "Newest measurements are still settling, so the comparison is withheld.";
+    case "multi_day_span":
+      return "A catch-up span prevents a week-to-week comparison.";
+    case "duplicate_day":
+      return "Duplicate daily measurements prevent a trustworthy comparison.";
   }
-
-  if (funnel) {
-    const { numerator, denominator } = funnel.headline.rate;
-    const lost = denominator - numerator;
-    if (lost > 0) {
-      // "Inspect", not "Rewrite". The cohort proves WHERE people stopped; it
-      // does not prove the copy stopped them. Prescribing a rewrite states a
-      // cause the measurement cannot support, and this product's standing rule
-      // is that every claim traces to evidence. Recommend a rewrite only once
-      // message-level or experiment data supports it.
-      items.push({
-        title: `Inspect the ${funnel.headline.label.toLowerCase()} loss`,
-        detail: `${nf.format(lost)} of ${nf.format(denominator)} conversations stop here — the largest measured loss in the journey. What causes it is not yet measured.`,
-        tag: "Today",
-        to: "/funnels",
-        action: "Inspect",
-      });
-    }
-  }
-
-  if (stats?.conversationsAwaiting) {
-    items.push({
-      title: `${nf.format(stats.conversationsAwaiting)} conversations awaiting a reply`,
-      detail: "Waiting on the follower's side. Worth a look if the number keeps climbing.",
-      tag: "Watch",
-      to: "/conversations",
-      action: "Open",
-    });
-  }
-
-  return items;
 }
 
 export function Home() {
@@ -122,10 +93,36 @@ export function Home() {
   const flowPoints = flowQ.data?.points ?? [];
   const flowStock = flowQ.data?.stock ?? null;
   const flowSummary = summarizeFollowerFlow(flowPoints);
-  const weekOverWeek = summarizeUsWeekOverWeek(flowPoints);
-  const read = composeTodaysRead(weekOverWeek, funnelQ.data);
-  const attention = deriveAttention(statsQ.data, funnelQ.data);
+  const weekComparison = compareSettledUsWeeks(flowPoints);
+  const read = composeTodaysRead(weekComparison, funnelQ.data);
+  const attentionState = deriveHomeAttentionState({
+    flow: queryState(flowQ),
+    stats: queryState(statsQ),
+    funnel: queryState(funnelQ),
+  });
+  const attention = attentionState.status === "checking" ? [] : attentionState.items;
   const best = attention[0] ?? null;
+
+  const failedSourceControls: Record<
+    HomeSource,
+    { label: string; retryLabel: string; retry: () => void }
+  > = {
+    flow: {
+      label: "Follower flow",
+      retryLabel: "Retry follower flow",
+      retry: () => void flowQ.refetch(),
+    },
+    stats: {
+      label: "System stats",
+      retryLabel: "Retry system stats",
+      retry: () => void statsQ.refetch(),
+    },
+    funnel: {
+      label: "Funnel evidence",
+      retryLabel: "Retry funnel evidence",
+      retry: () => void funnelQ.refetch(),
+    },
+  };
 
   // Three states, not two. A failed request previously rendered "Awaiting first
   // snapshot" — the same words the product uses for a genuinely empty account —
@@ -149,9 +146,7 @@ export function Home() {
         <div>
           <h1 className="text-2xl font-medium tracking-tight">Home</h1>
           <p className="mt-0.5 text-[13px] text-muted-foreground">
-            {attention.length === 0
-              ? "Nothing is waiting on you today."
-              : `${attention.length} ${attention.length === 1 ? "decision deserves" : "decisions deserve"} your attention today.`}
+            {attentionHeader(attentionState)}
           </p>
         </div>
         <span className="label-caps">{updatedLabel}</span>
@@ -190,10 +185,10 @@ export function Home() {
                 {evidenceOpen ? "Hide the evidence" : "Show the evidence"}
               </button>
             </>
-          ) : flowQ.isError || funnelQ.isError ? (
+          ) : flowQ.isError ? (
             <p className="mt-2 max-w-[54ch] text-[13px] leading-relaxed">
-              No read available — the API did not answer. This is a connection problem, not an
-              empty account.{" "}
+              No follower read is available — the API did not answer. This is a connection
+              problem, not an empty account.{" "}
               <button
                 type="button"
                 onClick={() => void flowQ.refetch()}
@@ -202,10 +197,13 @@ export function Home() {
                 Try again
               </button>
             </p>
+          ) : flowQ.isPending ? (
+            <p className="mt-2 max-w-[54ch] text-[13px] leading-relaxed">
+              Waiting for follower measurements.
+            </p>
           ) : (
             <p className="mt-2 max-w-[54ch] text-[13px] leading-relaxed">
-              No read yet. Two days of follower geography are needed before this week can be
-              compared with the last; the snapshot worker fills this in on its own.
+              {comparisonUnavailableCopy(weekComparison)}
             </p>
           )}
         </div>
@@ -222,6 +220,14 @@ export function Home() {
                 {best.title}
               </Link>
             </>
+          ) : attentionState.status === "checking" ? (
+            <p className="mt-2 flex-1 text-[13px] leading-relaxed text-muted-foreground">
+              Waiting for the required evidence.
+            </p>
+          ) : attentionState.status === "incomplete" ? (
+            <p className="mt-2 flex-1 text-[13px] leading-relaxed text-muted-foreground">
+              Some evidence could not be checked.
+            </p>
           ) : (
             <p className="mt-2 flex-1 text-[13px] leading-relaxed text-muted-foreground">
               Nothing is failing and nothing is queued. The automation is running without you.
@@ -251,7 +257,7 @@ export function Home() {
       )}
 
       <FollowerKpiRow
-        weekOverWeek={weekOverWeek}
+        weekComparison={weekComparison}
         stock={flowStock}
         avgPerDay7={flowSummary?.avgPerDay7 ?? null}
         stats={statsQ.data}
@@ -267,9 +273,43 @@ export function Home() {
             <h3 className="text-[15px] font-medium">What needs attention</h3>
             <span className="label-caps">Ranked by what is lost</span>
           </div>
-          {attention.length === 0 ? (
+          {attentionState.status === "incomplete" && (
+            <div className="mt-3 border border-line bg-muted p-3 text-[12.5px] leading-relaxed">
+              <p>
+                Could not check:{" "}
+                {attentionState.failedSources
+                  .map((source) => failedSourceControls[source].label)
+                  .join(", ")}
+                . Verified items from the available sources remain below.
+              </p>
+              <div className="mt-2 flex flex-wrap gap-3">
+                {attentionState.failedSources.map((source) => {
+                  const control = failedSourceControls[source];
+                  return (
+                    <button
+                      key={source}
+                      type="button"
+                      onClick={control.retry}
+                      className="border-b border-current text-signal"
+                    >
+                      {control.retryLabel}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {attentionState.status === "checking" ? (
+            <p className="mt-3 text-[13px] text-muted-foreground">
+              Checking the required evidence before calling anything clear.
+            </p>
+          ) : attention.length === 0 && attentionState.status === "ready_clear" ? (
             <p className="mt-3 text-[13px] text-muted-foreground">
               Nothing qualifies. No failed gates, no exhausted retries, nothing waiting.
+            </p>
+          ) : attention.length === 0 ? (
+            <p className="mt-3 text-[13px] text-muted-foreground">
+              No verified attention item is available from the sources that answered.
             </p>
           ) : (
             attention.map((a, i) => (

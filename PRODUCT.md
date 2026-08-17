@@ -79,9 +79,38 @@ smoothed-over finding is worse than a blank, because a blank is honest and a
 reader can act on a wrong sentence.
 
 **Status:** the first version ships derived from data that already exists —
-week-over-week velocity and the funnel's measured loss. The richer version
-(attributing a lift to specific reels, ranking across several signals) is real
-unbuilt work, not a wording problem.
+settled week-over-week velocity and the funnel's largest eligible measured loss.
+The richer version (attributing a lift to specific reels, ranking across several
+signals) is real unbuilt work, not a wording problem.
+
+**Measurement contract.** A week-over-week interpretation requires exactly two
+contiguous seven-day Pacific calendar windows. Every day must be a settled,
+single-day `diff` with a known US count. A missing, duplicated, stale,
+provisional, pending, no-snapshot, no-prior-day, or multi-day catch-up point
+withholds the interpretation; the code does not shorten or backshift the window
+to find a more convenient answer. Descriptive charts may still show provisional
+and catch-up data with their qualifications. The restriction applies to claims,
+not visibility.
+
+The funnel sentence and ranked action use the largest absolute loss between
+adjacent measured stages. A transition marked `bypassable` or `coverageOnly` is
+not eligible, because its apparent difference is not measured attrition. The
+funnel's predefined headline remains useful on the funnel page but is not
+allowed to masquerade as the largest loss on Home.
+
+**Home evidence states.** Home has four explicit readiness states:
+
+- `checking`: at least one required source is still loading and none has failed;
+- `ready_with_attention`: all required sources answered and verified items exist;
+- `ready_clear`: all required sources answered and no verified item exists;
+- `incomplete`: at least one required source failed, while verified items from
+  the sources that answered remain visible.
+
+The required all-clear sources are follower flow, system stats, and the guide
+funnel. “Nothing is waiting,” “nothing is failing,” and equivalent reassurance
+may appear only in `ready_clear`. Feed-follow attribution is optional detail: its
+failure must not erase a valid follower read or turn the whole Home check into an
+outage. Every required-source failure names itself and retries its own query.
 
 ### Success metric
 
