@@ -340,6 +340,11 @@
         "name": "The Own-Window Rule",
         "body": "Every clause in a composed sentence names the window it measured. Velocity is 7 days against the prior 7; the funnel clause reports whatever window the funnel actually ran. Joining two cohorts into one unlabelled sentence is the unstated-denominator failure the funnel layer refuses one level below.",
         "section": "typography"
+      },
+      {
+        "name": "The Foreign Surface Rule",
+        "body": "A preview of somebody else's interface is not ours to restyle. The phone mockup and its chat bubbles simulate an Instagram DM and stay Instagram-coloured on an ivory page. Recolouring them would make the preview misrepresent what the follower actually receives. Treat it as a screenshot: framed by our chrome, never repainted.",
+        "section": "components"
       }
     ],
     "dos": [
@@ -365,7 +370,8 @@
       "Don't show a green status beside a value you do not have.",
       "Don't add a second typeface, or reach past weight 500 for emphasis.",
       "Don't write an eyebrow above a heading, or number sections when the order carries no information.",
-      "Don't rely on hover for anything a phone user needs."
+      "Don't rely on hover for anything a phone user needs.",
+      "Don't restyle a preview of another product's surface into this system. A phone mockup of an Instagram DM stays Instagram-coloured."
     ]
   }
 }

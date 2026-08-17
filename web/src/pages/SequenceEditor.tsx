@@ -76,17 +76,15 @@ export function SequenceEditor() {
 
   if (!id || !resourceQ.data) {
     return (
-      <Card>
-        <CardContent className="p-8">
-          <p className="text-sm text-muted-foreground">Sequence not found.</p>
-          <Button variant="ghost" asChild className="mt-3">
-            <Link to="/sequences">
-              <ArrowLeft className="size-4" />
-              Back to Sequences
-            </Link>
-          </Button>
-        </CardContent>
-      </Card>
+      <div className="border-t pt-4">
+        <p className="text-[13px] text-muted-foreground">Sequence not found.</p>
+        <Button variant="ghost" asChild className="mt-2 -ml-3">
+          <Link to="/sequences">
+            <ArrowLeft className="size-4" />
+            Back to Sequences
+          </Link>
+        </Button>
+      </div>
     );
   }
 
@@ -164,8 +162,8 @@ function SequenceEditorForm({
           resourceId: id,
           type,
           ...(type === "text" ? { body: "New step — edit me." } : {}),
-          ...(type === "image" ? { mediaUrl: "https://placehold.co/600x400/0a0a0a/666?text=Upload+image" } : {}),
-          ...(type === "pdf" ? { mediaUrl: "https://placehold.co/600x400/0a0a0a/666?text=Upload+PDF" } : {}),
+          ...(type === "image" ? { mediaUrl: "https://placehold.co/600x400/EBE8DF/66665F?text=Upload+image" } : {}),
+          ...(type === "pdf" ? { mediaUrl: "https://placehold.co/600x400/EBE8DF/66665F?text=Upload+PDF" } : {}),
         }),
       }),
     onSuccess: (next) => {
@@ -225,7 +223,7 @@ function SequenceEditorForm({
                   renameMutation.mutate();
                 }
               }}
-              className="border-transparent bg-transparent px-0 text-xl font-semibold tracking-tight shadow-none focus-visible:ring-0"
+              className="h-auto border-transparent bg-transparent px-0 text-2xl font-medium tracking-tight focus-visible:ring-0"
               placeholder="Sequence name"
             />
             {id && <SaveStatus sequenceId={id} />}
@@ -240,7 +238,7 @@ function SequenceEditorForm({
             }}
             rows={1}
             placeholder="Internal note — what this sequence is for."
-            className="border-transparent bg-transparent px-0 text-sm text-muted-foreground shadow-none focus-visible:ring-0 resize-none"
+            className="resize-none border-transparent bg-transparent px-0 text-[13px] text-muted-foreground focus-visible:ring-0"
           />
         </div>
       </div>
@@ -248,9 +246,7 @@ function SequenceEditorForm({
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
         <div className="space-y-3">
           <div className="flex items-center justify-between">
-            <h3 className="text-sm font-medium uppercase tracking-wide text-muted-foreground">
-              Steps
-            </h3>
+            <h3 className="label-caps">Steps</h3>
             <div className="flex gap-1">
               {STEP_TYPES.map(({ value, label, icon: Icon }) => (
                 <Button
@@ -268,17 +264,13 @@ function SequenceEditorForm({
           </div>
 
           {items.length === 0 ? (
-            <Card>
-              <CardContent className="flex flex-col items-center gap-3 px-6 py-10 text-center">
-                <Plus className="size-5 text-muted-foreground" />
-                <div>
-                  <p className="text-sm font-medium">No steps yet</p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    Add a Text, Image, or PDF step to start building this sequence.
-                  </p>
-                </div>
-              </CardContent>
-            </Card>
+            <div className="border-t py-10 text-center">
+              <Plus className="mx-auto size-5 text-muted-foreground" aria-hidden />
+              <p className="mt-3 text-[13px] font-medium">No steps yet</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Add a Text, Image, or PDF step to start building this sequence.
+              </p>
+            </div>
           ) : (
             <DndContext
               sensors={sensors}
@@ -306,10 +298,8 @@ function SequenceEditorForm({
 
         <aside className="lg:sticky lg:top-4 self-start">
           <div className="mb-3 flex items-center justify-between">
-            <h3 className="text-sm font-medium uppercase tracking-wide text-muted-foreground">
-              Preview
-            </h3>
-            <span className="text-xs text-muted-foreground">After DONE reply</span>
+            <h3 className="label-caps">Preview</h3>
+            <span className="label-caps">After DONE reply</span>
           </div>
           <PhoneMockup steps={items} />
         </aside>
@@ -382,14 +372,12 @@ function SortableStep({
             >
               <GripVertical className="size-4" />
             </button>
-            <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-brand-gradient/15 text-foreground">
+            <div className="flex size-7 shrink-0 items-center justify-center rounded-sm bg-signal-soft text-signal">
               <Icon className="size-4" />
             </div>
             <div className="min-w-0 flex-1 space-y-3">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-xs uppercase tracking-wide text-muted-foreground">
-                  Step {index + 1} · {step.type}
-                </span>
+                <span className="label-caps">Step {index + 1} · {step.type}</span>
                 <Button
                   size="icon"
                   variant="ghost"

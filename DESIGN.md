@@ -301,6 +301,24 @@ their edges to satisfy a slogan makes them harder to use, not purer.
 The test is one question: *does this box exist because the content is an object,
 or because I wanted the layout to feel organised?* Only the first survives.
 
+Proven on the sequence editor, the first surface migrated after this rule was
+written. A step **kept** its bounded surface: it is dragged, reordered, and
+deleted as a unit, so its edges are the thing you grab. The empty state and the
+not-found state **lost** theirs — both were containers drawn to make a paragraph
+look considered. Same page, same rule, opposite answers, which is what a usable
+rule looks like.
+
+A dragged step also carries a shadow while in flight. That is the overlay
+exception doing its job: an element genuinely lifted off the page may look like
+it is.
+
+**The Foreign Surface Rule.** A preview of somebody else's interface is not ours
+to restyle. The phone mockup and its chat bubbles simulate an Instagram DM —
+`bg-neutral-800` received, `bg-blue-600` sent — and they stay that way on an
+ivory page. Recolouring them into this system would make the preview misrepresent
+what the follower actually receives, which is the one thing a preview may never
+do. Treat it as a screenshot: framed by our chrome, never repainted.
+
 ## Shapes
 
 Near-square: 2px on controls, 3px at most on a band. Enough to take the
