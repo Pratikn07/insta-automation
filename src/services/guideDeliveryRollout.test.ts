@@ -17,6 +17,10 @@ function owner(
 }
 
 describe("guideDeliveryOwner", () => {
+  it.each([null, undefined])("fails closed for a missing runtime input: %s", (input) => {
+    expect(guideDeliveryOwner(input as never)).toBe("legacy");
+  });
+
   it("keeps every trigger on legacy while durable delivery is disabled", () => {
     expect(
       owner({
@@ -35,6 +39,48 @@ describe("guideDeliveryOwner", () => {
     } as unknown as ReadonlySet<string>;
 
     expect(owner({ enabled: false, cohortIgUserIds })).toBe("legacy");
+  });
+
+  it.each([null, 0, 1, "false", "true", {}])(
+    "fails closed unless enabled is the literal boolean true: %j",
+    (enabled) => {
+      expect(
+        owner({
+          enabled: enabled as never,
+          rolloutPercent: 100,
+          cohortIgUserIds: new Set(["ig-user-1"]),
+        }),
+      ).toBe("legacy");
+    },
+  );
+
+  it.each([
+    ["blank recipient", { igUserId: "" }],
+    ["whitespace recipient", { igUserId: "   " }],
+    ["blank trigger", { triggerId: "" }],
+    ["whitespace trigger", { triggerId: "\t\n" }],
+  ] as const)("fails closed for a %s", (_label, overrides) => {
+    expect(owner({ rolloutPercent: 100, ...overrides })).toBe("legacy");
+  });
+
+  it("fails closed when a malformed cohort throws during membership lookup", () => {
+    const cohortIgUserIds = {
+      has: () => {
+        throw new Error("malformed runtime cohort");
+      },
+    } as unknown as ReadonlySet<string>;
+
+    expect(owner({ cohortIgUserIds, rolloutPercent: 100 })).toBe("legacy");
+  });
+
+  it("fails closed when a malformed cohort throws while exposing membership lookup", () => {
+    const cohortIgUserIds = Object.defineProperty({}, "has", {
+      get() {
+        throw new Error("malformed runtime cohort accessor");
+      },
+    }) as ReadonlySet<string>;
+
+    expect(owner({ cohortIgUserIds, rolloutPercent: 100 })).toBe("legacy");
   });
 
   it("assigns an exact controlled recipient to the ledger even at zero percent", () => {

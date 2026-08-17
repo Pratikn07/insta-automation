@@ -619,7 +619,40 @@ describe("handleMessage — mutually exclusive guide delivery ownership", () => 
     expect(markCompleted).not.toHaveBeenCalled();
   });
 
-  it("reuses the persisted trigger ID when the same inbound work is processed again", async () => {
+  it("drops a true duplicate webhook with the same provider mid before owner selection", async () => {
+    recordInboundMessage
+      .mockResolvedValueOnce({
+        duplicate: false,
+        becameLatest: true,
+        threadId: "thread-1",
+        messageId: "message-1",
+      })
+      .mockResolvedValueOnce({
+        duplicate: true,
+        becameLatest: false,
+        threadId: "thread-1",
+        messageId: "message-1",
+      });
+    findKeywordInMessage.mockResolvedValue(keywordFixture);
+    guideDeliveryOwner.mockReturnValue("ledger");
+    deliverGuideForTrigger.mockResolvedValue("already_processing");
+
+    const webhook = inbound("SLEEP");
+    await handleMessage(webhook);
+    await handleMessage(webhook);
+
+    expect(recordInboundMessage).toHaveBeenCalledTimes(2);
+    expect(recordInboundMessage.mock.calls.map(([input]) => input.instagramMessageId)).toEqual([
+      "mid-1",
+      "mid-1",
+    ]);
+    expect(recordRecoveryInbound).toHaveBeenCalledOnce();
+    expect(guideDeliveryOwner).toHaveBeenCalledOnce();
+    expect(deliverGuideForTrigger).toHaveBeenCalledOnce();
+    expect(sendSequence).not.toHaveBeenCalled();
+  });
+
+  it("reuses the persisted trigger ID when downstream processing is retried", async () => {
     findKeywordInMessage.mockResolvedValue(keywordFixture);
     guideDeliveryOwner.mockReturnValue("ledger");
     deliverGuideForTrigger.mockResolvedValue("already_processing");

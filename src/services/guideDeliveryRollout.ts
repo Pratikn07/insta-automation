@@ -9,15 +9,26 @@ export function guideDeliveryOwner(input: {
   igUserId: string;
   triggerId: string;
 }): GuideDeliveryOwner {
-  if (!input.enabled) return "legacy";
+  if (input === null || typeof input !== "object") return "legacy";
+  if (input.enabled !== true) return "legacy";
   if (
     typeof input.igUserId !== "string" ||
     typeof input.triggerId !== "string" ||
-    typeof input.cohortIgUserIds?.has !== "function"
+    input.igUserId.trim().length === 0 ||
+    input.triggerId.trim().length === 0
   ) {
     return "legacy";
   }
-  if (input.cohortIgUserIds.has(input.igUserId)) return "ledger";
+  let inControlledCohort: unknown;
+  try {
+    const has = input.cohortIgUserIds?.has;
+    if (typeof has !== "function") return "legacy";
+    inControlledCohort = has.call(input.cohortIgUserIds, input.igUserId);
+  } catch {
+    return "legacy";
+  }
+  if (inControlledCohort === true) return "ledger";
+  if (inControlledCohort !== false) return "legacy";
   if (
     !Number.isInteger(input.rolloutPercent) ||
     input.rolloutPercent < 0 ||
