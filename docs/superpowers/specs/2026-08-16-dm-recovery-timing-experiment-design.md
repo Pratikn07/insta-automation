@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-16
 
-**Status:** Approved in conversation, pending user review of this written specification
+**Status:** Approved
 
 **Feature:** GROW-002, timely recovery reminder
 
@@ -83,7 +83,7 @@ The following pre-assignment eligibility rules must hold:
 1. Instagram accepted the original gate DM.
 2. The journey originated from a captured public keyword comment.
 3. The gate DM has a trusted Instagram message identifier so seen and engagement signals can be correlated.
-4. The original public comment and media references required for a reply are present at scheduling time.
+4. The original public comment identifier required for a reply is present at scheduling time. Media metadata is retained when available but is not required to post a reply to the captured comment.
 5. The frozen audience-origin decision is in market under the active Western-audience policy.
 6. The accepted time falls inside the v2 enrollment window.
 7. The journey is not a `settings_blocked` fallback.
@@ -100,7 +100,7 @@ The assignment function will:
 
 1. Hash `read-recovery-timing-v2:<igUserId>` with SHA-256.
 2. Read an unsigned 32-bit prefix.
-3. Convert it into a bucket from 0 through 9,999.
+3. Convert it into a bucket from 0 through 9,999 with `floor(uint32 / 2^32 * 10000)`.
 4. Assign buckets 0 through 4,499 to `two_hour`.
 5. Assign buckets 4,500 through 8,999 to `six_hour`.
 6. Assign buckets 9,000 through 9,999 to `no_reminder`.
@@ -169,7 +169,7 @@ When Instagram acceptance is captured:
 
 ### 9.2 No-reminder arm
 
-A no-reminder row is terminal at creation. It never enters the worker claim query and cannot later be converted into a waiting row. Seen, reply, and completion signals may still be attributed to it for baseline measurement without changing its control status.
+A no-reminder row is terminal at creation. It never enters the worker claim query, cannot be owner-cancelled, and cannot later be converted into a waiting row. Seen, reply, and completion signals may still be attributed to it for baseline measurement without changing its control status.
 
 ### 9.3 Treatment arms
 
@@ -307,8 +307,16 @@ After enrollment closes, the system waits 48 additional hours before final analy
 The primary comparison is `two_hour` versus `six_hour`. A timing arm is declared the winner only when:
 
 1. its 48-hour completion rate is at least 2.0 percentage points higher;
-2. a two-sided two-proportion test reports `p < 0.05`, equivalent to a 95% confidence interval for the difference that excludes zero;
+2. a standard pooled two-sided two-proportion z test reports `p < 0.05`, and the unpooled 95% confidence interval for the difference excludes zero;
 3. its public-send failure and safety indicators are not materially worse.
+
+For this decision, materially worse has one fixed operational meaning:
+
+- The combined public-send exception rate, `(send_failed + send_uncertain) / reminders with at least one attempt`, must not exceed the other timing arm by more than 2.0 percentage points.
+- The delayed-signal false-positive rate, defined as attempted reminders for which a trusted positive signal happened before dispatch but was received after dispatch, must not exceed the other timing arm by more than 2.0 percentage points.
+- Any confirmed duplicate automated public recovery reply is a zero-tolerance safety event. A timing arm with such an event cannot be rolled out until the incident is reviewed and the duplicate path is closed.
+
+These thresholds are rollout guardrails, not additional statistical winner tests. The existing circuit breaker may pause sending at stricter operational thresholds while enrollment is in progress.
 
 The no-reminder arm is a safety baseline. Its 10% allocation is not expected to power small treatment-versus-control differences. If both timing arms are at least 2.0 percentage points below the control point estimate, or a treatment-versus-control confidence interval indicates harm, neither timing is rolled out without a new owner review.
 
@@ -392,6 +400,10 @@ The response includes:
 - pairwise timing difference, confidence interval, and final-decision eligibility;
 - allocation health;
 - existing recovery health and accuracy sections.
+
+The metrics response establishes the server-generated `asOf` timestamp and effective clamped date range for a dashboard load. The browser then sends those exact values to list and counts. This handshake keeps all three endpoint responses on one time and date boundary without trusting the browser clock.
+
+List cursors are opaque tokens bound to the effective `from`, `to`, and `asOf` values. Reusing a cursor with a different range or time boundary returns `400 invalid_cursor_scope`.
 
 The endpoint scopes to `experimentVersionSnapshot = read-recovery-timing-v2` internally. The browser never supplies an experiment name.
 
