@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { IG_TEXT_BYTE_LIMIT } from "./messages.routes.js";
+import { IG_TEXT_BYTE_LIMIT } from "../lib/instagramLimits.js";
 
 /**
  * The guard is on bytes because Instagram's limit is on bytes. These cases are

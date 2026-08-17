@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
+import { IG_TEXT_BYTE_LIMIT, instagramTextBytes } from "../lib/instagramLimits.js";
 
 export const messagesRouter = Router();
 
@@ -22,13 +23,11 @@ const messageTypeSchema = z.enum(["text", "image", "pdf"]);
  * worse than refusing to save it, and the editor shows the same budget live so
  * this should never be the first time anyone hears about it.
  */
-export const IG_TEXT_BYTE_LIMIT = 1000;
-
 const withinInstagramLimit = (value: string) =>
-  Buffer.byteLength(value, "utf8") <= IG_TEXT_BYTE_LIMIT;
+  instagramTextBytes(value) <= IG_TEXT_BYTE_LIMIT;
 
 const limitMessage = (value: string) =>
-  `Message is ${Buffer.byteLength(value, "utf8").toLocaleString()} bytes; Instagram's limit is ` +
+  `Message is ${instagramTextBytes(value).toLocaleString()} bytes; Instagram's limit is ` +
   `${IG_TEXT_BYTE_LIMIT.toLocaleString()}. Emoji cost 4 bytes each, bullets and curly quotes 3.`;
 
 const messageBody = z.string().refine(withinInstagramLimit, (value) => ({
