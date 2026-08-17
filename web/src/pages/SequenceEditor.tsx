@@ -43,7 +43,7 @@ import { MediaUpload } from "@/components/MediaUpload";
 import { PhoneMockup } from "@/components/PhoneMockup";
 import { SaveStatus } from "@/components/SaveStatus";
 import { cn } from "@/lib/utils";
-import { messageBudget } from "@/lib/messageBytes";
+import { messageBudget } from "@/lib/messageLimits";
 
 const STEP_TYPES: { value: MessageType; label: string; icon: typeof TypeIcon }[] = [
   { value: "text", label: "Text", icon: TypeIcon },
@@ -426,10 +426,10 @@ function SortableStep({
                   <Label>
                     {step.type === "text" ? "Message" : "Caption (optional)"}
                   </Label>
-                  {/* Bytes, not characters. Instagram's limit is 1,000 UTF-8
-                      bytes and an emoji costs 4 of them, so a character count
-                      would read "972 / 1000 — fine" on a message that cannot be
-                      delivered. See lib/messageBytes.ts. */}
+                  {/* Characters. This read bytes for one day, which would have
+                      shown "1,005 / 1,000 — over" on the first step of a guide
+                      that delivers to ~194 people a month. See
+                      lib/messageLimits.ts for what settled it. */}
                   <span
                     className={cn(
                       "label-caps tabular-nums",
@@ -437,7 +437,7 @@ function SortableStep({
                     )}
                     aria-live="polite"
                   >
-                    {budget.bytes.toLocaleString()} / {budget.limit.toLocaleString()} bytes
+                    {budget.chars.toLocaleString()} / {budget.limit.toLocaleString()} characters
                   </span>
                 </div>
                 <Textarea
@@ -458,11 +458,8 @@ function SortableStep({
                 />
                 {budget.level === "over" && (
                   <p className="text-xs leading-relaxed text-urgent">
-                    {budget.over.toLocaleString()} bytes over Instagram&rsquo;s limit — this step
-                    will not send. {budget.overhead > 0 && (
-                      <>Emoji and bullets account for {budget.overhead.toLocaleString()} of the
-                      weight; each emoji costs 4 bytes.</>
-                    )}
+                    {budget.over.toLocaleString()} characters over Instagram&rsquo;s limit — this
+                    step will not send.
                   </p>
                 )}
               </div>

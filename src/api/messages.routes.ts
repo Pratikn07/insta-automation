@@ -1,34 +1,29 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
-import { IG_TEXT_BYTE_LIMIT, instagramTextBytes } from "../lib/instagramLimits.js";
+import { IG_TEXT_CHAR_LIMIT, instagramTextChars } from "../lib/instagramLimits.js";
 
 export const messagesRouter = Router();
 
 const messageTypeSchema = z.enum(["text", "image", "pdf"]);
 
 /**
- * Instagram measures a message in BYTES, not characters: "Message text must be
- * UTF-8 and be a 1000 bytes or less" (Meta, Instagram Messaging API). An emoji
- * costs 4 bytes and a bullet or curly quote costs 3, so a `.max(n)` on string
- * length — which is what this schema used to carry, at 2000 — permitted roughly
- * double the deliverable size and let undeliverable steps reach the sender.
- *
- * Measured against production on 2026-08-16: 10 stored steps exceed 1,000 bytes
- * and six of those are under 1,000 characters, so the old check passed every one
- * of them. The failure surfaced only at send time, as a Graph error, after a
- * real person had already asked for the guide.
+ * 1,000 characters. This schema carried `.max(2000)` on string length, then a
+ * 1,000-BYTE check, and both were wrong in different directions — 2000 let
+ * genuinely undeliverable steps through, and bytes would have rejected six
+ * stored messages that production delivers every day. See instagramLimits.ts
+ * for the evidence that settled it.
  *
  * Rejecting here rather than truncating: silently shortening a parent's guide is
  * worse than refusing to save it, and the editor shows the same budget live so
  * this should never be the first time anyone hears about it.
  */
 const withinInstagramLimit = (value: string) =>
-  instagramTextBytes(value) <= IG_TEXT_BYTE_LIMIT;
+  instagramTextChars(value) <= IG_TEXT_CHAR_LIMIT;
 
 const limitMessage = (value: string) =>
-  `Message is ${instagramTextBytes(value).toLocaleString()} bytes; Instagram's limit is ` +
-  `${IG_TEXT_BYTE_LIMIT.toLocaleString()}. Emoji cost 4 bytes each, bullets and curly quotes 3.`;
+  `Message is ${instagramTextChars(value).toLocaleString()} characters; Instagram's limit is ` +
+  `${IG_TEXT_CHAR_LIMIT.toLocaleString()}.`;
 
 const messageBody = z.string().refine(withinInstagramLimit, (value) => ({
   message: limitMessage(value),
