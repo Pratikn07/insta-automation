@@ -115,6 +115,26 @@ type RlsRow = { relname: string; relrowsecurity: boolean };
 type PolicyRow = { policyname: string; tablename: string };
 type ColumnRow = { table_name: string; column_name: string; data_type: string };
 type IndexRow = { indexname: string; indexdef: string };
+type EnumValueRow = { enumlabel: string };
+
+const TIMING_EXPERIMENT_VERSION = "read-recovery-timing-v2";
+
+function v2ReminderData(
+  timingArm: "two_hour" | "six_hour" | "no_reminder",
+): Prisma.DmRecoveryReminderUncheckedCreateInput {
+  const acceptedAt = new Date("2026-08-17T08:00:00.000Z");
+  const treatment = timingArm !== "no_reminder";
+  const delayHours = timingArm === "two_hour" ? 2 : timingArm === "six_hour" ? 6 : 0;
+
+  return reminderData({
+    experimentVersionSnapshot: TIMING_EXPERIMENT_VERSION,
+    timingArm,
+    acceptedAt,
+    eligibleAt: new Date(acceptedAt.getTime() + delayHours * 60 * 60 * 1_000),
+    cohort: treatment ? "treatment" : "control",
+    status: treatment ? "waiting" : "control",
+  });
+}
 
 describeWithLocalDatabase("dm recovery database contract", () => {
   afterEach(async () => {
@@ -162,6 +182,171 @@ describeWithLocalDatabase("dm recovery database contract", () => {
         AND tablename IN ('dm_recovery_reminder', 'dm_recovery_control')
     `;
     expect(policies).toEqual([]);
+  });
+
+  // ── Immutable timing-experiment assignment ────────────────────────────
+
+  it("creates the frozen timing enum, nullable columns, and reporting index", async () => {
+    const enumValues = await prisma.$queryRaw<EnumValueRow[]>`
+      SELECT e.enumlabel
+      FROM pg_type t
+      JOIN pg_enum e ON e.enumtypid = t.oid
+      WHERE t.typname = 'dm_recovery_timing_arm'
+      ORDER BY e.enumsortorder
+    `;
+    expect(enumValues.map((row) => row.enumlabel)).toEqual([
+      "two_hour",
+      "six_hour",
+      "no_reminder",
+    ]);
+
+    const columns = await prisma.$queryRaw<ColumnRow[]>`
+      SELECT table_name, column_name, data_type
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'dm_recovery_reminder'
+        AND column_name IN ('experiment_version_snapshot', 'timing_arm')
+      ORDER BY column_name
+    `;
+    expect(columns).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ column_name: "experiment_version_snapshot" }),
+        expect.objectContaining({ column_name: "timing_arm" }),
+      ]),
+    );
+
+    const indexes = await prisma.$queryRaw<IndexRow[]>`
+      SELECT indexname, indexdef
+      FROM pg_indexes
+      WHERE schemaname = 'public'
+        AND tablename = 'dm_recovery_reminder'
+    `;
+    expect(indexes.map((row) => row.indexdef).join("\n").replaceAll('"', "")).toContain(
+      "experiment_version_snapshot, accepted_at",
+    );
+  });
+
+  it.each(["two_hour", "six_hour", "no_reminder"] as const)(
+    "accepts a valid %s assignment at insertion",
+    async (timingArm) => {
+      await expect(
+        prisma.dmRecoveryReminder.create({ data: v2ReminderData(timingArm) }),
+      ).resolves.toMatchObject({
+        experimentVersionSnapshot: TIMING_EXPERIMENT_VERSION,
+        timingArm,
+      });
+    },
+  );
+
+  it.each([
+    ["two_hour", "control", "waiting"],
+    ["six_hour", "control", "waiting"],
+    ["no_reminder", "control", "waiting"],
+  ] as const)(
+    "rejects an invalid %s/%s/%s assignment",
+    async (timingArm, cohort, status) => {
+      await expect(
+        prisma.dmRecoveryReminder.create({
+          data: {
+            ...v2ReminderData(timingArm),
+            cohort,
+            status,
+          },
+        }),
+      ).rejects.toThrow(/dm_recovery_reminder_v2_assignment_check/);
+    },
+  );
+
+  it("rejects a v2 row with no timing arm", async () => {
+    await expect(
+      prisma.dmRecoveryReminder.create({
+        data: {
+          ...reminderData({ acceptedAt: new Date("2026-08-17T08:00:00.000Z") }),
+          experimentVersionSnapshot: TIMING_EXPERIMENT_VERSION,
+          timingArm: null,
+        },
+      }),
+    ).rejects.toThrow(/dm_recovery_reminder_v2_assignment_check/);
+  });
+
+  it("prevents every frozen v2 assignment field from changing", async () => {
+    const row = await prisma.dmRecoveryReminder.create({
+      data: v2ReminderData("two_hour"),
+    });
+
+    await expect(
+      prisma.dmRecoveryReminder.update({
+        where: { id: row.id },
+        data: { experimentVersionSnapshot: "read-recovery-v1" },
+      }),
+    ).rejects.toThrow(/v2_assignment_is_immutable/);
+    await expect(
+      prisma.dmRecoveryReminder.update({
+        where: { id: row.id },
+        data: { timingArm: "six_hour" },
+      }),
+    ).rejects.toThrow(/v2_assignment_is_immutable/);
+    await expect(
+      prisma.dmRecoveryReminder.update({
+        where: { id: row.id },
+        data: { acceptedAt: new Date(row.acceptedAt!.getTime() + 1_000) },
+      }),
+    ).rejects.toThrow(/v2_assignment_is_immutable/);
+    await expect(
+      prisma.dmRecoveryReminder.update({
+        where: { id: row.id },
+        data: { eligibleAt: new Date(row.eligibleAt.getTime() + 1_000) },
+      }),
+    ).rejects.toThrow(/v2_assignment_is_immutable/);
+  });
+
+  it("allows outcome timestamps to be recorded on an assigned v2 row", async () => {
+    const row = await prisma.dmRecoveryReminder.create({
+      data: v2ReminderData("two_hour"),
+    });
+    const seenAt = new Date("2026-08-17T09:00:00.000Z");
+    const repliedAt = new Date("2026-08-17T09:05:00.000Z");
+
+    await expect(
+      prisma.dmRecoveryReminder.update({
+        where: { id: row.id },
+        data: { seenAt, repliedAt },
+      }),
+    ).resolves.toMatchObject({ seenAt, repliedAt });
+  });
+
+  it("keeps legacy null assignments readable and mutable through their lifecycle", async () => {
+    const row = await prisma.dmRecoveryReminder.create({
+      data: reminderData({ acceptedAt: new Date("2026-08-17T08:00:00.000Z") }),
+    });
+    const sentAt = new Date("2026-08-17T09:00:00.000Z");
+
+    const updated = await prisma.dmRecoveryReminder.update({
+      where: { id: row.id },
+      data: { status: "sent", sentAt },
+    });
+
+    expect(updated).toMatchObject({
+      experimentVersionSnapshot: null,
+      timingArm: null,
+      status: "sent",
+      sentAt,
+    });
+  });
+
+  it("rejects retrofitting a legacy row into v2", async () => {
+    const row = await prisma.dmRecoveryReminder.create({ data: reminderData() });
+
+    await expect(
+      prisma.dmRecoveryReminder.update({
+        where: { id: row.id },
+        data: {
+          experimentVersionSnapshot: TIMING_EXPERIMENT_VERSION,
+          timingArm: "two_hour",
+          acceptedAt: new Date("2026-08-17T08:00:00.000Z"),
+        },
+      }),
+    ).rejects.toThrow(/v2_assignment_is_immutable/);
   });
 
   // ── Singleton control ──────────────────────────────────────────────────
