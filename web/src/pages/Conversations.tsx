@@ -13,6 +13,7 @@ import {
   User,
 } from "lucide-react";
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { journeyRowMarkers } from "../components/conversations/journeyRowMarkers";
 import { api } from "@/lib/api";
 import type {
@@ -54,6 +55,10 @@ type HistoryMode = "canonical" | "raw";
 // data is not the test — what the control does is.
 type Lens = "needs_reply" | "dms" | "people" | "journeys";
 
+function isLens(value: string | null): value is Lens {
+  return value === "needs_reply" || value === "dms" || value === "people" || value === "journeys";
+}
+
 // Plain-English tab labels. "DONE" is internal jargon (the word the user types) —
 // a marketer tracks outcomes: who's waiting, who got it, and who we never got a
 // confirmed reply from — which is not the same as who chose not to answer.
@@ -94,12 +99,23 @@ function rowBadge(c: Conversation): { label: string; tone: string; Icon: typeof 
 }
 
 export function Conversations() {
-  const [lens, setLens] = useState<Lens>("needs_reply");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const lensParam = searchParams.get("lens");
+  const lens: Lens = isLens(lensParam) ? lensParam : "needs_reply";
   const [filter, setFilter] = useState<StateFilter>("all");
   const [historyMode, setHistoryMode] = useState<HistoryMode>("canonical");
   const [selected, setSelected] = useState<Conversation | null>(null);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [lineageUser, setLineageUser] = useState<string | null>(null);
+
+  const selectLens = (nextLens: Lens) => {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      if (nextLens === "needs_reply") next.delete("lens");
+      else next.set("lens", nextLens);
+      return next;
+    });
+  };
 
   const dmScope = lens === "needs_reply" ? "needs_reply" : "all";
   const dmThreadsQ = useQuery<Paginated<DmThreadRow>>({
@@ -202,7 +218,8 @@ export function Conversations() {
         ).map((l) => (
           <button
             key={l.value}
-            onClick={() => setLens(l.value)}
+            onClick={() => selectLens(l.value)}
+            aria-pressed={lens === l.value}
             className={cn(
               "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
               lens === l.value
@@ -221,9 +238,10 @@ export function Conversations() {
             <button
               key={f.value}
               onClick={() => {
-                setLens("journeys");
+                selectLens("journeys");
                 setFilter(f.value);
               }}
+              aria-pressed={lens === "journeys" && filter === f.value}
               className={cn(
                 "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
                 lens === "journeys" && filter === f.value

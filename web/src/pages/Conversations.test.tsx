@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -25,12 +25,18 @@ vi.mock("../lib/api", () => ({
 
 const { Conversations } = await import("./Conversations");
 
-function renderPage() {
+function LocationProbe() {
+  const location = useLocation();
+  return <output aria-label="location">{`${location.pathname}${location.search}`}</output>;
+}
+
+function renderPage(initialEntry = "/conversations") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[initialEntry]}>
       <QueryClientProvider client={client}>
         <Conversations />
+        <LocationProbe />
       </QueryClientProvider>
     </MemoryRouter>,
   );
@@ -91,8 +97,22 @@ describe("Conversations lenses", () => {
 
     await user.click(screen.getByRole("button", { name: "People" }));
 
+    expect(screen.getByLabelText("location")).toHaveTextContent("/conversations?lens=people");
     await waitFor(() =>
       expect(api.mock.calls.some((c) => String(c[0]).startsWith("/users"))).toBe(true),
+    );
+    expect(screen.getByPlaceholderText("Search by @username or name…")).toBeInTheDocument();
+  });
+
+  it("opens the People lens directly from its URL", async () => {
+    renderPage("/conversations?lens=people");
+
+    expect(screen.getByRole("button", { name: "People" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await waitFor(() =>
+      expect(api.mock.calls.some((call) => String(call[0]).startsWith("/users"))).toBe(true),
     );
     expect(screen.getByPlaceholderText("Search by @username or name…")).toBeInTheDocument();
   });

@@ -1,19 +1,7 @@
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
-import { AppShell } from "@/components/layout/AppShell";
 import { Login } from "@/pages/Login";
-import { Home } from "@/pages/Home";
-import { Content } from "@/pages/Content";
-import { Keywords } from "@/pages/Keywords";
-import { Sequences } from "@/pages/Sequences";
-import { SequenceEditor } from "@/pages/SequenceEditor";
-import { Conversations } from "@/pages/Conversations";
-import { DmRecovery } from "@/pages/DmRecovery";
-import { Assistant } from "@/pages/Assistant";
-import { Activity } from "@/pages/Activity";
-import { Insights } from "@/pages/Insights";
-import { Funnels } from "@/pages/Funnels";
-import { HistoricalRecovery } from "@/pages/HistoricalRecovery";
+import { AppRoutes } from "@/AppRoutes";
 
 function FullScreenLoader() {
   return (
@@ -31,33 +19,7 @@ export default function App() {
   return (
     <BrowserRouter>
       {session ? (
-        <Routes>
-          <Route element={<AppShell />}>
-            <Route index element={<Home />} />
-            <Route path="content" element={<Content />} />
-            {/* /reels was this page's old home — keep the URL working for
-                bookmarks rather than bouncing them to the dashboard. */}
-            <Route path="reels" element={<Navigate to="/content" replace />} />
-            <Route path="keywords" element={<Keywords />} />
-            <Route path="sequences" element={<Sequences />} />
-            <Route path="sequences/:id" element={<SequenceEditor />} />
-            <Route path="conversations" element={<Conversations />} />
-            {/* Deliberately "dm-recovery", not "recovery": historical recovery is a
-                separate mechanism with far larger blast radius, and a bare /recovery
-                would be the wrong thing to guess at. */}
-            <Route path="dm-recovery" element={<DmRecovery />} />
-            <Route path="assistant" element={<Assistant />} />
-            {/* /users folded into Conversations as the People lens — same dataset
-                indexed by person, same lineage drawer. The URL keeps working
-                rather than 404ing a bookmark. */}
-            <Route path="users" element={<Navigate to="/conversations" replace />} />
-            <Route path="insights" element={<Insights />} />
-            <Route path="funnels" element={<Funnels />} />
-            <Route path="activity" element={<Activity />} />
-            <Route path="historical-recovery" element={<HistoricalRecovery />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Route>
-        </Routes>
+        <AppRoutes />
       ) : (
         <Routes>
           <Route path="*" element={<Login />} />
