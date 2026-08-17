@@ -93,10 +93,12 @@ first-try ceiling over time. Pursue both — they compound.
 
 # DM recovery: launch runbook
 
-Everything below concerns the read-recovery reminder feature, which posts a
-public reply on someone's original comment when their gate DM shows no
-confirmed read after ten hours. It posts publicly, on a real person's comment,
-so the order of these steps matters.
+Everything below concerns the read-recovery reminder feature, which may post a
+public reply on someone's original comment when their gate DM has no confirmed
+read. Under `read-recovery-timing-v2`, a follower is assigned to a two-hour,
+six-hour, or no-reminder arm. The historical v1 path used one ten-hour delay.
+It posts publicly, on a real person's comment, so the order of these steps
+matters.
 
 ## Deploy owner checklist
 
@@ -106,8 +108,10 @@ so the order of these steps matters.
 - [ ] Confirm duplicate delivery leaves one evidence update.
 - [ ] Confirm the settings-blocked signature allowlist is empty unless the exact code/subcode has an active, unexpired registry record backed by a sanitized controlled-account evidence package.
 - [ ] Confirm the recovery circuit is closed and the hourly cap is conservative.
-- [ ] Confirm the two-week experiment start/end/version are fixed before launch.
-- [ ] Audit the first ready treatment row before and after its public comment.
+- [ ] Confirm the v2 version, start, and day-42 maximum end are fixed before launch.
+- [ ] Confirm the real-Postgres migration contract ran with zero skips.
+- [ ] Audit the first 20 v2 treatment comments against stored evidence and Instagram.
+- [ ] Complete the owner checklist in `docs/dm-recovery-timing-experiment-runbook.md`.
 
 ## The premise, stated once
 
@@ -255,29 +259,25 @@ fails the deploy instead of quietly disarming the fallback.
 Never classify by error message text, and never by the Business Suite gray
 warning.
 
-## Launch sequence
+## Timing-experiment launch sequence
 
-Run in this order, on one day:
+Use the complete
+[`dm-recovery-timing-experiment-runbook.md`](dm-recovery-timing-experiment-runbook.md).
+In summary: deploy the additive schema and compatible code while v1 remains
+configured, prove the real-Postgres contracts with zero skips, verify Meta
+signals, then change the version and 42-day maximum window at one recorded
+cutover instant. V2 uses a fixed 45% two-hour, 45% six-hour, and 10%
+no-reminder split. It does not use the legacy delay or holdout settings.
 
-1. Apply the additive migration.
-2. Deploy ingestion, persistence, UI, and worker with `DM_RECOVERY_ENABLED=false`.
-3. Subscribe the new webhook fields and verify a real signal of each immediately.
-4. Set `DM_RECOVERY_EXPERIMENT_VERSION` and a two-week `[start, end)` window beginning on launch day. Assignment inside the window is a deterministic 90/10 treatment/control split, hashed per person, so the same person always lands in the same arm. Settings-blocked fallbacks are always treatment and are excluded from the comparison.
-5. Leave the settings allowlist empty unless a signature was already verified.
-6. Set batch size, hourly cap, and health thresholds conservatively.
-7. Set `DM_RECOVERY_ENABLED=true` **the same day**, before the first ten-hour row is due.
-8. Audit the first ten treatment sends, every control assignment, every settings match, and every attention item.
-9. After two full weeks, compare treatment and control by unique people and by keyword.
-10. After owner review, set `DM_RECOVERY_POST_EXPERIMENT_ENABLED=true`. Only newly created records move to 100% treatment; previously stored controls stay withheld.
+Do not inspect completion outcomes at the blinded day-28 and day-35 enrollment
+checks. Close enrollment when both treatment arms have 1,700 matured followers,
+or at day 42 regardless, then wait 48 hours before full-range analysis. Owner
+review is required before any rollout, and
+`DM_RECOVERY_POST_EXPERIMENT_ENABLED` must remain false for v2.
 
-Two things that surprise people:
-
-- **A settings-blocked fallback is eligible immediately**, not after ten hours. If
-  the allowlist is populated at launch, audit those from the first minute.
-- **Rows created while the feature is disabled are stored as `control`, permanently.**
-  The upsert never converts a stored control row. Merging the code early is safe —
-  nothing can send — but every journey between merge and enablement is withheld
-  for good, so it costs experiment sample rather than safety.
+A settings-blocked fallback remains eligible immediately and is excluded from
+the timing experiment. If its allowlist is populated, audit it from the first
+minute using the controlled-verification procedure above.
 
 ## Rollback
 
@@ -292,8 +292,10 @@ half:
 
 - Ingestion and persistence continue; evidence keeps accruing.
 - No new public sends occur.
-- Pending rows do **not** expire — the ten-hour clock runs from Meta acceptance,
-  so an overdue row is still sendable when the switch goes back on.
+- Pending rows do **not** expire. Their v2 two-hour or six-hour eligibility is
+  frozen from Meta acceptance, so an overdue row remains pending if the switch
+  is later restored. Document the interruption and resulting lateness before
+  resuming the same experiment version.
 - Instagram comments already posted are untouched. Nothing is deleted.
 - **Do not reverse the migration.** It is additive and the dashboard reads it.
 

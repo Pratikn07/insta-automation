@@ -1,5 +1,8 @@
 # Instagram Automation Feature Requests 1, 3, and 4
 
+> **Historical context.** The prospective ten-hour workflow mentioned here is
+> `read-recovery-v1`; new prospective enrollment uses the v2 timing experiment.
+
 ## 1. Purpose
 
 This document defines the three remaining Instagram automation feature requests discussed during

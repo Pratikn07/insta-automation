@@ -129,6 +129,8 @@ export const envSchema = z.object({
    */
   DM_RECOVERY_HISTORICAL_ENABLED: booleanFlag(false),
   DM_RECOVERY_HISTORICAL_INTERVAL_MS: z.coerce.number().int().min(10_000).default(300_000),
+  // Legacy read-recovery-v1 inputs. V2 uses code-frozen 2h/6h schedules and a
+  // 45/45/10 allocation, so neither value is consulted for a randomized v2 row.
   DM_RECOVERY_DELAY_HOURS: z.coerce.number().int().min(1).max(168).default(10),
   DM_RECOVERY_COOLDOWN_HOURS: z.coerce.number().int().min(1).max(168).default(24),
   DM_RECOVERY_WORKER_INTERVAL_MS: z.coerce.number().int().min(10_000).default(60_000),

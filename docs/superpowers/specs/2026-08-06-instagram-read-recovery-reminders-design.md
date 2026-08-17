@@ -1,5 +1,9 @@
 # Instagram Read-Recovery Reminders Design
 
+> **Historical v1 design record.** Its ten-hour, two-week, and 90/10 rules are
+> retained to explain existing `read-recovery-v1` rows. New enrollment is
+> governed by the 2026-08-16 v2 timing-experiment design and runbook.
+
 **Date:** 2026-08-06  
 **Branch:** `feat/instagram-read-recovery-reminders`  
 **Status:** Approved design  

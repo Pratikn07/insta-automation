@@ -265,6 +265,8 @@ export async function scheduleAcceptedGateRecovery(
       suppressionReason: "audience_out_of_market",
     };
   } else {
+    // V2 reaches this branch only for a terminal pre/post-window exclusion. The
+    // configurable delay and holdout below remain the live v1 behavior.
     const decision = isV2
       ? excludedV2WindowDecision(input.acceptedAt)
       : decideExperimentCohort(input.igUserId, input.acceptedAt);
