@@ -239,6 +239,67 @@ demographics, feed-follow attribution, spike detection.
   Gemini daily USD budget, recovery hourly and global daily caps, worker
   self-throttling on snapshot age.
 
+### Information architecture
+
+Settled 2026-08-16. **This section is the record of which destinations exist and
+what they are called.** DESIGN.md owns how the rail looks; the rail's code
+follows both and carries no roadmap of its own — an earlier `Sidebar.tsx` comment
+predicted three merges, two of which were later rejected, and a component
+predicting the future is design authority nobody agreed to.
+
+Four groups, eleven destinations:
+
+| Group | Destinations |
+| --- | --- |
+| **Measure** | Insights · Funnels |
+| **Publish** | Content · Keywords · Sequences |
+| **Audience** | Conversations · DM recovery · Historical recovery |
+| **System** | Activity · Assistant |
+
+Home sits above the groups.
+
+**Decided:**
+
+- **Insights and Funnels stay separate.** They answer different questions —
+  *which content worked* versus *where the journey loses people* — and operate on
+  different units, reels versus conversation cohorts. Home is where their
+  evidence is already combined into one interpretation; that is the right place
+  for the join, not a merged page.
+- **People becomes a view inside Conversations.** It is an index over the same
+  data: `users.routes.ts` sources its directory from `Conversation.igUserId`, the
+  page is ~109 lines of list and search, and it opens the same `UserLineage`
+  drawer Conversations opens. `/users` stays as a redirect.
+- **DM recovery leaves Conversations and becomes its own destination.** It is
+  currently a fourth lens inside an 892-line page, carrying ~679 lines of its own
+  machinery with holdout cohorts and experiment measurement. That is a distinct
+  job, not a filter on the inbox.
+- **DM recovery and historical recovery stay separate destinations, grouped but
+  never tabbed.** `HistoricalRecovery.tsx` states the reason and it is a safety
+  boundary, not a preference: *"one approval here posts public comments on
+  hundreds of real posts. The two must not be one screen where a habitual click
+  means something different."* Peer tabs are precisely the habituation surface.
+  Grouping in the rail is free; a shared page is not.
+
+**Explicitly still open, and not to be treated as agreed:**
+
+- **Keywords into Content.** Overlap, not duplication. Content attaches a
+  keyword to a post and then defers: *"Manage or delete keywords from the
+  Keywords page."* Keywords holds the account-wide inventory, editing, pausing,
+  deletion, and the legacy global rows. Needs its own workflow review.
+- **Assistant into a command palette.** Assistant is a 264-line surface with a
+  persistent thread, history, evidence, connection and disabled states, and a
+  multi-line composer — not a question field. A global drawer behind a visible
+  control *and* a shortcut may be right; a shortcut alone would cost
+  discoverability, mobile access, and history. Needs its own design review.
+  (The `cmdk` dependency is not evidence either way: it is used for the country
+  picker and nothing else.)
+
+**Eleven destinations is the honest count, and it does not shrink.** Removing
+Users and adding DM recovery is net zero. The gain is that every destination is
+now one distinct job rather than two overlapping ones — coherence, not brevity.
+A count reduction is only worth taking when the receiving surface genuinely
+absorbs the destination it removes.
+
 ### Terminology (use these words; they are the product's vocabulary)
 
 *keyword*, *gate* / *gate message*, `DONE`, *sequence*, *resource* / *guide*,
