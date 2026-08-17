@@ -110,4 +110,70 @@ describe("guide delivery scheduler", () => {
     expect(exit).toEqual({ code: 143, signal: null });
     expect(output).toContain("STOPPED");
   });
+
+  it("absorbs repeated SIGTERM until asynchronous cleanup finishes", async () => {
+    const modulePath = path.resolve("src/services/guideDeliveryScheduler.ts");
+    const child = spawn(
+      process.execPath,
+      [
+        path.resolve("node_modules/tsx/dist/cli.mjs"),
+        "-e",
+        `
+          import { createServer } from "node:http";
+          import { writeSync } from "node:fs";
+          import { bindGuideDeliveryServerShutdown } from ${JSON.stringify(modulePath)};
+          const interval = setInterval(() => undefined, 1_000);
+          const server = createServer((_req, res) => res.end("ok"));
+          bindGuideDeliveryServerShutdown({
+            server,
+            stopOwnedWork: async () => {
+              writeSync(1, "CLEANUP_STARTED\\n");
+              await new Promise((resolve) => setTimeout(resolve, 150));
+              clearInterval(interval);
+              writeSync(1, "CLEANUP_FINISHED\\n");
+            },
+          });
+          server.listen(0, () => console.log("READY"));
+        `,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    let output = "";
+    child.stdout.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+    child.stderr.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error(`child did not start: ${output}`)), 2_000);
+      child.stdout.on("data", () => {
+        if (output.includes("READY")) {
+          clearTimeout(timeout);
+          resolve();
+        }
+      });
+    });
+    child.kill("SIGTERM");
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error(`cleanup did not start: ${output}`)), 2_000);
+      child.stdout.on("data", () => {
+        if (output.includes("CLEANUP_STARTED")) {
+          clearTimeout(timeout);
+          resolve();
+        }
+      });
+    });
+    child.kill("SIGTERM");
+    const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        child.kill("SIGKILL");
+        reject(new Error(`child did not terminate after cleanup: ${output}`));
+      }, 2_000);
+      child.once("exit", (code, signal) => {
+        clearTimeout(timeout);
+        resolve({ code, signal });
+      });
+    });
+
+    expect(output).toContain("CLEANUP_FINISHED");
+    expect(exit).toEqual({ code: 143, signal: null });
+  });
 });

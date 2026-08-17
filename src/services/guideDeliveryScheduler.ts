@@ -12,7 +12,7 @@ export type GuideDeliverySchedulerOptions = {
 };
 
 export type GuideDeliveryShutdownProcess = {
-  once(signal: "SIGINT" | "SIGTERM", listener: () => void): unknown;
+  on(signal: "SIGINT" | "SIGTERM", listener: () => void): unknown;
   removeListener(signal: "SIGINT" | "SIGTERM", listener: () => void): unknown;
   kill(pid: number, signal: "SIGINT" | "SIGTERM"): boolean;
   pid: number;
@@ -63,8 +63,11 @@ export function bindGuideDeliveryServerShutdown(
   };
   const onSigterm = () => shutdown("SIGTERM");
   const onSigint = () => shutdown("SIGINT");
-  processLike.once("SIGTERM", onSigterm);
-  processLike.once("SIGINT", onSigint);
+  // These are intentionally persistent until cleanup settles. `once` removes
+  // the first handler before its async body runs, so a second SIGTERM/SIGINT
+  // would otherwise take Node's default immediate-termination path mid-cleanup.
+  processLike.on("SIGTERM", onSigterm);
+  processLike.on("SIGINT", onSigint);
 }
 
 /** Starts one local, non-overlapping reconciliation loop. */
