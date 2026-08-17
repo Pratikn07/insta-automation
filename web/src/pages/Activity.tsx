@@ -8,7 +8,7 @@ import { cn, displayUser, type IgUserLite } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Drawer } from "@/components/ui/drawer";
-import { EmptyState } from "@/components/EmptyState";
+import { EmptyState, LoadFailed } from "@/components/EmptyState";
 import { UserLineage } from "@/components/UserLineage";
 import { EventRow, type EventLogItem } from "./Conversations";
 
@@ -65,7 +65,7 @@ export function Activity() {
     {},
     ...(eventsQ.data?.pages.map((p) => p.users ?? {}) ?? []),
   );
-  const isLoading = eventsQ.isLoading;
+  const isLoading = eventsQ.isPending;
 
   return (
     <div className="space-y-5">
@@ -97,7 +97,9 @@ export function Activity() {
         ))}
       </div>
 
-      {isLoading ? (
+      {eventsQ.isError ? (
+        <LoadFailed what="the event log" onRetry={() => void eventsQ.refetch()} />
+      ) : isLoading ? (
         <div className="space-y-2">
           {[0, 1, 2, 3, 4].map((i) => (
             <Skeleton key={i} className="h-14" />

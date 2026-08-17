@@ -38,6 +38,7 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { LoadFailed } from "@/components/EmptyState";
 import { MediaUpload } from "@/components/MediaUpload";
 import { PhoneMockup } from "@/components/PhoneMockup";
 import { SaveStatus } from "@/components/SaveStatus";
@@ -65,6 +66,20 @@ export function SequenceEditor() {
   });
 
   const isLoading = resourceQ.isLoading || messagesQ.isLoading;
+
+  // A failed fetch used to fall through to "Sequence not found", which reads as
+  // "this was deleted" when it means "the API did not answer".
+  if (resourceQ.isError || messagesQ.isError) {
+    return (
+      <LoadFailed
+        what="this sequence"
+        onRetry={() => {
+          void resourceQ.refetch();
+          void messagesQ.refetch();
+        }}
+      />
+    );
+  }
 
   if (isLoading) {
     return (

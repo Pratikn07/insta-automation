@@ -30,7 +30,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Drawer } from "@/components/ui/drawer";
 import { Skeleton } from "@/components/ui/skeleton";
-import { EmptyState } from "@/components/EmptyState";
+import { EmptyState, LoadFailed } from "@/components/EmptyState";
 import { UserLineage } from "@/components/UserLineage";
 import { IncomingBubble, OutgoingBubble, StepBubble } from "@/components/ChatBubbles";
 import { DmThreadList } from "@/components/conversations/DmThreadList";
@@ -133,7 +133,7 @@ export function Conversations() {
   const counts = countsQ.data;
 
   const items = conversationsQ.data?.pages.flatMap((p) => p.items) ?? [];
-  const isLoading = conversationsQ.isLoading;
+  const isLoading = conversationsQ.isPending;
 
   // In the Waiting views, float the "couldn't reach — retrying" rows to the top so
   // the handful that aren't really the user's turn don't hide among hundreds of
@@ -257,6 +257,8 @@ export function Conversations() {
           isLoading={dmThreadsQ.isLoading}
           onSelect={(row) => setSelectedThreadId(row.id)}
         />
+      ) : conversationsQ.isError ? (
+        <LoadFailed what="conversations" onRetry={() => void conversationsQ.refetch()} />
       ) : isLoading ? (
         <div className="space-y-2">
           {[0, 1, 2, 3].map((i) => (

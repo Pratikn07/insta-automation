@@ -6,7 +6,7 @@ import type { UserDirItem } from "@/lib/types";
 import { Card, CardContent } from "@/components/ui/card";
 import { Drawer } from "@/components/ui/drawer";
 import { Skeleton } from "@/components/ui/skeleton";
-import { EmptyState } from "@/components/EmptyState";
+import { EmptyState, LoadFailed } from "@/components/EmptyState";
 import { UserLineage } from "@/components/UserLineage";
 import { FollowBadge } from "@/components/FollowBadge";
 import { displayUser } from "@/lib/utils";
@@ -46,7 +46,9 @@ export function Users() {
         />
       </div>
 
-      {usersQ.isLoading ? (
+      {usersQ.isError ? (
+        <LoadFailed what="the directory" onRetry={() => void usersQ.refetch()} />
+      ) : usersQ.isPending ? (
         <div className="space-y-2">
           {[0, 1, 2, 3, 4].map((i) => (
             <Skeleton key={i} className="h-14" />

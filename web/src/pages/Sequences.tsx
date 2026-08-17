@@ -14,7 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
-import { EmptyState } from "@/components/EmptyState";
+import { EmptyState, LoadFailed } from "@/components/EmptyState";
 
 export function Sequences() {
   const qc = useQueryClient();
@@ -53,7 +53,9 @@ export function Sequences() {
         </Button>
       </div>
 
-      {resourcesQ.isLoading ? (
+      {resourcesQ.isError ? (
+        <LoadFailed what="your sequences" onRetry={() => void resourcesQ.refetch()} />
+      ) : resourcesQ.isPending ? (
         <div className="grid gap-3 sm:grid-cols-2">
           {[0, 1].map((i) => (
             <Skeleton key={i} className="h-28" />

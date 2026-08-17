@@ -11,7 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Drawer } from "@/components/ui/drawer";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { EmptyState } from "@/components/EmptyState";
+import { EmptyState, LoadFailed } from "@/components/EmptyState";
 import { KeywordForm } from "@/components/KeywordForm";
 
 export function Keywords() {
@@ -60,7 +60,7 @@ export function Keywords() {
     },
   });
 
-  const isLoading = keywordsQ.isLoading || resourcesQ.isLoading;
+  const isLoading = keywordsQ.isPending || resourcesQ.isPending;
 
   // Grouped by post, because a keyword now belongs to one post and the same word
   // can legitimately appear on several with different guides — a flat list of six
@@ -102,7 +102,9 @@ export function Keywords() {
         </Button>
       </div>
 
-      {isLoading ? (
+      {keywordsQ.isError ? (
+        <LoadFailed what="your keywords" onRetry={() => void keywordsQ.refetch()} />
+      ) : isLoading ? (
         <div className="space-y-3">
           {[0, 1, 2].map((i) => (
             <Skeleton key={i} className="h-20" />

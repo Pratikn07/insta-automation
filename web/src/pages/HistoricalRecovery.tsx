@@ -6,6 +6,7 @@ import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { LoadFailed } from "@/components/EmptyState";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   candidateView,
@@ -163,6 +164,17 @@ export function HistoricalRecovery() {
     },
     onError: (err: Error) => toast.error(err.message),
   });
+
+  // Without this a failed fetch falls through to "no active campaign", which on
+  // this page reads as "there is nothing to approve" — the most misleading thing
+  // it could say, given what approving here does.
+  if (campaigns.isError) {
+    return (
+      <div className="p-6">
+        <LoadFailed what="recovery campaigns" onRetry={() => void campaigns.refetch()} />
+      </div>
+    );
+  }
 
   if (campaigns.isLoading) {
     return (
