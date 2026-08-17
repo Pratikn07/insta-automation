@@ -1,5 +1,6 @@
 import { NavLink } from "react-router-dom";
 import { cn } from "@/lib/utils";
+import { HOME_DESTINATION, NAV_GROUPS } from "@/lib/navigation";
 
 /**
  * The rail.
@@ -26,46 +27,6 @@ import { cn } from "@/lib/utils";
  * surface on which a habitual click means something different. DM recovery was a
  * pill in the Conversations filter row until it became the route below.
  */
-/** Home stands above the groups: it is the surface, not a category within one. */
-const HOME = { to: "/", label: "Home" };
-
-const groups: { heading: string; items: { to: string; label: string }[] }[] = [
-  {
-    heading: "Measure",
-    items: [
-      { to: "/insights", label: "Insights" },
-      { to: "/funnels", label: "Funnels" },
-    ],
-  },
-  {
-    heading: "Publish",
-    items: [
-      { to: "/content", label: "Content" },
-      { to: "/keywords", label: "Keywords" },
-      { to: "/sequences", label: "Sequences" },
-    ],
-  },
-  {
-    heading: "Audience",
-    items: [
-      { to: "/conversations", label: "Conversations" },
-      // The two recovery destinations, adjacent and last. Both keep the qualifier:
-      // they are different mechanisms with very different blast radius, and one
-      // unqualified "Recovery" beside the other would invite the wrong click.
-      // Adjacent in the rail is the grouping; neither is reachable from the other.
-      { to: "/dm-recovery", label: "DM recovery" },
-      { to: "/historical-recovery", label: "Historical recovery" },
-    ],
-  },
-  {
-    heading: "System",
-    items: [
-      { to: "/activity", label: "Activity" },
-      { to: "/assistant", label: "Assistant" },
-    ],
-  },
-];
-
 /** One definition, so Home and the grouped items cannot drift apart. */
 const railLink = ({ isActive }: { isActive: boolean }) =>
   cn(
@@ -88,15 +49,15 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
       </div>
 
       <nav>
-        <NavLink to={HOME.to} end onClick={onNavigate} className={railLink}>
-          {HOME.label}
+        <NavLink to={HOME_DESTINATION.path} end onClick={onNavigate} className={railLink}>
+          {HOME_DESTINATION.label}
         </NavLink>
 
-        {groups.map(({ heading, items }) => (
+        {NAV_GROUPS.map(({ heading, items }) => (
           <div key={heading}>
             <div className="label-caps px-5 pb-1.5 pt-4">{heading}</div>
-            {items.map(({ to, label }) => (
-              <NavLink key={to} to={to} onClick={onNavigate} className={railLink}>
+            {items.map(({ path, label }) => (
+              <NavLink key={path} to={path} onClick={onNavigate} className={railLink}>
                 {label}
               </NavLink>
             ))}

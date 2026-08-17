@@ -4,21 +4,7 @@ import { useState } from "react";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 import { mobileNavigationOpen } from "./mobileNavigationState";
-
-const titles: Record<string, string> = {
-  "/": "Home",
-  "/content": "Content",
-  "/keywords": "Keywords",
-  "/sequences": "Sequences",
-  "/conversations": "Conversations",
-  "/dm-recovery": "DM recovery",
-};
-
-function titleFor(pathname: string) {
-  if (titles[pathname]) return titles[pathname]!;
-  if (pathname.startsWith("/sequences/")) return "Sequence editor";
-  return "Tiny Soho";
-}
+import { titleForPath } from "@/lib/navigation";
 
 export function AppShell() {
   const loc = useLocation();
@@ -63,7 +49,7 @@ export function AppShell() {
 
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar
-          title={titleFor(loc.pathname)}
+          title={titleForPath(loc.pathname)}
           onMenuClick={() => setMobileOpenedForPath(loc.pathname)}
         />
         <main className="flex-1 overflow-y-auto">
