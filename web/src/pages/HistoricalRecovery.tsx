@@ -56,9 +56,9 @@ type CandidatesResponse = {
 type CandidatePageParam = { cursor: string; asOf: string };
 
 const TONE_CLASS: Record<string, string> = {
-  positive: "text-emerald-400",
-  pending: "text-sky-400",
-  warning: "text-amber-400",
+  positive: "text-signal",
+  pending: "text-funnel-mark",
+  warning: "text-caution",
   danger: "text-red-400",
   neutral: "text-muted-foreground",
 };
@@ -247,9 +247,9 @@ export function HistoricalRecovery() {
           send may already be live on Instagram, and burying it under an Approve
           button would be exactly the wrong order. */}
       {attention > 0 && (
-        <Card className="border-amber-500/40 bg-amber-500/5 p-4">
+        <Card className="border-caution bg-caution-soft p-4">
           <div className="flex items-start gap-3">
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-caution" />
             <div>
               <p className="text-sm font-medium">
                 {attention} {attention === 1 ? "reminder needs" : "reminders need"} your review
@@ -259,7 +259,7 @@ export function HistoricalRecovery() {
                 because a retry could post a second public comment.
               </p>
               <button
-                className="mt-2 text-sm text-amber-400 underline-offset-4 hover:underline"
+                className="mt-2 text-sm text-caution underline-offset-4 hover:underline"
                 onClick={() => setTab("attention")}
               >
                 Review them

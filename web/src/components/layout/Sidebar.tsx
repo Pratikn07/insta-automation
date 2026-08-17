@@ -23,7 +23,8 @@ import { cn } from "@/lib/utils";
  * The one rule that is a safety boundary rather than a preference: DM recovery
  * and historical recovery are grouped but never tabbed. Approving in the latter
  * posts public comments on hundreds of real posts, and peer tabs are exactly the
- * surface on which a habitual click means something different.
+ * surface on which a habitual click means something different. DM recovery was a
+ * pill in the Conversations filter row until it became the route below.
  */
 /** Home stands above the groups: it is the surface, not a category within one. */
 const HOME = { to: "/", label: "Home" };
@@ -49,9 +50,11 @@ const groups: { heading: string; items: { to: string; label: string }[] }[] = [
     items: [
       { to: "/conversations", label: "Conversations" },
       { to: "/users", label: "Users" },
-      // "Historical recovery", not "Recovery". DM recovery is still a lens inside
-      // Conversations and becomes its own destination later; an unqualified
-      // "Recovery" would be ambiguous the moment it does.
+      // The two recovery destinations, adjacent and last. Both keep the qualifier:
+      // they are different mechanisms with very different blast radius, and one
+      // unqualified "Recovery" beside the other would invite the wrong click.
+      // Adjacent in the rail is the grouping; neither is reachable from the other.
+      { to: "/dm-recovery", label: "DM recovery" },
       { to: "/historical-recovery", label: "Historical recovery" },
     ],
   },

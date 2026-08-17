@@ -263,7 +263,7 @@ export function HistoricalCandidateDrawer({
           </section>
 
           {data.candidate.reviewedAt ? (
-            <p className="text-sm text-emerald-400">Reviewed</p>
+            <p className="text-sm text-signal">Reviewed</p>
           ) : canReview ? (
             <Button onClick={() => review.mutate()} disabled={review.isPending}>
               Mark reviewed

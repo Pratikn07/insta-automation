@@ -18,11 +18,11 @@ const STATE_META: Record<
   ReturnType<typeof rowState>,
   { label: string; tone: string; Icon: typeof MessageCircle }
 > = {
-  drafting: { label: "Drafting", tone: "text-sky-400 bg-sky-400/10", Icon: Loader2 },
+  drafting: { label: "Drafting", tone: "text-funnel-mark bg-mark-soft", Icon: Loader2 },
   draft_ready: { label: "Draft ready", tone: "text-brand bg-brand/10", Icon: Sparkles },
-  needs_review: { label: "Needs review", tone: "text-amber-400 bg-amber-400/10", Icon: AlertCircle },
+  needs_review: { label: "Needs review", tone: "text-caution bg-caution-soft", Icon: AlertCircle },
   send_failed: { label: "Send failed", tone: "text-destructive bg-destructive/10", Icon: AlertCircle },
-  replied: { label: "Replied", tone: "text-emerald-400 bg-emerald-400/10", Icon: Send },
+  replied: { label: "Replied", tone: "text-signal bg-signal-soft", Icon: Send },
   automated: { label: "Automated", tone: "text-muted-foreground bg-muted/40", Icon: MessageCircle },
 };
 

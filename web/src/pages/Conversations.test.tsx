@@ -61,32 +61,26 @@ beforeEach(() => {
   });
 });
 
-describe("Conversations recovery lens", () => {
-  it("keeps Needs reply as the default and does not fetch recovery until asked", () => {
+describe("Conversations lenses", () => {
+  it("keeps Needs reply as the default", () => {
     renderPage();
 
     expect(screen.getByRole("button", { name: "Needs reply" })).toBeInTheDocument();
-    expect(recoveryList).not.toHaveBeenCalled();
   });
 
-  it("adds a DM recovery lens beside the existing ones", () => {
+  // The safety boundary, asserted rather than assumed. Every control in this row
+  // reads what already happened; DM recovery releases new outbound DMs to real
+  // people and now lives on its own route. A pill that reappears here would put a
+  // sending control one habitual click from a reading one.
+  it("has no DM recovery lens and never fetches recovery", () => {
     renderPage();
-    for (const label of ["Needs reply", "DMs", "DM recovery"]) {
+
+    for (const label of ["Needs reply", "DMs"]) {
       expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
     }
-  });
-
-  it("shows the recovery views once selected", async () => {
-    const user = userEvent.setup();
-    renderPage();
-
-    await user.click(screen.getByRole("button", { name: "DM recovery" }));
-
-    expect(await screen.findByRole("button", { name: /Ready/ })).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: /Attention/ })).toBeInTheDocument();
-    // The summary describes the tab in view, and Ready is the default. The
-    // grand total is still one click away under the All tab.
-    expect(await screen.findByText("2 people · 3 journeys")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /recovery/i })).not.toBeInTheDocument();
+    expect(recoveryList).not.toHaveBeenCalled();
+    expect(recoveryCounts).not.toHaveBeenCalled();
   });
 
   // The old label asserted the person chose not to answer. A journey can end
@@ -102,7 +96,7 @@ describe("Conversations recovery lens", () => {
   // is paginated, so it kept fetching.
   it.each([
     ["Needs reply", "needs_reply"],
-    ["DM recovery", "recovery"],
+    ["DMs", "dms"],
   ])("does not fetch journeys while viewing %s", async (label) => {
     const user = userEvent.setup();
     renderPage();

@@ -60,6 +60,16 @@
      sentences that stop a reader misreading the funnel. */
   --color-caution: #7a5a0c; /* 5.85:1 */
 
+  /* Status-badge tints, one per state colour. Tailwind's own -400 shades are
+     built for a dark ground and collapse on paper: the DM recovery badge shipped
+     as text-amber-400, which measures 1.58:1 here — a status nobody can read is
+     not a status. Each pairs with its foreground above at AA or better, and all
+     four sit in the same 1.14–1.19 band against paper so a row of mixed badges
+     reads as one family rather than as one loud chip and three quiet ones. */
+  --color-urgent-soft: #f5ddd6; /* urgent reads 4.69:1 on it */
+  --color-caution-soft: #f0e6cc; /* caution reads 5.13:1 on it */
+  --color-mark-soft: #dce4ee; /* funnel-mark reads 7.15:1 on it */
+
   --color-destructive: #8c3a2b; /* 6.99:1 */
   --color-destructive-foreground: #f7f5ef;
 

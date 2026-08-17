@@ -8,6 +8,7 @@ import { Keywords } from "@/pages/Keywords";
 import { Sequences } from "@/pages/Sequences";
 import { SequenceEditor } from "@/pages/SequenceEditor";
 import { Conversations } from "@/pages/Conversations";
+import { DmRecovery } from "@/pages/DmRecovery";
 import { Assistant } from "@/pages/Assistant";
 import { Activity } from "@/pages/Activity";
 import { Users } from "@/pages/Users";
@@ -42,6 +43,10 @@ export default function App() {
             <Route path="sequences" element={<Sequences />} />
             <Route path="sequences/:id" element={<SequenceEditor />} />
             <Route path="conversations" element={<Conversations />} />
+            {/* Deliberately "dm-recovery", not "recovery": historical recovery is a
+                separate mechanism with far larger blast radius, and a bare /recovery
+                would be the wrong thing to guess at. */}
+            <Route path="dm-recovery" element={<DmRecovery />} />
             <Route path="assistant" element={<Assistant />} />
             <Route path="users" element={<Users />} />
             <Route path="insights" element={<Insights />} />

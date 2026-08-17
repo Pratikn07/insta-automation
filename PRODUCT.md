@@ -271,10 +271,14 @@ Home sits above the groups.
   data: `users.routes.ts` sources its directory from `Conversation.igUserId`, the
   page is ~109 lines of list and search, and it opens the same `UserLineage`
   drawer Conversations opens. `/users` stays as a redirect.
-- **DM recovery leaves Conversations and becomes its own destination.** It is
-  currently a fourth lens inside an 892-line page, carrying ~679 lines of its own
-  machinery with holdout cohorts and experiment measurement. That is a distinct
-  job, not a filter on the inbox.
+- **DM recovery leaves Conversations and becomes its own destination.** *Built —
+  `/dm-recovery`.* It was a fourth lens inside an 892-line page, carrying ~679
+  lines of its own machinery with holdout cohorts and experiment measurement.
+  That is a distinct job, not a filter on the inbox. The sharper reason emerged
+  while building it: every other control in that filter row reads what already
+  happened, and this one releases outbound DMs to real people. A sending control
+  does not belong in a row of reading controls. Asserted in
+  `Conversations.test.tsx` so the pill cannot come back.
 - **DM recovery and historical recovery stay separate destinations, grouped but
   never tabbed.** `HistoricalRecovery.tsx` states the reason and it is a safety
   boundary, not a preference: *"one approval here posts public comments on

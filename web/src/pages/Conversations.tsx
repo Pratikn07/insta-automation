@@ -13,8 +13,6 @@ import {
   User,
 } from "lucide-react";
 import { useState } from "react";
-import { DmRecoveryList } from "../components/conversations/DmRecoveryList";
-import { DmRecoveryDrawer } from "../components/conversations/DmRecoveryDrawer";
 import { journeyRowMarkers } from "../components/conversations/journeyRowMarkers";
 import { api } from "@/lib/api";
 import type {
@@ -45,7 +43,11 @@ type HistoryMode = "canonical" | "raw";
 // approval surface; the journey views are the existing keyword→gate→guide funnel,
 // unchanged. Kept side by side rather than replaced, because a journey row and a
 // DM thread answer different questions.
-type Lens = "needs_reply" | "dms" | "recovery" | "journeys";
+//
+// "recovery" was a third pill here and is now its own route. Every lens below is
+// a way of reading what already happened; recovery releases new outbound DMs, and
+// a sending control does not belong in a row of reading controls. See DmRecovery.tsx.
+type Lens = "needs_reply" | "dms" | "journeys";
 
 // Plain-English tab labels. "DONE" is internal jargon (the word the user types) —
 // a marketer tracks outcomes: who's waiting, who got it, and who we never got a
@@ -60,8 +62,8 @@ const FILTERS: { value: StateFilter; label: string; countKey?: keyof Conversatio
 ];
 
 const stateMeta: Record<ConversationState, { label: string; tone: string; Icon: typeof Clock }> = {
-  awaiting_done: { label: "Waiting for reply", tone: "text-amber-400 bg-amber-400/10", Icon: Clock },
-  completed: { label: "Delivered", tone: "text-emerald-400 bg-emerald-400/10", Icon: CheckCircle2 },
+  awaiting_done: { label: "Waiting for reply", tone: "text-caution bg-caution-soft", Icon: Clock },
+  completed: { label: "Delivered", tone: "text-signal bg-signal-soft", Icon: CheckCircle2 },
   expired: {
     label: "No confirmed reply",
     tone: "text-muted-foreground bg-muted/40",
@@ -70,17 +72,17 @@ const stateMeta: Record<ConversationState, { label: string; tone: string; Icon: 
 };
 
 // The "we couldn't reach them yet — auto-retrying" row style. Deliberately calm
-// (sky, not red): for almost everyone this self-heals and needs no action, so it
-// reads as a status, not an alarm. Distinct from the amber "their turn" badge.
+// (blue, not urgent): for almost everyone this self-heals and needs no action, so
+// it reads as a status, not an alarm. Distinct from the caution "their turn" badge.
 const RETRYING_META = {
   label: "Couldn’t message — retrying",
-  tone: "text-sky-400 bg-sky-400/10",
+  tone: "text-funnel-mark bg-mark-soft",
   Icon: RotateCw,
 };
 
 // What badge does this row get? Within "Waiting", a still-bouncing gate means the
 // DM never landed — so it is NOT the user's turn. Surface that instead of the
-// generic amber "Waiting for reply".
+// generic "Waiting for reply".
 function rowBadge(c: Conversation): { label: string; tone: string; Icon: typeof Clock } {
   if (c.state === "awaiting_done" && c.delivery === "retrying") return RETRYING_META;
   return stateMeta[c.state];
@@ -93,7 +95,6 @@ export function Conversations() {
   const [selected, setSelected] = useState<Conversation | null>(null);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [lineageUser, setLineageUser] = useState<string | null>(null);
-  const [selectedRecoveryId, setSelectedRecoveryId] = useState<string | null>(null);
 
   const dmScope = lens === "needs_reply" ? "needs_reply" : "all";
   const dmThreadsQ = useQuery<Paginated<DmThreadRow>>({
@@ -188,7 +189,6 @@ export function Conversations() {
           [
             { value: "needs_reply", label: "Needs reply" },
             { value: "dms", label: "DMs" },
-            { value: "recovery", label: "DM recovery" },
           ] as const
         ).map((l) => (
           <button
@@ -235,7 +235,7 @@ export function Conversations() {
       {/* Calm heads-up when some gates haven't landed. Most auto-heal, so this is
           informational, not an alarm — and it only shows when relevant. */}
       {counts != null && counts.retrying > 0 && (filter === "awaiting_done" || filter === "all") && (
-        <div className="flex items-start gap-2 rounded-md border border-sky-500/30 bg-sky-500/5 px-3 py-2 text-xs text-sky-300">
+        <div className="flex items-start gap-2 rounded-md border border-funnel-mark bg-mark-soft px-3 py-2 text-xs text-funnel-mark">
           <RotateCw className="mt-0.5 size-3.5 shrink-0" />
           <span>
             We couldn’t message{" "}
@@ -247,11 +247,7 @@ export function Conversations() {
         </div>
       )}
 
-      {lens === "recovery" ? (
-        <div className="mt-4">
-          <DmRecoveryList onSelect={setSelectedRecoveryId} />
-        </div>
-      ) : lens !== "journeys" ? (
+      {lens !== "journeys" ? (
         <DmThreadList
           rows={dmThreadsQ.data?.items ?? []}
           isLoading={dmThreadsQ.isLoading}
@@ -321,20 +317,6 @@ export function Conversations() {
       </Drawer>
 
       <Drawer
-        open={selectedRecoveryId !== null}
-        onClose={() => setSelectedRecoveryId(null)}
-        title="DM recovery reminder"
-      >
-        {selectedRecoveryId && (
-          <DmRecoveryDrawer
-            id={selectedRecoveryId}
-            onClose={() => setSelectedRecoveryId(null)}
-            onOpenUser={(id) => setLineageUser(id)}
-          />
-        )}
-      </Drawer>
-
-      <Drawer
         open={lineageUser !== null}
         onClose={() => setLineageUser(null)}
         title="User journey"
@@ -386,7 +368,7 @@ function ConversationRow({ c, onClick }: { c: Conversation; onClick: () => void 
               {c.completedAt && ` · completed ${formatRelative(c.completedAt)}`}
             </p>
             {c.historyRole === "alias" && (
-              <p className="mt-0.5 text-[11px] text-amber-300">
+              <p className="mt-0.5 text-[11px] text-caution">
                 Alias history · canonical owner {c.canonicalOwner?.id ?? "unknown"}
               </p>
             )}
@@ -406,7 +388,7 @@ function ConversationRow({ c, onClick }: { c: Conversation; onClick: () => void 
               className={cn(
                 "inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium",
                 markers.recovery.pending
-                  ? "bg-sky-400/10 text-sky-400"
+                  ? "bg-mark-soft text-funnel-mark"
                   : "bg-muted/40 text-muted-foreground",
               )}
             >
@@ -634,8 +616,8 @@ function ConversationDetail({
         <p
           className={cn(
             "mt-2 text-sm",
-            summary.tone === "done" && "text-emerald-400",
-            summary.tone === "failed" && "text-amber-400",
+            summary.tone === "done" && "text-signal",
+            summary.tone === "failed" && "text-caution",
             summary.tone === "pending" && "text-foreground",
           )}
         >
@@ -693,8 +675,8 @@ function ConversationDetail({
 }
 
 const STATUS_DOT: Record<StepStatus, string> = {
-  done: "bg-emerald-500 text-white",
-  failed: "bg-amber-500 text-white",
+  done: "bg-signal text-primary-foreground",
+  failed: "bg-caution text-primary-foreground",
   pending: "border border-border bg-muted text-muted-foreground",
 };
 
@@ -726,7 +708,7 @@ function JourneyRow({ step }: { step: JourneyStep }) {
           </span>
         </div>
         {step.note && (
-          <p className="mt-0.5 text-xs text-amber-400">{step.note}</p>
+          <p className="mt-0.5 text-xs text-caution">{step.note}</p>
         )}
 
         {/* Bubble(s) under the step */}
@@ -759,25 +741,25 @@ function GateRetryCard({ gate }: { gate: GateRetry }) {
     new Date(gate.commentAt).getTime() + 7 * 24 * 60 * 60 * 1000,
   );
   return (
-    <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3">
+    <div className="rounded-md border border-caution bg-caution-soft p-3">
       <div className="flex items-start gap-2">
-        <RotateCw className={cn("mt-0.5 size-4 shrink-0 text-amber-400", !exhausted && "animate-none")} />
+        <RotateCw className={cn("mt-0.5 size-4 shrink-0 text-caution", !exhausted && "animate-none")} />
         <div className="text-sm">
           {exhausted ? (
-            <p className="text-amber-300">
+            <p className="text-caution">
               Instagram only allows auto-DMs for 7 days after a comment, and that window has
               closed — so this DM couldn’t be delivered.
             </p>
           ) : (
             <>
-              <p className="font-medium text-amber-300">
+              <p className="font-medium text-caution">
                 We couldn’t DM them automatically — but we’re retrying.
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
                 Instagram temporarily limited how many auto-DMs this account can send, so this one
                 was held back. We’ll keep retrying as the limit frees up — no action needed from you.
               </p>
-              <p className="mt-2 text-xs text-amber-300/90">
+              <p className="mt-2 text-xs text-caution">
                 Attempt {gate.attempts + 1} · next try {formatRelativeFuture(gate.nextAttemptAt)} ·
                 retrying until {formatAbsolute(windowCloses.toISOString())}
               </p>
