@@ -131,7 +131,7 @@ const TERMINAL_STATUSES = new Set([
  *  5. Person cooldown (24h)
  *  6. Newer candidate
  *  7. Settings fallback
- *  8. Ten-hour eligibility wait
+ *  8. Frozen eligibility wait
  *  9. Holdout (control cohort)
  * 10. Send no-confirmed-read reminder
  */
@@ -232,7 +232,7 @@ export function decideRecovery(input: RecoveryPolicyInput): RecoveryDecision {
     return { kind: "send_settings_fallback" };
   }
 
-  // 8. Ten-hour eligibility wait
+  // 8. Frozen eligibility wait
   if (input.now.getTime() < input.eligibleAt.getTime()) {
     return { kind: "wait" };
   }

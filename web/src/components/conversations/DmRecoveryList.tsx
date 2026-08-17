@@ -66,7 +66,6 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
   const [keywordId, setKeywordId] = useState<string>("");
   const [timingArm, setTimingArm] = useState<"" | RecoveryTimingArm>("");
   const [requestedRange, setRequestedRange] = useState<RequestedRange | null>(null);
-  const now = new Date();
 
   const keywordsQ = useQuery<Keyword[]>({
     queryKey: ["keywords"],
@@ -154,6 +153,25 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
   // The active view, not the grand total: a count that never changes as tabs
   // change is not describing what is on screen.
   const active = countsQ.data?.[view];
+  const viewAsOf = reporting ? new Date(reporting.asOf) : new Date();
+
+  if (metricsQ.isError) {
+    return (
+      <div
+        role="alert"
+        className="rounded-lg border border-rose-400/30 bg-rose-400/10 px-3 py-4 text-sm"
+      >
+        <p className="text-rose-100">Couldn’t load recovery reporting.</p>
+        <button
+          type="button"
+          onClick={() => metricsQ.refetch()}
+          className="mt-2 rounded-md border px-2 py-1 text-xs hover:bg-accent/20"
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
 
   const requestPreset = (preset: RangePreset) => {
     if (!timingExperiment) return;
@@ -379,7 +397,7 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
       ) : (
         <ul className="space-y-2">
           {rows.map((row) => {
-            const state = recoveryStatusView(row, now);
+            const state = recoveryStatusView(row, viewAsOf);
             return (
               // The post link is a sibling of the row button, not a child: an
               // anchor inside a button is invalid, and nesting it would make the

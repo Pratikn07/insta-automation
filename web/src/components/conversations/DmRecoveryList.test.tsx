@@ -272,6 +272,51 @@ describe("DmRecoveryList", () => {
     await waitFor(() => expect(list).toHaveBeenCalledWith(expect.stringContaining(scope)));
   });
 
+  it("surfaces a metrics failure and retries before loading scoped data", async () => {
+    metrics.mockReset().mockRejectedValueOnce(new Error("boom")).mockResolvedValue(METRICS);
+    renderList();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Couldn’t load recovery reporting/i);
+    expect(counts).not.toHaveBeenCalled();
+    expect(list).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    expect(await screen.findByRole("heading", { name: "Recovery timing" })).toBeInTheDocument();
+    await waitFor(() => expect(counts).toHaveBeenCalled());
+    await waitFor(() => expect(list).toHaveBeenCalled());
+  });
+
+  it("uses the server asOf when describing whether a scoped row is due", async () => {
+    metrics.mockResolvedValue({
+      ...METRICS,
+      timingExperiment: {
+        ...TIMING_EXPERIMENT,
+        reporting: {
+          ...TIMING_EXPERIMENT.reporting,
+          asOf: "2020-01-01T00:00:00.000Z",
+          coverage: { from: "2019-12-01", to: "2020-01-01" },
+          range: { from: "2019-12-03", to: "2020-01-01" },
+          resultsCompleteThrough: "2019-12-29",
+        },
+      },
+    });
+    list.mockResolvedValue({
+      rows: [
+        row({
+          acceptedAt: "2019-12-31T22:00:00.000Z",
+          eligibleAt: "2020-01-01T01:00:00.000Z",
+        }),
+      ],
+      nextCursor: null,
+    });
+
+    renderList();
+
+    expect(await screen.findByText("Waiting for read confirmation")).toBeInTheDocument();
+    expect(screen.queryByText("No confirmed read")).not.toBeInTheDocument();
+  });
+
   it("starts at 30 days and exposes presets plus a custom date range", async () => {
     renderList();
 
