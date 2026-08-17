@@ -10,7 +10,9 @@ vi.mock("./supabase", () => ({
   },
 }));
 
-const { api, TimeoutError } = await import("./api");
+const { api, TimeoutError, ApiError, apiErrorCode } = (await import("./api")) as typeof import("./api") & {
+  apiErrorCode: (error: unknown) => string | null;
+};
 
 describe("api timeout", () => {
   beforeEach(() => vi.useFakeTimers());
@@ -40,5 +42,21 @@ describe("api timeout", () => {
     await vi.advanceTimersByTimeAsync(2_000);
     await call;
     expect(settled).toBe(true);
+  });
+});
+
+describe("apiErrorCode", () => {
+  it("returns a stable server error code without parsing its message", () => {
+    const error = new ApiError(
+      400,
+      { error: "message_body_too_long", limit: 1_000, actual: 1_001 },
+      "Message is 1,001 characters; Instagram's limit is 1,000.",
+    );
+
+    expect(apiErrorCode(error)).toBe("message_body_too_long");
+  });
+
+  it("returns null when an API error does not have a string error code", () => {
+    expect(apiErrorCode(new ApiError(400, { error: { fieldErrors: {} } }, "Invalid request"))).toBe(null);
   });
 });

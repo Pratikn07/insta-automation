@@ -1,33 +1,27 @@
-import { Router } from "express";
+import { Router, type Response } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
-import { IG_TEXT_CHAR_LIMIT, instagramTextChars } from "../lib/instagramLimits.js";
+import {
+  INSTAGRAM_GUIDE_TEXT_LIMIT,
+  MESSAGE_BODY_TOO_LONG_ERROR,
+  countInstagramCodePoints,
+} from "../../shared/guideMessagePolicy.js";
 
 export const messagesRouter = Router();
 
 const messageTypeSchema = z.enum(["text", "image", "pdf"]);
 
 /**
- * 1,000 characters. This schema carried `.max(2000)` on string length, then a
- * 1,000-BYTE check, and both were wrong in different directions — 2000 let
- * genuinely undeliverable steps through, and bytes would have rejected six
- * stored messages that production delivers every day. See instagramLimits.ts
- * for the evidence that settled it.
- *
- * Rejecting here rather than truncating: silently shortening a parent's guide is
- * worse than refusing to save it, and the editor shows the same budget live so
- * this should never be the first time anyone hears about it.
+ * The route enforces the shared code-point policy. It rejects rather than
+ * truncating because silently shortening a parent's guide would lose content.
  */
-const withinInstagramLimit = (value: string) =>
-  instagramTextChars(value) <= IG_TEXT_CHAR_LIMIT;
-
-const limitMessage = (value: string) =>
-  `Message is ${instagramTextChars(value).toLocaleString()} characters; Instagram's limit is ` +
-  `${IG_TEXT_CHAR_LIMIT.toLocaleString()}.`;
-
-const messageBody = z.string().refine(withinInstagramLimit, (value) => ({
-  message: limitMessage(value),
-}));
+// Zod counts string `.max()` values in UTF-16 units. Transforming to code
+// points first keeps its defense-in-depth limit aligned with the API boundary.
+const messageBody = z
+  .string()
+  .transform((value) => [...value])
+  .pipe(z.array(z.string()).max(INSTAGRAM_GUIDE_TEXT_LIMIT))
+  .transform((codePoints) => codePoints.join(""));
 
 const createSchema = z.object({
   resourceId: z.string().uuid(),
@@ -46,6 +40,18 @@ const reorderSchema = z.object({
   messageIds: z.array(z.string().uuid()).min(1),
 });
 
+function rejectLongBody(body: unknown, res: Response): boolean {
+  if (typeof body !== "string") return false;
+  const actual = countInstagramCodePoints(body);
+  if (actual <= INSTAGRAM_GUIDE_TEXT_LIMIT) return false;
+  res.status(400).json({
+    error: MESSAGE_BODY_TOO_LONG_ERROR,
+    limit: INSTAGRAM_GUIDE_TEXT_LIMIT,
+    actual,
+  });
+  return true;
+}
+
 messagesRouter.get("/by-resource/:resourceId", async (req, res) => {
   const rows = await prisma.resourceMessage.findMany({
     where: { resourceId: req.params.resourceId },
@@ -55,6 +61,7 @@ messagesRouter.get("/by-resource/:resourceId", async (req, res) => {
 });
 
 messagesRouter.post("/", async (req, res) => {
+  if (rejectLongBody(req.body?.body, res)) return;
   const parsed = createSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   const { resourceId, type, body, mediaUrl } = parsed.data;
@@ -80,6 +87,7 @@ messagesRouter.post("/", async (req, res) => {
 });
 
 messagesRouter.patch("/:id", async (req, res) => {
+  if (rejectLongBody(req.body?.body, res)) return;
   const parsed = updateSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   const updated = await prisma.resourceMessage.update({
