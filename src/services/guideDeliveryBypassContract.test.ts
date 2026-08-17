@@ -189,6 +189,186 @@ describe("guide-delivery bypass detector", () => {
     expect(output).toContain("scripts/rogue.cjs");
   });
 
+  it("rejects a CommonJS loader propagated through object shorthand and member aliases", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "guide-delivery-bypass-"));
+    temporaryRoots.push(root);
+    mkdirSync(path.join(root, "scripts"), { recursive: true });
+    writeFileSync(
+      path.join(root, "scripts", "rogue.cjs"),
+      "const loaders = { require };\n" +
+        "const load = loaders.require;\n" +
+        'load("../src/services/sequenceSender.js");\n',
+    );
+
+    const result = runDetector(root);
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.status).toBe(1);
+    expect(output).toContain("scripts/rogue.cjs");
+  });
+
+  it("accepts the inverse object member when its value is not a loader", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "guide-delivery-bypass-"));
+    temporaryRoots.push(root);
+    mkdirSync(path.join(root, "scripts"), { recursive: true });
+    writeFileSync(
+      path.join(root, "scripts", "safe.mjs"),
+      "const require = (value) => value;\n" +
+        "const loaders = { require };\n" +
+        "const load = loaders.require;\n" +
+        'load("../src/services/sequenceSender.js");\n',
+    );
+
+    const result = runDetector(root);
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.status, output).toBe(0);
+    expect(output).toContain("guide_delivery_bypass_check_passed");
+  });
+
+  it("fails closed for a computed member of an object containing a loader factory", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "guide-delivery-bypass-"));
+    temporaryRoots.push(root);
+    mkdirSync(path.join(root, "scripts"), { recursive: true });
+    writeFileSync(
+      path.join(root, "scripts", "rogue.mjs"),
+      'import { createRequire } from "node:module";\n' +
+        "const factories = { createRequire };\n" +
+        "const selected = process.argv[2];\n" +
+        "const load = factories[selected](import.meta.url);\n" +
+        'load("../src/services/sequenceSender.js");\n',
+    );
+
+    const result = runDetector(root);
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.status).toBe(1);
+    expect(output).toContain("scripts/rogue.mjs");
+  });
+
+  it("accepts a computed member of an object with no loader provenance", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "guide-delivery-bypass-"));
+    temporaryRoots.push(root);
+    mkdirSync(path.join(root, "scripts"), { recursive: true });
+    writeFileSync(
+      path.join(root, "scripts", "safe.mjs"),
+      "const loaders = { safe: (value) => value };\n" +
+        "const selected = process.argv[2];\n" +
+        "const load = loaders[selected];\n" +
+        'load("../src/services/sequenceSender.js");\n',
+    );
+
+    const result = runDetector(root);
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.status, output).toBe(0);
+    expect(output).toContain("guide_delivery_bypass_check_passed");
+  });
+
+  it("rejects a canonical createRequire-derived loader", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "guide-delivery-bypass-"));
+    temporaryRoots.push(root);
+    mkdirSync(path.join(root, "scripts"), { recursive: true });
+    writeFileSync(
+      path.join(root, "scripts", "rogue.mjs"),
+      'import { createRequire } from "node:module";\n' +
+        "const load = createRequire(import.meta.url);\n" +
+        'load("../src/services/sequenceSender.js");\n',
+    );
+
+    const result = runDetector(root);
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.status).toBe(1);
+    expect(output).toContain("scripts/rogue.mjs");
+  });
+
+  it("accepts a createRequire-derived loader for a non-sender module", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "guide-delivery-bypass-"));
+    temporaryRoots.push(root);
+    mkdirSync(path.join(root, "scripts"), { recursive: true });
+    writeFileSync(
+      path.join(root, "scripts", "safe.mjs"),
+      'import { createRequire } from "node:module";\n' +
+        "const load = createRequire(import.meta.url);\n" +
+        'load("./safe.js");\n',
+    );
+
+    const result = runDetector(root);
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.status, output).toBe(0);
+    expect(output).toContain("guide_delivery_bypass_check_passed");
+  });
+
+  it("rejects a destructured CommonJS createRequire alias", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "guide-delivery-bypass-"));
+    temporaryRoots.push(root);
+    mkdirSync(path.join(root, "scripts"), { recursive: true });
+    writeFileSync(
+      path.join(root, "scripts", "rogue.cjs"),
+      'const { createRequire: makeLoader } = require("node:module");\n' +
+        "const load = makeLoader(__filename);\n" +
+        'load("../src/services/sequenceSender.js");\n',
+    );
+
+    const result = runDetector(root);
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.status).toBe(1);
+    expect(output).toContain("scripts/rogue.cjs");
+  });
+
+  it("rejects a namespace createRequire loader", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "guide-delivery-bypass-"));
+    temporaryRoots.push(root);
+    mkdirSync(path.join(root, "scripts"), { recursive: true });
+    writeFileSync(
+      path.join(root, "scripts", "rogue.mjs"),
+      'import * as moduleApi from "node:module";\n' +
+        "const load = moduleApi.createRequire(import.meta.url);\n" +
+        'load("../src/services/sequenceSender.js");\n',
+    );
+
+    const result = runDetector(root);
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.status).toBe(1);
+    expect(output).toContain("scripts/rogue.mjs");
+  });
+
+  it("rejects a sender module specifier with a query or hash suffix", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "guide-delivery-bypass-"));
+    temporaryRoots.push(root);
+    mkdirSync(path.join(root, "scripts"), { recursive: true });
+    writeFileSync(
+      path.join(root, "scripts", "rogue.mjs"),
+      'await import("../src/services/sequenceSender.js?bypass#fragment");\n',
+    );
+
+    const result = runDetector(root);
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.status).toBe(1);
+    expect(output).toContain("scripts/rogue.mjs");
+  });
+
+  it("accepts a non-sender module specifier with query and hash suffixes", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "guide-delivery-bypass-"));
+    temporaryRoots.push(root);
+    mkdirSync(path.join(root, "scripts"), { recursive: true });
+    writeFileSync(
+      path.join(root, "scripts", "safe.mjs"),
+      'await import("./safe.js?cache=1#fragment");\n',
+    );
+
+    const result = runDetector(root);
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.status, output).toBe(0);
+    expect(output).toContain("guide_delivery_bypass_check_passed");
+  });
+
   it("rejects a local dynamic-import wrapper", () => {
     const root = mkdtempSync(path.join(tmpdir(), "guide-delivery-bypass-"));
     temporaryRoots.push(root);
