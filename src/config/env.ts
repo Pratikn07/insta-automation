@@ -1,6 +1,11 @@
 import "dotenv/config";
 import { z } from "zod";
+import { DM_RECOVERY_TIMING_EXPERIMENT_VERSION } from "../services/dmRecoveryTimingExperiment.js";
 import { booleanFlag } from "./booleanFlag.js";
+
+const DAY_MS = 24 * 60 * 60 * 1_000;
+const MIN_TIMING_EXPERIMENT_DAYS = 28;
+const MAX_TIMING_EXPERIMENT_DAYS = 42;
 
 /**
  * The one Graph signature that must never enter the settings-blocked allowlist.
@@ -227,7 +232,38 @@ export const envSchema = z.object({
         path: ["DM_RECOVERY_EXPERIMENT_END_AT"],
         message: "DM_RECOVERY_EXPERIMENT_END_AT must be strictly after DM_RECOVERY_EXPERIMENT_START_AT",
       });
+    } else if (
+      value.DM_RECOVERY_EXPERIMENT_VERSION ===
+      DM_RECOVERY_TIMING_EXPERIMENT_VERSION
+    ) {
+      const durationDays = (endTime - startTime) / DAY_MS;
+      if (
+        durationDays < MIN_TIMING_EXPERIMENT_DAYS ||
+        durationDays > MAX_TIMING_EXPERIMENT_DAYS
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["DM_RECOVERY_EXPERIMENT_END_AT"],
+          message:
+            `${DM_RECOVERY_TIMING_EXPERIMENT_VERSION} must enroll for ` +
+            `${MIN_TIMING_EXPERIMENT_DAYS} to ${MAX_TIMING_EXPERIMENT_DAYS} days`,
+        });
+      }
     }
+  }
+
+  if (
+    value.DM_RECOVERY_EXPERIMENT_VERSION ===
+      DM_RECOVERY_TIMING_EXPERIMENT_VERSION &&
+    value.DM_RECOVERY_POST_EXPERIMENT_ENABLED
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["DM_RECOVERY_POST_EXPERIMENT_ENABLED"],
+      message:
+        `${DM_RECOVERY_TIMING_EXPERIMENT_VERSION} does not assign followers ` +
+        "after its enrollment window",
+    });
   }
 
   if (value.DM_RECOVERY_ENABLED && (!hasStart || !hasEnd)) {
