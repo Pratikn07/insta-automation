@@ -4,9 +4,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const findMany = vi.fn();
 const findUnique = vi.fn();
+const countDeliveries = vi.fn();
+const findKeywords = vi.fn();
+const deleteConversations = vi.fn();
+const deleteKeywords = vi.fn();
+const deleteResource = vi.fn();
+const transaction = vi.fn();
 
 vi.mock("../lib/prisma.js", () => ({
-  prisma: { resource: { findMany, findUnique } },
+  prisma: {
+    guideDelivery: { count: countDeliveries },
+    keyword: { findMany: findKeywords, deleteMany: deleteKeywords },
+    conversation: { deleteMany: deleteConversations },
+    resource: { findMany, findUnique, delete: deleteResource },
+    $transaction: transaction,
+  },
 }));
 
 const { resourcesRouter } = await import("./resources.routes.js");
@@ -48,6 +60,25 @@ beforeEach(() => {
       },
     ],
     keywords: [{ id: "keyword-1", keyword: "DONE" }],
+  });
+  countDeliveries.mockReset().mockResolvedValue(0);
+  findKeywords.mockReset().mockResolvedValue([]);
+  deleteConversations.mockReset().mockReturnValue({ operation: "delete-conversations" });
+  deleteKeywords.mockReset().mockReturnValue({ operation: "delete-keywords" });
+  deleteResource.mockReset().mockReturnValue({ operation: "delete-resource" });
+  transaction.mockReset().mockResolvedValue([]);
+});
+
+describe("resource deletion", () => {
+  it("rejects deletion before its transaction when immutable delivery history exists", async () => {
+    countDeliveries.mockResolvedValue(1);
+
+    const response = await request(makeApp()).delete(`/api/resources/${RESOURCE_ID}`).expect(409);
+
+    expect(response.body).toEqual({ error: "resource_has_delivery_history" });
+    expect(countDeliveries).toHaveBeenCalledWith({ where: { resourceId: RESOURCE_ID } });
+    expect(findKeywords).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
   });
 });
 
