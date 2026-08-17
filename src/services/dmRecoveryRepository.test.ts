@@ -74,6 +74,7 @@ const {
   listDueRecoveryIds,
   claimRecovery,
   authorizeClaimForSend,
+  reconcileExpiredProspectiveLeases,
   releaseOrSuppressClaim,
   resolveAudienceOrigin,
 } = await import("./dmRecoveryRepository.js");
@@ -89,6 +90,8 @@ function candidate(overrides: Record<string, unknown> = {}) {
     commentId: "comment-1",
     status: "waiting",
     cohort: "treatment",
+    experimentVersionSnapshot: null,
+    timingArm: null,
     triggerKind: "no_confirmed_read",
     instagramGateMessageId: "mid-1",
     eligibleAt: new Date("2026-08-06T09:00:00Z"),
@@ -158,7 +161,19 @@ describe("listDueRecoveryIds", () => {
       where: {
         status: "waiting",
         eligibleAt: { lte: NOW },
-        OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: NOW } }],
+        AND: [
+          {
+            OR: [
+              { experimentVersionSnapshot: null },
+              {
+                experimentVersionSnapshot: "read-recovery-timing-v2",
+                cohort: "treatment",
+                timingArm: { in: ["two_hour", "six_hour"] },
+              },
+            ],
+          },
+          { OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: NOW } }] },
+        ],
       },
       select: { id: true },
       orderBy: [{ eligibleAt: "asc" }, { createdAt: "asc" }],
@@ -193,7 +208,19 @@ describe("claimRecovery", () => {
         status: "waiting",
         claimToken: null,
         eligibleAt: { lte: NOW },
-        OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: NOW } }],
+        AND: [
+          {
+            OR: [
+              { experimentVersionSnapshot: null },
+              {
+                experimentVersionSnapshot: "read-recovery-timing-v2",
+                cohort: "treatment",
+                timingArm: { in: ["two_hour", "six_hour"] },
+              },
+            ],
+          },
+          { OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: NOW } }] },
+        ],
       },
       data: {
         status: "sending",
@@ -209,6 +236,57 @@ describe("claimRecovery", () => {
     updateMany.mockResolvedValue({ count: 0 });
 
     await expect(claimRecovery("rec-1", NOW, LEASE)).resolves.toBeNull();
+  });
+
+  it("includes the v2 treatment guard in the compare-and-set claim", async () => {
+    findUnique.mockResolvedValue(
+      candidate({
+        experimentVersionSnapshot: "read-recovery-timing-v2",
+        timingArm: "two_hour",
+      }),
+    );
+
+    await claimRecovery("rec-1", NOW, LEASE);
+
+    expect(updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          AND: expect.arrayContaining([
+            {
+              OR: [
+                { experimentVersionSnapshot: null },
+                {
+                  experimentVersionSnapshot: "read-recovery-timing-v2",
+                  cohort: "treatment",
+                  timingArm: { in: ["two_hour", "six_hour"] },
+                },
+              ],
+            },
+          ]),
+        }),
+      }),
+    );
+  });
+
+  it.each([
+    ["a null arm", { timingArm: null, cohort: "treatment" }],
+    ["a no-reminder waiting row", { timingArm: "no_reminder", cohort: "control" }],
+  ])("suppresses v2 %s instead of claiming it", async (_label, assignment) => {
+    findUnique.mockResolvedValue(
+      candidate({
+        experimentVersionSnapshot: "read-recovery-timing-v2",
+        ...assignment,
+      }),
+    );
+
+    await expect(claimRecovery("rec-1", NOW, LEASE)).resolves.toBeNull();
+    expect(update).toHaveBeenCalledWith({
+      where: { id: "rec-1" },
+      data: expect.objectContaining({
+        status: "suppressed",
+        suppressionReason: "experiment_assignment_invalid",
+      }),
+    });
   });
 
   // The claim must run the approved policy rather than a hand-rolled subset,
@@ -377,6 +455,21 @@ describe("authorizeClaimForSend", () => {
       where: { id: "rec-1", status: "sending", claimToken: "token-1" },
       data: { lastAttemptAt: NOW, attempts: 1 },
     });
+  });
+
+  it("suppresses a malformed v2 claim at final authorization", async () => {
+    findUnique.mockResolvedValue(
+      sendingRow({
+        experimentVersionSnapshot: "read-recovery-timing-v2",
+        timingArm: null,
+      }),
+    );
+
+    await expect(authorizeClaimForSend("rec-1", "token-1", NOW)).resolves.toEqual({
+      kind: "suppress",
+      reason: "experiment_assignment_invalid",
+    });
+    expect(dispatchCreate).not.toHaveBeenCalled();
   });
 
   // Circuit state and hourly capacity are process-wide, so the singleton must
@@ -597,6 +690,38 @@ describe("resolveAudienceOrigin", () => {
 });
 
 describe("finalizers", () => {
+  it("does not reconcile a no-reminder control as an expired sending lease", async () => {
+    findMany.mockResolvedValue([]);
+
+    await expect(reconcileExpiredProspectiveLeases(NOW)).resolves.toEqual({
+      released: 0,
+      uncertain: 0,
+    });
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          status: "sending",
+          claimToken: { not: null },
+          claimExpiresAt: { lte: NOW },
+          AND: [
+            {
+              OR: [
+                { experimentVersionSnapshot: null },
+                {
+                  experimentVersionSnapshot: "read-recovery-timing-v2",
+                  cohort: "treatment",
+                  timingArm: { in: ["two_hour", "six_hour"] },
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
   // Every non-send outcome must move the row out of `sending`. A row left
   // claimed is reconciled to send_uncertain when its lease expires, which sends
   // a healthy hold to manual review for no reason.
@@ -608,9 +733,38 @@ describe("finalizers", () => {
     ["suppress", { kind: "suppress", reason: "seen" }, "suppressed"],
   ])("releaseOrSuppressClaim moves a %s decision out of sending", async (_l, decision, status) => {
     await expect(releaseOrSuppressClaim("rec-1", decision as never, NOW)).resolves.toBe(true);
-    expect(updateMany).toHaveBeenCalledWith({
-      where: { id: "rec-1", status: "sending" },
-      data: expect.objectContaining({ status, claimedAt: null, claimExpiresAt: null }),
-    });
+    expect(updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: "rec-1", status: "sending" }),
+        data: expect.objectContaining({ status, claimedAt: null, claimExpiresAt: null }),
+      }),
+    );
+  });
+
+  it("requires a sendable assignment before releasing a claim to waiting", async () => {
+    await releaseOrSuppressClaim(
+      "rec-1",
+      { kind: "release", reason: "stale_claim" },
+      NOW,
+    );
+
+    expect(updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          AND: [
+            {
+              OR: [
+                { experimentVersionSnapshot: null },
+                {
+                  experimentVersionSnapshot: "read-recovery-timing-v2",
+                  cohort: "treatment",
+                  timingArm: { in: ["two_hour", "six_hour"] },
+                },
+              ],
+            },
+          ],
+        }),
+      }),
+    );
   });
 });

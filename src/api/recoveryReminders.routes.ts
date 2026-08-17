@@ -11,6 +11,7 @@ import {
   activateSettingsBlockedVerification,
   retireSettingsBlockedVerification,
 } from "../services/settingsBlockedVerificationAdminService.js";
+import { DM_RECOVERY_TIMING_EXPERIMENT_VERSION } from "../services/dmRecoveryTimingExperiment.js";
 
 /**
  * Read models and owner actions for the DM recovery lens.
@@ -498,9 +499,21 @@ recoveryRemindersRouter.post("/:id/cancel", async (req, res) => {
 
   const before = await prisma.dmRecoveryReminder.findUnique({
     where: { id: req.params.id },
-    select: { status: true },
+    select: {
+      status: true,
+      experimentVersionSnapshot: true,
+      timingArm: true,
+    },
   });
   if (!before) return void res.status(404).json({ error: "not_found" });
+
+  if (
+    before.experimentVersionSnapshot ===
+      DM_RECOVERY_TIMING_EXPERIMENT_VERSION &&
+    before.timingArm === "no_reminder"
+  ) {
+    return void res.status(409).json({ error: "experiment_control_immutable" });
+  }
 
   if (!CANCELLABLE.includes(before.status as (typeof CANCELLABLE)[number])) {
     return resolveActionConflict(req.params.id, res);

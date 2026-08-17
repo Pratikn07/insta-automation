@@ -704,7 +704,12 @@ describe("POST /:id/cancel", () => {
   it.each(["waiting", "control", "tracking_unavailable", "send_failed"])(
     "cancels an unsent %s item",
     async (status) => {
-      findUnique.mockResolvedValue({ id: "rec-1", status });
+      findUnique.mockResolvedValue({
+        id: "rec-1",
+        status,
+        experimentVersionSnapshot: null,
+        timingArm: null,
+      });
       updateMany.mockResolvedValue({ count: 1 });
 
       const res = await request(makeApp()).post("/api/recovery-reminders/rec-1/cancel");
@@ -728,6 +733,22 @@ describe("POST /:id/cancel", () => {
       );
     },
   );
+
+  it("refuses to cancel a v2 no-reminder control", async () => {
+    findUnique.mockResolvedValue({
+      id: "rec-1",
+      status: "control",
+      experimentVersionSnapshot: "read-recovery-timing-v2",
+      timingArm: "no_reminder",
+    });
+
+    const res = await request(makeApp()).post("/api/recovery-reminders/rec-1/cancel");
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({ error: "experiment_control_immutable" });
+    expect(updateMany).not.toHaveBeenCalled();
+    expect(logEvent).not.toHaveBeenCalled();
+  });
 
   it.each(["sending", "sent", "send_uncertain", "cancelled"])(
     "returns 409 for %s",

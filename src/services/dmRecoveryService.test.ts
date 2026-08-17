@@ -896,7 +896,14 @@ describe("recordRecoveryReaction", () => {
   });
 
   it("preserves status on control rows", async () => {
-    findMany.mockResolvedValue([makeRow({ status: "control" })]);
+    findMany.mockResolvedValue([
+      makeRow({
+        status: "control",
+        cohort: "control",
+        experimentVersionSnapshot: "read-recovery-timing-v2",
+        timingArm: "no_reminder",
+      }),
+    ]);
 
     await recordRecoveryReaction({
       instagramMessageId: "mid-1",

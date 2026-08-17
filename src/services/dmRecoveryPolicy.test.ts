@@ -63,6 +63,8 @@ describe("DM recovery policy", () => {
       triggerKind: "no_confirmed_read",
       status: "waiting",
       cohort: "treatment",
+      experimentVersionSnapshot: null,
+      timingArm: null,
       eligibleAt,
       instagramGateMessageId: "mid.gate.123",
       seenAt: null,
@@ -276,6 +278,58 @@ describe("DM recovery policy", () => {
     it("returns send_no_confirmed_read_reminder when eligible and in treatment cohort", () => {
       expect(decideRecovery(baseInput)).toEqual({
         kind: "send_no_confirmed_read_reminder",
+      });
+    });
+
+    describe("read-recovery-timing-v2 assignment safety", () => {
+      const v2Input: RecoveryPolicyInput = {
+        ...baseInput,
+        experimentVersionSnapshot: "read-recovery-timing-v2",
+        timingArm: "two_hour",
+      };
+
+      it("never sends a no-reminder control", () => {
+        expect(
+          decideRecovery({
+            ...v2Input,
+            status: "control",
+            cohort: "control",
+            timingArm: "no_reminder",
+          }),
+        ).toEqual({ kind: "holdout" });
+      });
+
+      it.each([
+        ["a null arm", { timingArm: null }],
+        ["a treatment arm in control", { timingArm: "two_hour", cohort: "control" }],
+        ["a no-reminder arm waiting", { timingArm: "no_reminder", cohort: "control" }],
+      ] as const)("suppresses %s as an invalid assignment", (_label, assignment) => {
+        expect(decideRecovery({ ...v2Input, ...assignment })).toEqual({
+          kind: "suppress",
+          reason: "experiment_assignment_invalid",
+        });
+      });
+
+      it.each(["two_hour", "six_hour"] as const)(
+        "allows %s only after its persisted eligibility time",
+        (timingArm) => {
+          expect(
+            decideRecovery({
+              ...v2Input,
+              timingArm,
+              eligibleAt: new Date(now.getTime() + 1),
+            }),
+          ).toEqual({ kind: "wait" });
+          expect(decideRecovery({ ...v2Input, timingArm })).toEqual({
+            kind: "send_no_confirmed_read_reminder",
+          });
+        },
+      );
+
+      it("keeps a legacy null-arm treatment on the existing send policy", () => {
+        expect(decideRecovery(baseInput)).toEqual({
+          kind: "send_no_confirmed_read_reminder",
+        });
       });
     });
 
