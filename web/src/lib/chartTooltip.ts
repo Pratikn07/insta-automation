@@ -145,6 +145,11 @@ export function tooltipModel(
     notes.push("Meta did not refresh in between");
   }
   if (point.provisional) notes.push("Still settling — Meta may revise");
+  // Meta publishes no per-country-per-day follower data, so a split is always
+  // inferred from its cumulative demographics. Say so on the bar rather than in
+  // a legend nobody reads while hovering: the TOTAL here is exact, the country
+  // rows underneath it are the best available estimate.
+  if (point.estimated) notes.push("Total exact — country split estimated");
   if (point.unattributed) {
     notes.push(`${formatSignedCount(point.unattributed)} unplaced (top-country cutoff)`);
   }

@@ -429,6 +429,27 @@ model GeoDemographicSnapshot {
   @@map("geo_demographic_snapshot")
 }
 
+// The account's TRUE follower total, captured on every snapshot tick.
+//
+// GeoDemographicSnapshot cannot carry this job. follower_demographics counts only
+// the followers Meta HAS demographic data for, inside its top ~45 countries, and
+// Meta refreshes it on its own irregular schedule — so diffing it both
+// undercounts real growth and collapses several calendar days into one bar when
+// a refresh is skipped. followers_count has neither problem: it is the live
+// number Instagram shows on the profile, with no top-N cutoff and no ~48h
+// demographics lag, so consecutive daily rows give an EXACT net-add series.
+//
+// Deliberately its own table rather than a column on GeoDemographicSnapshot:
+// that table writes one row PER STAGE per run, and this figure is account-wide.
+model FollowerTotalSnapshot {
+  id             String   @id @default(uuid()) @db.Uuid
+  capturedAt     DateTime @default(now()) @map("captured_at") @db.Timestamptz(3)
+  followersTotal Int      @map("followers_total")
+
+  @@index([capturedAt])
+  @@map("follower_total_snapshot")
+}
+
 // Gemini analysis queue. Queue state kept separate from the result (same reason
 // GateQueue is separate from Conversation). Mirrors GateQueue's shape/backoff.
 model GeminiJob {

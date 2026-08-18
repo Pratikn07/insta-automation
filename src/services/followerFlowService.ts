@@ -15,13 +15,20 @@ import {
   toAnalyticsDayKey,
 } from "./analyticsDay.js";
 import { getSpikesByDay } from "./spikeService.js";
+import {
+  allocateDailyPoints,
+  exactNetAddsByDay,
+  padPointsThrough,
+  type AllocatedDailyAddsPoint,
+  type TotalAnchor,
+} from "./followerAllocationCore.js";
 
 // DB-facing wrapper around the pure follower-flow core (followerFlowCore.ts) —
 // all diff/gap/staleness semantics live there.
 
 export interface FollowerFlowResult {
   analyticsTimeZone: typeof ANALYTICS_TIME_ZONE;
-  points: FollowerDailyAddsPoint[];
+  points: AllocatedDailyAddsPoint[];
   stock: FollowerStock | null;
 }
 
@@ -31,6 +38,45 @@ interface FollowerSnapshotRow {
   capturedAt: Date;
   counts: unknown;
   totalCounted: number | null;
+}
+
+interface FollowerTotalRow {
+  capturedAt: Date;
+  followersTotal: number;
+}
+
+/**
+ * Last followers_count reading of each Pacific analytics day.
+ *
+ * Same last-of-day rule the demographic anchors use, for the same reason: an
+ * early-morning capture still describes yesterday's growth, so diffing
+ * first-of-day readings would shift every bar by one snapshot interval.
+ */
+function totalAnchorsFromRows(rows: FollowerTotalRow[]): TotalAnchor[] {
+  const byDay = new Map<string, TotalAnchor>();
+  for (const row of rows) {
+    const day = toAnalyticsDayKey(row.capturedAt);
+    byDay.set(day, { day, capturedAt: row.capturedAt, followersTotal: row.followersTotal });
+  }
+  return [...byDay.values()];
+}
+
+/**
+ * Anchor the honest demographic points onto exact followers_count totals.
+ *
+ * Shared by both read paths so a filtered range can never disagree with the
+ * chart it was filtered out of. Before the first followers_count capture there
+ * is nothing to anchor to and the points pass through unchanged — historical
+ * bars keep reading exactly as they always have.
+ */
+function anchorToExactTotals(
+  measured: FollowerDailyAddsPoint[],
+  totalRows: FollowerTotalRow[],
+): AllocatedDailyAddsPoint[] {
+  const totalAnchors = totalAnchorsFromRows(totalRows);
+  const newestExactDay = totalAnchors[totalAnchors.length - 1]?.day;
+  const padded = newestExactDay ? padPointsThrough(measured, newestExactDay) : measured;
+  return allocateDailyPoints(padded, exactNetAddsByDay(totalAnchors));
 }
 
 function anchorsFromRows(rows: FollowerSnapshotRow[]): AnchorSnapshot[] {
@@ -55,14 +101,21 @@ function anchorsFromRows(rows: FollowerSnapshotRow[]): AnchorSnapshot[] {
 export async function getFollowerDailyAddsPointsForRange(range: {
   from: string;
   to: string;
-}): Promise<FollowerDailyAddsPoint[]> {
+}): Promise<AllocatedDailyAddsPoint[]> {
   const toSuccessorExclusive = analyticsDayBounds(shiftDayKey(range.to, 3)).start;
-  const rows = await prisma.geoDemographicSnapshot.findMany({
-    where: { stage: "follower", capturedAt: { lt: toSuccessorExclusive } },
-    orderBy: { capturedAt: "asc" },
-    select: { capturedAt: true, counts: true, totalCounted: true },
-  });
-  return buildDailyPoints(anchorsFromRows(rows)).filter(
+  const [rows, totalRows] = await Promise.all([
+    prisma.geoDemographicSnapshot.findMany({
+      where: { stage: "follower", capturedAt: { lt: toSuccessorExclusive } },
+      orderBy: { capturedAt: "asc" },
+      select: { capturedAt: true, counts: true, totalCounted: true },
+    }),
+    prisma.followerTotalSnapshot.findMany({
+      where: { capturedAt: { lt: toSuccessorExclusive } },
+      orderBy: { capturedAt: "asc" },
+      select: { capturedAt: true, followersTotal: true },
+    }),
+  ]);
+  return anchorToExactTotals(buildDailyPoints(anchorsFromRows(rows)), totalRows).filter(
     (point) => point.day >= range.from && point.day <= range.to,
   );
 }
@@ -82,15 +135,22 @@ export async function getFollowerDailyAdds(): Promise<FollowerFlowResult> {
   // Instagram shows on the profile.
   const profileTotalsPromise = fetchProfileTotals();
 
-  const rows = await prisma.geoDemographicSnapshot.findMany({
-    where: { stage: "follower", capturedAt: { gte: cutoff } },
-    orderBy: { capturedAt: "asc" },
-    select: { capturedAt: true, counts: true, totalCounted: true },
-  });
+  const [rows, totalRows] = await Promise.all([
+    prisma.geoDemographicSnapshot.findMany({
+      where: { stage: "follower", capturedAt: { gte: cutoff } },
+      orderBy: { capturedAt: "asc" },
+      select: { capturedAt: true, counts: true, totalCounted: true },
+    }),
+    prisma.followerTotalSnapshot.findMany({
+      where: { capturedAt: { gte: cutoff } },
+      orderBy: { capturedAt: "asc" },
+      select: { capturedAt: true, followersTotal: true },
+    }),
+  ]);
 
   // Last row per Pacific analytics day wins.
   const anchors = anchorsFromRows(rows);
-  const points = buildDailyPoints(anchors);
+  const points = anchorToExactTotals(buildDailyPoints(anchors), totalRows);
 
   // Spike attribution needs the finished points, so it can only start here.
   const spikesByDay = await getSpikesByDay(points);
