@@ -80,6 +80,10 @@ export function Assistant() {
     advisorEnabled,
   });
 
+  // Survives a failed attempt so a resubmit carries the same key. Cleared only
+  // when the question has actually been answered.
+  const attemptRef = useRef<PendingTurn | null>(null);
+
   const ask = useMutation<AdvisorResponse, unknown, PendingTurn>({
     mutationFn: (turn) =>
       api<AdvisorResponse>("/ai/advisor/messages", {
@@ -87,6 +91,7 @@ export function Assistant() {
         body: JSON.stringify({ message: turn.question, clientMessageId: turn.clientMessageId }),
       }),
     onSuccess: async (response, turn) => {
+      attemptRef.current = null;
       setAnswered((previous) => [...previous, { ...turn, response }]);
       setPending(null);
       setText("");
@@ -117,7 +122,18 @@ export function Assistant() {
   function submit(): void {
     if (!composer.canSubmit) return;
     setAskError(null);
-    const turn = { clientMessageId: crypto.randomUUID(), question: text.trim() };
+    const question = text.trim();
+    // The key belongs to the QUESTION, not to the click. A resubmit of text still
+    // sitting in the composer is the same question — reusing its key lets the
+    // runtime recognise a replay instead of spending a second model turn and
+    // showing the owner their own question twice. A fresh key is minted only once
+    // the question changes, or once one has been answered.
+    const clientMessageId =
+      attemptRef.current?.question === question
+        ? attemptRef.current.clientMessageId
+        : crypto.randomUUID();
+    const turn = { clientMessageId, question };
+    attemptRef.current = turn;
     setPending(turn);
     ask.mutate(turn);
   }

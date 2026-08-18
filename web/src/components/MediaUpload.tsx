@@ -2,8 +2,9 @@ import { motion } from "framer-motion";
 import { FileText, Image as ImageIcon, Loader2, Upload, X } from "lucide-react";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
-import { api, ApiError } from "@/lib/api";
-import type { SignedUpload } from "@/lib/types";
+import { ApiError } from "@/lib/api";
+import { createOperationId } from "@/lib/mutationOutcome";
+import { reconcileUpload, uploadSignedFile } from "@/lib/signedUpload";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -22,6 +23,9 @@ const accept: Record<Kind, string> = {
 
 export function MediaUpload({ kind, value, onChange }: MediaUploadProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
+  // Survives a failed attempt so the retry keeps the same object path. Cleared
+  // only once the outcome is settled one way or the other.
+  const uploadIdRef = useRef<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
 
@@ -36,18 +40,40 @@ export function MediaUpload({ kind, value, onChange }: MediaUploadProps) {
     }
     setUploading(true);
     try {
-      const signed = await api<SignedUpload>("/upload/sign", {
-        method: "POST",
-        body: JSON.stringify({ kind, filename: file.name }),
-      });
-      const putRes = await fetch(signed.signedUrl, {
-        method: "PUT",
-        headers: { "content-type": file.type, "x-upsert": "true" },
-        body: file,
-      });
-      if (!putRes.ok) throw new Error(`Upload failed (${putRes.status})`);
-      onChange(signed.publicUrl);
-      toast.success("Uploaded");
+      // One intent, one object path, for as long as it takes to settle. A second
+      // attempt reuses this id so it overwrites its own object instead of
+      // scattering half-written ones across the bucket.
+      const uploadId = uploadIdRef.current ?? createOperationId();
+      uploadIdRef.current = uploadId;
+
+      const attempt = await uploadSignedFile({ uploadId, kind, file });
+
+      if (attempt.status === "uploaded") {
+        uploadIdRef.current = null;
+        onChange(attempt.publicUrl);
+        toast.success("Uploaded");
+        return;
+      }
+
+      // The PUT's outcome is unknown. Ask storage rather than guessing.
+      const settled = await reconcileUpload(attempt.publicUrl, file);
+      if (settled.status === "confirmed") {
+        uploadIdRef.current = null;
+        onChange(settled.publicUrl);
+        toast.success("Uploaded");
+        return;
+      }
+      if (settled.status === "absent") {
+        // Keeping the id is the point: retrying writes to the same path.
+        toast.error("The upload did not complete. Try again.");
+        return;
+      }
+      if (settled.status === "mismatched") {
+        toast.error("Something else is already stored at that address. Try again with a new file.");
+        uploadIdRef.current = null;
+        return;
+      }
+      toast.error("Couldn't confirm whether the upload finished. Check before replacing it.");
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : (err as Error).message);
     } finally {

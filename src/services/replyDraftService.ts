@@ -90,6 +90,27 @@ export async function queueReplyDraft(input: QueueReplyDraftInput): Promise<Repl
           }
 
           const inboundMessageId = thread.latestInboundMessageId;
+
+          // The business key for an initial draft is (thread, latest inbound).
+          // Asking twice for a first draft of the same message is one intent — a
+          // double click, or a retry after a lost response — so it coalesces onto
+          // the draft that already exists rather than superseding a good draft and
+          // spending another model call to replace it with an identical one.
+          //
+          // An active draft answering an *older* inbound is a different matter:
+          // the question has moved on, so it is genuinely superseded below.
+          // Replacing a draft the owner may be reading is an explicit transition,
+          // and that is what regenerateReplyDraft is for — keyed by the prior
+          // draft ID so it cannot happen by accident.
+          const active = await tx.replyDraft.findFirst({
+            where: {
+              threadId: input.threadId,
+              status: { in: [...ACTIVE_DRAFT_STATUSES] },
+            },
+            orderBy: { revision: "desc" },
+          });
+          if (active && active.inboundMessageId === inboundMessageId) return active;
+
           const highest = await tx.replyDraft.aggregate({
             where: { threadId: input.threadId },
             _max: { revision: true },

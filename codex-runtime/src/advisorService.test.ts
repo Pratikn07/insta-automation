@@ -399,3 +399,148 @@ describe("advisor history", () => {
     expect(JSON.stringify(items)).not.toContain("internal scratchpad");
   });
 });
+
+/**
+ * `clientMessageId` is the owner's intent. A repeat of it is the same question, and
+ * a model turn is the most expensive thing in this product to duplicate: it spends
+ * quota and puts the question in the owner's history twice.
+ */
+describe("advisor question idempotency", () => {
+  it("returns the stored answer instead of asking again", async () => {
+    const first = await h.service.ask(ASK);
+    const turnStarts = () => h.request.mock.calls.filter(([m]) => m === "turn/start").length;
+    expect(turnStarts()).toBe(1);
+
+    await expect(h.service.ask(ASK)).resolves.toEqual(first);
+
+    expect(turnStarts()).toBe(1);
+  });
+
+  it("reports a question still in flight as pending rather than starting a second turn", async () => {
+    // A genuinely stalled turn: turn/start resolves and turn/completed never fires,
+    // so the first ask is still waiting when the second arrives.
+    const stalled = makeHarness();
+    stalled.request.mockImplementation(async (method: string) => {
+      if (method === "thread/start") return { thread: { id: "thread-new" } };
+      if (method === "thread/read") return { turns: [] };
+      if (method === "turn/start") return { turn: { id: "turn-stalled" } };
+      return null;
+    });
+    const inFlight = stalled.service.ask(ASK).catch(() => undefined);
+    // Let the first ask reach its wait before the second one asks.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    await expect(stalled.service.ask(ASK)).rejects.toMatchObject({
+      code: "advisor_outcome_pending",
+    });
+    expect(stalled.request.mock.calls.filter(([m]) => m === "turn/start").length).toBe(1);
+    void inFlight;
+  });
+
+  it("rejects the same id carrying a different question", async () => {
+    await h.service.ask(ASK);
+
+    await expect(
+      h.service.ask({ message: "Something completely different", clientMessageId: "msg-1" }),
+    ).rejects.toMatchObject({ code: "idempotency_conflict" });
+  });
+
+  it("keeps a definite failure definite for the same id", async () => {
+    const broken = makeHarness({ agentText: "not json" });
+
+    await expect(broken.service.ask(ASK)).rejects.toMatchObject({
+      code: "invalid_advisor_output",
+    });
+    // Asking again must not spend another turn on a question that already failed.
+    await expect(broken.service.ask(ASK)).rejects.toMatchObject({
+      code: "invalid_advisor_output",
+    });
+    expect(broken.request.mock.calls.filter(([m]) => m === "turn/start").length).toBe(1);
+  });
+
+  it("treats a timed-out turn as unresolved, not as a failure to retry past", async () => {
+    const timedOut = makeHarness({
+      turnStartError: Object.assign(new Error("turn timed out"), {}),
+    });
+
+    await expect(timedOut.service.ask(ASK)).rejects.toMatchObject({ code: "turn_timeout" });
+    // The turn may still be running, so the id stays claimed.
+    await expect(timedOut.service.ask(ASK)).rejects.toMatchObject({
+      code: "advisor_outcome_pending",
+    });
+  });
+
+  it("recovers a completed answer from the thread after a restart", async () => {
+    const restarted = makeHarness({ storedThreadId: "thread-existing" });
+    restarted.request.mockImplementation(async (method: string) => {
+      if (method === "thread/read") {
+        return {
+          turns: [
+            {
+              clientUserMessageId: "msg-1",
+              input: ASK.message,
+              items: [{ type: "agentMessage", text: VALID_ANSWER }],
+            },
+          ],
+        };
+      }
+      throw new Error(`unexpected ${method}`);
+    });
+
+    await expect(restarted.service.ask(ASK)).resolves.toMatchObject({ confidence: "medium" });
+    expect(restarted.request.mock.calls.filter(([m]) => m === "turn/start").length).toBe(0);
+  });
+
+  it("reports an unanswered turn found in the thread as pending", async () => {
+    const restarted = makeHarness({ storedThreadId: "thread-existing" });
+    restarted.request.mockImplementation(async (method: string) => {
+      if (method === "thread/read") {
+        // No agentMessage: it may still be running. Without a verified per-turn
+        // status field, calling this a failure would invite a duplicate turn.
+        return { turns: [{ clientUserMessageId: "msg-1", input: ASK.message, items: [] }] };
+      }
+      throw new Error(`unexpected ${method}`);
+    });
+
+    await expect(restarted.service.ask(ASK)).rejects.toMatchObject({
+      code: "advisor_outcome_pending",
+    });
+  });
+
+  it("rejects a reused id found in the thread with different text", async () => {
+    const restarted = makeHarness({ storedThreadId: "thread-existing" });
+    restarted.request.mockImplementation(async (method: string) => {
+      if (method === "thread/read") {
+        return {
+          turns: [{ clientUserMessageId: "msg-1", input: "an older question", items: [] }],
+        };
+      }
+      throw new Error(`unexpected ${method}`);
+    });
+
+    await expect(restarted.service.ask(ASK)).rejects.toMatchObject({
+      code: "idempotency_conflict",
+    });
+  });
+
+  // The distinction the design turns on: a read that failed is not an absence.
+  it("never treats a failed thread read as permission to ask again", async () => {
+    const restarted = makeHarness({ storedThreadId: "thread-existing" });
+    restarted.request.mockImplementation(async (method: string) => {
+      if (method === "thread/read") throw new Error("app-server unreachable");
+      throw new Error(`unexpected ${method}`);
+    });
+
+    await expect(restarted.service.ask(ASK)).rejects.toMatchObject({
+      code: "advisor_outcome_pending",
+    });
+    expect(restarted.request.mock.calls.filter(([m]) => m === "turn/start").length).toBe(0);
+  });
+
+  it("asks normally when the thread has no turn for this id", async () => {
+    const fresh = makeHarness({ storedThreadId: "thread-existing" });
+
+    await expect(fresh.service.ask(ASK)).resolves.toMatchObject({ confidence: "medium" });
+    expect(fresh.request.mock.calls.filter(([m]) => m === "turn/start").length).toBe(1);
+  });
+});
