@@ -12,42 +12,14 @@ import type {
 const apiBase = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
 
 /**
- * Nothing in this client may hang indefinitely.
+ * The default deadline for one request.
  *
- * With the API stopped, a query was observed sitting in `pending` well past its
- * retry budget instead of settling into an error — so the page held skeletons
- * forever and the error state never rendered. `fetch` itself rejects in ~3ms on
- * a refused connection, so the stall is upstream of it, in the Supabase auth
- * call that resolves the bearer token.
- *
- * Rather than depend on every dependency settling, the whole request is bounded.
- * A timeout produces a real rejection, which produces a real error state, which
- * is the difference between "we could not load this" and a spinner that never
- * stops. Generous enough not to fire on a slow cohort scan.
+ * Generous enough not to fire on a slow cohort scan, and short enough that a page
+ * settles into a real error state rather than holding skeletons forever. The
+ * deadline is enforced by aborting the request, not by abandoning it — see
+ * requestDeadline.ts for why that distinction matters.
  */
 const REQUEST_TIMEOUT_MS = 20_000;
-
-export class TimeoutError extends Error {
-  constructor(path: string) {
-    super(`Request to ${path} timed out after ${REQUEST_TIMEOUT_MS / 1000}s`);
-    this.name = "TimeoutError";
-  }
-}
-
-/** Rejects if the wrapped promise has not settled in time. */
-async function withTimeout<T>(work: Promise<T>, path: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      work,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new TimeoutError(path)), REQUEST_TIMEOUT_MS);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
 
 export class ApiError extends Error {
   status: number;
@@ -111,10 +83,6 @@ async function fetchOnce(path: string, init: RequestInit, token: string | undefi
   headers.set("content-type", "application/json");
   if (token) headers.set("authorization", `Bearer ${token}`);
   return fetch(`${apiBase}/api${path}`, { ...init, headers });
-}
-
-export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
-  return withTimeout(request<T>(path, init), path);
 }
 
 export interface ReadOptions {
@@ -227,28 +195,6 @@ async function readBody<T>(res: Response): Promise<T> {
   return body as T;
 }
 
-async function request<T>(path: string, init: RequestInit): Promise<T> {
-  let token = await getAccessToken(false);
-  let res = await fetchOnce(path, init, token);
-
-  if (res.status === 401) {
-    token = await getAccessToken(true);
-    if (token) res = await fetchOnce(path, init, token);
-  }
-
-  if (res.status === 204) return undefined as T;
-
-  const contentType = res.headers.get("content-type") ?? "";
-  const body = contentType.includes("application/json") ? await res.json() : await res.text();
-
-  if (!res.ok) {
-    const message = extractErrorMessage(body, res.status);
-    throw new ApiError(res.status, body, message);
-  }
-
-  return body as T;
-}
-
 // ── DM recovery ───────────────────────────────────────────────────────────
 
 /**
@@ -275,15 +221,15 @@ export const recoveryApi = {
       options,
     ),
   activateSettingsVerification: (id: string) =>
-    api<void>(`/recovery-reminders/settings-verifications/${id}/activate`, { method: "POST" }),
+    apiMutation<void>(`/recovery-reminders/settings-verifications/${id}/activate`, { method: "POST" }),
   retireSettingsVerification: (id: string, reason: string) =>
-    api<void>(`/recovery-reminders/settings-verifications/${id}/retire`, {
+    apiMutation<void>(`/recovery-reminders/settings-verifications/${id}/retire`, {
       method: "POST",
       body: JSON.stringify({ reason }),
     }),
   detail: (id: string, options: ReadOptions = {}) =>
     apiRead<RecoveryReminderDetail>(`/recovery-reminders/${id}`, options),
-  cancel: (id: string) => api<void>(`/recovery-reminders/${id}/cancel`, { method: "POST" }),
+  cancel: (id: string) => apiMutation<void>(`/recovery-reminders/${id}/cancel`, { method: "POST" }),
   markReviewed: (id: string) =>
-    api<void>(`/recovery-reminders/${id}/mark-reviewed`, { method: "POST" }),
+    apiMutation<void>(`/recovery-reminders/${id}/mark-reviewed`, { method: "POST" }),
 };

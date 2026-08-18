@@ -19,7 +19,7 @@ class ApiError extends Error {
 }
 
 vi.mock("../../lib/api", () => ({
-  api: (path: string, init?: RequestInit) => apiCall(path, init),
+  apiMutation: (path: string, init?: RequestInit) => apiCall(path, init),
   ApiError,
   apiErrorCode: (error: unknown) =>
     error instanceof ApiError && error.body && typeof error.body === "object"

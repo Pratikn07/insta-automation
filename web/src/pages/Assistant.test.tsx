@@ -10,6 +10,7 @@ const api = vi.fn();
 vi.mock("@/lib/api", () => ({
   api: (...a: unknown[]) => api(...a),
   apiRead: (path: unknown) => api(path),
+  apiMutation: (...a: unknown[]) => api(...a),
 }));
 vi.mock("@/components/ai/AiConnectionCard", () => ({
   AiConnectionCard: () => <div data-testid="connection-card" />,

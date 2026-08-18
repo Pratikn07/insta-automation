@@ -29,7 +29,7 @@ import {
 import { useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { toast } from "sonner";
-import { api, apiMutation, apiRead, apiErrorCode, ApiError } from "@/lib/api";
+import { apiRead, apiMutation, apiErrorCode, ApiError } from "@/lib/api";
 import { useOperationId } from "@/lib/useOperationId";
 import type { MessageType, Resource, ResourceMessage } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -154,7 +154,7 @@ function SequenceEditorForm({
   const renameMutation = useMutation({
     mutationKey: saveKey,
     mutationFn: () =>
-      api<Resource>(`/resources/${id}`, {
+      apiMutation<Resource>(`/resources/${id}`, {
         method: "PATCH",
         body: JSON.stringify({ name, description: description || null }),
       }),
@@ -169,7 +169,7 @@ function SequenceEditorForm({
   const reorderMutation = useMutation({
     mutationKey: saveKey,
     mutationFn: ({ orderedIds }: { orderedIds: string[]; previous: ResourceMessage[] }) =>
-      api<ResourceMessage[]>(`/messages/reorder/${id}`, {
+      apiMutation<ResourceMessage[]>(`/messages/reorder/${id}`, {
         method: "POST",
         body: JSON.stringify({ messageIds: orderedIds }),
       }),
@@ -212,7 +212,7 @@ function SequenceEditorForm({
 
   const deleteMutation = useMutation({
     mutationKey: saveKey,
-    mutationFn: (mid: string) => api(`/messages/${mid}`, { method: "DELETE" }),
+    mutationFn: (mid: string) => apiMutation(`/messages/${mid}`, { method: "DELETE" }),
     onSuccess: (_result, mid) => {
       setItems((current) => current.filter((message) => message.id !== mid));
       qc.invalidateQueries({ queryKey: ["resource-messages", id] });
@@ -378,7 +378,7 @@ function SortableStep({
   const patchMutation = useMutation({
     mutationKey: ["sequence-save", step.resourceId],
     mutationFn: (data: Partial<Pick<ResourceMessage, "body" | "mediaUrl">>) =>
-      api<ResourceMessage>(`/messages/${step.id}`, {
+      apiMutation<ResourceMessage>(`/messages/${step.id}`, {
         method: "PATCH",
         body: JSON.stringify(data),
       }),

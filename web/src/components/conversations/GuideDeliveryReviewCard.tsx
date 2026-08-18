@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, Check, RotateCw, Trash2 } from "lucide-react";
-import { api, apiErrorCode } from "@/lib/api";
+import { apiMutation, apiErrorCode } from "@/lib/api";
 import type {
   GuideDeliveryReview,
   GuideDeliveryReviewUnit,
@@ -80,7 +80,7 @@ export function GuideDeliveryReviewCard({
 
   const confirmDelivered = useMutation({
     mutationFn: (unitId: string) =>
-      api<void>(`/guide-deliveries/${review.id}/units/${unitId}/confirm-delivered`, {
+      apiMutation<void>(`/guide-deliveries/${review.id}/units/${unitId}/confirm-delivered`, {
         method: "POST",
       }),
     retry: false,
@@ -89,7 +89,7 @@ export function GuideDeliveryReviewCard({
 
   const retryUnit = useMutation({
     mutationFn: (unitId: string) =>
-      api<void>(`/guide-deliveries/${review.id}/units/${unitId}/retry`, {
+      apiMutation<void>(`/guide-deliveries/${review.id}/units/${unitId}/retry`, {
         method: "POST",
         body: JSON.stringify({ acknowledgeDuplicateRisk: true }),
       }),
@@ -98,7 +98,7 @@ export function GuideDeliveryReviewCard({
   });
 
   const cancelDelivery = useMutation({
-    mutationFn: () => api<void>(`/guide-deliveries/${review.id}/cancel`, { method: "POST" }),
+    mutationFn: () => apiMutation<void>(`/guide-deliveries/${review.id}/cancel`, { method: "POST" }),
     retry: false,
     onSettled: (_data, error) => onSettledAction(error),
   });

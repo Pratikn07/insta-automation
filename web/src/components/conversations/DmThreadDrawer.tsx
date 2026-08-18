@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Sparkles } from "lucide-react";
-import { ApiError, api, apiRead } from "@/lib/api";
+import { apiRead, apiMutation, ApiError } from "@/lib/api";
 import type { DmThreadDetail } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Drawer } from "@/components/ui/drawer";
@@ -10,6 +10,17 @@ import { displayUser } from "@/lib/utils";
 import { GuideDeliveryReviewCard } from "./GuideDeliveryReviewCard";
 import { ReplyDraftCard } from "./ReplyDraftCard";
 import { draftActionErrorMessage, isStale, isVisibleDraft } from "./replyDraftView";
+import { isUnknownOutcome } from "@/lib/unknownOutcome";
+
+/**
+ * What the owner sees when a draft action's outcome cannot be determined.
+ *
+ * Deliberately not "try again". Approve & Send and retry-send are the two paths in
+ * the product that put an AI-derived message in front of a real person, and a lost
+ * response does not mean a lost send.
+ */
+export const UNRESOLVED_DRAFT_ACTION_MESSAGE =
+  "Still confirming with Instagram state — nothing was retried. This draft will show its real status once confirmed.";
 
 /**
  * The real message thread plus its approval surface.
@@ -32,6 +43,8 @@ export function DmThreadDrawer({
     threadId: string | null;
     draftId: string | null;
     code: string | null;
+    /** The request was dispatched and its result is not known. */
+    unresolved: boolean;
   } | null>(null);
 
   const detailQ = useQuery<DmThreadDetail>({
@@ -52,7 +65,14 @@ export function DmThreadDrawer({
   }
 
   function handleMutationError(error: Error) {
-    setActionError({ threadId, draftId: draft?.id ?? null, code: apiErrorCode(error) });
+    setActionError({
+      threadId,
+      draftId: draft?.id ?? null,
+      code: apiErrorCode(error),
+      unresolved: isUnknownOutcome(error),
+    });
+    // The draft's own state machine is the answer. Approve may have sent; a refetch
+    // is how the owner finds out, and it is the only thing that happens here.
     void refreshAll();
   }
 
@@ -66,39 +86,39 @@ export function DmThreadDrawer({
 
   const edit = useMutation({
     mutationFn: (workingText: string) =>
-      api<void>(draftPath(""), { method: "PATCH", body: JSON.stringify({ workingText }) }),
+      apiMutation<void>(draftPath(""), { method: "PATCH", body: JSON.stringify({ workingText }) }),
     onSuccess: handleMutationSuccess,
     onError: handleMutationError,
   });
 
   const regenerate = useMutation({
-    mutationFn: () => api<void>(draftPath("/regenerate"), { method: "POST" }),
+    mutationFn: () => apiMutation<void>(draftPath("/regenerate"), { method: "POST" }),
     onSuccess: handleMutationSuccess,
     onError: handleMutationError,
   });
 
   const dismiss = useMutation({
-    mutationFn: () => api<void>(draftPath("/dismiss"), { method: "POST" }),
+    mutationFn: () => apiMutation<void>(draftPath("/dismiss"), { method: "POST" }),
     onSuccess: handleMutationSuccess,
     onError: handleMutationError,
   });
 
   const generate = useMutation({
-    mutationFn: () => api<void>(`/ai/dm-threads/${threadId}/drafts`, { method: "POST" }),
+    mutationFn: () => apiMutation<void>(`/ai/dm-threads/${threadId}/drafts`, { method: "POST" }),
     onSuccess: handleMutationSuccess,
     onError: handleMutationError,
   });
 
   const approve = useMutation({
     mutationFn: (workingText: string) =>
-      api<void>(draftPath("/approve"), { method: "POST", body: JSON.stringify({ workingText }) }),
+      apiMutation<void>(draftPath("/approve"), { method: "POST", body: JSON.stringify({ workingText }) }),
     onSuccess: handleMutationSuccess,
     onError: handleMutationError,
   });
 
   const retry = useMutation({
     mutationFn: () =>
-      api<void>(draftPath("/retry-send"), {
+      apiMutation<void>(draftPath("/retry-send"), {
         method: "POST",
         body: JSON.stringify({ confirmedNotDelivered: true }),
       }),
@@ -115,7 +135,11 @@ export function DmThreadDrawer({
     generate.isPending;
   const actionErrorMessage =
     actionError?.threadId === threadId && actionError.draftId === draft?.id
-      ? draftActionErrorMessage(actionError.code)
+      ? actionError.unresolved
+        // Never "try again" here: approve and retry-send put a message in front of
+        // a real person, and the request may already have done so.
+        ? UNRESOLVED_DRAFT_ACTION_MESSAGE
+        : draftActionErrorMessage(actionError.code)
       : null;
   const terminalFollowUp =
     draft?.kind === "engagement_follow_up" &&

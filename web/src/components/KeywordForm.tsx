@@ -3,7 +3,7 @@ import { Film, Images } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { api, apiMutation, apiRead, ApiError } from "@/lib/api";
+import { apiRead, apiMutation, ApiError } from "@/lib/api";
 import { useOperationId } from "@/lib/useOperationId";
 import type { Keyword, MediaKind, MediaPage, Resource } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -99,7 +99,7 @@ export function KeywordForm({
   const saveMutation = useMutation({
     mutationFn: async (): Promise<{ keyword: Keyword; createdSequence: boolean }> => {
       if (initial) {
-        const updated = await api<Keyword>(`/keywords/${initial.id}`, {
+        const updated = await apiMutation<Keyword>(`/keywords/${initial.id}`, {
           method: "PATCH",
           body: JSON.stringify({
             keyword: form.keyword,

@@ -8,13 +8,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResourceMessage } from "@/lib/types";
 
 const api = vi.fn();
-const apiMutation = vi.fn();
 const toastError = vi.fn();
 
+// Reads and mutations route to one spy: the assertions are about paths and methods,
+// which both clients pass through unchanged.
 vi.mock("@/lib/api", () => ({
-  api: (...args: unknown[]) => api(...args),
   apiRead: (path: unknown) => api(path),
-  apiMutation: (...args: unknown[]) => apiMutation(...args),
+  apiMutation: (...args: unknown[]) => api(...args),
   ApiError: class ApiError extends Error {},
   apiErrorCode: (error: { code?: unknown }) =>
     typeof error?.code === "string" ? error.code : null,
@@ -271,23 +271,15 @@ describe("SequenceEditor Instagram message limits", () => {
 // Adding a step is a create, so it carries a client UUID. The order is assigned by
 // the server, which is why a replay of the same UUID must not append twice.
 describe("SequenceEditor add step identity", () => {
-  function lastAddCall() {
-    const call = apiMutation.mock.calls.filter(([p]) => String(p) === "/messages").at(-1);
-    return call?.[1] as { operationId?: string; body?: string } | undefined;
+  function addCalls() {
+    return api.mock.calls.filter(([p]) => String(p) === "/messages");
   }
 
-  beforeEach(() => {
-    apiMutation.mockReset();
-  });
+  function lastAddCall() {
+    return addCalls().at(-1)?.[1] as { operationId?: string; body?: string } | undefined;
+  }
 
   it("sends one UUID as both the step id and the idempotency key", async () => {
-    apiMutation.mockResolvedValue({
-      id: "message-new",
-      order: 2,
-      type: "text",
-      body: "New step — edit me.",
-      mediaUrl: null,
-    });
     renderEditor();
     await waitFor(() => expect(screen.getByRole("button", { name: "Text" })).toBeEnabled());
 
@@ -303,25 +295,34 @@ describe("SequenceEditor add step identity", () => {
   });
 
   it("repeats the same UUID after an unknown outcome", async () => {
-    apiMutation.mockRejectedValueOnce(new Error("unknown outcome"));
+    // The first add fails with an outcome nobody can classify.
+    const failOnce = new Error("unknown outcome");
+    let addAttempts = 0;
+    const baseImpl = api.getMockImplementation()!;
+    api.mockImplementation((path: unknown, init?: unknown) => {
+      if (String(path) === "/messages") {
+        addAttempts += 1;
+        if (addAttempts === 1) return Promise.reject(failOnce);
+        return Promise.resolve({
+          id: "message-new",
+          order: 2,
+          type: "text",
+          body: "New step — edit me.",
+          mediaUrl: null,
+        });
+      }
+      return baseImpl(path, init);
+    });
+
     renderEditor();
     await waitFor(() => expect(screen.getByRole("button", { name: "Text" })).toBeEnabled());
 
     fireEvent.click(screen.getByRole("button", { name: "Text" }));
-    await waitFor(() => expect(lastAddCall()).toBeDefined());
+    await waitFor(() => expect(addCalls().length).toBe(1));
     const first = lastAddCall()!.operationId;
 
-    apiMutation.mockResolvedValue({
-      id: "message-new",
-      order: 2,
-      type: "text",
-      body: "New step — edit me.",
-      mediaUrl: null,
-    });
     fireEvent.click(screen.getByRole("button", { name: "Text" }));
-    await waitFor(() =>
-      expect(apiMutation.mock.calls.filter(([p]) => String(p) === "/messages").length).toBe(2),
-    );
+    await waitFor(() => expect(addCalls().length).toBe(2));
 
     expect(lastAddCall()!.operationId).toBe(first);
   });

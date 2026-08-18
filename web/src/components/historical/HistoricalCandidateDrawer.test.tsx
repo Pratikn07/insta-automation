@@ -9,6 +9,7 @@ const api = vi.fn();
 vi.mock("@/lib/api", () => ({
   api: (...args: unknown[]) => api(...args),
   apiRead: (path: unknown) => api(path),
+  apiMutation: (...a: unknown[]) => api(...a),
 }));
 
 const { HistoricalCandidateDrawer } = await import("./HistoricalCandidateDrawer");

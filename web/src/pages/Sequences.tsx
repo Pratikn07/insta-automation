@@ -4,7 +4,7 @@ import { CircleAlert, Layers, MessageSquare, Plus, Tag, Trash2 } from "lucide-re
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
-import { api, apiMutation, apiRead, ApiError } from "@/lib/api";
+import { apiRead, apiMutation, ApiError } from "@/lib/api";
 import { useOperationId } from "@/lib/useOperationId";
 import type { Resource } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -28,7 +28,7 @@ export function Sequences() {
   const [confirmDelete, setConfirmDelete] = useState<Resource | null>(null);
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => api(`/resources/${id}`, { method: "DELETE" }),
+    mutationFn: (id: string) => apiMutation(`/resources/${id}`, { method: "DELETE" }),
     onSuccess: () => {
       toast.success("Sequence deleted");
       qc.invalidateQueries({ queryKey: ["resources"] });

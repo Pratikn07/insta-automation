@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Plus, Tag, Trash2, MessageSquare, Globe } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
-import { api, apiRead, ApiError } from "@/lib/api";
+import { apiRead, apiMutation, ApiError } from "@/lib/api";
 import type { Keyword, Resource } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -32,7 +32,7 @@ export function Keywords() {
 
   const toggleMutation = useMutation({
     mutationFn: ({ id, active }: { id: string; active: boolean }) =>
-      api<Keyword>(`/keywords/${id}`, { method: "PATCH", body: JSON.stringify({ active }) }),
+      apiMutation<Keyword>(`/keywords/${id}`, { method: "PATCH", body: JSON.stringify({ active }) }),
     onMutate: async ({ id, active }) => {
       await qc.cancelQueries({ queryKey: ["keywords"] });
       const prev = qc.getQueryData<Keyword[]>(["keywords"]);
@@ -49,7 +49,7 @@ export function Keywords() {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => api(`/keywords/${id}`, { method: "DELETE" }),
+    mutationFn: (id: string) => apiMutation(`/keywords/${id}`, { method: "DELETE" }),
     onSuccess: () => {
       toast.success("Keyword deleted");
       qc.invalidateQueries({ queryKey: ["keywords"] });

@@ -17,6 +17,7 @@ vi.mock("../../lib/api", () => ({
   // The keyword filter's options come from the generic client, not recoveryApi.
   api: (path: string) => apiGet(path),
   apiRead: (path: string) => apiGet(path),
+  apiMutation: (...a: unknown[]) => apiGet(...a),
   recoveryApi: {
     list: (query: unknown) => list(query),
     counts: () => counts(),

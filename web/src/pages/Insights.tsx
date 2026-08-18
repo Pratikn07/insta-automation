@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 import { BarChart3, Film, ExternalLink, Sparkles, RefreshCw, ListChecks, FlaskConical, Target } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
-import { api, apiMutation, apiRead } from "@/lib/api";
+import { apiRead, apiMutation } from "@/lib/api";
 import { useOperationId } from "@/lib/useOperationId";
 import type {
   GeoStageSplit,
@@ -299,7 +299,7 @@ function ReelDetailDrawer({ mediaId }: { mediaId: string }) {
   });
 
   const analyzeM = useMutation({
-    mutationFn: () => api(`/insights/reels/${mediaId}/analyze`, { method: "POST" }),
+    mutationFn: () => apiMutation(`/insights/reels/${mediaId}/analyze`, { method: "POST" }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["insights", "leaderboard"] });
       qc.invalidateQueries({ queryKey: ["insights", "reel", mediaId] });
@@ -1107,7 +1107,7 @@ function NewExperimentForm({ onCreated }: { onCreated: () => void }) {
 function ExperimentCard({ exp, onChange }: { exp: Experiment; onChange: () => void }) {
   const patchM = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
-      api(`/insights/experiments/${exp.id}`, { method: "PATCH", body: JSON.stringify(body) }),
+      apiMutation(`/insights/experiments/${exp.id}`, { method: "PATCH", body: JSON.stringify(body) }),
     onSuccess: onChange,
     onError: () => toast.error("Update failed."),
   });

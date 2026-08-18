@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, Loader2, MessageSquare, Send } from "lucide-react";
-import { api, apiRead } from "@/lib/api";
+import { apiRead, apiMutation } from "@/lib/api";
 import type { AdvisorHistoryItem, AdvisorResponse, AiConnectionStatus } from "@/lib/types";
 import { AiConnectionCard } from "@/components/ai/AiConnectionCard";
 import { AdvisorMessage } from "@/components/assistant/AdvisorMessage";
@@ -86,7 +86,7 @@ export function Assistant() {
 
   const ask = useMutation<AdvisorResponse, unknown, PendingTurn>({
     mutationFn: (turn) =>
-      api<AdvisorResponse>("/ai/advisor/messages", {
+      apiMutation<AdvisorResponse>("/ai/advisor/messages", {
         method: "POST",
         body: JSON.stringify({ message: turn.question, clientMessageId: turn.clientMessageId }),
       }),

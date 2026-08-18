@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { formatAbsolute } from "../../lib/utils";
 import { useEffect, useState } from "react";
 import { ApiError, recoveryApi } from "../../lib/api";
+import { STILL_CONFIRMING_MESSAGE, isUnknownOutcome } from "../../lib/unknownOutcome";
 import type { RecoveryReminderDetail } from "../../lib/types";
 import { recoveryStatusView } from "./dmRecoveryViewModel";
 
@@ -88,9 +89,13 @@ export function DmRecoveryDrawer({
     onSettled: refresh,
   });
 
-  const retryableError = [cancelM, reviewM].find(
-    (m) => m.error instanceof ApiError && m.error.status !== 409,
-  );
+  // An unknown outcome is not a failure and must not offer a retry: this action
+  // publishes a public comment, and the request may already have done so. The whole
+  // recovery tree is refetched on settle, so the server's state is what appears.
+  const unresolved = [cancelM, reviewM].some((m) => isUnknownOutcome(m.error));
+  const retryableError = unresolved
+    ? undefined
+    : [cancelM, reviewM].find((m) => m.error instanceof ApiError && m.error.status !== 409);
 
   if (detailQ.isPending) return <div className="p-4 text-sm text-muted-foreground">Loading…</div>;
   if (detailQ.isError || !detailQ.data) {
@@ -212,6 +217,13 @@ export function DmRecoveryDrawer({
         <p role="status" className="rounded-md border border-caution bg-caution-soft px-3 py-2 text-xs text-caution">
           {RECOVERY_CONFLICT_MESSAGE}
         </p>
+      ) : unresolved ? (
+        <div role="alert" className="rounded-md border border-caution bg-caution-soft px-3 py-2 text-xs">
+          <p className="text-caution">{STILL_CONFIRMING_MESSAGE}</p>
+          <p className="mt-1 text-muted-foreground">
+            Nothing was retried. This reminder will show its real state once confirmed.
+          </p>
+        </div>
       ) : retryableError ? (
         <div role="alert" className="rounded-md border border-urgent bg-urgent-soft px-3 py-2 text-xs">
           <p className="text-urgent">Couldn’t complete that action.</p>

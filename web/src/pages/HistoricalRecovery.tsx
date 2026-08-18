@@ -2,7 +2,8 @@ import { useState } from "react";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { AlertTriangle, Pause, Play, Check, X, Gauge } from "lucide-react";
-import { api, apiRead } from "@/lib/api";
+import { apiRead, apiMutation } from "@/lib/api";
+import { STILL_CONFIRMING_MESSAGE, isUnknownOutcome } from "@/lib/unknownOutcome";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -67,6 +68,19 @@ function ageInDays(iso: string): number {
   return Math.round((Date.now() - Date.parse(iso)) / 86_400_000);
 }
 
+/**
+ * A campaign action can dispatch hundreds of public comments. If its outcome is
+ * unknown the operator must not be told it failed — that reads as an invitation to
+ * press start again.
+ */
+function campaignActionError(error: unknown): string {
+  return isUnknownOutcome(error)
+    ? `${STILL_CONFIRMING_MESSAGE} — nothing was retried. Check the campaign state below.`
+    : error instanceof Error
+      ? error.message
+      : "That action did not complete.";
+}
+
 export function HistoricalRecovery() {
   const queryClient = useQueryClient();
   const [tab, setTab] = useState<(typeof TABS)[number]["key"]>("pending");
@@ -125,7 +139,7 @@ export function HistoricalRecovery() {
         action === "pause" || action === "cancel"
             ? { reason: "Stopped from the dashboard" }
             : {};
-      return api<{ state: string }>(`/historical-recovery/campaigns/${campaignId}/${action}`, {
+      return apiMutation<{ state: string }>(`/historical-recovery/campaigns/${campaignId}/${action}`, {
         method: "POST",
         body: JSON.stringify(body),
       });
@@ -135,12 +149,18 @@ export function HistoricalRecovery() {
       void queryClient.invalidateQueries({ queryKey: ["historical-campaigns"] });
       void queryClient.invalidateQueries({ queryKey: ["historical-candidates"] });
     },
-    onError: (err: Error) => toast.error(err.message),
+    onError: (err: Error) => toast.error(campaignActionError(err)),
+    // A start or approve may have dispatched before the response was lost. Refetch
+    // regardless of outcome so the sealed state on screen is the server's.
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["historical-campaigns"] });
+      void queryClient.invalidateQueries({ queryKey: ["historical-candidates"] });
+    },
   });
 
   const stage = useMutation({
     mutationFn: ({ campaignId, caps }: { campaignId: string; caps: HistoricalStageCaps }) =>
-      api<{ state: string }>(`/historical-recovery/campaigns/${campaignId}/stage`, {
+      apiMutation<{ state: string }>(`/historical-recovery/campaigns/${campaignId}/stage`, {
         method: "POST",
         body: JSON.stringify(caps),
       }),
@@ -149,12 +169,13 @@ export function HistoricalRecovery() {
       toast.success("Campaign stage advanced");
       void queryClient.invalidateQueries({ queryKey: ["historical-campaigns"] });
     },
-    onError: (err: Error) => toast.error(err.message),
+    onError: (err: Error) => toast.error(campaignActionError(err)),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["historical-campaigns"] }),
   });
 
   const pauseGroup = useMutation({
     mutationFn: (rolloutGroupId: string) =>
-      api<{ rolloutGroupId: string }>(`/historical-recovery/rollout-groups/${rolloutGroupId}/pause`, {
+      apiMutation<{ rolloutGroupId: string }>(`/historical-recovery/rollout-groups/${rolloutGroupId}/pause`, {
         method: "POST",
         body: JSON.stringify({ reason: "Stopped from the dashboard" }),
       }),
@@ -163,7 +184,11 @@ export function HistoricalRecovery() {
       void queryClient.invalidateQueries({ queryKey: ["historical-campaigns"] });
       void queryClient.invalidateQueries({ queryKey: ["historical-candidates"] });
     },
-    onError: (err: Error) => toast.error(err.message),
+    onError: (err: Error) => toast.error(campaignActionError(err)),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["historical-campaigns"] });
+      void queryClient.invalidateQueries({ queryKey: ["historical-candidates"] });
+    },
   });
 
   // Without this a failed fetch falls through to "no active campaign", which on

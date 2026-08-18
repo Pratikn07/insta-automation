@@ -13,7 +13,7 @@ vi.mock("./supabase", () => ({
   },
 }));
 
-const { api, TimeoutError, ApiError, apiErrorCode, apiRead, apiMutation } = (await import(
+const { ApiError, apiErrorCode, apiRead, apiMutation } = (await import(
   "./api"
 )) as typeof import("./api") & {
   apiErrorCode: (error: unknown) => string | null;
@@ -41,27 +41,31 @@ function jsonResponse(body: unknown, status = 200) {
   } as unknown as Response;
 }
 
-describe("api timeout", () => {
+// The stall these bound: a Supabase auth call that never settles, upstream of
+// fetch. `getSession` is mocked to hang for the whole file, so a read that did not
+// bound its dependencies would sit in `pending` forever and the page would hold
+// its skeletons rather than showing an error.
+describe("read deadline", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
   it("rejects rather than hanging when a dependency never settles", async () => {
-    const call = api("/resources");
-    const assertion = expect(call).rejects.toBeInstanceOf(TimeoutError);
+    const call = apiRead("/resources");
+    const assertion = expect(call).rejects.toBeInstanceOf(RequestTimeoutError);
     await vi.advanceTimersByTimeAsync(20_000);
     await assertion;
   });
 
-  it("names the path so the failure is diagnosable", async () => {
-    const call = api("/funnels/guide-follow");
-    const assertion = expect(call).rejects.toThrow(/funnels\/guide-follow/);
+  it("reports the deadline it exceeded", async () => {
+    const call = apiRead("/funnels/guide-follow");
+    const assertion = expect(call).rejects.toThrow(/20000ms/);
     await vi.advanceTimersByTimeAsync(20_000);
     await assertion;
   });
 
-  it("is still pending before the timeout elapses", async () => {
+  it("is still pending before the deadline elapses", async () => {
     let settled = false;
-    const call = api("/resources").catch(() => {
+    const call = apiRead("/resources").catch(() => {
       settled = true;
     });
     await vi.advanceTimersByTimeAsync(19_000);
