@@ -26,6 +26,12 @@ const EXPECTED_SENDER_MODULE = "../services/sequenceSender.js";
 const SENDER_EXPORT = "sendSequence";
 const OWNER_HELPER = "deliverOwnedGuide";
 
+// Invariant: any executable AST expression that statically identifies the legacy
+// sequenceSender module is forbidden, independent of the API that consumes it.
+// Static evaluation covers literals, primitive templates/concatenation, and lexical
+// const aliases. Runtime-generated values are outside that proof; unresolved string
+// constructions still fail closed when their known fragments collapse to the sender.
+
 function repositoryRoot(argv) {
   const rootIndex = argv.indexOf("--root");
   if (rootIndex === -1) return process.cwd();
@@ -99,87 +105,6 @@ function isRuntimeDeclaration(declaration) {
   return !current?.isDeclarationFile;
 }
 
-function valueSymbol(identifier, checker) {
-  if (
-    ts.isShorthandPropertyAssignment(identifier.parent) &&
-    identifier.parent.name === identifier
-  ) {
-    return checker.getShorthandAssignmentValueSymbol(identifier.parent);
-  }
-  return checker.getSymbolAtLocation(identifier);
-}
-
-function bindingState(identifier, checker) {
-  const symbol = valueSymbol(identifier, checker);
-  if (!symbol) return "unbound";
-  const declarations = (symbol.declarations ?? []).filter(isRuntimeDeclaration);
-  if (declarations.length === 0) return "unbound";
-  return declarations.length === 1 ? "bound" : "ambiguous";
-}
-
-function staticString(node, checker, resolving = new Set()) {
-  if (!node) return null;
-  if (ts.isStringLiteralLike(node)) return node.text;
-  if (ts.isParenthesizedExpression(node)) return staticString(node.expression, checker, resolving);
-  if (
-    ts.isAsExpression(node) ||
-    ts.isTypeAssertionExpression(node) ||
-    ts.isNonNullExpression(node) ||
-    ts.isSatisfiesExpression(node)
-  ) {
-    return staticString(node.expression, checker, resolving);
-  }
-  if (ts.isIdentifier(node)) {
-    const symbol = checker.getSymbolAtLocation(node);
-    if (!symbol || resolving.has(symbol)) return null;
-    const declarations = (symbol.declarations ?? []).filter(isRuntimeDeclaration);
-    if (declarations.length !== 1) return null;
-    const declaration = declarations[0];
-    if (
-      !ts.isVariableDeclaration(declaration) ||
-      !ts.isIdentifier(declaration.name) ||
-      !declaration.initializer ||
-      (declaration.parent.flags & ts.NodeFlags.Const) === 0
-    ) {
-      return null;
-    }
-    const nextResolving = new Set(resolving);
-    nextResolving.add(symbol);
-    return staticString(declaration.initializer, checker, nextResolving);
-  }
-  if (
-    ts.isBinaryExpression(node) &&
-    node.operatorToken.kind === ts.SyntaxKind.PlusToken
-  ) {
-    const left = staticString(node.left, checker, resolving);
-    const right = staticString(node.right, checker, resolving);
-    return left === null || right === null ? null : left + right;
-  }
-  if (ts.isTemplateExpression(node)) {
-    let value = node.head.text;
-    for (const span of node.templateSpans) {
-      const expression = staticString(span.expression, checker, resolving);
-      if (expression === null) return null;
-      value += expression + span.literal.text;
-    }
-    return value;
-  }
-  return null;
-}
-
-function isSenderModule(value) {
-  if (value === null) return false;
-  const normalized = value
-    .replace(/[?#].*$/, "")
-    .replaceAll("\\", "/")
-    .toLowerCase();
-  return /(?:^|\/)sequencesender(?:\.(?:js|ts))?$/.test(normalized);
-}
-
-function isNodeModule(value) {
-  return value === "node:module" || value === "module";
-}
-
 function unwrapExpression(node) {
   let current = node;
   while (
@@ -195,264 +120,180 @@ function unwrapExpression(node) {
   return current;
 }
 
-function importDeclarationFor(node) {
-  let current = node;
-  while (current && !ts.isSourceFile(current)) {
-    if (ts.isImportDeclaration(current)) return current;
-    current = current.parent;
-  }
-  return null;
-}
-
-function propertyName(node, checker) {
-  if (!node) return null;
-  if (ts.isIdentifier(node) || ts.isPrivateIdentifier(node)) return node.text;
-  if (ts.isStringLiteralLike(node) || ts.isNumericLiteral(node)) return node.text;
-  if (ts.isComputedPropertyName(node)) return staticString(node.expression, checker);
-  return null;
-}
-
-function combinedProvenance(values) {
-  const meaningful = new Set(values.filter((value) => value !== "none"));
-  if (meaningful.size === 0) return "none";
-  if (meaningful.size === 1) return [...meaningful][0];
-  return "ambiguous";
-}
-
-function declarationProvenance(declaration, checker, resolving) {
-  if (ts.isVariableDeclaration(declaration)) {
-    if (!ts.isIdentifier(declaration.name) || !declaration.initializer) return "none";
-    return loaderProvenance(declaration.initializer, checker, resolving);
-  }
-  if (ts.isImportSpecifier(declaration)) {
-    const importedName = (declaration.propertyName ?? declaration.name).text;
-    const importDeclaration = importDeclarationFor(declaration);
-    const moduleName = importDeclaration
-      ? staticString(importDeclaration.moduleSpecifier, checker)
-      : null;
-    return importedName === "createRequire" && isNodeModule(moduleName)
-      ? "factory"
-      : "none";
-  }
-  if (ts.isNamespaceImport(declaration)) {
-    const importDeclaration = importDeclarationFor(declaration);
-    const moduleName = importDeclaration
-      ? staticString(importDeclaration.moduleSpecifier, checker)
-      : null;
-    return isNodeModule(moduleName) ? "namespace" : "none";
-  }
-  if (ts.isBindingElement(declaration)) {
-    const pattern = declaration.parent;
-    const variableDeclaration = pattern.parent;
-    if (
-      !ts.isObjectBindingPattern(pattern) ||
-      !ts.isVariableDeclaration(variableDeclaration) ||
-      !variableDeclaration.initializer
-    ) {
-      return "none";
-    }
-    const selectedName = propertyName(declaration.propertyName ?? declaration.name, checker);
-    if (selectedName === null) return "ambiguous";
-    return objectPropertyProvenance(
-      variableDeclaration.initializer,
-      selectedName,
-      checker,
-      resolving,
-    );
-  }
-  return "none";
-}
-
-function symbolProvenance(symbol, checker, resolving) {
-  if (resolving.has(symbol)) return "ambiguous";
+function constantBinding(identifier, checker, resolving) {
+  const symbol = checker.getSymbolAtLocation(identifier);
+  if (!symbol || resolving.has(symbol)) return null;
   const declarations = (symbol.declarations ?? []).filter(isRuntimeDeclaration);
-  if (declarations.length === 0) return "none";
+  if (declarations.length !== 1) return null;
+  const declaration = declarations[0];
+  if (
+    !ts.isVariableDeclaration(declaration) ||
+    !ts.isIdentifier(declaration.name) ||
+    !declaration.initializer ||
+    (declaration.parent.flags & ts.NodeFlags.Const) === 0
+  ) {
+    return null;
+  }
   const nextResolving = new Set(resolving);
   nextResolving.add(symbol);
-  return combinedProvenance(
-    declarations.map((declaration) =>
-      declarationProvenance(declaration, checker, nextResolving),
-    ),
-  );
+  return { initializer: declaration.initializer, resolving: nextResolving };
 }
 
-function objectPropertyProvenance(node, selectedName, checker, resolving) {
+function staticPrimitive(node, checker, resolving = new Set()) {
   const expression = unwrapExpression(node);
-  if (!expression) return "ambiguous";
-
-  const receiverProvenance = loaderProvenance(expression, checker, resolving);
-  if (receiverProvenance === "ambiguous") return "ambiguous";
-  if (receiverProvenance === "namespace") {
-    return selectedName === "createRequire" ? "factory" : "none";
-  }
+  if (!expression) return null;
+  if (ts.isStringLiteralLike(expression)) return { value: expression.text };
+  if (ts.isNumericLiteral(expression)) return { value: Number(expression.text) };
+  if (expression.kind === ts.SyntaxKind.TrueKeyword) return { value: true };
+  if (expression.kind === ts.SyntaxKind.FalseKeyword) return { value: false };
+  if (expression.kind === ts.SyntaxKind.NullKeyword) return { value: null };
 
   if (ts.isIdentifier(expression)) {
-    const symbol = valueSymbol(expression, checker);
-    if (!symbol || resolving.has(symbol)) return symbol ? "ambiguous" : "none";
-    const declarations = (symbol.declarations ?? []).filter(isRuntimeDeclaration);
-    if (declarations.length === 0) return "none";
-    const nextResolving = new Set(resolving);
-    nextResolving.add(symbol);
-    return combinedProvenance(
-      declarations.map((declaration) => {
-        if (
-          ts.isVariableDeclaration(declaration) &&
-          ts.isIdentifier(declaration.name) &&
-          declaration.initializer
-        ) {
-          return objectPropertyProvenance(
-            declaration.initializer,
-            selectedName,
-            checker,
-            nextResolving,
-          );
-        }
-        return declarationProvenance(declaration, checker, nextResolving) === "namespace"
-          ? selectedName === "createRequire"
-            ? "factory"
-            : "none"
-          : "none";
-      }),
-    );
-  }
-
-  if (!ts.isObjectLiteralExpression(expression)) return "none";
-  const matches = [];
-  let ambiguous = false;
-  for (const property of expression.properties) {
-    if (ts.isSpreadAssignment(property)) {
-      ambiguous = true;
-      continue;
-    }
-    const candidateName = propertyName(property.name, checker);
-    if (candidateName === null) {
-      ambiguous = true;
-      continue;
-    }
-    if (candidateName !== selectedName) continue;
-    if (ts.isShorthandPropertyAssignment(property)) {
-      matches.push(loaderProvenance(property.name, checker, resolving));
-    } else if (ts.isPropertyAssignment(property)) {
-      matches.push(loaderProvenance(property.initializer, checker, resolving));
-    } else {
-      matches.push("ambiguous");
-    }
-  }
-  if (ambiguous || matches.length !== 1) return matches.length === 0 && !ambiguous
-    ? "none"
-    : "ambiguous";
-  return matches[0];
-}
-
-function unknownObjectMemberProvenance(node, checker, resolving) {
-  const expression = unwrapExpression(node);
-  if (!expression) return "ambiguous";
-  const directProvenance = loaderProvenance(expression, checker, resolving);
-  if (directProvenance !== "none") return "ambiguous";
-
-  if (ts.isIdentifier(expression)) {
-    const symbol = valueSymbol(expression, checker);
-    if (!symbol || resolving.has(symbol)) return symbol ? "ambiguous" : "none";
-    const declarations = (symbol.declarations ?? []).filter(isRuntimeDeclaration);
-    if (declarations.length === 0) return "none";
-    const nextResolving = new Set(resolving);
-    nextResolving.add(symbol);
-    return combinedProvenance(
-      declarations.map((declaration) => {
-        if (
-          ts.isVariableDeclaration(declaration) &&
-          ts.isIdentifier(declaration.name) &&
-          declaration.initializer
-        ) {
-          return unknownObjectMemberProvenance(
-            declaration.initializer,
-            checker,
-            nextResolving,
-          );
-        }
-        return "none";
-      }),
-    );
-  }
-
-  if (!ts.isObjectLiteralExpression(expression)) return "none";
-  for (const property of expression.properties) {
-    if (ts.isSpreadAssignment(property)) return "ambiguous";
-    const value = ts.isShorthandPropertyAssignment(property)
-      ? property.name
-      : ts.isPropertyAssignment(property)
-        ? property.initializer
-        : null;
-    if (value && loaderProvenance(value, checker, resolving) !== "none") {
-      return "ambiguous";
-    }
-    if (!value) return "ambiguous";
-  }
-  return "none";
-}
-
-function loaderProvenance(node, checker, resolving = new Set()) {
-  const expression = unwrapExpression(node);
-  if (!expression) return "ambiguous";
-  if (expression.kind === ts.SyntaxKind.ImportKeyword) return "loader";
-
-  if (ts.isIdentifier(expression)) {
-    const symbol = valueSymbol(expression, checker);
-    const declarations = (symbol?.declarations ?? []).filter(isRuntimeDeclaration);
-    if (declarations.length === 0) {
-      return expression.text === "require" ? "loader" : "none";
-    }
-    return symbolProvenance(symbol, checker, resolving);
-  }
-
-  if (ts.isPropertyAccessExpression(expression) || ts.isElementAccessExpression(expression)) {
-    const selectedName = ts.isPropertyAccessExpression(expression)
-      ? expression.name.text
-      : staticString(expression.argumentExpression, checker);
-    if (selectedName === null) {
-      return unknownObjectMemberProvenance(expression.expression, checker, resolving);
-    }
-    return objectPropertyProvenance(expression.expression, selectedName, checker, resolving);
-  }
-
-  if (ts.isCallExpression(expression)) {
-    const calleeProvenance = loaderProvenance(expression.expression, checker, resolving);
-    if (calleeProvenance === "ambiguous") return "ambiguous";
-    if (calleeProvenance === "factory") return "loader";
-    if (calleeProvenance !== "loader" || expression.arguments.length === 0) return "none";
-    const moduleName = staticString(expression.arguments[0], checker);
-    return isNodeModule(moduleName) ? "namespace" : "none";
-  }
-
-  return "none";
-}
-
-function moduleReference(node, checker) {
-  if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
-    return node.moduleSpecifier
-      ? { loader: "static", value: staticString(node.moduleSpecifier, checker) }
+    const binding = constantBinding(expression, checker, resolving);
+    return binding
+      ? staticPrimitive(binding.initializer, checker, binding.resolving)
       : null;
   }
+
   if (
-    ts.isImportEqualsDeclaration(node) &&
-    ts.isExternalModuleReference(node.moduleReference)
+    ts.isPrefixUnaryExpression(expression) &&
+    (expression.operator === ts.SyntaxKind.PlusToken ||
+      expression.operator === ts.SyntaxKind.MinusToken)
   ) {
-    const expression = node.moduleReference.expression;
-    return { loader: "static", value: staticString(expression, checker) };
+    const operand = staticPrimitive(expression.operand, checker, resolving);
+    if (!operand || typeof operand.value !== "number") return null;
+    return {
+      value:
+        expression.operator === ts.SyntaxKind.MinusToken
+          ? -operand.value
+          : operand.value,
+    };
   }
-  if (!ts.isCallExpression(node) || node.arguments.length === 0) return null;
-  const provenance = loaderProvenance(node.expression, checker);
-  if (provenance === "ambiguous") {
-    return { loader: "ambiguous", value: null };
+
+  if (
+    ts.isBinaryExpression(expression) &&
+    expression.operatorToken.kind === ts.SyntaxKind.PlusToken
+  ) {
+    const left = staticPrimitive(expression.left, checker, resolving);
+    const right = staticPrimitive(expression.right, checker, resolving);
+    if (!left || !right) return null;
+    if (typeof left.value === "string" || typeof right.value === "string") {
+      return { value: String(left.value) + String(right.value) };
+    }
+    if (typeof left.value === "number" && typeof right.value === "number") {
+      return { value: left.value + right.value };
+    }
+    return null;
   }
-  if (provenance !== "loader") return null;
-  return {
-    loader:
-      node.expression.kind === ts.SyntaxKind.ImportKeyword
-        ? "dynamic import"
-        : "runtime loader",
-    value: staticString(node.arguments[0], checker),
-  };
+
+  if (ts.isTemplateExpression(expression)) {
+    let value = expression.head.text;
+    for (const span of expression.templateSpans) {
+      const part = staticPrimitive(span.expression, checker, resolving);
+      if (!part) return null;
+      value += String(part.value) + span.literal.text;
+    }
+    return { value };
+  }
+  return null;
+}
+
+function staticString(node, checker) {
+  const primitive = staticPrimitive(node, checker);
+  return primitive && typeof primitive.value === "string" ? primitive.value : null;
+}
+
+function staticFragments(node, checker, resolving = new Set()) {
+  const exact = staticPrimitive(node, checker, resolving);
+  if (exact) return { ambiguous: false, pieces: [String(exact.value)] };
+
+  const expression = unwrapExpression(node);
+  if (!expression) return null;
+  if (ts.isIdentifier(expression)) {
+    const binding = constantBinding(expression, checker, resolving);
+    return binding
+      ? staticFragments(binding.initializer, checker, binding.resolving)
+      : null;
+  }
+
+  if (
+    ts.isBinaryExpression(expression) &&
+    expression.operatorToken.kind === ts.SyntaxKind.PlusToken
+  ) {
+    const left = staticFragments(expression.left, checker, resolving) ?? {
+      ambiguous: true,
+      pieces: [],
+    };
+    const right = staticFragments(expression.right, checker, resolving) ?? {
+      ambiguous: true,
+      pieces: [],
+    };
+    return {
+      ambiguous: left.ambiguous || right.ambiguous,
+      pieces: [...left.pieces, ...right.pieces],
+    };
+  }
+
+  if (ts.isTemplateExpression(expression)) {
+    const result = { ambiguous: false, pieces: [expression.head.text] };
+    for (const span of expression.templateSpans) {
+      const part = staticFragments(span.expression, checker, resolving);
+      if (part) {
+        result.ambiguous ||= part.ambiguous;
+        result.pieces.push(...part.pieces);
+      } else {
+        result.ambiguous = true;
+      }
+      result.pieces.push(span.literal.text);
+    }
+    return result;
+  }
+  return null;
+}
+
+function decodePercentEncoding(value) {
+  let decoded = value;
+  while (true) {
+    let next;
+    try {
+      next = decodeURIComponent(decoded);
+    } catch {
+      return decoded;
+    }
+    if (next === decoded) return decoded;
+    decoded = next;
+  }
+}
+
+function canonicalSpecifier(value) {
+  const decoded = decodePercentEncoding(value);
+  const withoutSuffix = decoded.replace(/[?#].*$/, "");
+  return path.posix.normalize(withoutSuffix.replaceAll("\\", "/"));
+}
+
+function withoutSenderRuntimeExtension(value) {
+  const extension = path.posix.extname(value).toLowerCase();
+  if (extension === ".js" || extension === ".ts") {
+    return value.slice(0, -extension.length);
+  }
+  return extension === "" ? value : null;
+}
+
+function isSenderReference(value, sourceFile, root) {
+  const canonical = canonicalSpecifier(value);
+  const resolved = path.resolve(path.dirname(sourceFile.fileName), canonical);
+  const targetStem = withoutSenderRuntimeExtension(
+    path.resolve(root, SENDER_PATH).replaceAll("\\", "/").toLowerCase(),
+  );
+  const resolvedStem = withoutSenderRuntimeExtension(
+    resolved.replaceAll("\\", "/").toLowerCase(),
+  );
+  if (resolvedStem !== null && resolvedStem === targetStem) return true;
+
+  const basenameStem = withoutSenderRuntimeExtension(
+    path.posix.basename(canonical).toLowerCase(),
+  );
+  return basenameStem === "sequencesender";
 }
 
 function exactSenderImport(node) {
@@ -478,6 +319,16 @@ function exactSenderImport(node) {
     return null;
   }
   return specifier.name;
+}
+
+function exactSenderImportSource(node, relative) {
+  return (
+    relative === HANDLER_PATH &&
+    ts.isStringLiteral(node) &&
+    ts.isImportDeclaration(node.parent) &&
+    node.parent.moduleSpecifier === node &&
+    exactSenderImport(node.parent) !== null
+  );
 }
 
 function insideLegacyOwnerHelper(node, sourceFile) {
@@ -532,36 +383,39 @@ function computedName(node, checker) {
   return null;
 }
 
-function inspectSource(relative, sourceFile, checker) {
+function inspectSource(root, relative, sourceFile, checker) {
   const findings = new Set();
   const permittedIdentifiers = new Set();
   let permittedImportCount = 0;
   let permittedCallCount = 0;
   let permittedDefinitionCount = 0;
   const report = (message) => findings.add(`${relative}: ${message}`);
+  const lineFor = (node) =>
+    sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
 
   const visit = (node) => {
-    const reference = moduleReference(node, checker);
-    if (reference && reference.loader !== "static" && reference.value === null) {
-      const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
-      report(`${reference.loader} module path is not statically resolvable at line ${line + 1}`);
-    } else if (reference && isSenderModule(reference.value)) {
-      const importedIdentifier = relative === HANDLER_PATH ? exactSenderImport(node) : null;
+    if (relative === HANDLER_PATH && ts.isImportDeclaration(node)) {
+      const importedIdentifier = exactSenderImport(node);
       if (importedIdentifier) {
         permittedImportCount += 1;
         permittedIdentifiers.add(importedIdentifier);
-      } else {
-        report("legacy sequenceSender module reference outside the permitted static import");
       }
     }
 
-    if (
-      ts.isIdentifier(node) &&
-      node.text === "require" &&
-      bindingState(node, checker) !== "bound" &&
-      !(ts.isCallExpression(node.parent) && node.parent.expression === node)
-    ) {
-      report("CommonJS loader alias or wrapper is not permitted");
+    const value = staticString(node, checker);
+    if (value !== null && isSenderReference(value, sourceFile, root)) {
+      if (!exactSenderImportSource(node, relative)) {
+        report(`legacy sequenceSender module reference at line ${lineFor(node)}`);
+      }
+    } else if (value === null) {
+      const fragments = staticFragments(node, checker);
+      if (
+        fragments?.ambiguous &&
+        fragments.pieces.length > 0 &&
+        isSenderReference(fragments.pieces.join(""), sourceFile, root)
+      ) {
+        report(`ambiguous legacy sequenceSender construction at line ${lineFor(node)}`);
+      }
     }
 
     if (relative === HANDLER_PATH && exactSenderCall(node, sourceFile)) {
@@ -640,7 +494,9 @@ function bypasses(root) {
       continue;
     }
     const checker = checkerForSource(sourceFile);
-    for (const finding of inspectSource(relative, sourceFile, checker)) findings.add(finding);
+    for (const finding of inspectSource(root, relative, sourceFile, checker)) {
+      findings.add(finding);
+    }
   }
   return [...findings].sort();
 }
