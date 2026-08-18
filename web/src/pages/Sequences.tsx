@@ -140,8 +140,11 @@ function SequenceCard({ r, onDelete }: { r: Resource; onDelete: () => void }) {
             {r.description && (
               <p className="mt-2 line-clamp-2 text-sm text-muted-foreground">{r.description}</p>
             )}
+            {/* The caution tokens, like every other badge. This one still wore
+                bg-amber-100/text-amber-900 plus dark: variants — a leftover from the
+                dark shell, in a console that has no dark mode. */}
             {(r.invalidMessageCount ?? 0) > 0 && (
-              <span className="mt-2 inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-1 text-xs font-medium text-amber-900 dark:bg-amber-950/50 dark:text-amber-200">
+              <span className="mt-2 inline-flex items-center gap-1 rounded-full bg-caution-soft px-2 py-1 text-xs font-medium text-caution">
                 <CircleAlert className="size-3.5" />
                 {r.invalidMessageCount} {r.invalidMessageCount === 1 ? "message needs" : "messages need"} attention
               </span>

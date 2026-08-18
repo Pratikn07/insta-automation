@@ -146,6 +146,10 @@ follower count or username appears in a committed PNG. Clock pinned to
 
 | Surface | Desktop | Mobile |
 | --- | --- | --- |
+| Sequences list | [sequences.png](artifacts/2026-08-16-maison-editorial/desktop/sequences.png) | [sequences.png](artifacts/2026-08-16-maison-editorial/mobile/sequences.png) |
+| Sequence Editor | [sequence-editor.png](artifacts/2026-08-16-maison-editorial/desktop/sequence-editor.png) | [sequence-editor.png](artifacts/2026-08-16-maison-editorial/mobile/sequence-editor.png) |
+| Insights | [insights.png](artifacts/2026-08-16-maison-editorial/desktop/insights.png) | [insights.png](artifacts/2026-08-16-maison-editorial/mobile/insights.png) |
+| Funnels | [funnels.png](artifacts/2026-08-16-maison-editorial/desktop/funnels.png) | [funnels.png](artifacts/2026-08-16-maison-editorial/mobile/funnels.png) |
 | Home + follower chart | [home.png](artifacts/2026-08-16-maison-editorial/desktop/home.png) | [home.png](artifacts/2026-08-16-maison-editorial/mobile/home.png) |
 | Conversations, Needs reply | [conversations-needs-reply.png](artifacts/2026-08-16-maison-editorial/desktop/conversations-needs-reply.png) | [conversations-needs-reply.png](artifacts/2026-08-16-maison-editorial/mobile/conversations-needs-reply.png) |
 | Conversations, People lens | [conversations-people.png](artifacts/2026-08-16-maison-editorial/desktop/conversations-people.png) | [conversations-people.png](artifacts/2026-08-16-maison-editorial/mobile/conversations-people.png) |
@@ -153,11 +157,20 @@ follower count or username appears in a committed PNG. Clock pinned to
 | Historical recovery | [historical-recovery.png](artifacts/2026-08-16-maison-editorial/desktop/historical-recovery.png) | [historical-recovery.png](artifacts/2026-08-16-maison-editorial/mobile/historical-recovery.png) |
 | Assistant | [assistant.png](artifacts/2026-08-16-maison-editorial/desktop/assistant.png) | [assistant.png](artifacts/2026-08-16-maison-editorial/mobile/assistant.png) |
 
-**Partial, and visibly so.** The plan also asked for Sequence Editor, Insights and
-Funnels. The E2E harness renders only the surfaces it has scenarios for; a Home
-scenario was added for this gate because the follower chart is what this release
-repainted. Sequence Editor, Insights and Funnels have **no captured artifact** and
-are covered by unit and integration tests only.
+**Complete coverage of the migrated console.** Ten surfaces, both viewports, 20
+artifacts. Harness scenarios were added for Home, Sequences, Sequence Editor,
+Insights and Funnels so that every destination the interface migration touched has
+been looked at, not merely tested.
+
+Looking at them found a real defect that no test caught: the Sequences list badge
+was still `bg-amber-100 / text-amber-900` with `dark:` variants — a leftover from
+the dark shell, in a console with no dark mode, and the one badge family index.css
+says was already corrected. It now uses the caution tokens like every other badge.
+
+Two of the four unseen surfaces also exposed fixture errors of mine rather than
+product defects, both since corrected: `skipRate` is 0–1 (a fixture of `41.2`
+rendered "4120% skip"), and `pct1` returns 0–100 (a fixture of `0.649` rendered
+"0.6488651535380507%").
 
 ### Manual checklist
 
@@ -171,6 +184,7 @@ are covered by unit and integration tests only.
 | Truthful loading / error / empty states | Pass — Today's Read withholds itself with its reason rather than inventing a number |
 | Automatic public-action wording | Pass — DM recovery states it publishes automatically; asserted in E2E |
 | Guide review visible | Pass — asserted in `Conversations.test.tsx`; not in a screenshot (needs a delivery fixture) |
+| Sequences badge uses caution tokens | **Fixed during this gate** — was `amber-100`/`amber-900` with `dark:` variants |
 | Keyboard focus | Pass — 2px moss ring; `ConfirmDialog` traps and restores focus |
 | Touch targets | Pass — rail items 44px on coarse pointers |
 | Reduced motion | Not verified in this gate |
@@ -205,6 +219,8 @@ authorized or run, so there is no evidence about real delivery behaviour. It is
 in place and may only be removed after a separate named-owner decision following
 formally declared controlled stability.
 
-Known gaps, stated rather than buried: three surfaces have no visual artifact,
-reduced motion was not verified, and the inherited dependency advisories above are
-open.
+Known gaps, stated rather than buried: reduced motion was not verified, and the
+inherited dependency advisories above are open. The visual-artifact gap named in the
+first draft of this report has been closed — all ten migrated surfaces are captured
+in both viewports, and doing so caught one real dark-shell leftover that the test
+suite could not see.

@@ -8,6 +8,10 @@ import { Conversations } from "@/pages/Conversations";
 import { DmRecovery } from "@/pages/DmRecovery";
 import { HistoricalRecovery } from "@/pages/HistoricalRecovery";
 import { Home } from "@/pages/Home";
+import { Funnels } from "@/pages/Funnels";
+import { Insights } from "@/pages/Insights";
+import { SequenceEditor } from "@/pages/SequenceEditor";
+import { Sequences } from "@/pages/Sequences";
 import "../src/index.css";
 
 /**
@@ -580,6 +584,106 @@ const HOME_FUNNEL = {
   homeTileCohort: { deliveredToNonFollower: 12, ofWhichRedelivery: 3 },
 };
 
+
+/** Funnels, Sequence Editor and Insights fixtures — synthetic, deterministic. */
+const FUNNEL_DROP_OFF = {
+  bucket: "no-reply" as const,
+  label: "Never replied DONE",
+  definition: "Received the gate DM and never replied within the window.",
+  total: 263,
+  byState: { expired: 201, stillOpen: 62 },
+  readEvidence: {
+    confirmedSeen: 118,
+    trackedNeverConfirmed: 74,
+    noReadData: 71,
+    confirmedSeenOfTracked: rate(118, 192),
+  },
+  recovery: { reminderSent: 96, reminderSuppressed: 34, inControlArm: 48, noReminder: 85 },
+  rows: [],
+};
+
+const EDITOR_RESOURCE = {
+  id: "resource-1",
+  name: "Toddler Activity Guide",
+  description: "Three quiet-time activities, sent after the follow.",
+  createdAt: "2026-07-02T10:00:00.000Z",
+  invalidMessageCount: 0,
+  messages: [],
+  keywords: [{ id: "keyword-1", keyword: "SLEEP" }],
+};
+
+const EDITOR_MESSAGES = [
+  {
+    id: "message-1",
+    resourceId: "resource-1",
+    order: 0,
+    type: "text" as const,
+    body: "Here is your guide — three quiet-time activities you can set up in a minute.",
+    mediaUrl: null,
+  },
+  {
+    id: "message-2",
+    resourceId: "resource-1",
+    order: 1,
+    type: "image" as const,
+    body: "Activity one: the sorting basket.",
+    mediaUrl: "https://placehold.co/600x400/EBE8DF/66665F?text=Activity+one",
+  },
+  {
+    id: "message-3",
+    resourceId: "resource-1",
+    order: 2,
+    type: "pdf" as const,
+    body: null,
+    mediaUrl: "https://placehold.co/600x400/EBE8DF/66665F?text=Printable",
+  },
+];
+
+const leaderboardRow = (
+  mediaId: string,
+  caption: string,
+  usFitScore: number | null,
+  reach: number,
+  comments: number,
+) => ({
+  mediaId,
+  caption,
+  thumbnailUrl: null,
+  permalink: `https://instagram.com/p/${mediaId}`,
+  postedAt: "2026-08-04T15:00:00.000Z",
+  usFitScore,
+  confidence: usFitScore === null ? null : "high",
+  mediaAudioType: "original_sound",
+  videoUnavailable: false,
+  analyzed: usFitScore !== null,
+  views: reach + 400,
+  reach,
+  // 0-1, not a percentage: RepeatReelsCard multiplies by 100. A fixture using 41.2
+  // rendered "4120% skip".
+  skipRate: 0.412,
+  conversion: {
+    keywordComments: comments,
+    gateDelivered: Math.round(comments * 0.92),
+    completed: Math.round(comments * 0.61),
+  },
+  captureRatePct: Math.round((comments / reach) * 1000) / 10,
+});
+
+const INSIGHTS_LEADERBOARD = [
+  leaderboardRow("reel-a", "Quiet time basket that actually works", 82, 24800, 214),
+  leaderboardRow("reel-b", "Two-minute reset for a toddler meltdown", 74, 19100, 168),
+  leaderboardRow("reel-c", "Why we stopped buying loud toys", 61, 15600, 96),
+  leaderboardRow("reel-d", "Snack prep on a bad morning", null, 11200, 54),
+];
+
+const INSIGHTS_GEO = {
+  stages: [
+    { stage: "reached", timeframe: "last_90_days", usPct: 41.2, capturedAt: "2026-08-17T23:00:00.000Z" },
+    { stage: "engaged", timeframe: "last_90_days", usPct: 38.4, capturedAt: "2026-08-17T23:00:00.000Z" },
+    { stage: "followers", timeframe: "lifetime", usPct: 34.6, capturedAt: "2026-08-17T23:00:00.000Z" },
+  ],
+};
+
 function installFetchStub(): void {
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -619,6 +723,38 @@ function installFetchStub(): void {
     if (path.startsWith("/insights/feed-follow-attribution") && method === "GET") {
       return json({ days: [], totals: null });
     }
+
+    if (path === "/funnels/guide-follow/drop-off/no-reply" && method === "GET") {
+      return json(FUNNEL_DROP_OFF);
+    }
+    if (path === "/resources" && method === "GET") {
+      return json([
+        { ...EDITOR_RESOURCE, _count: { messages: 3, keywords: 1 }, invalidMessageCount: 0 },
+        {
+          id: "resource-2",
+          name: "Sleep Reset Guide",
+          description: "Sent after the follow. One step is over Instagram's limit.",
+          createdAt: "2026-06-11T10:00:00.000Z",
+          _count: { messages: 4, keywords: 2 },
+          invalidMessageCount: 1,
+        },
+      ]);
+    }
+    if (path === "/resources/resource-1" && method === "GET") return json(EDITOR_RESOURCE);
+    if (path === "/messages/by-resource/resource-1" && method === "GET") {
+      return json(EDITOR_MESSAGES);
+    }
+    if (path === "/insights/leaderboard" && method === "GET") {
+      return json({ items: INSIGHTS_LEADERBOARD });
+    }
+    if (path === "/insights/geo" && method === "GET") return json(INSIGHTS_GEO);
+    if (path === "/insights/recipe" && method === "GET") {
+      return json({ top: [], bottom: [], contrasts: [] });
+    }
+    if (path === "/insights/reel-origin" && method === "GET") return json({ items: [] });
+    if (path === "/insights/us-reach-trend" && method === "GET") return json({ points: [] });
+    if (path === "/insights/geo-window-trend" && method === "GET") return json({ points: [] });
+    if (path === "/insights/experiments" && method === "GET") return json({ items: [] });
 
     if (path === "/dm-threads/thread-1" && method === "GET") {
       const scenario = new URLSearchParams(window.location.search).get("scenario");
@@ -1093,6 +1229,36 @@ export function Harness() {
       </div>
     );
   }
+  if (scenario === "sequences") {
+    return (
+      <div className="p-4">
+        <Sequences />
+      </div>
+    );
+  }
+  if (scenario === "funnels") {
+    return (
+      <div className="p-4">
+        <Funnels />
+      </div>
+    );
+  }
+  if (scenario === "sequence-editor") {
+    return (
+      <div className="p-4">
+        <Routes>
+          <Route path="/sequences/:id" element={<SequenceEditor />} />
+        </Routes>
+      </div>
+    );
+  }
+  if (scenario === "insights") {
+    return (
+      <div className="p-4">
+        <Insights />
+      </div>
+    );
+  }
   if (scenario === "advisor") {
     return (
       <div className="p-4">
@@ -1111,7 +1277,12 @@ const queryClient = new QueryClient({
 });
 
 const harnessScenario = new URLSearchParams(window.location.search).get("scenario");
-const initialEntry = harnessScenario?.startsWith("recovery-") ? "/dm-recovery" : "/";
+const initialEntry =
+  harnessScenario?.startsWith("recovery-")
+    ? "/dm-recovery"
+    : harnessScenario === "sequence-editor"
+      ? "/sequences/resource-1"
+      : "/";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

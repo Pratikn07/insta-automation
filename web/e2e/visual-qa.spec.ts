@@ -75,6 +75,30 @@ test.describe("visual QA artifacts", () => {
     await capture(page, testInfo.project.name, "historical-recovery");
   });
 
+  test("funnels", async ({ page }, testInfo) => {
+    await open(page, "funnels");
+    await expect(page.getByRole("heading").first()).toBeVisible();
+    await capture(page, testInfo.project.name, "funnels");
+  });
+
+  test("sequence editor", async ({ page }, testInfo) => {
+    await open(page, "sequence-editor");
+    await expect(page.getByRole("heading").first()).toBeVisible();
+    await capture(page, testInfo.project.name, "sequence-editor");
+  });
+
+  test("insights", async ({ page }, testInfo) => {
+    await open(page, "insights");
+    await expect(page.getByRole("button", { name: "Leaderboard" })).toBeVisible();
+    await capture(page, testInfo.project.name, "insights");
+  });
+
+  test("sequences list", async ({ page }, testInfo) => {
+    await open(page, "sequences");
+    await expect(page.getByRole("heading").first()).toBeVisible();
+    await capture(page, testInfo.project.name, "sequences");
+  });
+
   test("assistant", async ({ page }, testInfo) => {
     await open(page, "advisor");
     await expect(page.getByPlaceholder("What should I focus on this week?")).toBeVisible();
