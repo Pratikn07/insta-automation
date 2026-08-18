@@ -4,8 +4,29 @@ import { env } from "../config/env.js";
 import { prisma } from "../lib/prisma.js";
 import { logEvent } from "../services/eventLogger.js";
 import { normalizeKeyword } from "../services/keywordService.js";
+import {
+  classifyCreateReplay,
+  idempotencyKeyMismatch,
+  isPrimaryKeyViolation,
+  isUniqueViolation,
+} from "./createReplay.js";
 
 export const upcomingAutomationsRouter = Router();
+
+/**
+ * How long a resolved setup keeps its place in the list.
+ *
+ * A `bound` row is a receipt, not an entry: the keyword it produced is an
+ * ordinary keyword and already shows on its post in the Content grid, so leaving
+ * it here forever prints the same fact twice and makes the list unscannable. A
+ * `cancelled` row is the owner's own deliberate act. Both linger long enough to
+ * be seen and then leave.
+ *
+ * Open rows — `waiting` and `needs_attention` — never expire. The asymmetry is
+ * the point: a success she misses costs her nothing, a failure she misses costs
+ * her every commenter on that post.
+ */
+const RESOLVED_ROW_VISIBLE_MS = 24 * 60 * 60 * 1000;
 
 const keywordToken = z
   .string()
@@ -22,26 +43,40 @@ const editableFields = z.object({
   active: z.boolean().optional(),
 });
 
-const createSchema = editableFields.required({
-  keyword: true,
-  resourceId: true,
-  publicReply: true,
-  gateMessage: true,
-});
+// `id` is client-owned. A create whose response is lost is indistinguishable from
+// one that never ran, so the browser mints the UUID, sends it in both the body and
+// `Idempotency-Key`, and repeats the same one — turning "did this happen?" into a
+// primary-key lookup instead of a guess.
+const createSchema = editableFields
+  .required({
+    keyword: true,
+    resourceId: true,
+    publicReply: true,
+    gateMessage: true,
+  })
+  .extend({ id: z.string().uuid() });
+
+/**
+ * Compared against the stored row on a replay. `triggerWord` is compared after
+ * normalization, because the request's casing was never part of the intent.
+ *
+ * Server-assigned and lifecycle fields are deliberately absent: `status`,
+ * `createdBy`, `matchedMediaId` and the timestamps cannot disagree with a request
+ * that never mentioned them.
+ */
+const UPCOMING_REPLAY_KEYS = [
+  "id",
+  "triggerWord",
+  "resourceId",
+  "publicReply",
+  "gateMessage",
+  "active",
+] as const;
 
 type OpenStatus = "waiting" | "needs_attention";
 
 function isOpenStatus(status: string): status is OpenStatus {
   return status === "waiting" || status === "needs_attention";
-}
-
-function isUniqueViolation(error: unknown): boolean {
-  return Boolean(
-    error &&
-      typeof error === "object" &&
-      "code" in error &&
-      (error as { code?: string }).code === "P2002",
-  );
 }
 
 async function validateResource(resourceId: string): Promise<"ok" | "missing" | "empty"> {
@@ -69,8 +104,16 @@ function respondForResourceValidation(
 }
 
 upcomingAutomationsRouter.get("/", async (_req, res) => {
+  const resolvedSince = new Date(Date.now() - RESOLVED_ROW_VISIBLE_MS);
+
   const automations = await prisma.upcomingAutomation.findMany({
-    where: { status: { not: "bound" } },
+    where: {
+      OR: [
+        { status: { in: ["waiting", "needs_attention"] } },
+        { status: "bound", boundAt: { gte: resolvedSince } },
+        { status: "cancelled", cancelledAt: { gte: resolvedSince } },
+      ],
+    },
     include: {
       resource: { select: { id: true, name: true, _count: { select: { messages: true } } } },
     },
@@ -84,29 +127,53 @@ upcomingAutomationsRouter.post("/", async (req, res) => {
   const parsed = createSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
 
+  if (idempotencyKeyMismatch(req.headers["idempotency-key"], parsed.data.id)) {
+    return res.status(400).json({ error: "idempotency_key_mismatch" });
+  }
+
   const resourceResult = await validateResource(parsed.data.resourceId);
   if (respondForResourceValidation(resourceResult, res)) return;
 
-  const triggerWord = normalizeKeyword(parsed.data.keyword);
+  const intended = {
+    id: parsed.data.id,
+    triggerWord: normalizeKeyword(parsed.data.keyword),
+    resourceId: parsed.data.resourceId,
+    publicReply: parsed.data.publicReply,
+    gateMessage: parsed.data.gateMessage,
+    active: parsed.data.active ?? true,
+  };
+
   try {
     const created = await prisma.upcomingAutomation.create({
       data: {
-        triggerWord,
-        resourceId: parsed.data.resourceId,
-        publicReply: parsed.data.publicReply,
-        gateMessage: parsed.data.gateMessage,
-        active: parsed.data.active ?? true,
+        ...intended,
         status: "waiting",
         createdBy: req.adminEmail ?? "unknown",
       },
     });
     await logEvent("upcoming_automation_created", {
       upcomingAutomationId: created.id,
-      triggerWord,
+      triggerWord: intended.triggerWord,
       createdBy: req.adminEmail ?? "unknown",
     });
     res.status(201).json(created);
   } catch (error) {
+    // A clash on the primary key means this exact create already happened, so the
+    // answer is the stored row. A clash on the partial unique index means a
+    // DIFFERENT open setup already reserves this word, which is the domain
+    // duplicate and keeps its own answer.
+    if (isPrimaryKeyViolation(error)) {
+      const existing = await prisma.upcomingAutomation.findUnique({
+        where: { id: intended.id },
+      });
+      if (!existing) throw error;
+      if (
+        classifyCreateReplay({ existing, intended, keys: UPCOMING_REPLAY_KEYS }) === "conflict"
+      ) {
+        return res.status(409).json({ error: "idempotency_conflict" });
+      }
+      return res.status(200).json(existing);
+    }
     if (isUniqueViolation(error)) {
       return res.status(409).json({ error: "upcoming_keyword_reserved" });
     }

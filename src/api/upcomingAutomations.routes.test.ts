@@ -33,7 +33,12 @@ function makeApp() {
   return app;
 }
 
+// The browser owns this. A create whose response is lost is indistinguishable
+// from one that never ran, so the id has to come from the caller.
+const SETUP_ID = "22222222-2222-4222-8222-222222222222";
+
 const validBody = {
+  id: SETUP_ID,
   keyword: " highchair ",
   resourceId: "11111111-1111-4111-8111-111111111111",
   publicReply: "Sent! Check your DMs.",
@@ -41,15 +46,35 @@ const validBody = {
   active: true,
 };
 
+/** The row the route would have written, as the database would return it. */
+const storedRow = {
+  id: SETUP_ID,
+  triggerWord: "HIGHCHAIR",
+  resourceId: validBody.resourceId,
+  publicReply: validBody.publicReply,
+  gateMessage: validBody.gateMessage,
+  active: true,
+  status: "waiting",
+  createdBy: "owner@example.com",
+};
+
+function primaryKeyViolation() {
+  return { code: "P2002", meta: { target: ["id"] } };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.useRealTimers();
   resourceFindUnique.mockResolvedValue({ id: validBody.resourceId, _count: { messages: 1 } });
-  create.mockImplementation(async ({ data }) => ({ id: "upcoming-1", status: "waiting", ...data }));
+  create.mockImplementation(async ({ data }) => ({ status: "waiting", ...data }));
   updateMany.mockResolvedValue({ count: 1 });
 });
 
 describe("upcoming automations API", () => {
-  it("lists every non-bound setup with its guide summary", async () => {
+  it("lists open setups always, and resolved ones only for 24 hours", async () => {
+    // Fixed so the 24h boundary is an assertable value rather than "roughly now".
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-18T12:00:00.000Z"));
     findMany.mockResolvedValue([{ id: "upcoming-1", status: "waiting" }]);
 
     const response = await request(makeApp()).get("/api/upcoming-automations").expect(200);
@@ -58,11 +83,36 @@ describe("upcoming automations API", () => {
       automations: [{ id: "upcoming-1", status: "waiting" }],
       discoveryEnabled: false,
     });
+
+    const cutoff = new Date("2026-08-17T12:00:00.000Z");
     expect(findMany).toHaveBeenCalledWith({
-      where: { status: { not: "bound" } },
+      where: {
+        OR: [
+          { status: { in: ["waiting", "needs_attention"] } },
+          { status: "bound", boundAt: { gte: cutoff } },
+          { status: "cancelled", cancelledAt: { gte: cutoff } },
+        ],
+      },
       include: { resource: { select: { id: true, name: true, _count: { select: { messages: true } } } } },
       orderBy: { createdAt: "desc" },
     });
+  });
+
+  // A bound row IS an ordinary keyword and already shows on its post in the
+  // Content grid. Keeping it here forever prints the same fact twice; dropping it
+  // instantly means she never sees that the thing she set up worked.
+  it("never expires an open setup, however old", async () => {
+    findMany.mockResolvedValue([]);
+
+    await request(makeApp()).get("/api/upcoming-automations").expect(200);
+
+    const where = findMany.mock.calls[0]![0].where;
+    const openClause = where.OR.find(
+      (clause: { status?: unknown }) =>
+        typeof clause.status === "object" && clause.status !== null,
+    );
+    expect(openClause).toEqual({ status: { in: ["waiting", "needs_attention"] } });
+    expect(Object.keys(openClause)).toEqual(["status"]);
   });
 
   it("creates an uppercase reservation only when the guide has messages", async () => {
@@ -74,6 +124,7 @@ describe("upcoming automations API", () => {
     expect(response.body.triggerWord).toBe("HIGHCHAIR");
     expect(create).toHaveBeenCalledWith({
       data: expect.objectContaining({
+        id: SETUP_ID,
         triggerWord: "HIGHCHAIR",
         resourceId: validBody.resourceId,
         publicReply: validBody.publicReply,
@@ -84,10 +135,68 @@ describe("upcoming automations API", () => {
       }),
     });
     expect(logEvent).toHaveBeenCalledWith("upcoming_automation_created", {
-      upcomingAutomationId: "upcoming-1",
+      upcomingAutomationId: SETUP_ID,
       triggerWord: "HIGHCHAIR",
       createdBy: "owner@example.com",
     });
+  });
+
+  it("refuses a create with no client-owned id", async () => {
+    const { id: _omitted, ...noId } = validBody;
+
+    await request(makeApp()).post("/api/upcoming-automations").send(noId).expect(400);
+
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  // Two identities for one request, and no safe way to guess which was meant.
+  it("refuses before writing when the header disagrees with the body", async () => {
+    const response = await request(makeApp())
+      .post("/api/upcoming-automations")
+      .set("Idempotency-Key", "33333333-3333-4333-8333-333333333333")
+      .send(validBody)
+      .expect(400);
+
+    expect(response.body).toEqual({ error: "idempotency_key_mismatch" });
+    expect(create).not.toHaveBeenCalled();
+    expect(resourceFindUnique).not.toHaveBeenCalled();
+  });
+
+  it("returns the stored row when the same create is repeated", async () => {
+    create.mockRejectedValue(primaryKeyViolation());
+    findUnique.mockResolvedValue(storedRow);
+
+    const response = await request(makeApp())
+      .post("/api/upcoming-automations")
+      .set("Idempotency-Key", SETUP_ID)
+      .send(validBody)
+      .expect(200);
+
+    expect(response.body).toMatchObject({ id: SETUP_ID, triggerWord: "HIGHCHAIR" });
+    expect(findUnique).toHaveBeenCalledWith({ where: { id: SETUP_ID } });
+  });
+
+  // Casing was never part of the intent, so it must not read as a conflict.
+  it("treats a differently cased repeat as the same create", async () => {
+    create.mockRejectedValue(primaryKeyViolation());
+    findUnique.mockResolvedValue(storedRow);
+
+    await request(makeApp())
+      .post("/api/upcoming-automations")
+      .send({ ...validBody, keyword: "HighChair" })
+      .expect(200);
+  });
+
+  it("surfaces one key reused for two different intents rather than the wrong row", async () => {
+    create.mockRejectedValue(primaryKeyViolation());
+    findUnique.mockResolvedValue(storedRow);
+
+    const response = await request(makeApp())
+      .post("/api/upcoming-automations")
+      .send({ ...validBody, gateMessage: "A different gate entirely." })
+      .expect(409);
+
+    expect(response.body).toEqual({ error: "idempotency_conflict" });
   });
 
   it.each(["two words", "POTTY!", "🥑", "under_score"])(
