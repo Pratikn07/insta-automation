@@ -16,6 +16,7 @@ import { recoveryRemindersRouter } from "./recoveryReminders.routes.js";
 import { historicalRecoveryRouter } from "./historicalRecovery.routes.js";
 import { funnelsRouter } from "./funnels.routes.js";
 import { guideDeliveriesRouter } from "./guideDeliveries.routes.js";
+import { upcomingAutomationsRouter } from "./upcomingAutomations.routes.js";
 import { logger } from "../lib/logger.js";
 
 export const apiRouter = Router();
@@ -47,6 +48,7 @@ apiRouter.use("/historical-recovery", historicalRecoveryRouter);
 // scoped to reels ("which reels resonate"), while a funnel's axis is the
 // conversation lifecycle. Same reason they get their own page.
 apiRouter.use("/funnels", funnelsRouter);
+apiRouter.use("/upcoming-automations", upcomingAutomationsRouter);
 
 apiRouter.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   const code = err && typeof err === "object" && "code" in err ? (err as { code: string }).code : undefined;

@@ -4,6 +4,7 @@ import type { FollowerFlowResponse, GuideFollowResult, Stats } from "./types";
 const nf = new Intl.NumberFormat("en-US");
 
 export type AttentionKind =
+  | "upcoming_needs_attention"
   | "uncertain_gate_sends"
   | "failed_gates"
   | "funnel_loss"
@@ -42,6 +43,28 @@ export function deriveAttentionItems(
   funnel: GuideFollowResult | undefined,
 ): AttentionItem[] {
   const items: AttentionItem[] = [];
+
+  // First, which makes it Home's "Best next move" whenever it exists.
+  //
+  // Every other item here is automation running badly. This one is automation not
+  // running: the post is live, its keyword never attached, and everybody who
+  // comments gets nothing until she changes one word. It is also the only item on
+  // this list she can finish in ten seconds.
+  if (stats?.upcomingNeedsAttention) {
+    const many = stats.upcomingNeedsAttention > 1;
+    items.push({
+      kind: "upcoming_needs_attention",
+      title: many
+        ? `${nf.format(stats.upcomingNeedsAttention)} keywords didn't attach to your new posts`
+        : "A keyword didn't attach to your new post",
+      detail: many
+        ? "Those posts published, but their captions didn't match the words you set up, so nothing is being sent to anyone commenting on them."
+        : "The post published, but its caption didn't match the word you set up, so nothing is being sent to anyone commenting on it.",
+      tag: "Now",
+      to: "/content",
+      action: "Fix",
+    });
+  }
 
   if (stats?.gateQueueSendUncertain) {
     items.push({

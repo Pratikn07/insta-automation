@@ -27,7 +27,10 @@ interface CandidateComment {
  * for this keyword are skipped, so re-runs and route-triggered runs are safe.
  * Non-throwing; returns the number of gates enqueued.
  */
-export async function backfillKeyword(keywordId: string): Promise<number> {
+export async function backfillKeyword(
+  keywordId: string,
+  options: { excludeCommentIds?: string[] } = {},
+): Promise<number> {
   try {
     const kw = await prisma.keyword.findUnique({ where: { id: keywordId } });
     if (!kw || !kw.active) return 0;
@@ -39,6 +42,7 @@ export async function backfillKeyword(keywordId: string): Promise<number> {
       orderBy: { createdAt: "asc" },
       select: { payload: true, createdAt: true },
     });
+    const excludedCommentIds = new Set(options.excludeCommentIds ?? []);
 
     // Latest matching comment per user (asc order → Map.set keeps the newest).
     const byUser = new Map<string, CandidateComment>();
@@ -50,6 +54,7 @@ export async function backfillKeyword(keywordId: string): Promise<number> {
         mediaId?: string | null;
       };
       if (!p.commentId || !p.fromId || !p.text) continue;
+      if (excludedCommentIds.has(p.commentId)) continue;
       if (p.fromId === env.IG_USER_ID) continue; // own replies (bot or manual)
       if (kw.mediaId && p.mediaId !== kw.mediaId) continue; // respect reel scope
       if (!textContainsKeyword(p.text, norm)) continue;

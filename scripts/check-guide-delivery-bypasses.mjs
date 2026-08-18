@@ -2,9 +2,30 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import ts from "typescript";
 
+/**
+ * Directories this detector must not walk.
+ *
+ * The nested ones matter as much as node_modules. A git worktree under
+ * `.worktrees/` or `.claude/worktrees/` is a full second copy of this repository,
+ * so walking it re-reads `src/handlers/messageHandler.ts` at a path that does not
+ * equal HANDLER_PATH — and every legitimate legacy reference in that copy is then
+ * reported as a bypass "outside its permitted shape". One nested worktree produced
+ * 117 findings, none of them about code that ships.
+ *
+ * That is worse than a false alarm. A safety check whose output is mostly noise is
+ * a safety check people learn to skip, which is the failure it exists to prevent.
+ *
+ * The set mirrors the untracked working material already excluded by
+ * `.railwayignore`, for the same underlying reason: these paths hold copies of the
+ * repo, not the repo.
+ */
 const EXCLUDED_DIRECTORIES = new Set([
   ".git",
+  ".claude",
+  ".impeccable",
+  ".rollout-audit-backups",
   ".superpowers",
+  ".worktrees",
   "coverage",
   "dist",
   "node_modules",

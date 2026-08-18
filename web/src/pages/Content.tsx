@@ -9,6 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Drawer } from "@/components/ui/drawer";
 import { EmptyState } from "@/components/EmptyState";
 import { KeywordForm } from "@/components/KeywordForm";
+import { UpcomingAutomations } from "@/components/UpcomingAutomations";
 import { cn } from "@/lib/utils";
 
 type Filter = "all" | MediaKind;
@@ -129,6 +130,20 @@ export function Content() {
           ))}
         </div>
       )}
+
+      {/*
+        Below the grid, not above it, and not behind a tab.
+        A Published/Upcoming tab pair made the grid one of two things this page
+        could be showing, which is a worse description of Content than the truth:
+        the grid IS the page, and these are a handful of setups waiting on posts
+        that don't exist yet. She scans the grid, doesn't find the post she just
+        scheduled, and keeps going — this is where that scan ends.
+        A failure doesn't need to be high on this page either, because Home
+        surfaces an unmatched caption as its Best next move.
+      */}
+      <div className="border-t pt-5">
+        <UpcomingAutomations resources={resourcesQ.data ?? []} />
+      </div>
 
       <Drawer
         open={selected !== null}
