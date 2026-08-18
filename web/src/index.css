@@ -70,6 +70,24 @@
   --color-caution-soft: #f0e6cc; /* caution reads 5.13:1 on it */
   --color-mark-soft: #dce4ee; /* funnel-mark reads 7.15:1 on it */
 
+  /* Chart marks. Named here so the palette is inspectable in one place, but the
+     values are owned by src/lib/chartPalette.ts, which is where the 3:1 floor is
+     enforced by test. The series this replaced were Tailwind *-400 tints plus two
+     semi-transparent WHITE strokes for the mean and the provisional outline —
+     built for a dark ground, and on paper the white measured about 1.05:1.
+
+     `--color-chart-us` is NOT moss. Moss is the accent, reserved for focus and
+     affirmative state; an accent that also means "United States" stops meaning
+     "the system is working". */
+  --color-chart-us: #1f5d3f; /* 7.15:1 on canvas */
+  --color-chart-south-asian: #8c5a1f; /* 5.13:1 */
+  --color-chart-anglosphere: #2a4a6b; /* 8.20:1 */
+  --color-chart-other: #66665f; /* 4.42:1 */
+  /* Near-ink, so the rolling average reads as the statement of fact it is. */
+  --color-chart-mean: #171812;
+  /* Paired with a dash. The colour alone never carries "incomplete window". */
+  --color-chart-provisional: #66665f;
+
   --color-destructive: #8c3a2b; /* 6.99:1 */
   --color-destructive-foreground: #f7f5ef;
 

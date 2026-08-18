@@ -202,6 +202,35 @@ celebrates it before the reader has read it is editorialising. Colour may mark
 healthy status, affirmative action. It is never a data series, a chart line, or
 a decorative fill, and it never tints a surface that carries a finding.
 
+This rule cost the follower chart its most obvious colour. A dark green is the
+natural mark for the US series, and moss is the dark green already in the palette —
+but an accent that also means "United States" stops meaning "the system is
+working". So the US series is `#1F5D3F`: the same family, a different value, and
+7.15:1 on the canvas. Neither rule bends.
+
+**The Chart Legibility Rule.** Every semantic mark clears **3:1** against both
+paper surfaces (`#F7F5EF` canvas, `#FFFEF9` card) — the WCAG floor for a
+graphical object — and renders **fully opaque**. State is carried by shape, not by
+transparency: a dash for a provisional window, an outline for selection. Fading a
+series to say "this one is incomplete" makes it fail the contrast its colour was
+chosen to pass, which is how the chart previously became least legible in exactly
+the states that needed reading. The mean line is near-ink (`#171812`) because a
+rolling average is a statement of fact.
+
+| Mark | Value | On canvas |
+| --- | --- | --- |
+| US | `#1F5D3F` | 7.15:1 |
+| South Asian | `#8C5A1F` | 5.13:1 |
+| Anglosphere | `#2A4A6B` | 8.20:1 |
+| Other / provisional | `#66665F` | 4.42:1 |
+| Rolling mean | `#171812` | 17.9:1 |
+
+Values live in `web/src/lib/chartPalette.ts`, mirrored as `--color-chart-*` in
+`index.css`, and the floor is asserted by test rather than trusted. What these
+replaced were Tailwind `*-400` tints and two semi-transparent **white** strokes —
+correct for a dark ground, and on paper the white measured about 1.05:1, meaning
+the mean line was not dim but absent.
+
 **The Attention-Not-Alarm Rule.** `#A8412B` marks a task, not a failure. Nothing
 on this surface should make a person feel caught out; the product's voice
 forbids it for followers and the same restraint applies to its operator.

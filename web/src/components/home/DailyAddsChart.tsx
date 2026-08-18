@@ -1,6 +1,13 @@
 import { useRef, useState } from "react";
 import type { FollowerDailyAddsPoint } from "@/lib/types";
 import {
+  CHART_MEAN,
+  CHART_OTHER,
+  CHART_PROVISIONAL,
+  CHART_SEMANTIC_MARK_OPACITY,
+  REGION_CHART_COLORS,
+} from "@/lib/chartPalette";
+import {
   REGION_STACK,
   chartGeometry,
   formatSignedCount,
@@ -29,11 +36,13 @@ interface DailyAddsChartProps {
 
 // Region fills, hardcoded rather than themed. No <defs> at all — nothing here
 // declares a global gradient id, so nothing can collide with one.
+// Paper values, not the dark-ground *-400 tints these used to be: emerald-400
+// measured about 1.5:1 on this canvas.
 const REGION_COLORS: Record<ChartRegion, string> = {
-  us: "rgb(52 211 153)", // emerald-400
-  southAsian: "rgb(167 139 250)", // violet-400
-  anglosphere: "rgb(56 189 248)", // sky-400
-  other: "rgb(148 163 184)", // slate-400
+  us: REGION_CHART_COLORS.us,
+  southAsian: REGION_CHART_COLORS.southAsian,
+  anglosphere: REGION_CHART_COLORS.anglosphere,
+  other: REGION_CHART_COLORS.other,
 };
 
 const REGION_LABELS: Record<ChartRegion, string> = {
@@ -71,7 +80,7 @@ export function DailyAddsChart({
   selectedDay = null,
   onDaySelect,
   stack = REGION_STACK,
-  colorOf = (key) => REGION_COLORS[key as ChartRegion] ?? "rgb(148 163 184)",
+  colorOf = (key) => REGION_COLORS[key as ChartRegion] ?? CHART_OTHER,
   labelOf = (key) => REGION_LABELS[key as ChartRegion] ?? key,
   seriesNoun = "region",
 }: DailyAddsChartProps) {
@@ -233,15 +242,12 @@ export function DailyAddsChart({
             <g
               key={bar.day}
               {...selectionProps}
-              opacity={
-                bar.provisional
-                  ? activeDay === bar.day
-                    ? 0.7
-                    : 0.45
-                  : activeDay && activeDay !== bar.day
-                    ? 0.55
-                    : 1
-              }
+              // Never faded. Opacity was how the chart distinguished provisional
+              // and unselected days, and it is also how those days stopped being
+              // legible — a 0.45 mark on paper is below the 3:1 floor its colour
+              // was picked to clear. State is carried by the dashed outline and the
+              // selection background instead.
+              opacity={CHART_SEMANTIC_MARK_OPACITY}
             >
               <rect
                 data-day-hit-target={bar.day}
@@ -272,8 +278,10 @@ export function DailyAddsChart({
                     Math.min(...bar.segments.map((s) => s.y))
                   }
                   fill="none"
-                  stroke="rgb(255 255 255 / 0.5)"
+                  stroke={CHART_PROVISIONAL}
                   strokeWidth="1"
+                  // A dash carries "incomplete window"; the old fade made the bar
+                  // fail the contrast its colour was chosen to pass.
                   strokeDasharray="3 3"
                   vectorEffect="non-scaling-stroke"
                 />
@@ -286,7 +294,7 @@ export function DailyAddsChart({
           <polyline
             points={geo.meanLine.map((p) => `${p.x},${p.y}`).join(" ")}
             fill="none"
-            stroke="rgb(255 255 255 / 0.55)"
+            stroke={CHART_MEAN}
             strokeWidth="1.5"
             strokeLinecap="round"
             strokeLinejoin="round"

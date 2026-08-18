@@ -9,6 +9,8 @@ import type { FollowerDailyAddsPoint } from "./types";
 // long tail is genuinely noisy (countries crossing Meta's top-45 cutoff), so the
 // job here is to surface the short head honestly and fold the rest.
 
+import { COUNTRY_CHART_COLORS } from "./chartPalette";
+
 export const OTHER_KEY = "__other__";
 
 /**
@@ -21,14 +23,7 @@ export const OTHER_KEY = "__other__";
  * when the range changes which six those are.
  */
 export const COUNTRY_PALETTE = [
-  "#3987e5", // blue
-  "#d95926", // orange
-  "#199e70", // aqua
-  "#c98500", // yellow
-  "#d55181", // magenta
-  "#008300", // green
-  "#9085e9", // violet
-  "#e66767", // red
+  ...COUNTRY_CHART_COLORS,
 ] as const;
 
 // Same slate the region chart uses for "Rest of world" — a fold-up bucket is not
