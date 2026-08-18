@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,8 +13,10 @@ const api = vi.fn();
 
 vi.mock("../lib/api", () => ({
   api: (...a: unknown[]) => api(...a),
+  apiRead: (path: unknown) => api(path),
+  apiMutation: (...a: unknown[]) => api(...a),
   recoveryApi: {
-    list: (...a: unknown[]) => recoveryList(...a),
+    list: (query: unknown) => recoveryList(query),
     counts: () => recoveryCounts(),
     metrics: () => recoveryMetrics(),
     detail: vi.fn(),
@@ -25,12 +27,29 @@ vi.mock("../lib/api", () => ({
 
 const { Conversations } = await import("./Conversations");
 
-function renderPage() {
+function LocationProbe() {
+  const location = useLocation();
+  return <output aria-label="location">{`${location.pathname}${location.search}`}</output>;
+}
+
+function HistoryControls() {
+  const navigate = useNavigate();
+  return (
+    <>
+      <button type="button" onClick={() => navigate(-1)}>History back</button>
+      <button type="button" onClick={() => navigate(1)}>History forward</button>
+    </>
+  );
+}
+
+function renderPage(initialEntry = "/conversations") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[initialEntry]}>
       <QueryClientProvider client={client}>
         <Conversations />
+        <LocationProbe />
+        <HistoryControls />
       </QueryClientProvider>
     </MemoryRouter>,
   );
@@ -61,33 +80,103 @@ beforeEach(() => {
   });
 });
 
-describe("Conversations recovery lens", () => {
-  it("keeps Needs reply as the default and does not fetch recovery until asked", () => {
+describe("Conversations lenses", () => {
+  it("keeps Needs reply as the default", () => {
     renderPage();
 
     expect(screen.getByRole("button", { name: "Needs reply" })).toBeInTheDocument();
-    expect(recoveryList).not.toHaveBeenCalled();
   });
 
-  it("adds a DM recovery lens beside the existing ones", () => {
+  // The safety boundary, asserted rather than assumed. Every control in this row
+  // reads what already happened; DM recovery can publish a public reminder to real
+  // people and now lives on its own route. A pill that reappears here would put a
+  // sending control one habitual click from a reading one.
+  it("has no DM recovery lens and never fetches recovery", () => {
     renderPage();
-    for (const label of ["Needs reply", "DMs", "DM recovery"]) {
+
+    for (const label of ["Needs reply", "DMs", "People"]) {
       expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
     }
+    expect(screen.queryByRole("button", { name: /recovery/i })).not.toBeInTheDocument();
+    expect(recoveryList).not.toHaveBeenCalled();
+    expect(recoveryCounts).not.toHaveBeenCalled();
   });
 
-  it("shows the recovery views once selected", async () => {
+  // People arrived from /users. It reads the same conversations indexed by
+  // person, so unlike recovery it belongs in this row.
+  it("loads the directory on the People lens", async () => {
     const user = userEvent.setup();
     renderPage();
 
-    await user.click(screen.getByRole("button", { name: "DM recovery" }));
+    await user.click(screen.getByRole("button", { name: "People" }));
 
-    expect(await screen.findByRole("button", { name: /Ready/ })).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: /Attention/ })).toBeInTheDocument();
-    // The summary describes the tab in view, and Ready is the default. The
-    // grand total is still one click away under the All tab.
-    expect(await screen.findByText("2 people · 3 journeys")).toBeInTheDocument();
+    expect(screen.getByLabelText("location")).toHaveTextContent("/conversations?lens=people");
+    await waitFor(() =>
+      expect(api.mock.calls.some((c) => String(c[0]).startsWith("/users"))).toBe(true),
+    );
+    expect(screen.getByPlaceholderText("Search by @username or name…")).toBeInTheDocument();
   });
+
+  it("opens the People lens directly from its URL", async () => {
+    renderPage("/conversations?lens=people");
+
+    expect(screen.getByRole("button", { name: "People" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await waitFor(() =>
+      expect(api.mock.calls.some((call) => String(call[0]).startsWith("/users"))).toBe(true),
+    );
+    expect(screen.getByPlaceholderText("Search by @username or name…")).toBeInTheDocument();
+  });
+
+  it("falls back safely for an unknown lens", () => {
+    renderPage("/conversations?lens=unknown");
+    expect(screen.getByRole("button", { name: "Needs reply" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+
+  it("preserves unrelated search parameters when changing lens", async () => {
+    renderPage("/conversations?source=bookmark");
+
+    await userEvent.click(screen.getByRole("button", { name: "People" }));
+    const location = screen.getByLabelText("location").textContent ?? "";
+    const search = new URL(location, "https://tinysoho.test").searchParams;
+    expect(search.get("source")).toBe("bookmark");
+    expect(search.get("lens")).toBe("people");
+  });
+
+  it("restores lenses through browser history", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole("button", { name: "People" }));
+    await user.click(screen.getByRole("button", { name: "DMs" }));
+    await user.click(screen.getByRole("button", { name: "History back" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "People" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      ),
+    );
+
+    await user.click(screen.getByRole("button", { name: "History forward" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "DMs" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      ),
+    );
+  });
+
+  // Not tested: that /ai/capabilities is disabled on the People lens. The page
+  // opens on Needs reply, which fetches it legitimately, and React Query serves
+  // the cached result thereafter — so the assertion passes identically with the
+  // guard right or wrong. The narrowed `enabled` still belongs in the source; a
+  // test that cannot fail for the reason it claims does not belong here.
 
   // The old label asserted the person chose not to answer. A journey can end
   // here because the gate DM never landed, which is a different fact.
@@ -102,7 +191,7 @@ describe("Conversations recovery lens", () => {
   // is paginated, so it kept fetching.
   it.each([
     ["Needs reply", "needs_reply"],
-    ["DM recovery", "recovery"],
+    ["DMs", "dms"],
   ])("does not fetch journeys while viewing %s", async (label) => {
     const user = userEvent.setup();
     renderPage();
@@ -184,5 +273,103 @@ describe("Conversations recovery lens", () => {
       .toBe(true);
     expect(paths.some((path) => path.includes("/conversations?") && path.includes("mode=raw")))
       .toBe(true);
+  });
+});
+
+// An unresolved guide delivery is the automation's own unfinished business. It has
+// to be visible from the list without opening anything, and it has to be visible
+// even on a thread whose reply draft looks perfectly ordinary — those are two
+// independent facts about the same person.
+describe("guide delivery review in Conversations", () => {
+  const THREAD_ID = "44444444-4444-4444-8444-444444444444";
+
+  function threadRow(deliveryReviewCount: number) {
+    return {
+      id: THREAD_ID,
+      igUserId: "ig-99",
+      username: "geri",
+      name: "Geri",
+      needsReply: false,
+      latestInboundMessageId: "msg-1",
+      lastMessageAt: "2026-08-16T10:00:00.000Z",
+      lastInboundAt: "2026-08-16T09:00:00.000Z",
+      lastOutboundAt: "2026-08-16T10:00:00.000Z",
+      latestMessage: {
+        direction: "outbound",
+        text: "Sent you the guide",
+        type: "text",
+        source: "automation",
+        instagramTimestamp: "2026-08-16T10:00:00.000Z",
+      },
+      draft: null,
+      deliveryReviewCount,
+    };
+  }
+
+  const REVIEW = {
+    id: "55555555-5555-4555-8555-555555555555",
+    status: "needs_review",
+    confirmedUnits: 1,
+    totalUnits: 3,
+    sendWindowExpiresAt: "2026-08-17T10:00:00.000Z",
+    sendWindowOpen: true,
+    failureCode: null,
+    units: [
+      { id: "unit-a", position: 0, kind: "text", status: "sent" },
+      { id: "unit-b", position: 1, kind: "image", status: "uncertain" },
+      { id: "unit-c", position: 2, kind: "text", status: "pending" },
+    ],
+  };
+
+  function mockDmThreads(reviewCount: number) {
+    api.mockImplementation((path: string) => {
+      const p = String(path);
+      if (p.startsWith("/dm-threads?")) {
+        return Promise.resolve({ items: [threadRow(reviewCount)], nextCursor: null });
+      }
+      if (p === `/dm-threads/${THREAD_ID}`) {
+        return Promise.resolve({
+          ...threadRow(reviewCount),
+          messages: [],
+          deliveryReviews: reviewCount > 0 ? [REVIEW] : [],
+        });
+      }
+      if (p.startsWith("/keywords")) return Promise.resolve([]);
+      return Promise.resolve({ items: [], nextCursor: null });
+    });
+  }
+
+  it("badges a thread whose delivery needs review even with no draft", async () => {
+    mockDmThreads(1);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole("button", { name: "DMs" }));
+
+    expect(await screen.findByText("Delivery needs review")).toBeInTheDocument();
+  });
+
+  it("shows no delivery badge when nothing needs review", async () => {
+    mockDmThreads(0);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole("button", { name: "DMs" }));
+    await waitFor(() => expect(screen.getByText("@geri")).toBeInTheDocument());
+
+    expect(screen.queryByText("Delivery needs review")).not.toBeInTheDocument();
+  });
+
+  it("resolves the delivery from the thread drawer without exposing content", async () => {
+    mockDmThreads(1);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole("button", { name: "DMs" }));
+    await user.click(await screen.findByText("@geri"));
+
+    expect(await screen.findByText("1 of 3 messages confirmed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Already delivered" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Cancel delivery" })).toBeEnabled();
   });
 });

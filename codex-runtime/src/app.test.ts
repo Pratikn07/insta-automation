@@ -370,6 +370,32 @@ describe("POST /internal/advisor/messages", () => {
     await askReq(app).send(VALID_ASK).expect(504, { error: "turn_timeout", retryAt: null });
   });
 
+  // 409, not a 5xx. A 5xx tells the caller "try again", and trying again is exactly
+  // what must not happen while a question's outcome is unresolved.
+  it("maps an in-flight question to 409 so nobody retries it", async () => {
+    const app = advisorApp(
+      fakeAdvisorService({
+        ask: vi.fn(async () => {
+          throw new AdvisorError("advisor_outcome_pending");
+        }),
+      }),
+    );
+    await askReq(app)
+      .send(VALID_ASK)
+      .expect(409, { error: "advisor_outcome_pending", retryAt: null });
+  });
+
+  it("maps a reused message id to 409", async () => {
+    const app = advisorApp(
+      fakeAdvisorService({
+        ask: vi.fn(async () => {
+          throw new AdvisorError("idempotency_conflict");
+        }),
+      }),
+    );
+    await askReq(app).send(VALID_ASK).expect(409, { error: "idempotency_conflict", retryAt: null });
+  });
+
   it("maps invalid advisor output to 503", async () => {
     const app = advisorApp(
       fakeAdvisorService({

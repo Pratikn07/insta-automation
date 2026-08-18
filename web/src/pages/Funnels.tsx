@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Filter, RefreshCw } from "lucide-react";
 import { useState } from "react";
-import { api } from "@/lib/api";
+import { apiRead } from "@/lib/api";
 import type { DropOffSummary, GuideFollowResult } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -48,21 +48,19 @@ export function Funnels() {
 
   const funnelQ = useQuery<GuideFollowResult>({
     queryKey: ["funnels", "guide-follow", range.from, range.to],
-    queryFn: () => api<GuideFollowResult>(`/funnels/guide-follow${query}`),
+    queryFn: ({ signal }) => apiRead<GuideFollowResult>(`/funnels/guide-follow${query}`, { signal }),
   });
 
   const dropOffQ = useQuery<DropOffSummary>({
     queryKey: ["funnels", "guide-follow", "no-reply", range.from, range.to],
-    queryFn: () => api<DropOffSummary>(`/funnels/guide-follow/drop-off/no-reply${query}`),
+    queryFn: ({ signal }) => apiRead<DropOffSummary>(`/funnels/guide-follow/drop-off/no-reply${query}`, { signal }),
   });
 
   return (
     <div className="space-y-8">
       <header>
-        <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-          Funnels · Guide → follow
-        </p>
-        <h2 className="mt-2.5 max-w-[18ch] text-3xl font-semibold leading-[1.08] tracking-[-0.028em] text-balance sm:text-4xl">
+        <p className="label-caps">Funnels · Guide → follow</p>
+        <h2 className="mt-2 max-w-[24ch] text-2xl font-medium leading-tight tracking-tight text-balance">
           Where the guide funnel loses people.
         </h2>
 
@@ -72,11 +70,11 @@ export function Funnels() {
         <p className="mt-4 max-w-[62ch] text-sm text-muted-foreground">
           {funnelQ.data ? (
             <>
-              <span className="font-semibold text-foreground">
+              <span className="font-medium text-foreground">
                 {funnelQ.data.cohortSize.toLocaleString()} conversations
               </span>{" "}
               that entered between{" "}
-              <span className="font-semibold text-foreground">
+              <span className="font-medium text-foreground">
                 {formatCohortRange(funnelQ.data.window)}
               </span>
               , followed forward however long they took — not events counted inside the
@@ -94,10 +92,10 @@ export function Funnels() {
               type="button"
               onClick={() => setDays(p.days)}
               className={
-                "rounded-full border px-3 py-1 text-xs font-medium transition-colors " +
+                "rounded-sm border px-3 py-1.5 text-xs transition-colors [@media(pointer:coarse)]:min-h-11 " +
                 (days === p.days
-                  ? "border-foreground/40 bg-accent/40 text-foreground"
-                  : "text-muted-foreground hover:bg-accent/20")
+                  ? "border-line bg-muted font-medium text-foreground"
+                  : "border-transparent text-muted-foreground hover:bg-muted")
               }
             >
               {p.label}
@@ -147,9 +145,7 @@ function FunnelBody({
       {/* Headline + KPIs */}
       <section className="grid gap-8 border-b pb-9 md:grid-cols-[1.15fr_1fr] md:gap-14">
         <div>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-            {data.headline.label}
-          </p>
+          <p className="label-caps">{data.headline.label}</p>
           <GuardedNumber
             className="mt-3"
             rate={data.headline.rate}
@@ -188,13 +184,13 @@ function FunnelBody({
           renderLoss={(stage, lost) =>
             stage.key === "replied" ? (
               <p className="mt-2.5 text-[12.5px] text-muted-foreground">
-                <span className="font-semibold text-foreground">
+                <span className="font-medium text-foreground">
                   {lost.toLocaleString()} lost here
                 </span>{" "}
                 —{" "}
                 <a
                   href="#drop-off"
-                  className="border-b border-current text-[color:var(--color-funnel-soft)] hover:opacity-80"
+                  className="border-b border-current text-funnel-mark hover:opacity-80"
                 >
                   see who they are
                 </a>
@@ -219,7 +215,7 @@ function FunnelBody({
             followingD21:
               d21 && measuredD21 < eligible ? (
                 <Caveat className="mt-3">
-                  <b className="font-semibold">This is not {d21.ofPrevPct}% retention.</b> The
+                  <b className="font-medium">This is not {d21.ofPrevPct}% retention.</b> The
                   follow-through worker has re-measured {measuredD21.toLocaleString()} of{" "}
                   {eligible.toLocaleString()} eligible conversations, and{" "}
                   {data.retention.numerator.toLocaleString()} of those are still following.
@@ -245,7 +241,7 @@ function FunnelBody({
             <EvidenceBar evidence={dropOff.readEvidence} />
 
             <Caveat className="mt-5">
-              <b className="font-semibold">
+              <b className="font-medium">
                 The grey block is an absence of evidence, not a finding.
               </b>{" "}
               Those {dropOff.readEvidence.noReadData.toLocaleString()} conversations were never
@@ -255,7 +251,7 @@ function FunnelBody({
               confirmed read. That points at deliverability rather than at the wording of the DM.
             </Caveat>
 
-            <h3 className="mt-9 text-[15px] font-semibold">Who to act on</h3>
+            <h3 className="mt-9 text-[15px] font-medium">Who to act on</h3>
             <p className="mb-4 mt-1 text-sm text-muted-foreground">
               Newest first, capped at {dropOff.rows.length.toLocaleString()} rows.
             </p>
@@ -286,10 +282,8 @@ function SectionHead({
 }) {
   return (
     <div className="mb-6">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-        {eyebrow}
-      </p>
-      <h3 className="mt-2 text-xl font-semibold tracking-[-0.018em]">{title}</h3>
+      <p className="label-caps">{eyebrow}</p>
+      <h3 className="mt-1.5 text-[15px] font-medium tracking-tight">{title}</h3>
       <p className="mt-1.5 max-w-[64ch] text-sm text-muted-foreground">{blurb}</p>
     </div>
   );
@@ -297,7 +291,7 @@ function SectionHead({
 
 function Kpi({ label, rate }: { label: string; rate: GuideFollowResult["retention"] }) {
   return (
-    <div className="flex items-baseline justify-between gap-4 border-b border-border/60 py-3 first:border-t first:border-border/60">
+    <div className="flex items-baseline justify-between gap-4 border-b py-3 first:border-t">
       <dt className="text-[13px] capitalize text-muted-foreground">{label}</dt>
       <dd className="text-right">
         <GuardedNumber rate={rate} size="inline" />
@@ -308,10 +302,10 @@ function Kpi({ label, rate }: { label: string; rate: GuideFollowResult["retentio
 
 function KpiCount({ label, value, sub }: { label: string; value: number; sub: string }) {
   return (
-    <div className="flex items-baseline justify-between gap-4 border-b border-border/60 py-3 first:border-t first:border-border/60">
+    <div className="flex items-baseline justify-between gap-4 border-b py-3 first:border-t">
       <dt className="text-[13px] text-muted-foreground">{label}</dt>
       <dd className="text-right">
-        <div className="text-base font-semibold tabular-nums tracking-[-0.01em]">
+        <div className="text-base font-medium tabular-nums tracking-[-0.01em]">
           {value.toLocaleString()}
         </div>
         <p className="mt-0.5 text-[11px] text-muted-foreground">{sub}</p>

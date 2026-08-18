@@ -16,8 +16,10 @@ const activateSettingsVerification = vi.fn();
 vi.mock("../../lib/api", () => ({
   // The keyword filter's options come from the generic client, not recoveryApi.
   api: (path: string) => apiGet(path),
+  apiRead: (path: string) => apiGet(path),
+  apiMutation: (...a: unknown[]) => apiGet(...a),
   recoveryApi: {
-    list: (...a: unknown[]) => list(...a),
+    list: (query: unknown) => list(query),
     counts: () => counts(),
     metrics: () => metrics(),
     settingsVerifications: () => settingsVerifications(),
@@ -145,7 +147,14 @@ beforeEach(() => {
 describe("DmRecoveryList", () => {
   it("shows a view tab per state with its record count", async () => {
     renderList();
-    for (const label of ["Scheduled", "Ready", "Sent", "Suppressed", "Control", "Attention"]) {
+    for (const label of [
+      "Scheduled",
+      "Due",
+      "Sent publicly",
+      "Suppressed",
+      "Control",
+      "Attention",
+    ]) {
       expect(await screen.findByRole("button", { name: new RegExp(label) })).toBeInTheDocument();
     }
   });
@@ -163,6 +172,30 @@ describe("DmRecoveryList", () => {
 
     expect(await screen.findByText("No confirmed read")).toBeInTheDocument();
     expect(container.textContent).not.toMatch(/\bUnread\b/);
+  });
+
+  it("renders Due as the automation state beside the read evidence", async () => {
+    list.mockResolvedValue({
+      rows: [row({ eligibleAt: "2020-01-01T00:00:00.000Z" })],
+      nextCursor: null,
+    });
+    renderList();
+
+    const reminder = await screen.findByRole("button", { name: /@sarah/ });
+    expect(reminder).toHaveTextContent("Due");
+    expect(reminder).toHaveTextContent("No confirmed read");
+  });
+
+  it("renders Scheduled before the eligibility time", async () => {
+    list.mockResolvedValue({
+      rows: [row({ eligibleAt: "2099-01-01T00:00:00.000Z" })],
+      nextCursor: null,
+    });
+    renderList();
+
+    expect(await screen.findByRole("button", { name: /@sarah/ })).toHaveTextContent(
+      "Scheduled",
+    );
   });
 
   it("refetches with the selected view", async () => {
@@ -358,7 +391,7 @@ describe("DmRecoveryList", () => {
     expect(
       await screen.findByRole("button", { name: "Scheduled: 6 people, 6 journeys" }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Ready: 2 people, 3 journeys" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Due: 2 people, 3 journeys" })).toBeInTheDocument();
   });
 
   describe("filters", () => {

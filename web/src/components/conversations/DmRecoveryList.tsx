@@ -1,6 +1,6 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { api, recoveryApi } from "../../lib/api";
+import { apiRead, recoveryApi } from "../../lib/api";
 import type {
   Keyword,
   RecoveryCohort,
@@ -23,20 +23,28 @@ export const CIRCUIT_PAUSED_MESSAGE =
 
 const VIEWS: { value: RecoveryView; label: string }[] = [
   { value: "scheduled", label: "Scheduled" },
-  { value: "ready", label: "Ready" },
-  { value: "sent", label: "Sent" },
+  { value: "ready", label: "Due" },
+  { value: "sent", label: "Sent publicly" },
   { value: "suppressed", label: "Suppressed" },
   { value: "control", label: "Control" },
   { value: "attention", label: "Attention" },
   { value: "all", label: "All" },
 ];
 
+// Measured against the paper ground, not chosen by name. The previous map used
+// Tailwind's -400 shades, which are calibrated for a dark background: amber-400
+// on this page measured 1.58:1, so "Waiting for read confirmation" was legible
+// only if you already knew what it said.
+//
+// warning is blue rather than orange on purpose, and that predates the recolour:
+// "couldn't reach them yet — retrying on our own" self-heals for almost everyone
+// and needs no action, so it is a status, not an alarm. Only danger gets urgent.
 const TONE_CLASS: Record<RecoveryTone, string> = {
-  neutral: "text-muted-foreground bg-muted/40",
-  positive: "text-emerald-400 bg-emerald-400/10",
-  pending: "text-amber-400 bg-amber-400/10",
-  warning: "text-sky-400 bg-sky-400/10",
-  danger: "text-rose-400 bg-rose-400/10",
+  neutral: "text-muted-foreground bg-muted", // 5.31:1
+  positive: "text-signal bg-signal-soft", // 7.81:1
+  pending: "text-caution bg-caution-soft", // 5.13:1
+  warning: "text-funnel-mark bg-mark-soft", // 7.15:1
+  danger: "text-urgent bg-urgent-soft", // 4.69:1
 };
 
 /** Percentages are the experiment's headline, so an absent one must read as
@@ -54,24 +62,24 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
 
   const keywordsQ = useQuery<Keyword[]>({
     queryKey: ["keywords"],
-    queryFn: () => api<Keyword[]>("/keywords"),
+    queryFn: ({ signal }) => apiRead<Keyword[]>("/keywords", { signal }),
   });
 
   const countsQ = useQuery<RecoveryCounts>({
     queryKey: ["recovery-reminders", "counts"],
-    queryFn: () => recoveryApi.counts(),
+    queryFn: ({ signal }) => recoveryApi.counts({ signal }),
   });
 
   // Health rides along with metrics rather than its own endpoint, so the banner
   // and the experiment readout can never disagree about the circuit.
   const metricsQ = useQuery<RecoveryMetrics>({
     queryKey: ["recovery-reminders", "metrics"],
-    queryFn: () => recoveryApi.metrics(),
+    queryFn: ({ signal }) => recoveryApi.metrics({ signal }),
   });
 
   const settingsVerificationsQ = useQuery<{ records: SettingsBlockedVerificationRecord[] }>({
     queryKey: ["recovery-reminders", "settings-verifications"],
-    queryFn: () => recoveryApi.settingsVerifications(),
+    queryFn: ({ signal }) => recoveryApi.settingsVerifications({ signal }),
   });
 
   const activateVerificationM = useMutation({
@@ -91,7 +99,7 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
     // filter's badge is the same lie as the wrong tab's rows.
     queryKey: ["recovery-reminders", "list", view, keywordId, cohort],
     initialPageParam: null as { cursor: string; asOf: string } | null,
-    queryFn: ({ pageParam }) => {
+    queryFn: ({ pageParam, signal }) => {
       const params = new URLSearchParams({ view });
       if (keywordId) params.set("keywordId", keywordId);
       if (cohort) params.set("cohort", cohort);
@@ -102,7 +110,7 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
         // boundary; letting it advance drops the rows that cross it.
         params.set("asOf", pageParam.asOf);
       }
-      return recoveryApi.list(params.toString());
+      return recoveryApi.list(params.toString(), { signal });
     },
     getNextPageParam: (last: { nextCursor: string | null; asOf: string }) =>
       last.nextCursor ? { cursor: last.nextCursor, asOf: last.asOf } : null,
@@ -125,10 +133,10 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
       {health?.circuitOpen ? (
         <div
           role="status"
-          className="rounded-lg border border-sky-400/30 bg-sky-400/10 px-3 py-2 text-xs text-sky-100"
+          className="rounded-lg border border-funnel-mark bg-mark-soft px-3 py-2 text-xs text-funnel-mark"
         >
           <p>{CIRCUIT_PAUSED_MESSAGE}</p>
-          <p className="mt-1 text-sky-200/80">
+          <p className="mt-1 text-funnel-mark">
             Reason: <span className="font-medium">{health.reason ?? "unknown"}</span> · {health.dueCount} waiting
           </p>
         </div>
@@ -270,9 +278,9 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
                     Activate
                   </button>
                 ) : record.status === "stale" || record.status === "retired" ? (
-                  <span className="ml-auto text-rose-200">Activation blocked</span>
+                  <span className="ml-auto text-urgent">Activation blocked</span>
                 ) : (
-                  <span className="ml-auto text-emerald-300">Active</span>
+                  <span className="ml-auto text-signal">Active</span>
                 )}
               </li>
             ))}
@@ -287,8 +295,8 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
           ))}
         </div>
       ) : rowsQ.isError ? (
-        <div className="rounded-lg border border-rose-400/30 bg-rose-400/10 px-3 py-4 text-sm">
-          <p className="text-rose-100">Couldn’t load recovery reminders.</p>
+        <div className="rounded-lg border border-urgent bg-urgent-soft px-3 py-4 text-sm">
+          <p className="text-urgent">Couldn’t load recovery reminders.</p>
           <button
             type="button"
             onClick={() => rowsQ.refetch()}
@@ -323,18 +331,25 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
                       {row.keyword.keyword} · {formatAbsolute(row.eligibleAt)}
                     </span>
                   </span>
-                  <span
-                    className={cn(
-                      "shrink-0 rounded-full px-2 py-0.5 text-xs font-medium",
-                      TONE_CLASS[state.tone],
-                    )}
-                  >
-                    {state.label}
+                  <span className="flex shrink-0 flex-col items-end gap-1">
+                    {state.actionState ? (
+                      <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-foreground">
+                        {state.actionState}
+                      </span>
+                    ) : null}
+                    <span
+                      className={cn(
+                        "rounded-full px-2 py-0.5 text-xs font-medium",
+                        TONE_CLASS[state.tone],
+                      )}
+                    >
+                      {state.label}
+                    </span>
                   </span>
                   {row.triggerKind === "settings_blocked" &&
                   row.settingsEvidence &&
                   row.settingsEvidence.status !== "current" ? (
-                    <span className="shrink-0 rounded-full bg-rose-400/10 px-2 py-0.5 text-xs font-medium text-rose-300">
+                    <span className="shrink-0 rounded-full bg-urgent-soft px-2 py-0.5 text-xs font-medium text-urgent">
                       {row.settingsEvidence.status === "missing"
                         ? "Evidence missing"
                         : row.settingsEvidence.status === "stale"

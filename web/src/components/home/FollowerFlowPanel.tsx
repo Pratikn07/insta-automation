@@ -60,20 +60,20 @@ const trendStyles = {
   accelerating: {
     label: "Accelerating",
     Icon: ArrowUpRight,
-    badge: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300",
-    glow: "from-emerald-400/20 via-emerald-400/5 to-transparent",
+    badge: "border-signal bg-signal-soft text-signal",
+    glow: "from-signal-soft via-signal-soft to-transparent",
   },
   steady: {
     label: "Holding steady",
     Icon: ArrowRight,
-    badge: "border-amber-300/25 bg-amber-300/10 text-amber-200",
-    glow: "from-amber-300/15 via-amber-300/5 to-transparent",
+    badge: "border-caution bg-caution-soft text-caution",
+    glow: "from-caution-soft via-caution-soft to-transparent",
   },
   slowing: {
     label: "Slowing",
     Icon: ArrowDownRight,
-    badge: "border-rose-400/25 bg-rose-400/10 text-rose-300",
-    glow: "from-rose-400/15 via-rose-400/5 to-transparent",
+    badge: "border-urgent bg-urgent-soft text-urgent",
+    glow: "from-urgent-soft via-urgent-soft to-transparent",
   },
 } as const;
 
@@ -127,7 +127,7 @@ export function FollowerFlowPanel({
           body="The rest of your dashboard is still available. Retry this panel when you're ready."
           action={<Button variant="outline" size="sm" onClick={onRetry}><RefreshCw className="size-3.5" /> Retry</Button>}
           Icon={TrendingUp}
-          accentClassName="bg-sky-400/10 text-sky-300"
+          accentClassName="bg-mark-soft text-funnel-mark"
         />
       </PanelShell>
     );
@@ -140,7 +140,7 @@ export function FollowerFlowPanel({
           title="Waiting for follower snapshots"
           body="Daily adds need two days of follower geography. The snapshot worker fills this in automatically."
           Icon={TrendingUp}
-          accentClassName="bg-sky-400/10 text-sky-300"
+          accentClassName="bg-mark-soft text-funnel-mark"
         />
       </PanelShell>
     );
@@ -207,7 +207,7 @@ export function FollowerFlowPanel({
           title="Not enough measured days in this range"
           body="Pick a wider range — daily adds need at least two days Meta actually refreshed."
           Icon={TrendingUp}
-          accentClassName="bg-sky-400/10 text-sky-300"
+          accentClassName="bg-mark-soft text-funnel-mark"
         />
       </PanelShell>
     );
@@ -241,7 +241,7 @@ export function FollowerFlowPanel({
       <div className="relative space-y-5">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-[0.16em] text-sky-300">
+            <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-[0.16em] text-funnel-mark">
               <TrendingUp className="size-4" /> Follower flow
             </div>
             <h2 className="text-xl font-semibold tracking-tight">Where are your followers coming from?</h2>
@@ -256,7 +256,7 @@ export function FollowerFlowPanel({
               </span>
             )}
             {freshness?.isStale && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-amber-300/25 bg-amber-300/10 px-2.5 py-1 text-[11px] font-medium text-amber-200">
+              <span className="inline-flex items-center gap-1 rounded-full border border-caution bg-caution-soft px-2.5 py-1 text-[11px] font-medium text-caution">
                 <Clock className="size-3" /> Snapshots {freshness.label}
               </span>
             )}
@@ -265,14 +265,14 @@ export function FollowerFlowPanel({
 
         {filterBar && <div className="flex justify-end">{filterBar}</div>}
 
-        <div className="rounded-xl border border-white/10 bg-black/15 px-4 py-3">
+        <div className="rounded-xl border border-border bg-card/40 px-4 py-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="text-xs text-muted-foreground">
               Where your new followers come from ({windowLabel})
             </div>
             {hasCountryData && (
               <div className="flex items-center gap-1">
-                <div className="flex rounded-md border border-white/10 p-0.5">
+                <div className="flex rounded-md border border-border p-0.5">
                   {(["regions", "countries"] as const).map((m) => (
                     <button
                       key={m}
@@ -282,7 +282,7 @@ export function FollowerFlowPanel({
                       className={cn(
                         "rounded px-2 py-0.5 text-[11px] font-medium capitalize transition",
                         mode === m
-                          ? "bg-white/10 text-foreground"
+                          ? "bg-muted text-foreground"
                           : "text-muted-foreground hover:text-foreground",
                       )}
                     >
@@ -325,7 +325,7 @@ export function FollowerFlowPanel({
                             ? `Remove ${countryLabel(code)}`
                             : `Show only ${countryLabel(code)}`
                       }
-                      className="inline-flex items-center gap-1.5 rounded-md px-1 py-0.5 text-xs text-foreground transition hover:bg-white/10"
+                      className="inline-flex items-center gap-1.5 rounded-md px-1 py-0.5 text-xs text-foreground transition hover:bg-muted"
                     >
                       <span
                         className="size-2.5 rounded-full"
@@ -362,14 +362,14 @@ export function FollowerFlowPanel({
               whole window's total, and there is no total on screen to reconcile
               it against when you have asked for two countries. */}
           {unattributed !== 0 && !(inCountryMode && selected) && (
-            <p className="mt-2 border-t border-white/5 pt-2 text-[11px] leading-relaxed text-muted-foreground">
+            <p className="mt-2 border-t border-border pt-2 text-[11px] leading-relaxed text-muted-foreground">
               {formatSignedCount(unattributed)} more Meta counted but couldn't place —
               countries crossing its top-{stock.countriesReported} reporting cutoff.
             </p>
           )}
         </div>
 
-        <div className="rounded-2xl border border-white/10 bg-black/15 p-4">
+        <div className="rounded-2xl border border-border bg-card/40 p-4">
           <div className="mb-2 flex items-center justify-between text-xs">
             <span className="font-medium text-foreground">
               Daily net adds by {inCountryMode ? "country" : "region"}
@@ -399,8 +399,8 @@ export function FollowerFlowPanel({
             and hiding a spike because of a date filter buries the lead. */}
         <SpikeCandidates points={points} />
 
-        <div className="flex gap-3 rounded-xl border border-violet-400/15 bg-violet-400/5 p-3.5 text-xs leading-relaxed text-muted-foreground">
-          <Info className="mt-0.5 size-4 shrink-0 text-violet-300" />
+        <div className="flex gap-3 rounded-xl border border-funnel-mark bg-mark-soft p-3.5 text-xs leading-relaxed text-muted-foreground">
+          <Info className="mt-0.5 size-4 shrink-0 text-funnel-mark" />
           <p>
             Net adds (follows minus unfollows) diffed from Meta's follower geography, bucketed by Pacific day.
             Meta reports only its top countries and lags about two days — the dashed newest bars can still shift,

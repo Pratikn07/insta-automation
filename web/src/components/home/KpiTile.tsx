@@ -1,11 +1,16 @@
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
 // A single glanceable stat. Deliberately dumb: every string arrives already
 // formatted, so the tile has no opinion about follower math and stays trivially
 // testable. Domain formatting lives in FollowerKpiRow.
+//
+// Maison renders it with no container at all. The old tile was a filled card
+// with a tonal glow and an icon chip; here a hairline above the label does the
+// separating, and the figure carries the weight. `tone` and `Icon` survive in
+// the API because callers and tests still pass them, but this world has no icon
+// system and no tonal fills — the accent is reserved for the emphasised figure.
 export type KpiTone = "emerald" | "sky" | "violet";
 
 export interface KpiTileProps {
@@ -17,69 +22,54 @@ export interface KpiTileProps {
   tone?: KpiTone;
   isLoading?: boolean;
   trendIcon?: LucideIcon | null;
+  /** The one figure that is the score. Set on a single tile per row. */
+  emphasis?: boolean;
 }
-
-const TONES: Record<KpiTone, { chip: string; value: string; glow: string }> = {
-  emerald: {
-    chip: "bg-emerald-400/10 text-emerald-300",
-    value: "text-emerald-300",
-    glow: "from-emerald-400/12 to-transparent",
-  },
-  sky: {
-    chip: "bg-sky-400/10 text-sky-300",
-    value: "text-sky-300",
-    glow: "from-sky-400/12 to-transparent",
-  },
-  violet: {
-    chip: "bg-violet-400/10 text-violet-200",
-    value: "text-violet-200",
-    glow: "from-violet-400/12 to-transparent",
-  },
-};
 
 export function KpiTile({
   label,
   value,
   context,
   note,
-  Icon,
-  tone = "sky",
   isLoading = false,
   trendIcon: TrendIcon = null,
+  emphasis = false,
 }: KpiTileProps) {
-  const t = TONES[tone];
+  // An em-dash set at figure scale is a 60px-tall hole where a number should be,
+  // and every tile shows one before the first snapshot lands. A placeholder is
+  // not a figure, so it does not get a figure's size.
+  const isPlaceholder = value === "—" || value === "";
 
   return (
-    <Card className="relative overflow-hidden rounded-2xl border-white/10 bg-card/85">
-      <div className={cn("pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b", t.glow)} />
-      <CardContent className="relative p-5 pt-5">
-        <div className="flex items-center gap-2.5">
-          <div className={cn("flex size-8 shrink-0 items-center justify-center rounded-lg", t.chip)}>
-            <Icon className="size-4" />
-          </div>
-          <div className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">
-            {label}
-          </div>
+    <div className="border-t pt-3">
+      <div className="label-caps">{label}</div>
+
+      {isLoading ? (
+        <Skeleton className={cn("mt-2.5 w-28", emphasis ? "h-9" : "h-7")} />
+      ) : (
+        <div className="mt-2 flex items-baseline gap-2">
+          <span
+            className={cn(
+              "font-medium leading-tight tracking-tight tabular-nums",
+              isPlaceholder
+                ? "text-lg text-muted-foreground"
+                : emphasis
+                  ? "text-[1.8rem]"
+                  : "text-[1.4rem]",
+            )}
+          >
+            {value}
+          </span>
+          {TrendIcon && <TrendIcon className="size-4 shrink-0 text-signal" aria-hidden />}
         </div>
+      )}
 
-        {isLoading ? (
-          <Skeleton className="mt-4 h-10 w-28" />
-        ) : (
-          <div className="mt-4 flex items-baseline gap-2">
-            <span className={cn("text-4xl font-semibold tracking-[-0.04em] tabular-nums", t.value)}>
-              {value}
-            </span>
-            {TrendIcon && <TrendIcon className={cn("size-5 shrink-0", t.value)} />}
-          </div>
-        )}
-
-        {!isLoading && context && (
-          <p className="mt-2 text-sm leading-snug text-foreground/80">{context}</p>
-        )}
-        {!isLoading && note && (
-          <p className="mt-1 text-[11px] leading-snug text-muted-foreground">{note}</p>
-        )}
-      </CardContent>
-    </Card>
+      {!isLoading && context && (
+        <p className="mt-2 text-[12.5px] leading-snug text-foreground/75">{context}</p>
+      )}
+      {!isLoading && note && (
+        <p className="mt-1 text-[11px] leading-snug text-muted-foreground">{note}</p>
+      )}
+    </div>
   );
 }

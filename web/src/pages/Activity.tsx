@@ -1,14 +1,14 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Activity as ActivityIcon } from "lucide-react";
 import { useState } from "react";
-import { api } from "@/lib/api";
+import { apiRead } from "@/lib/api";
 import type { Stats } from "@/lib/types";
 import { AutomationHealthStrip } from "@/components/activity/AutomationHealthStrip";
 import { cn, displayUser, type IgUserLite } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Drawer } from "@/components/ui/drawer";
-import { EmptyState } from "@/components/EmptyState";
+import { EmptyState, LoadFailed } from "@/components/EmptyState";
 import { UserLineage } from "@/components/UserLineage";
 import { EventRow, type EventLogItem } from "./Conversations";
 
@@ -44,11 +44,11 @@ export function Activity() {
 
   const eventsQ = useInfiniteQuery({
     queryKey: ["activity", kind],
-    queryFn: ({ pageParam }) => {
+    queryFn: ({ pageParam, signal }) => {
       const params = new URLSearchParams();
       if (kind !== "all") params.set("kind", kind);
       if (pageParam) params.set("cursor", pageParam);
-      return api<EventsPage>(`/stats/events?${params.toString()}`);
+      return apiRead<EventsPage>(`/stats/events?${params.toString()}`, { signal });
     },
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last) => last.nextCursor ?? undefined,
@@ -57,7 +57,7 @@ export function Activity() {
   // Same key as elsewhere, so this shares one cached fetch across pages.
   const statsQ = useQuery<Stats>({
     queryKey: ["stats"],
-    queryFn: () => api<Stats>("/stats"),
+    queryFn: ({ signal }) => apiRead<Stats>("/stats", { signal }),
   });
 
   const items = eventsQ.data?.pages.flatMap((p) => p.items) ?? [];
@@ -65,7 +65,7 @@ export function Activity() {
     {},
     ...(eventsQ.data?.pages.map((p) => p.users ?? {}) ?? []),
   );
-  const isLoading = eventsQ.isLoading;
+  const isLoading = eventsQ.isPending;
 
   return (
     <div className="space-y-5">
@@ -97,7 +97,9 @@ export function Activity() {
         ))}
       </div>
 
-      {isLoading ? (
+      {eventsQ.isError ? (
+        <LoadFailed what="the event log" onRetry={() => void eventsQ.refetch()} />
+      ) : isLoading ? (
         <div className="space-y-2">
           {[0, 1, 2, 3, 4].map((i) => (
             <Skeleton key={i} className="h-14" />

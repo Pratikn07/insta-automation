@@ -125,6 +125,66 @@ describe("queueReplyDraft", () => {
     });
   });
 
+  // Asking twice for a first draft of the same message is one intent, not two. It
+  // happens for free: a double click, or a retry after a response was lost. The old
+  // behaviour superseded the good draft and spent another model call to replace it
+  // with an identical one.
+  it("returns the active draft instead of superseding it for the same inbound", async () => {
+    tx.replyDraft.findFirst.mockResolvedValue({
+      id: "draft-existing",
+      revision: 1,
+      status: "pending_approval",
+      inboundMessageId: "message-1",
+    });
+
+    await expect(queueReplyDraft(INPUT)).resolves.toMatchObject({ id: "draft-existing" });
+
+    expect(tx.replyDraft.updateMany).not.toHaveBeenCalled();
+    expect(tx.replyDraft.create).not.toHaveBeenCalled();
+    expect(tx.replyDraft.aggregate).not.toHaveBeenCalled();
+  });
+
+  it("coalesces onto a draft that is still generating", async () => {
+    tx.replyDraft.findFirst.mockResolvedValue({
+      id: "draft-generating",
+      revision: 1,
+      status: "generating",
+      inboundMessageId: "message-1",
+    });
+
+    await expect(queueReplyDraft(INPUT)).resolves.toMatchObject({ id: "draft-generating" });
+
+    expect(tx.replyDraft.create).not.toHaveBeenCalled();
+  });
+
+  // A new inbound is a different question, so the old draft really is superseded.
+  it("still supersedes an active draft answering an older inbound", async () => {
+    tx.$queryRaw.mockResolvedValue([
+      { ...LOCKED_THREAD, latestInboundMessageId: "message-2" },
+    ]);
+    tx.replyDraft.findFirst.mockResolvedValue({
+      id: "draft-old",
+      revision: 1,
+      status: "pending_approval",
+      inboundMessageId: "message-1",
+    });
+
+    await expect(queueReplyDraft({ threadId: "thread-1" })).resolves.toMatchObject({
+      id: "draft-1",
+    });
+
+    expect(tx.replyDraft.updateMany).toHaveBeenCalled();
+    expect(tx.replyDraft.create).toHaveBeenCalled();
+  });
+
+  it("creates normally when no active draft exists", async () => {
+    tx.replyDraft.findFirst.mockResolvedValue(null);
+
+    await expect(queueReplyDraft(INPUT)).resolves.toMatchObject({ id: "draft-1" });
+
+    expect(tx.replyDraft.create).toHaveBeenCalled();
+  });
+
   it("rejects a slow older handler after a newer inbound becomes authoritative", async () => {
     tx.$queryRaw.mockResolvedValue([
       { ...LOCKED_THREAD, latestInboundMessageId: "message-new" },
@@ -230,14 +290,21 @@ describe("queueReplyDraft", () => {
         throw error;
       }
     });
+    tx.replyDraft.findFirst.mockImplementation(async () => {
+      order.push("coalesce_check");
+      return null;
+    });
     rootReplyDraft.findFirst.mockImplementation(async () => {
       order.push("winner_lookup");
       return { id: "draft-winner", revision: 1, status: "queued" };
     });
 
     await expect(queueReplyDraft(INPUT)).resolves.toMatchObject({ id: "draft-winner" });
-    expect(order).toEqual(["rollback", "winner_lookup"]);
-    expect(tx.replyDraft.findFirst).not.toHaveBeenCalled();
+    // The coalesce check runs inside the transaction; the winner lookup must come
+    // after the rollback and on the ROOT client, because Prisma refuses further
+    // queries on a transaction it has marked aborted.
+    expect(order).toEqual(["coalesce_check", "rollback", "winner_lookup"]);
+    expect(rootReplyDraft.findFirst).toHaveBeenCalledTimes(1);
     expect(rootReplyDraft.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({

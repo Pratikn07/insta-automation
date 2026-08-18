@@ -1,19 +1,25 @@
 import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { DmThreadDrawer } from "@/components/conversations/DmThreadDrawer";
 import { Assistant } from "@/pages/Assistant";
 import { Conversations } from "@/pages/Conversations";
+import { DmRecovery } from "@/pages/DmRecovery";
 import { HistoricalRecovery } from "@/pages/HistoricalRecovery";
+import { Home } from "@/pages/Home";
+import { Funnels } from "@/pages/Funnels";
+import { Insights } from "@/pages/Insights";
+import { SequenceEditor } from "@/pages/SequenceEditor";
+import { Sequences } from "@/pages/Sequences";
 import "../src/index.css";
 
 /**
  * Test-only harness for the Playwright journeys.
  *
  * It mounts the REAL components — no reimplementation — and replaces only
- * `window.fetch` with deterministic handlers for the exact `/api/dm-threads` and
- * `/api/ai` paths the tests touch. Anything else 404s loudly rather than silently
+ * `window.fetch` with deterministic handlers for the exact `/api` paths the
+ * tests touch. Anything else 404s loudly rather than silently
  * passing, so a journey cannot appear to work against a route that does not exist.
  *
  * This file is never imported by src/main.tsx and index.html does not reference
@@ -163,6 +169,7 @@ function json(body: unknown, status = 200): Response {
 
 const RECOVERY_CANCELLED = new Set<string>();
 const RECOVERY_REVIEWED = new Set<string>();
+const RECOVERY_NOW_MS = Date.parse("2026-08-07T06:00:00.000Z");
 
 function recoveryRow(over: Record<string, unknown> = {}) {
   return {
@@ -194,6 +201,15 @@ function recoveryRow(over: Record<string, unknown> = {}) {
 
 const RECOVERY_ROWS: Record<string, Record<string, unknown>[]> = {
   "recovery-ready": [recoveryRow()],
+  "recovery-scheduled": [
+    recoveryRow({ eligibleAt: "2026-08-08T10:00:00.000Z" }),
+  ],
+  "recovery-sending": [
+    recoveryRow({ status: "sending", lastAttemptAt: "2026-08-07T05:59:58.000Z", attempts: 1 }),
+  ],
+  "recovery-failed": [
+    recoveryRow({ status: "send_failed", lastErrorCategory: "graph_rejected", attempts: 1 }),
+  ],
   "recovery-seen": [
     recoveryRow({ status: "suppressed", suppressionReason: "seen", seenAt: "2026-08-06T09:00:00.000Z" }),
   ],
@@ -252,8 +268,12 @@ function recoveryCounts() {
   };
   return {
     all: { records: rows.length, people },
-    scheduled: of((r) => r.status === "waiting" && r.eligibleAt! > "2026-08-07"),
-    ready: of((r) => r.status === "waiting"),
+    scheduled: of(
+      (r) => r.status === "waiting" && Date.parse(String(r.eligibleAt)) > RECOVERY_NOW_MS,
+    ),
+    ready: of(
+      (r) => r.status === "waiting" && Date.parse(String(r.eligibleAt)) <= RECOVERY_NOW_MS,
+    ),
     sent: of((r) => r.status === "sent"),
     suppressed: of((r) => r.status === "suppressed"),
     control: of((r) => r.status === "control"),
@@ -458,6 +478,212 @@ function canonicalConversation(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/**
+ * Home fixtures. Deterministic, and deliberately synthetic: no real follower
+ * counts and no real usernames reach a committed screenshot.
+ *
+ * The last window is provisional so the dashed outline is visible, and the series
+ * are large enough that every region contributes a legible band.
+ */
+const HOME_FLOW_DAYS = [
+  { day: "2026-08-08", us: 21, southAsian: 6, anglosphere: 5, other: 3 },
+  { day: "2026-08-09", us: 18, southAsian: 8, anglosphere: 4, other: 2 },
+  { day: "2026-08-10", us: 25, southAsian: 5, anglosphere: 6, other: 4 },
+  { day: "2026-08-11", us: 22, southAsian: 7, anglosphere: 3, other: 3 },
+  { day: "2026-08-12", us: 27, southAsian: 4, anglosphere: 7, other: 2 },
+  { day: "2026-08-13", us: 19, southAsian: 9, anglosphere: 4, other: 5 },
+  { day: "2026-08-14", us: 24, southAsian: 6, anglosphere: 5, other: 3 },
+  { day: "2026-08-15", us: 30, southAsian: 5, anglosphere: 6, other: 2 },
+  { day: "2026-08-16", us: 26, southAsian: 7, anglosphere: 4, other: 4 },
+  { day: "2026-08-17", us: 12, southAsian: 3, anglosphere: 2, other: 1 },
+];
+
+const HOME_FLOW_POINTS = HOME_FLOW_DAYS.map((point, index) => {
+  const total = point.us + point.southAsian + point.anglosphere + point.other;
+  return {
+    ...point,
+    capturedAt: `${point.day}T23:00:00.000Z`,
+    total,
+    unattributed: 0,
+    reportedTotalDelta: total,
+    spanDays: 1,
+    stale: false,
+    // The newest window is still filling — the case the dashed outline exists for.
+    provisional: index === HOME_FLOW_DAYS.length - 1,
+    basis: "diff" as const,
+  };
+});
+
+const HOME_STOCK = {
+  capturedAt: "2026-08-17T23:10:00.000Z",
+  totalCounted: 4308,
+  followersTotal: 4578,
+  us: 1489,
+  southAsian: 1278,
+  anglosphere: 817,
+  other: 724,
+  countriesReported: 45,
+};
+
+const HOME_STATS = {
+  activeKeywords: 9,
+  totalKeywords: 12,
+  dmsSentToday: 34,
+  conversationsAwaiting: 74,
+  completedToday: 21,
+  lastError: null,
+  gateQueuePending: 0,
+  gateQueueExhausted: 0,
+  gateQueueSendUncertain: 0,
+  tokenHealth: null,
+}
+
+// pct1 in the funnel layer returns 0-100 (64.9, not 0.649). A fixture using the
+// 0-1 form rendered "0.6488651535380507%" on Home, which looked like a formatting
+// bug in the product and was a bug in the fixture.
+const rate = (numerator: number, denominator: number) => ({
+  numerator,
+  denominator,
+  pct: denominator === 0 ? null : Math.round((numerator / denominator) * 1000) / 10,
+  belowMinSample: false,
+});
+
+const stage = (
+  key: string,
+  label: string,
+  count: number,
+  ofEntryPct: number | null,
+  ofPrevPct: number | null,
+) => ({ key, label, definition: `Synthetic ${label} stage.`, count, ofEntryPct, ofPrevPct });
+
+const HOME_FUNNEL = {
+  key: "guide-follow",
+  name: "Guide and follow",
+  question: "Of the people who commented, how many followed and received the guide?",
+  window: { from: "2026-07-19", to: "2026-08-17" },
+  cohortSize: 812,
+  stages: [
+    stage("commented", "Commented", 812, 100, null),
+    stage("gated", "Gate DM sent", 749, 92.2, 92.2),
+    stage("replied", "Replied DONE", 486, 59.9, 64.9),
+    stage("delivered", "Guide delivered", 471, 58, 96.9),
+  ],
+  headline: {
+    fromStage: "gated",
+    toStage: "replied",
+    label: "Gate DM sent to Replied DONE",
+    rationale: "The largest measured loss in this cohort.",
+    rate: rate(486, 749),
+  },
+  followGateConversion: rate(486, 749),
+  stuckAtWall: 263,
+  askDistribution: [{ asks: 1, conversations: 749, cleared: 486 }],
+  expressLane: 37,
+  byEntryPath: [],
+  retention: rate(104, 471),
+  homeTileCohort: { deliveredToNonFollower: 12, ofWhichRedelivery: 3 },
+};
+
+
+/** Funnels, Sequence Editor and Insights fixtures — synthetic, deterministic. */
+const FUNNEL_DROP_OFF = {
+  bucket: "no-reply" as const,
+  label: "Never replied DONE",
+  definition: "Received the gate DM and never replied within the window.",
+  total: 263,
+  byState: { expired: 201, stillOpen: 62 },
+  readEvidence: {
+    confirmedSeen: 118,
+    trackedNeverConfirmed: 74,
+    noReadData: 71,
+    confirmedSeenOfTracked: rate(118, 192),
+  },
+  recovery: { reminderSent: 96, reminderSuppressed: 34, inControlArm: 48, noReminder: 85 },
+  rows: [],
+};
+
+const EDITOR_RESOURCE = {
+  id: "resource-1",
+  name: "Toddler Activity Guide",
+  description: "Three quiet-time activities, sent after the follow.",
+  createdAt: "2026-07-02T10:00:00.000Z",
+  invalidMessageCount: 0,
+  messages: [],
+  keywords: [{ id: "keyword-1", keyword: "SLEEP" }],
+};
+
+const EDITOR_MESSAGES = [
+  {
+    id: "message-1",
+    resourceId: "resource-1",
+    order: 0,
+    type: "text" as const,
+    body: "Here is your guide — three quiet-time activities you can set up in a minute.",
+    mediaUrl: null,
+  },
+  {
+    id: "message-2",
+    resourceId: "resource-1",
+    order: 1,
+    type: "image" as const,
+    body: "Activity one: the sorting basket.",
+    mediaUrl: "https://placehold.co/600x400/EBE8DF/66665F?text=Activity+one",
+  },
+  {
+    id: "message-3",
+    resourceId: "resource-1",
+    order: 2,
+    type: "pdf" as const,
+    body: null,
+    mediaUrl: "https://placehold.co/600x400/EBE8DF/66665F?text=Printable",
+  },
+];
+
+const leaderboardRow = (
+  mediaId: string,
+  caption: string,
+  usFitScore: number | null,
+  reach: number,
+  comments: number,
+) => ({
+  mediaId,
+  caption,
+  thumbnailUrl: null,
+  permalink: `https://instagram.com/p/${mediaId}`,
+  postedAt: "2026-08-04T15:00:00.000Z",
+  usFitScore,
+  confidence: usFitScore === null ? null : "high",
+  mediaAudioType: "original_sound",
+  videoUnavailable: false,
+  analyzed: usFitScore !== null,
+  views: reach + 400,
+  reach,
+  // 0-1, not a percentage: RepeatReelsCard multiplies by 100. A fixture using 41.2
+  // rendered "4120% skip".
+  skipRate: 0.412,
+  conversion: {
+    keywordComments: comments,
+    gateDelivered: Math.round(comments * 0.92),
+    completed: Math.round(comments * 0.61),
+  },
+  captureRatePct: Math.round((comments / reach) * 1000) / 10,
+});
+
+const INSIGHTS_LEADERBOARD = [
+  leaderboardRow("reel-a", "Quiet time basket that actually works", 82, 24800, 214),
+  leaderboardRow("reel-b", "Two-minute reset for a toddler meltdown", 74, 19100, 168),
+  leaderboardRow("reel-c", "Why we stopped buying loud toys", 61, 15600, 96),
+  leaderboardRow("reel-d", "Snack prep on a bad morning", null, 11200, 54),
+];
+
+const INSIGHTS_GEO = {
+  stages: [
+    { stage: "reached", timeframe: "last_90_days", usPct: 41.2, capturedAt: "2026-08-17T23:00:00.000Z" },
+    { stage: "engaged", timeframe: "last_90_days", usPct: 38.4, capturedAt: "2026-08-17T23:00:00.000Z" },
+    { stage: "followers", timeframe: "lifetime", usPct: 34.6, capturedAt: "2026-08-17T23:00:00.000Z" },
+  ],
+};
+
 function installFetchStub(): void {
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -481,6 +707,54 @@ function installFetchStub(): void {
         user: { id: "e2e-user", email: "owner@example.com" },
       });
     }
+
+    // Home. Added so the follower chart's paper palette can be inspected in a real
+    // browser: the marks, the rolling mean, and the provisional dash are SVG
+    // rendering decisions that a unit test can only assert about, not look at.
+    if (path === "/insights/follower-daily-adds" && method === "GET") {
+      return json({ points: HOME_FLOW_POINTS, stock: HOME_STOCK });
+    }
+    if (path === "/stats" && method === "GET") {
+      return json(HOME_STATS);
+    }
+    if (path === "/funnels/guide-follow" && method === "GET") {
+      return json(HOME_FUNNEL);
+    }
+    if (path.startsWith("/insights/feed-follow-attribution") && method === "GET") {
+      return json({ days: [], totals: null });
+    }
+
+    if (path === "/funnels/guide-follow/drop-off/no-reply" && method === "GET") {
+      return json(FUNNEL_DROP_OFF);
+    }
+    if (path === "/resources" && method === "GET") {
+      return json([
+        { ...EDITOR_RESOURCE, _count: { messages: 3, keywords: 1 }, invalidMessageCount: 0 },
+        {
+          id: "resource-2",
+          name: "Sleep Reset Guide",
+          description: "Sent after the follow. One step is over Instagram's limit.",
+          createdAt: "2026-06-11T10:00:00.000Z",
+          _count: { messages: 4, keywords: 2 },
+          invalidMessageCount: 1,
+        },
+      ]);
+    }
+    if (path === "/resources/resource-1" && method === "GET") return json(EDITOR_RESOURCE);
+    if (path === "/messages/by-resource/resource-1" && method === "GET") {
+      return json(EDITOR_MESSAGES);
+    }
+    if (path === "/insights/leaderboard" && method === "GET") {
+      return json({ items: INSIGHTS_LEADERBOARD });
+    }
+    if (path === "/insights/geo" && method === "GET") return json(INSIGHTS_GEO);
+    if (path === "/insights/recipe" && method === "GET") {
+      return json({ top: [], bottom: [], contrasts: [] });
+    }
+    if (path === "/insights/reel-origin" && method === "GET") return json({ items: [] });
+    if (path === "/insights/us-reach-trend" && method === "GET") return json({ points: [] });
+    if (path === "/insights/geo-window-trend" && method === "GET") return json({ points: [] });
+    if (path === "/insights/experiments" && method === "GET") return json({ items: [] });
 
     if (path === "/dm-threads/thread-1" && method === "GET") {
       const scenario = new URLSearchParams(window.location.search).get("scenario");
@@ -647,6 +921,10 @@ function installFetchStub(): void {
       });
     }
 
+    if (path === "/keywords" && method === "GET") {
+      return json([]);
+    }
+
     // ── Historical recovery dashboard ───────────────────────────────────
     if (path === "/historical-recovery/campaigns" && method === "GET") {
       return json({ sendingEnabled: true, campaigns: historicalCampaignRows() });
@@ -735,7 +1013,12 @@ function installFetchStub(): void {
       const view = new URL(url, window.location.origin).searchParams.get("view") ?? "all";
       const rows = currentRecoveryRows().filter((r) => {
         if (view === "all") return true;
-        if (view === "ready") return r.status === "waiting";
+        if (view === "scheduled") {
+          return r.status === "waiting" && Date.parse(String(r.eligibleAt)) > RECOVERY_NOW_MS;
+        }
+        if (view === "ready") {
+          return r.status === "waiting" && Date.parse(String(r.eligibleAt)) <= RECOVERY_NOW_MS;
+        }
         if (view === "attention") {
           return ["send_failed", "send_uncertain", "tracking_unavailable"].includes(
             r.status as string,
@@ -933,7 +1216,46 @@ export function Harness() {
   if (scenario?.startsWith("recovery-")) {
     return (
       <div className="p-4">
-        <Conversations />
+        <Routes>
+          <Route path="/dm-recovery" element={<DmRecovery />} />
+        </Routes>
+      </div>
+    );
+  }
+  if (scenario === "home") {
+    return (
+      <div className="p-4">
+        <Home />
+      </div>
+    );
+  }
+  if (scenario === "sequences") {
+    return (
+      <div className="p-4">
+        <Sequences />
+      </div>
+    );
+  }
+  if (scenario === "funnels") {
+    return (
+      <div className="p-4">
+        <Funnels />
+      </div>
+    );
+  }
+  if (scenario === "sequence-editor") {
+    return (
+      <div className="p-4">
+        <Routes>
+          <Route path="/sequences/:id" element={<SequenceEditor />} />
+        </Routes>
+      </div>
+    );
+  }
+  if (scenario === "insights") {
+    return (
+      <div className="p-4">
+        <Insights />
       </div>
     );
   }
@@ -954,10 +1276,18 @@ const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
 });
 
+const harnessScenario = new URLSearchParams(window.location.search).get("scenario");
+const initialEntry =
+  harnessScenario?.startsWith("recovery-")
+    ? "/dm-recovery"
+    : harnessScenario === "sequence-editor"
+      ? "/sequences/resource-1"
+      : "/";
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[initialEntry]}>
         <Harness />
       </MemoryRouter>
     </QueryClientProvider>

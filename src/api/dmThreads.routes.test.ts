@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const findMany = vi.fn();
 const findUnique = vi.fn();
@@ -53,7 +53,54 @@ beforeEach(() => {
       lastMessageAt: messages[200]!.instagramTimestamp,
       messages: selected,
       drafts: [],
+      guideDeliveries: [],
     };
+  });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+describe("GET /api/dm-threads", () => {
+  it("returns only a delivery review count and selects no private delivery fields", async () => {
+    findMany.mockResolvedValueOnce([
+      {
+        id: "thread-1",
+        igUserId: "ig-user-1",
+        username: "geri",
+        name: "Geri",
+        needsReply: true,
+        latestInboundMessageId: "message-201",
+        lastMessageAt: messages[200]!.instagramTimestamp,
+        lastInboundAt: messages[200]!.instagramTimestamp,
+        lastOutboundAt: null,
+        messages: [messages[200]],
+        drafts: [],
+        _count: { guideDeliveries: 2 },
+      },
+    ]);
+
+    const response = await request(makeApp()).get("/api/dm-threads").expect(200);
+
+    expect(response.body.items[0]).toMatchObject({ deliveryReviewCount: 2 });
+    expect(response.body.items[0]).not.toHaveProperty("_count");
+    expect(response.body.items[0]).not.toHaveProperty("guideDeliveries");
+    const serialized = JSON.stringify(response.body);
+    expect(serialized).not.toContain("textSnapshot");
+    expect(serialized).not.toContain("mediaUrlSnapshot");
+    expect(serialized).not.toContain("providerMessageId");
+    expect(serialized).not.toContain("errorTraceId");
+
+    const select = findMany.mock.calls[0]![0].select;
+    expect(select._count).toEqual({
+      select: {
+        guideDeliveries: {
+          where: expect.objectContaining({ OR: expect.any(Array) }),
+        },
+      },
+    });
+    expect(select).not.toHaveProperty("guideDeliveries");
   });
 });
 
@@ -98,6 +145,7 @@ describe("GET /api/dm-threads/:threadId", () => {
       latestInboundMessageId: "message-201",
       lastMessageAt: messages[200]!.instagramTimestamp,
       messages: [],
+      guideDeliveries: [],
       drafts: [
         {
           id: "follow-up-1",
@@ -167,6 +215,126 @@ describe("GET /api/dm-threads/:threadId", () => {
               },
             }),
           }),
+        }),
+      }),
+    );
+  });
+
+  it("returns bounded newest-first aggregate review DTOs queried directly through the thread", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-17T12:00:00.000Z"));
+    findUnique.mockResolvedValueOnce({
+      id: "thread-1",
+      igUserId: "ig-user-1",
+      username: "geri",
+      name: "Geri",
+      needsReply: true,
+      latestInboundMessageId: "message-201",
+      lastMessageAt: messages[200]!.instagramTimestamp,
+      messages: [],
+      drafts: [],
+      guideDeliveries: [
+        {
+          id: "delivery-newest",
+          status: "needs_review",
+          sendWindowExpiresAt: new Date("2026-08-17T12:00:01.000Z"),
+          failureCode: null,
+          createdAt: new Date("2026-08-17T11:59:00.000Z"),
+          textSnapshot: "PRIVATE-LATER-DELIVERY-SNAPSHOT",
+          providerMessageId: "PRIVATE-PROVIDER-ID",
+          units: [
+            {
+              id: "unit-1",
+              position: 0,
+              kind: "text",
+              status: "sent",
+              textSnapshot: "PRIVATE-UNIT-SNAPSHOT",
+              mediaUrlSnapshot: "https://private.example.test/media",
+              contentFingerprint: "f".repeat(64),
+              providerMessageId: "provider-private",
+              errorTraceId: "trace-private",
+            },
+            {
+              id: "unit-2",
+              position: 1,
+              kind: "image",
+              status: "uncertain",
+              textSnapshot: null,
+              mediaUrlSnapshot: "https://private.example.test/media",
+              contentFingerprint: "e".repeat(64),
+              providerMessageId: null,
+              errorTraceId: "trace-private",
+            },
+          ],
+        },
+        {
+          id: "delivery-older-closed",
+          status: "failed",
+          sendWindowExpiresAt: new Date("2026-08-17T11:59:59.000Z"),
+          failureCode: "messaging_window_closed",
+          createdAt: new Date("2026-08-17T11:00:00.000Z"),
+          units: [
+            { id: "unit-3", position: 0, kind: "file", status: "pending" },
+          ],
+        },
+      ],
+    });
+
+    const response = await request(makeApp()).get("/api/dm-threads/thread-1").expect(200);
+
+    expect(response.body.deliveryReviews).toEqual([
+      {
+        id: "delivery-newest",
+        status: "needs_review",
+        confirmedUnits: 1,
+        totalUnits: 2,
+        sendWindowExpiresAt: "2026-08-17T12:00:01.000Z",
+        sendWindowOpen: true,
+        failureCode: null,
+        units: [
+          { id: "unit-1", position: 0, kind: "text", status: "sent" },
+          { id: "unit-2", position: 1, kind: "image", status: "uncertain" },
+        ],
+      },
+      {
+        id: "delivery-older-closed",
+        status: "failed",
+        confirmedUnits: 0,
+        totalUnits: 1,
+        sendWindowExpiresAt: "2026-08-17T11:59:59.000Z",
+        sendWindowOpen: false,
+        failureCode: "messaging_window_closed",
+        units: [{ id: "unit-3", position: 0, kind: "file", status: "pending" }],
+      },
+    ]);
+    const serialized = JSON.stringify(response.body.deliveryReviews);
+    expect(serialized).not.toContain("PRIVATE");
+    expect(serialized).not.toContain("textSnapshot");
+    expect(serialized).not.toContain("mediaUrlSnapshot");
+    expect(serialized).not.toContain("contentFingerprint");
+    expect(serialized).not.toContain("providerMessageId");
+    expect(serialized).not.toContain("errorTraceId");
+
+    expect(findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "thread-1" },
+        select: expect.objectContaining({
+          messages: expect.objectContaining({ take: 200 }),
+          guideDeliveries: {
+            where: expect.objectContaining({ OR: expect.any(Array) }),
+            orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+            take: expect.any(Number),
+            select: {
+              id: true,
+              status: true,
+              sendWindowExpiresAt: true,
+              failureCode: true,
+              units: {
+                orderBy: { position: "asc" },
+                select: { id: true, position: true, kind: true, status: true },
+              },
+            },
+          },
         }),
       }),
     );

@@ -18,11 +18,11 @@ const STATE_META: Record<
   ReturnType<typeof rowState>,
   { label: string; tone: string; Icon: typeof MessageCircle }
 > = {
-  drafting: { label: "Drafting", tone: "text-sky-400 bg-sky-400/10", Icon: Loader2 },
+  drafting: { label: "Drafting", tone: "text-funnel-mark bg-mark-soft", Icon: Loader2 },
   draft_ready: { label: "Draft ready", tone: "text-brand bg-brand/10", Icon: Sparkles },
-  needs_review: { label: "Needs review", tone: "text-amber-400 bg-amber-400/10", Icon: AlertCircle },
+  needs_review: { label: "Needs review", tone: "text-caution bg-caution-soft", Icon: AlertCircle },
   send_failed: { label: "Send failed", tone: "text-destructive bg-destructive/10", Icon: AlertCircle },
-  replied: { label: "Replied", tone: "text-emerald-400 bg-emerald-400/10", Icon: Send },
+  replied: { label: "Replied", tone: "text-signal bg-signal-soft", Icon: Send },
   automated: { label: "Automated", tone: "text-muted-foreground bg-muted/40", Icon: MessageCircle },
 };
 
@@ -80,10 +80,19 @@ export function DmThreadList({ rows, isLoading, onSelect }: DmThreadListProps) {
                     ? draftStatusLabel(row.draft.status, row.draft.kind)
                     : meta.label}
                 </span>
+                {/* Independent of draft state: an unresolved delivery is the
+                    automation's own unfinished business, and it stays visible
+                    whatever the reply draft happens to be doing. */}
+                {row.deliveryReviewCount > 0 && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-caution-soft px-2 py-0.5 text-[11px] font-medium text-caution">
+                    <AlertCircle className="size-3" />
+                    Delivery needs review
+                  </span>
+                )}
               </div>
               <p className="mt-0.5 truncate text-sm text-muted-foreground">{preview}</p>
               {row.draft && state !== "needs_review" && (
-                <p className="mt-0.5 truncate text-xs text-muted-foreground/80">
+                <p className="mt-0.5 truncate text-xs text-muted-foreground">
                   {draftStatusLabel(row.draft.status, row.draft.kind)}
                   {row.draft.workingText ? ` — ${row.draft.workingText}` : ""}
                 </p>

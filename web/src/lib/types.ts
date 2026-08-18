@@ -7,6 +7,7 @@ export interface Resource {
   description: string | null;
   createdAt: string;
   _count?: { messages: number; keywords: number };
+  invalidMessageCount?: number;
 }
 
 export interface ResourceMessage {
@@ -541,6 +542,42 @@ export interface ReplyDraft {
   createdAt: string;
 }
 
+// --- guide delivery owner review ---------------------------------------------
+// A delivery the automation could not finish on its own. The server deliberately
+// serialises identity and progress only: no text snapshot, media URL, provider
+// body, or trace ID crosses this boundary, because the owner decides from
+// position and status alone.
+export type GuideDeliveryReviewUnitKind = "text" | "image" | "file";
+
+export type GuideDeliveryReviewUnitStatus =
+  | "pending"
+  | "sending"
+  | "sent"
+  | "retryable"
+  | "failed"
+  | "uncertain"
+  | "cancelled";
+
+export interface GuideDeliveryReviewUnit {
+  id: string;
+  /** Zero-based on the wire; rendered one-based so the owner counts messages. */
+  position: number;
+  kind: GuideDeliveryReviewUnitKind;
+  status: GuideDeliveryReviewUnitStatus;
+}
+
+export interface GuideDeliveryReview {
+  id: string;
+  status: "needs_review" | "failed";
+  confirmedUnits: number;
+  totalUnits: number;
+  sendWindowExpiresAt: string;
+  /** Server-computed against its own clock, never re-derived in the browser. */
+  sendWindowOpen: boolean;
+  failureCode: string | null;
+  units: GuideDeliveryReviewUnit[];
+}
+
 export interface DmThreadRow {
   id: string;
   igUserId: string;
@@ -553,6 +590,8 @@ export interface DmThreadRow {
   lastOutboundAt: string | null;
   latestMessage: Omit<DmMessage, "id" | "mediaUrl"> | null;
   draft: ReplyDraft | null;
+  /** Deliveries awaiting an owner decision. Independent of draft status. */
+  deliveryReviewCount: number;
 }
 
 export interface DmThreadDetail {
@@ -565,6 +604,7 @@ export interface DmThreadDetail {
   lastMessageAt: string;
   messages: DmMessage[];
   draft: ReplyDraft | null;
+  deliveryReviews: GuideDeliveryReview[];
 }
 
 // --- AI advisor ---------------------------------------------------------------

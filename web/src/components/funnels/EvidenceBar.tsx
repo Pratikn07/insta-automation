@@ -73,7 +73,7 @@ export function EvidenceBar({ evidence }: { evidence: DropOffSummary["readEviden
               style={{ background: s.color }}
             />
             <span>
-              <span className="font-semibold tabular-nums">
+              <span className="font-medium tabular-nums">
                 {evidence[s.key].toLocaleString()}
               </span>{" "}
               {s.label}{" "}

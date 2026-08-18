@@ -8,9 +8,35 @@ import { booleanFlag } from "./booleanFlag.js";
  */
 export const FORBIDDEN_SETTINGS_SIGNATURE = "100:2534025";
 
+/** Stable controlled-recipient input for the later mutually-exclusive owner selector. */
+export function guideDeliveryCohortIgUserIds(value: string): ReadonlySet<string> {
+  return new Set(
+    value
+      .split(",")
+      .map((id) => id.trim())
+      .filter((id) => id.length > 0),
+  );
+}
+
 export const envSchema = z.object({
   PORT: z.coerce.number().default(3000),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
+  /**
+   * Background workers. Defaults TRUE so production is unchanged by its absence;
+   * the only reason to set it false is a local server run for UI work.
+   *
+   * Seven of the workers start unconditionally, and the listen callback fires a
+   * token refresh and a feed-follow snapshot immediately on boot. Since there is
+   * one database and one Instagram account, a second local server means a second
+   * gate-queue worker sending real private replies, a second token refresher
+   * racing the deployed one, and duplicate Graph and Gemini spend — all against
+   * production, alongside Railway doing the same work.
+   *
+   * booleanFlag, never z.coerce.boolean: coerce treats the STRING "false" as
+   * true, so WORKERS_ENABLED=false would silently start every worker — the exact
+   * failure this flag exists to prevent.
+   */
+  WORKERS_ENABLED: booleanFlag(true),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
 
   META_APP_SECRET: z.string().min(1),
@@ -111,6 +137,21 @@ export const envSchema = z.object({
     .max(4000)
     .default("Warm, practical, concise, and supportive. Never diagnose or shame a parent."),
   AI_DRAFT_INTERVAL_MS: z.coerce.number().int().min(5_000).default(15_000),
+
+  // --- Durable guide-delivery recovery ---------------------------------------
+  // Off until a deliberately selected cohort is configured. This controls only
+  // the ledger worker; Task 9 owns mutually exclusive assignment of new work.
+  GUIDE_DELIVERY_BATCH_SIZE: z.coerce.number().int().min(1).max(50).default(10),
+  GUIDE_DELIVERY_LEASE_MS: z.coerce.number().int().min(60_000).default(5 * 60_000),
+  GUIDE_DELIVERY_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
+  GUIDE_DELIVERY_RETRY_BASE_MS: z.coerce.number().int().min(10_000).default(60_000),
+  GUIDE_DELIVERY_WORKER_INTERVAL_MS: z.coerce.number().int().min(10_000).default(60_000),
+  GUIDE_DELIVERY_ENABLED: booleanFlag(false),
+  GUIDE_DELIVERY_ROLLOUT_PERCENT: z.coerce.number().int().min(0).max(100).default(0),
+  // Kept as an unlogged source string. The Task 9 selector turns it into a
+  // trimmed set; config validates the enablement precondition without exposing
+  // recipient identifiers in startup logs.
+  GUIDE_DELIVERY_COHORT_IG_USER_IDS: z.string().default(""),
 
   // --- DM Recovery Reminders ---
   DM_RECOVERY_ENABLED: booleanFlag(false),
@@ -235,6 +276,21 @@ export const envSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ["DM_RECOVERY_ENABLED"],
       message: "DM_RECOVERY_ENABLED requires experiment start and end dates to be configured",
+    });
+  }
+
+  const guideCohortConfigured = guideDeliveryCohortIgUserIds(
+    value.GUIDE_DELIVERY_COHORT_IG_USER_IDS,
+  ).size > 0;
+  if (
+    value.GUIDE_DELIVERY_ENABLED &&
+    !guideCohortConfigured &&
+    value.GUIDE_DELIVERY_ROLLOUT_PERCENT === 0
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["GUIDE_DELIVERY_ENABLED"],
+      message: "GUIDE_DELIVERY_ENABLED requires a cohort or rollout percentage",
     });
   }
 });

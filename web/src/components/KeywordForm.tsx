@@ -3,7 +3,8 @@ import { Film, Images } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { api, ApiError } from "@/lib/api";
+import { apiRead, apiMutation, ApiError } from "@/lib/api";
+import { useOperationId } from "@/lib/useOperationId";
 import type { Keyword, MediaKind, MediaPage, Resource } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -89,10 +90,16 @@ export function KeywordForm({
       : { ...emptyForm },
   );
 
+  // Two creates can happen in one attempt, so each owns its own stable UUID. If
+  // the keyword create fails after the sequence create succeeded, repeating the
+  // attempt replays the same sequence rather than making a second one.
+  const { operationId: newSequenceId, renew: renewNewSequenceId } = useOperationId();
+  const { operationId: newKeywordId, renew: renewNewKeywordId } = useOperationId();
+
   const saveMutation = useMutation({
     mutationFn: async (): Promise<{ keyword: Keyword; createdSequence: boolean }> => {
       if (initial) {
-        const updated = await api<Keyword>(`/keywords/${initial.id}`, {
+        const updated = await apiMutation<Keyword>(`/keywords/${initial.id}`, {
           method: "PATCH",
           body: JSON.stringify({
             keyword: form.keyword,
@@ -108,9 +115,11 @@ export function KeywordForm({
       let resourceId = form.resourceId;
       let createdSequence = false;
       if (form.sequenceMode === "new") {
-        const seq = await api<Resource>("/resources", {
+        const seq = await apiMutation<Resource>("/resources", {
           method: "POST",
+          operationId: newSequenceId,
           body: JSON.stringify({
+            id: newSequenceId,
             name: form.newSequenceName.trim(),
             description: null,
           }),
@@ -119,9 +128,11 @@ export function KeywordForm({
         createdSequence = true;
       }
 
-      const created = await api<Keyword>("/keywords", {
+      const created = await apiMutation<Keyword>("/keywords", {
         method: "POST",
+        operationId: newKeywordId,
         body: JSON.stringify({
+          id: newKeywordId,
           keyword: form.keyword,
           resourceId,
           publicReply: form.publicReply,
@@ -140,6 +151,8 @@ export function KeywordForm({
       return { keyword: created, createdSequence };
     },
     onSuccess: ({ keyword, createdSequence }) => {
+      renewNewSequenceId();
+      renewNewKeywordId();
       toast.success(initial ? "Keyword updated" : "Keyword created");
       qc.invalidateQueries({ queryKey: ["keywords"] });
       qc.invalidateQueries({ queryKey: ["resources"] });
@@ -399,11 +412,11 @@ function PostPicker({
   const [query, setQuery] = useState("");
   const mediaQ = useQuery<MediaPage>({
     queryKey: ["content"],
-    queryFn: () => api<MediaPage>("/media/content"),
+    queryFn: ({ signal }) => apiRead<MediaPage>("/media/content", { signal }),
   });
   const keywordsQ = useQuery<Keyword[]>({
     queryKey: ["keywords"],
-    queryFn: () => api<Keyword[]>("/keywords"),
+    queryFn: ({ signal }) => apiRead<Keyword[]>("/keywords", { signal }),
   });
 
   const countByMedia = useMemo(() => {

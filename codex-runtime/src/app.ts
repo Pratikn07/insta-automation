@@ -24,6 +24,10 @@ const ADVISOR_ERROR_STATUS: Record<AdvisorError["code"], number> = {
   turn_timeout: 504,
   invalid_advisor_output: 503,
   advisor_unavailable: 503,
+  // 409, not 503: the question is not unavailable, it is already in progress —
+  // and a 5xx would invite the caller's retry logic to ask again.
+  advisor_outcome_pending: 409,
+  idempotency_conflict: 409,
 };
 
 /** DraftGenerationError code → HTTP status. Only the code and retryAt cross back. */

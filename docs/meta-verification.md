@@ -455,3 +455,42 @@ mirror is absent, the gate row is invisible.
 non-zero. That makes a mirror-less row impossible to miss without building a
 review queue for a state that should read zero almost always. A dedicated
 reviewer is only worth building if that count starts moving.
+
+---
+
+## Message text is limited in BYTES, not characters
+
+**Verified 2026-08-16** against Meta's Instagram Messaging API documentation,
+which states: *"Message text must be UTF-8 and be a 1000 bytes or less."*
+
+This is not a pedantic distinction for this account. Every guide is written with
+emoji, bullets and curly quotes, and in UTF-8 an emoji costs **4 bytes**, a
+bullet or a typographic quote **3**. A guide can gain 70 bytes without gaining a
+single word.
+
+**Measured against production the same day:**
+
+| Counting | Over-limit steps |
+| --- | --- |
+| Characters | 3 |
+| **Bytes** | **10** |
+
+Six stored steps are under 1,000 characters and over 1,000 bytes — "Brush" step 4
+reads 972 characters and weighs 1,017. One step sits at 999 bytes, a single byte
+inside the limit. A character-based counter would have displayed
+"972 / 1000 — fine" on a message Instagram rejects, which is worse than no
+counter: it makes an undeliverable guide look approved.
+
+**What was changed as a result.** `messages.routes.ts` validated `body` with
+`z.string().max(2000)` — a character check permitting roughly double the
+deliverable size. It now refuses anything over 1,000 UTF-8 bytes and returns the
+measured weight in the error. The editor shows the same budget live, so the API
+rejection should never be the first anyone hears of it.
+
+**What is still unverified.** Ten `sequence_failed` events carry
+`code 100 / subcode 2534038`, most recently 2026-08-17. That subcode is **not**
+documented here or anywhere I could reach: Meta's error-code reference returned a
+500 and search engines were CAPTCHA-gated. Length correlates but does not
+explain them all — "Recipe" failed twice with no step over 1,000 bytes — so at
+least one other cause is in that set. **Do not assume 2534038 means "too long".**
+The failing conversations are real cases to test against when someone verifies it.

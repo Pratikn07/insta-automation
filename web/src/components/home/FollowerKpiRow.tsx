@@ -3,8 +3,8 @@ import type { FollowerStock, GuideFollowResult, Stats } from "@/lib/types";
 import {
   describeStockVsFlow,
   formatSignedCount,
+  type ComparableWeekResult,
   type FlowTrend,
-  type UsWeekOverWeek,
 } from "@/lib/followerFlow";
 import { KpiTile } from "./KpiTile";
 
@@ -38,7 +38,7 @@ function buildTotalsNote(stock: FollowerStock, avgPerDay7: number | null): strin
 }
 
 interface FollowerKpiRowProps {
-  weekOverWeek: UsWeekOverWeek | null;
+  weekComparison: ComparableWeekResult;
   stock: FollowerStock | null;
   avgPerDay7: number | null;
   stats: Stats | undefined;
@@ -50,7 +50,7 @@ interface FollowerKpiRowProps {
 }
 
 export function FollowerKpiRow({
-  weekOverWeek,
+  weekComparison,
   stock,
   avgPerDay7,
   funnel,
@@ -59,32 +59,34 @@ export function FollowerKpiRow({
   isFunnelLoading,
 }: FollowerKpiRowProps) {
   const milestone = stock ? describeStockVsFlow(stock, avgPerDay7) : null;
+  const comparable = weekComparison.status === "ready" ? weekComparison : null;
+  const comparisonContext =
+    weekComparison.status === "ready"
+      ? `vs ${formatSignedCount(weekComparison.prior.us)} in the prior settled week`
+      : {
+          not_enough_history: "Waiting for two complete settled weeks",
+          missing_day: "A daily measurement is missing",
+          provisional_day: "Newest measurements are still settling",
+          multi_day_span: "A catch-up span prevents a week-to-week comparison",
+          duplicate_day: "Duplicate daily measurements need attention",
+        }[weekComparison.reason];
 
   return (
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    // Not three equal tiles. The US figure is the stated success metric, so it
+    // takes the wider column and the accent; the other two are supporting facts
+    // and are set at supporting scale. An equal 3-up row would say all three
+    // matter the same, which PRODUCT.md explicitly says they do not.
+    <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2 lg:grid-cols-[1.3fr_1fr_1fr]">
       <KpiTile
+        emphasis
         label="US followers this week"
-        value={weekOverWeek === null ? "—" : formatSignedCount(weekOverWeek.thisWeek)}
-        context={
-          weekOverWeek === null
-            ? "Needs two days of follower geography"
-            : weekOverWeek.lastWeek === null
-              ? "Not enough history yet for a week-over-week read"
-              : `vs ${formatSignedCount(weekOverWeek.lastWeek)} last week`
-        }
-        note={
-          weekOverWeek && weekOverWeek.provisionalDays > 0
-            ? `newest ${weekOverWeek.provisionalDays} still settling`
-            : null
-        }
+        value={comparable ? formatSignedCount(comparable.current.us) : "—"}
+        context={comparisonContext}
+        note={null}
         Icon={Users}
         tone="emerald"
         isLoading={isFlowLoading}
-        trendIcon={
-          weekOverWeek && weekOverWeek.lastWeek !== null
-            ? TREND_ICON[weekOverWeek.trend]
-            : null
-        }
+        trendIcon={comparable ? TREND_ICON[comparable.trend] : null}
       />
 
       <KpiTile

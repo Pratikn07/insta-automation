@@ -20,6 +20,8 @@ const resolveJourneyIntent = vi.fn();
 const markCompleted = vi.fn();
 const markGated = vi.fn();
 const sendSequence = vi.fn();
+const guideDeliveryOwner = vi.fn();
+const deliverGuideForTrigger = vi.fn();
 const sendTrackedText = vi.fn();
 const resolveUsername = vi.fn();
 const logEvent = vi.fn();
@@ -64,6 +66,8 @@ vi.mock("../services/conversationService.js", () => ({
   markGated,
 }));
 vi.mock("../services/sequenceSender.js", () => ({ sendSequence }));
+vi.mock("../services/guideDeliveryRollout.js", () => ({ guideDeliveryOwner }));
+vi.mock("../services/guideDeliveryService.js", () => ({ deliverGuideForTrigger }));
 vi.mock("../services/dmDeliveryService.js", () => ({ sendTrackedText }));
 vi.mock("../services/igUserService.js", () => ({ resolveUsername }));
 vi.mock("../services/eventLogger.js", () => ({
@@ -75,14 +79,30 @@ vi.mock("../lib/logger.js", () => ({ logger }));
 // The real env has AI_DRAFTS_ENABLED=false (all AI ships off), so drafting is
 // mocked ON here and toggled per test. `aiDraftsEnabled` is mutable so one test
 // can prove the flag genuinely gates the queue call.
-const aiFlags = { AI_DRAFTS_ENABLED: true, AI_FOLLOW_UPS_ENABLED: true };
+const aiFlags = {
+  AI_DRAFTS_ENABLED: true,
+  AI_FOLLOW_UPS_ENABLED: true,
+  GUIDE_DELIVERY_ENABLED: true,
+  GUIDE_DELIVERY_ROLLOUT_PERCENT: 25,
+  GUIDE_DELIVERY_COHORT_IG_USER_IDS: "controlled-1",
+};
 vi.mock("../config/env.js", async (importOriginal) => {
-  const actual = (await importOriginal()) as { env: Record<string, unknown> };
+  const actual = (await importOriginal()) as Record<string, unknown> & {
+    env: Record<string, unknown>;
+  };
   return {
+    ...actual,
     env: new Proxy(actual.env, {
       get: (target, prop) => {
         if (prop === "AI_DRAFTS_ENABLED") return aiFlags.AI_DRAFTS_ENABLED;
         if (prop === "AI_FOLLOW_UPS_ENABLED") return aiFlags.AI_FOLLOW_UPS_ENABLED;
+        if (prop === "GUIDE_DELIVERY_ENABLED") return aiFlags.GUIDE_DELIVERY_ENABLED;
+        if (prop === "GUIDE_DELIVERY_ROLLOUT_PERCENT") {
+          return aiFlags.GUIDE_DELIVERY_ROLLOUT_PERCENT;
+        }
+        if (prop === "GUIDE_DELIVERY_COHORT_IG_USER_IDS") {
+          return aiFlags.GUIDE_DELIVERY_COHORT_IG_USER_IDS;
+        }
         return target[prop as string];
       },
     }),
@@ -109,7 +129,10 @@ const keywordFixture = {
   gateMessage: "Follow and reply DONE",
   mediaId: null,
   inferredFromPost: null,
-  resource: { messages: [{ id: "m1", order: 0, type: "text", body: "guide" }] },
+  resource: {
+    id: "resource-1",
+    messages: [{ id: "m1", order: 0, type: "text", body: "guide" }],
+  },
 };
 
 beforeEach(() => {
@@ -132,6 +155,8 @@ beforeEach(() => {
     markCompleted,
     markGated,
     sendSequence,
+    guideDeliveryOwner,
+    deliverGuideForTrigger,
     sendTrackedText,
     resolveUsername,
     logEvent,
@@ -162,6 +187,8 @@ beforeEach(() => {
   logEvent.mockResolvedValue(undefined);
   sendTrackedText.mockResolvedValue({ messageId: "mid-out" });
   sendSequence.mockResolvedValue(undefined);
+  guideDeliveryOwner.mockReturnValue("legacy");
+  deliverGuideForTrigger.mockResolvedValue("completed");
   queueReplyDraft.mockResolvedValue({ id: "draft-1" });
   scheduleEngagementFollowUp.mockResolvedValue({ scheduled: true, draftId: "follow-up-1" });
   recordInboundCampaignHealthSignals.mockResolvedValue({ recorded: 0 });
@@ -172,6 +199,9 @@ beforeEach(() => {
   });
   aiFlags.AI_DRAFTS_ENABLED = true;
   aiFlags.AI_FOLLOW_UPS_ENABLED = true;
+  aiFlags.GUIDE_DELIVERY_ENABLED = true;
+  aiFlags.GUIDE_DELIVERY_ROLLOUT_PERCENT = 25;
+  aiFlags.GUIDE_DELIVERY_COHORT_IG_USER_IDS = "controlled-1";
 });
 
 describe("handleMessage — inbound capture", () => {
@@ -394,6 +424,267 @@ describe("handleMessage — branch order is unchanged", () => {
 
     expect(findLatestIncompleteConversation).not.toHaveBeenCalled();
     expect(queueReplyDraft).toHaveBeenCalledOnce();
+  });
+});
+
+describe("handleMessage — mutually exclusive guide delivery ownership", () => {
+  const triggeredAt = new Date(1785895200000);
+  const sendWindowExpiresAt = new Date(1785895200000 + 24 * 60 * 60 * 1000);
+
+  function expectedDurableCall(
+    overrides: Partial<Record<string, unknown>> = {},
+  ): Record<string, unknown> {
+    return {
+      conversationId: "convo-1",
+      resourceId: "resource-1",
+      igUserId: "ig-user-1",
+      threadId: "thread-1",
+      triggerKind: "inbound_reply",
+      triggerId: "message-1",
+      triggeredAt,
+      sendWindowExpiresAt,
+      followerAtTrigger: true,
+      ...overrides,
+    };
+  }
+
+  function openGateConversation(id = "convo-1") {
+    return {
+      id,
+      keywordId: "keyword-1",
+      keyword: {
+        keyword: "SLEEP",
+        resource: { id: "resource-1", messages: keywordFixture.resource.messages },
+      },
+    };
+  }
+
+  it.each(["ledger", "legacy"] as const)(
+    "routes an instant follower guide through only the %s sender",
+    async (selectedOwner) => {
+      findKeywordInMessage.mockResolvedValue(keywordFixture);
+      guideDeliveryOwner.mockReturnValue(selectedOwner);
+
+      await handleMessage(inbound("SLEEP"));
+
+      expect(guideDeliveryOwner).toHaveBeenCalledOnce();
+      expect(guideDeliveryOwner).toHaveBeenCalledWith({
+        enabled: true,
+        rolloutPercent: 25,
+        cohortIgUserIds: new Set(["controlled-1"]),
+        igUserId: "ig-user-1",
+        triggerId: "message-1",
+      });
+      if (selectedOwner === "ledger") {
+        expect(deliverGuideForTrigger).toHaveBeenCalledOnce();
+        expect(deliverGuideForTrigger).toHaveBeenCalledWith(expectedDurableCall());
+        expect(sendSequence).not.toHaveBeenCalled();
+        expect(markCompleted).not.toHaveBeenCalled();
+      } else {
+        expect(sendSequence).toHaveBeenCalledOnce();
+        expect(deliverGuideForTrigger).not.toHaveBeenCalled();
+        expect(markCompleted).toHaveBeenCalledWith("convo-1");
+      }
+    },
+  );
+
+  it.each(["ledger", "legacy"] as const)(
+    "routes an already-completed keyword through only the %s sender",
+    async (selectedOwner) => {
+      findKeywordInMessage.mockResolvedValue(keywordFixture);
+      hasCompletedKeyword.mockResolvedValue(true);
+      guideDeliveryOwner.mockReturnValue(selectedOwner);
+
+      await handleMessage(inbound("SLEEP"));
+
+      if (selectedOwner === "ledger") {
+        expect(deliverGuideForTrigger).toHaveBeenCalledWith(
+          expectedDurableCall({
+            triggerKind: "explicit_redelivery",
+            redeliveryIntro: "You've already got this one — here it is again 💛",
+          }),
+        );
+        expect(sendSequence).not.toHaveBeenCalled();
+        expect(sendTrackedText).not.toHaveBeenCalledWith(
+          expect.objectContaining({
+            text: "You've already got this one — here it is again 💛",
+          }),
+        );
+      } else {
+        expect(deliverGuideForTrigger).not.toHaveBeenCalled();
+        expect(sendSequence).toHaveBeenCalledOnce();
+        expect(sendTrackedText).toHaveBeenCalledWith(
+          expect.objectContaining({
+            text: "You've already got this one — here it is again 💛",
+            source: "keyword_automation",
+          }),
+        );
+      }
+    },
+  );
+
+  it.each(["ledger", "legacy"] as const)(
+    "routes an open-gate reply through only the %s sender",
+    async (selectedOwner) => {
+      findActiveAwaitingDone.mockResolvedValue(openGateConversation());
+      guideDeliveryOwner.mockReturnValue(selectedOwner);
+
+      await handleMessage(inbound("Done"));
+
+      if (selectedOwner === "ledger") {
+        expect(deliverGuideForTrigger).toHaveBeenCalledWith(expectedDurableCall());
+        expect(sendSequence).not.toHaveBeenCalled();
+        expect(markCompleted).not.toHaveBeenCalled();
+      } else {
+        expect(deliverGuideForTrigger).not.toHaveBeenCalled();
+        expect(sendSequence).toHaveBeenCalledOnce();
+        expect(markCompleted).toHaveBeenCalledWith("convo-1");
+      }
+    },
+  );
+
+  it("routes a recovered expired DONE through the same durable owner choke point", async () => {
+    findLatestIncompleteConversation.mockResolvedValue(openGateConversation("expired-convo"));
+    guideDeliveryOwner.mockReturnValue("ledger");
+
+    await handleMessage(inbound("DONE!"));
+
+    expect(deliverGuideForTrigger).toHaveBeenCalledWith(
+      expectedDurableCall({ conversationId: "expired-convo" }),
+    );
+    expect(sendSequence).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "preflight_failed",
+    "needs_review",
+    "retry_scheduled",
+    "already_processing",
+  ] as const)(
+    "leaves the inbound thread needing attention when ledger returns %s",
+    async (result) => {
+      findActiveAwaitingDone.mockResolvedValue(openGateConversation());
+      guideDeliveryOwner.mockReturnValue("ledger");
+      deliverGuideForTrigger.mockResolvedValue(result);
+
+      await handleMessage(inbound("Done"));
+
+      expect(sendSequence).not.toHaveBeenCalled();
+      expect(sendTrackedText).not.toHaveBeenCalled();
+      expect(markCompleted).not.toHaveBeenCalled();
+      expect(markThreadResolved).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves the follow-aware closing after ledger completes in this invocation", async () => {
+    findKeywordInMessage.mockResolvedValue(keywordFixture);
+    guideDeliveryOwner.mockReturnValue("ledger");
+    deliverGuideForTrigger.mockResolvedValue("completed");
+
+    await handleMessage(inbound("SLEEP"));
+
+    expect(sendTrackedText).toHaveBeenCalledOnce();
+    expect(sendTrackedText).toHaveBeenCalledWith({
+      recipientIgUserId: "ig-user-1",
+      text: "Thanks for following! 💛",
+      source: "guide_automation",
+    });
+    expect(markCompleted).not.toHaveBeenCalled();
+    expect(markThreadResolved).not.toHaveBeenCalled();
+  });
+
+  it("makes zero guide provider calls when ledger preflight rejects the plan", async () => {
+    findKeywordInMessage.mockResolvedValue(keywordFixture);
+    guideDeliveryOwner.mockReturnValue("ledger");
+    deliverGuideForTrigger.mockResolvedValue("preflight_failed");
+
+    await handleMessage(inbound("SLEEP"));
+
+    expect(deliverGuideForTrigger).toHaveBeenCalledOnce();
+    expect(sendSequence).not.toHaveBeenCalled();
+    expect(sendTrackedText).not.toHaveBeenCalled();
+    expect(markCompleted).not.toHaveBeenCalled();
+    expect(markThreadResolved).not.toHaveBeenCalled();
+  });
+
+  it("does not fall back to legacy when ledger delivery throws", async () => {
+    findActiveAwaitingDone.mockResolvedValue(openGateConversation());
+    guideDeliveryOwner.mockReturnValue("ledger");
+    deliverGuideForTrigger.mockRejectedValue(new Error("private ledger detail"));
+
+    await expect(handleMessage(inbound("Done"))).resolves.toBeUndefined();
+
+    expect(sendSequence).not.toHaveBeenCalled();
+    expect(sendTrackedText).not.toHaveBeenCalled();
+    expect(markCompleted).not.toHaveBeenCalled();
+  });
+
+  it("drops a true duplicate webhook with the same provider mid before owner selection", async () => {
+    recordInboundMessage
+      .mockResolvedValueOnce({
+        duplicate: false,
+        becameLatest: true,
+        threadId: "thread-1",
+        messageId: "message-1",
+      })
+      .mockResolvedValueOnce({
+        duplicate: true,
+        becameLatest: false,
+        threadId: "thread-1",
+        messageId: "message-1",
+      });
+    findKeywordInMessage.mockResolvedValue(keywordFixture);
+    guideDeliveryOwner.mockReturnValue("ledger");
+    deliverGuideForTrigger.mockResolvedValue("already_processing");
+
+    const webhook = inbound("SLEEP");
+    await handleMessage(webhook);
+    await handleMessage(webhook);
+
+    expect(recordInboundMessage).toHaveBeenCalledTimes(2);
+    expect(recordInboundMessage.mock.calls.map(([input]) => input.instagramMessageId)).toEqual([
+      "mid-1",
+      "mid-1",
+    ]);
+    expect(recordRecoveryInbound).toHaveBeenCalledOnce();
+    expect(guideDeliveryOwner).toHaveBeenCalledOnce();
+    expect(deliverGuideForTrigger).toHaveBeenCalledOnce();
+    expect(sendSequence).not.toHaveBeenCalled();
+  });
+
+  it("reuses the persisted trigger ID when downstream processing is retried", async () => {
+    findKeywordInMessage.mockResolvedValue(keywordFixture);
+    guideDeliveryOwner.mockReturnValue("ledger");
+    deliverGuideForTrigger.mockResolvedValue("already_processing");
+
+    await handleMessage(inbound("SLEEP"));
+    await handleMessage(
+      inbound("SLEEP", { message: { mid: "mid-provider-replay", text: "SLEEP" } }),
+    );
+
+    expect(guideDeliveryOwner).toHaveBeenCalledTimes(2);
+    expect(guideDeliveryOwner.mock.calls.map(([input]) => input.triggerId)).toEqual([
+      "message-1",
+      "message-1",
+    ]);
+    expect(deliverGuideForTrigger.mock.calls.map(([input]) => input.triggerId)).toEqual([
+      "message-1",
+      "message-1",
+    ]);
+  });
+
+  it("does not select a guide owner for a confirmed non-follower", async () => {
+    resolveUsername.mockResolvedValue({ isFollower: false, username: "geri", name: "Geri" });
+    findActiveAwaitingDone.mockResolvedValue(openGateConversation());
+
+    await handleMessage(inbound("Done"));
+
+    expect(guideDeliveryOwner).not.toHaveBeenCalled();
+    expect(deliverGuideForTrigger).not.toHaveBeenCalled();
+    expect(sendSequence).not.toHaveBeenCalled();
+    expect(sendTrackedText).toHaveBeenCalledWith(
+      expect.objectContaining({ source: "keyword_automation" }),
+    );
   });
 });
 

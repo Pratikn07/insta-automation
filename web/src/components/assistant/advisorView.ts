@@ -118,6 +118,14 @@ export function askErrorMessage(error: unknown, retryAt: string | null): string 
   if (code === "invalid_advisor_output") {
     return "The answer came back malformed, so nothing is shown. Try asking again.";
   }
+  // Not a failure: the question is already being worked on. Saying "try again"
+  // here would invite a second model turn for the same question.
+  if (code === "advisor_outcome_pending") {
+    return "That question is still being answered. Give it a moment — it will appear here.";
+  }
+  if (code === "idempotency_conflict") {
+    return "That question was already asked with different wording. Edit it and ask again.";
+  }
   return "Couldn't get an answer just now. Your question is still here — try again.";
 }
 

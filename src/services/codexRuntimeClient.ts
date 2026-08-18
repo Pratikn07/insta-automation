@@ -17,7 +17,33 @@ export type CodexRuntimeErrorCode =
   | "runtime_rate_limited"
   | "runtime_unavailable"
   | "runtime_timeout"
-  | "invalid_runtime_response";
+  | "invalid_runtime_response"
+  // Forwarded verbatim from the runtime. Flattening these into
+  // `runtime_unavailable` would tell the browser to try again, which is the one
+  // thing it must not do while a question's outcome is unresolved.
+  | "advisor_outcome_pending"
+  | "idempotency_conflict";
+
+/**
+ * Runtime error codes that carry meaning the browser must act on, so they cross
+ * this boundary unchanged. Everything else is still reduced to a generic code —
+ * no runtime response detail is forwarded verbatim.
+ */
+const PRESERVED_RUNTIME_CODES = new Set(["advisor_outcome_pending", "idempotency_conflict"]);
+
+/** Reads only the `error` field, and only when it is one of the allowlisted codes. */
+async function readPreservedCode(response: Response): Promise<CodexRuntimeErrorCode | null> {
+  try {
+    const body: unknown = await response.json();
+    if (!body || typeof body !== "object") return null;
+    const code = (body as { error?: unknown }).error;
+    return typeof code === "string" && PRESERVED_RUNTIME_CODES.has(code)
+      ? (code as CodexRuntimeErrorCode)
+      : null;
+  } catch {
+    return null;
+  }
+}
 
 export class CodexRuntimeError extends Error {
   readonly code: CodexRuntimeErrorCode;
@@ -208,6 +234,10 @@ export function createCodexRuntimeClient(config: CodexRuntimeClientConfig): Code
           parseRetryAfter(response.headers.get("retry-after")),
         );
       }
+      // A stable code the browser must act on survives this hop; anything else is
+      // still reduced to a generic unavailable.
+      const preserved = await readPreservedCode(response);
+      if (preserved) throw new CodexRuntimeError(preserved, response.status);
       throw new CodexRuntimeError("runtime_unavailable", response.status);
     }
 

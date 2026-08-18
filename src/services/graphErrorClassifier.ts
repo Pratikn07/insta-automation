@@ -17,6 +17,11 @@ export type PublicReplyFailure =
   | "permanent"
   | "uncertain";
 
+export type DirectMessageSendDisposition =
+  | "definite_transient"
+  | "definite_permanent"
+  | "uncertain";
+
 export function parseGraphSignatures(value: string): ReadonlySet<string> {
   if (!value || typeof value !== "string") return new Set();
 
@@ -39,6 +44,10 @@ export function parseGraphSignatures(value: string): ReadonlySet<string> {
  * limit, which both retried a permanently failing send and made the
  * settings-blocked allowlist unreachable, because this check runs first.
  */
+function hasVerifiedGraphEnvelope(metadata: GraphErrorMetadata): boolean {
+  return metadata.category === "graph_response" && metadata.traceId !== null;
+}
+
 function isRateLimit(metadata: GraphErrorMetadata): boolean {
   if (metadata.httpStatus === 429) return true;
 
@@ -60,6 +69,74 @@ const NEVER_DELIVERED_TRANSPORT: ReadonlySet<string> = new Set([
   "ENOTFOUND",
   "EAI_AGAIN",
 ]);
+
+/**
+ * Classify the delivery boundary for a normal direct-message send.
+ *
+ * A response-less failure is retryable only when the closed transport
+ * allowlist proves that no connection reached Meta. A structured Graph error
+ * is a definite rejection; an unstructured proxy 5xx is not, because the
+ * proxy may have lost Meta's success response after forwarding the request.
+ */
+export function classifyDirectMessageSend(
+  metadata: GraphErrorMetadata,
+): DirectMessageSendDisposition {
+  const verifiedGraphEnvelope = hasVerifiedGraphEnvelope(metadata);
+
+  if (
+    metadata.httpStatus === 429 ||
+    (verifiedGraphEnvelope && isRateLimit(metadata))
+  ) {
+    return "definite_transient";
+  }
+
+  if (
+    metadata.httpStatus === 401 ||
+    metadata.httpStatus === 403 ||
+    (verifiedGraphEnvelope &&
+      (metadata.graphCode === 10 ||
+        metadata.graphCode === 102 ||
+        metadata.graphCode === 190 ||
+        metadata.graphCode === 200))
+  ) {
+    return "definite_permanent";
+  }
+
+  if (metadata.category === "graph_transport") {
+    return metadata.transportCode !== null &&
+      NEVER_DELIVERED_TRANSPORT.has(metadata.transportCode)
+      ? "definite_transient"
+      : "uncertain";
+  }
+
+  if (metadata.category !== "graph_response") return "uncertain";
+
+  const structuredGraphRejection = verifiedGraphEnvelope && metadata.graphCode !== null;
+  if (
+    structuredGraphRejection &&
+    (metadata.graphCode === 1 ||
+      metadata.graphCode === 2 ||
+      (metadata.httpStatus !== null && metadata.httpStatus >= 500))
+  ) {
+    return "definite_transient";
+  }
+
+  if (structuredGraphRejection) return "definite_permanent";
+
+  if (
+    metadata.httpStatus !== null &&
+    metadata.httpStatus >= 400 &&
+    metadata.httpStatus < 500 &&
+    metadata.httpStatus !== 408
+  ) {
+    return "definite_permanent";
+  }
+
+  return "uncertain";
+}
+
+// Kept as a descriptive alias for worker/review callers added by later slices.
+export const classifyDirectMessageSendFailure = classifyDirectMessageSend;
 
 export function classifyPrivateGateFailure(
   metadata: GraphErrorMetadata,

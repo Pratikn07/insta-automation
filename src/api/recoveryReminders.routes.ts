@@ -435,7 +435,14 @@ function buildTimeline(row: Record<string, unknown>): TimelineEntry[] {
  * Drift is a mislabelled button, not corruption: every action re-reads the row
  * and answers 409 when the status is no longer eligible.
  */
-export const CANCELLABLE = ["waiting", "control", "tracking_unavailable", "send_failed"] as const;
+export const CANCELLABLE = [
+  "waiting",
+  "control",
+  "tracking_unavailable",
+  // No public comment was accepted. Cancelling prevents a later retry; it does
+  // not rewrite or undo the failed Meta attempt already recorded in the timeline.
+  "send_failed",
+] as const;
 export const REVIEWABLE = ["send_failed", "send_uncertain", "tracking_unavailable"] as const;
 
 recoveryRemindersRouter.get("/:id", async (req, res) => {

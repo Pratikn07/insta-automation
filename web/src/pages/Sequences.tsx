@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
-import { Layers, MessageSquare, Plus, Tag, Trash2 } from "lucide-react";
+import { CircleAlert, Layers, MessageSquare, Plus, Tag, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
-import { api, ApiError } from "@/lib/api";
+import { apiRead, apiMutation, ApiError } from "@/lib/api";
+import { useOperationId } from "@/lib/useOperationId";
 import type { Resource } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -14,20 +15,20 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
-import { EmptyState } from "@/components/EmptyState";
+import { EmptyState, LoadFailed } from "@/components/EmptyState";
 
 export function Sequences() {
   const qc = useQueryClient();
   const resourcesQ = useQuery<Resource[]>({
     queryKey: ["resources"],
-    queryFn: () => api<Resource[]>("/resources"),
+    queryFn: ({ signal }) => apiRead<Resource[]>("/resources", { signal }),
   });
 
   const [creating, setCreating] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<Resource | null>(null);
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => api(`/resources/${id}`, { method: "DELETE" }),
+    mutationFn: (id: string) => apiMutation(`/resources/${id}`, { method: "DELETE" }),
     onSuccess: () => {
       toast.success("Sequence deleted");
       qc.invalidateQueries({ queryKey: ["resources"] });
@@ -53,7 +54,9 @@ export function Sequences() {
         </Button>
       </div>
 
-      {resourcesQ.isLoading ? (
+      {resourcesQ.isError ? (
+        <LoadFailed what="your sequences" onRetry={() => void resourcesQ.refetch()} />
+      ) : resourcesQ.isPending ? (
         <div className="grid gap-3 sm:grid-cols-2">
           {[0, 1].map((i) => (
             <Skeleton key={i} className="h-28" />
@@ -137,6 +140,15 @@ function SequenceCard({ r, onDelete }: { r: Resource; onDelete: () => void }) {
             {r.description && (
               <p className="mt-2 line-clamp-2 text-sm text-muted-foreground">{r.description}</p>
             )}
+            {/* The caution tokens, like every other badge. This one still wore
+                bg-amber-100/text-amber-900 plus dark: variants — a leftover from the
+                dark shell, in a console that has no dark mode. */}
+            {(r.invalidMessageCount ?? 0) > 0 && (
+              <span className="mt-2 inline-flex items-center gap-1 rounded-full bg-caution-soft px-2 py-1 text-xs font-medium text-caution">
+                <CircleAlert className="size-3.5" />
+                {r.invalidMessageCount} {r.invalidMessageCount === 1 ? "message needs" : "messages need"} attention
+              </span>
+            )}
           </Link>
           <Button
             size="icon"
@@ -167,15 +179,20 @@ function CreateSequenceForm({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  // The new row's UUID, owned by this attempt. A repeat carries the same one, so
+  // the server answers with the existing sequence instead of making a second.
+  const { operationId, renew } = useOperationId();
 
   const createMutation = useMutation({
     mutationFn: () =>
-      api<Resource>("/resources", {
+      apiMutation<Resource>("/resources", {
         method: "POST",
-        body: JSON.stringify({ name, description: description || null }),
+        operationId,
+        body: JSON.stringify({ id: operationId, name, description: description || null }),
       }),
     onSuccess: () => {
       toast.success("Sequence created");
+      renew();
       qc.invalidateQueries({ queryKey: ["resources"] });
       onClose();
     },

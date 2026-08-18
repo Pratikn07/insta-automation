@@ -13,10 +13,9 @@ import {
   User,
 } from "lucide-react";
 import { useState } from "react";
-import { DmRecoveryList } from "../components/conversations/DmRecoveryList";
-import { DmRecoveryDrawer } from "../components/conversations/DmRecoveryDrawer";
+import { useSearchParams } from "react-router-dom";
 import { journeyRowMarkers } from "../components/conversations/journeyRowMarkers";
-import { api } from "@/lib/api";
+import { apiRead } from "@/lib/api";
 import type {
   Conversation,
   ConversationCounts,
@@ -30,10 +29,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Drawer } from "@/components/ui/drawer";
 import { Skeleton } from "@/components/ui/skeleton";
-import { EmptyState } from "@/components/EmptyState";
+import { EmptyState, LoadFailed } from "@/components/EmptyState";
 import { UserLineage } from "@/components/UserLineage";
 import { IncomingBubble, OutgoingBubble, StepBubble } from "@/components/ChatBubbles";
 import { DmThreadList } from "@/components/conversations/DmThreadList";
+import { PeopleDirectory } from "@/components/conversations/PeopleDirectory";
 import { DmThreadDrawer } from "@/components/conversations/DmThreadDrawer";
 import { cn, displayUser, formatAbsolute } from "@/lib/utils";
 import { prettyKind } from "@/lib/eventLog";
@@ -45,7 +45,19 @@ type HistoryMode = "canonical" | "raw";
 // approval surface; the journey views are the existing keyword→gate→guide funnel,
 // unchanged. Kept side by side rather than replaced, because a journey row and a
 // DM thread answer different questions.
-type Lens = "needs_reply" | "dms" | "recovery" | "journeys";
+//
+// "recovery" was a third pill here and is now its own route. Every lens below is
+// a way of reading what already happened; recovery can publish a public reminder, and
+// a sending control does not belong in a row of reading controls. See DmRecovery.tsx.
+//
+// "people" arrived the other way, from /users, and the same line explains why: it
+// is this dataset indexed by person rather than by event, and it reads. Related
+// data is not the test — what the control does is.
+type Lens = "needs_reply" | "dms" | "people" | "journeys";
+
+function isLens(value: string | null): value is Lens {
+  return value === "needs_reply" || value === "dms" || value === "people" || value === "journeys";
+}
 
 // Plain-English tab labels. "DONE" is internal jargon (the word the user types) —
 // a marketer tracks outcomes: who's waiting, who got it, and who we never got a
@@ -60,8 +72,8 @@ const FILTERS: { value: StateFilter; label: string; countKey?: keyof Conversatio
 ];
 
 const stateMeta: Record<ConversationState, { label: string; tone: string; Icon: typeof Clock }> = {
-  awaiting_done: { label: "Waiting for reply", tone: "text-amber-400 bg-amber-400/10", Icon: Clock },
-  completed: { label: "Delivered", tone: "text-emerald-400 bg-emerald-400/10", Icon: CheckCircle2 },
+  awaiting_done: { label: "Waiting for reply", tone: "text-caution bg-caution-soft", Icon: Clock },
+  completed: { label: "Delivered", tone: "text-signal bg-signal-soft", Icon: CheckCircle2 },
   expired: {
     label: "No confirmed reply",
     tone: "text-muted-foreground bg-muted/40",
@@ -70,52 +82,66 @@ const stateMeta: Record<ConversationState, { label: string; tone: string; Icon: 
 };
 
 // The "we couldn't reach them yet — auto-retrying" row style. Deliberately calm
-// (sky, not red): for almost everyone this self-heals and needs no action, so it
-// reads as a status, not an alarm. Distinct from the amber "their turn" badge.
+// (blue, not urgent): for almost everyone this self-heals and needs no action, so
+// it reads as a status, not an alarm. Distinct from the caution "their turn" badge.
 const RETRYING_META = {
   label: "Couldn’t message — retrying",
-  tone: "text-sky-400 bg-sky-400/10",
+  tone: "text-funnel-mark bg-mark-soft",
   Icon: RotateCw,
 };
 
 // What badge does this row get? Within "Waiting", a still-bouncing gate means the
 // DM never landed — so it is NOT the user's turn. Surface that instead of the
-// generic amber "Waiting for reply".
+// generic "Waiting for reply".
 function rowBadge(c: Conversation): { label: string; tone: string; Icon: typeof Clock } {
   if (c.state === "awaiting_done" && c.delivery === "retrying") return RETRYING_META;
   return stateMeta[c.state];
 }
 
 export function Conversations() {
-  const [lens, setLens] = useState<Lens>("needs_reply");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const lensParam = searchParams.get("lens");
+  const lens: Lens = isLens(lensParam) ? lensParam : "needs_reply";
   const [filter, setFilter] = useState<StateFilter>("all");
   const [historyMode, setHistoryMode] = useState<HistoryMode>("canonical");
   const [selected, setSelected] = useState<Conversation | null>(null);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [lineageUser, setLineageUser] = useState<string | null>(null);
-  const [selectedRecoveryId, setSelectedRecoveryId] = useState<string | null>(null);
+  const now = new Date();
+
+  const selectLens = (nextLens: Lens) => {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      if (nextLens === "needs_reply") next.delete("lens");
+      else next.set("lens", nextLens);
+      return next;
+    });
+  };
 
   const dmScope = lens === "needs_reply" ? "needs_reply" : "all";
   const dmThreadsQ = useQuery<Paginated<DmThreadRow>>({
     queryKey: ["dm-threads", dmScope],
-    queryFn: () => api<Paginated<DmThreadRow>>(`/dm-threads?scope=${dmScope}`),
+    queryFn: ({ signal }) => apiRead<Paginated<DmThreadRow>>(`/dm-threads?scope=${dmScope}`, { signal }),
     enabled: lens === "needs_reply" || lens === "dms",
   });
 
+  // Only the two DM lenses render a thread drawer, so only they need to know
+  // whether sending is enabled. This said `lens !== "journeys"` when those were
+  // the only two, and adding People would have quietly widened it.
   const capabilitiesQ = useQuery<AiCapabilities>({
     queryKey: ["ai-capabilities"],
-    queryFn: () => api<AiCapabilities>("/ai/capabilities"),
-    enabled: lens !== "journeys",
+    queryFn: ({ signal }) => apiRead<AiCapabilities>("/ai/capabilities", { signal }),
+    enabled: lens === "needs_reply" || lens === "dms",
   });
 
   const conversationsQ = useInfiniteQuery({
     queryKey: ["conversations", historyMode, filter],
-    queryFn: ({ pageParam }) => {
+    queryFn: ({ pageParam, signal }) => {
       const params = new URLSearchParams();
       params.set("mode", historyMode);
       if (filter !== "all") params.set("state", filter);
       if (pageParam) params.set("cursor", pageParam);
-      return api<Paginated<Conversation>>(`/conversations?${params.toString()}`);
+      return apiRead<Paginated<Conversation>>(`/conversations?${params.toString()}`, { signal });
     },
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last) => last.nextCursor ?? undefined,
@@ -128,12 +154,12 @@ export function Conversations() {
   // Tab counts so the page reads like a dashboard ("Waiting 416 · Delivered 351").
   const countsQ = useQuery<ConversationCounts>({
     queryKey: ["conversation-counts", historyMode],
-    queryFn: () => api<ConversationCounts>(`/conversations/counts?mode=${historyMode}`),
+    queryFn: ({ signal }) => apiRead<ConversationCounts>(`/conversations/counts?mode=${historyMode}`, { signal }),
   });
   const counts = countsQ.data;
 
   const items = conversationsQ.data?.pages.flatMap((p) => p.items) ?? [];
-  const isLoading = conversationsQ.isLoading;
+  const isLoading = conversationsQ.isPending;
 
   // In the Waiting views, float the "couldn't reach — retrying" rows to the top so
   // the handful that aren't really the user's turn don't hide among hundreds of
@@ -188,12 +214,13 @@ export function Conversations() {
           [
             { value: "needs_reply", label: "Needs reply" },
             { value: "dms", label: "DMs" },
-            { value: "recovery", label: "DM recovery" },
+            { value: "people", label: "People" },
           ] as const
         ).map((l) => (
           <button
             key={l.value}
-            onClick={() => setLens(l.value)}
+            onClick={() => selectLens(l.value)}
+            aria-pressed={lens === l.value}
             className={cn(
               "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
               lens === l.value
@@ -212,9 +239,10 @@ export function Conversations() {
             <button
               key={f.value}
               onClick={() => {
-                setLens("journeys");
+                selectLens("journeys");
                 setFilter(f.value);
               }}
+              aria-pressed={lens === "journeys" && filter === f.value}
               className={cn(
                 "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
                 lens === "journeys" && filter === f.value
@@ -235,7 +263,7 @@ export function Conversations() {
       {/* Calm heads-up when some gates haven't landed. Most auto-heal, so this is
           informational, not an alarm — and it only shows when relevant. */}
       {counts != null && counts.retrying > 0 && (filter === "awaiting_done" || filter === "all") && (
-        <div className="flex items-start gap-2 rounded-md border border-sky-500/30 bg-sky-500/5 px-3 py-2 text-xs text-sky-300">
+        <div className="flex items-start gap-2 rounded-md border border-funnel-mark bg-mark-soft px-3 py-2 text-xs text-funnel-mark">
           <RotateCw className="mt-0.5 size-3.5 shrink-0" />
           <span>
             We couldn’t message{" "}
@@ -247,16 +275,16 @@ export function Conversations() {
         </div>
       )}
 
-      {lens === "recovery" ? (
-        <div className="mt-4">
-          <DmRecoveryList onSelect={setSelectedRecoveryId} />
-        </div>
+      {lens === "people" ? (
+        <PeopleDirectory onSelect={setLineageUser} />
       ) : lens !== "journeys" ? (
         <DmThreadList
           rows={dmThreadsQ.data?.items ?? []}
           isLoading={dmThreadsQ.isLoading}
           onSelect={(row) => setSelectedThreadId(row.id)}
         />
+      ) : conversationsQ.isError ? (
+        <LoadFailed what="conversations" onRetry={() => void conversationsQ.refetch()} />
       ) : isLoading ? (
         <div className="space-y-2">
           {[0, 1, 2, 3].map((i) => (
@@ -281,7 +309,7 @@ export function Conversations() {
                 exit={{ opacity: 0, y: -4 }}
                 transition={{ duration: 0.18, delay: Math.min(i * 0.015, 0.3) }}
               >
-                <ConversationRow c={c} onClick={() => setSelected(c)} />
+                <ConversationRow c={c} now={now} onClick={() => setSelected(c)} />
               </motion.li>
             ))}
           </AnimatePresence>
@@ -319,20 +347,6 @@ export function Conversations() {
       </Drawer>
 
       <Drawer
-        open={selectedRecoveryId !== null}
-        onClose={() => setSelectedRecoveryId(null)}
-        title="DM recovery reminder"
-      >
-        {selectedRecoveryId && (
-          <DmRecoveryDrawer
-            id={selectedRecoveryId}
-            onClose={() => setSelectedRecoveryId(null)}
-            onOpenUser={(id) => setLineageUser(id)}
-          />
-        )}
-      </Drawer>
-
-      <Drawer
         open={lineageUser !== null}
         onClose={() => setLineageUser(null)}
         title="User journey"
@@ -355,9 +369,9 @@ function isRetrying(c: Conversation): boolean {
   return c.state === "awaiting_done" && c.delivery === "retrying";
 }
 
-function ConversationRow({ c, onClick }: { c: Conversation; onClick: () => void }) {
+function ConversationRow({ c, now, onClick }: { c: Conversation; now: Date; onClick: () => void }) {
   const meta = rowBadge(c);
-  const markers = journeyRowMarkers(c);
+  const markers = journeyRowMarkers(c, now);
   return (
     <Card className="group transition-colors hover:bg-accent/40">
       <CardContent className="p-0">
@@ -384,7 +398,7 @@ function ConversationRow({ c, onClick }: { c: Conversation; onClick: () => void 
               {c.completedAt && ` · completed ${formatRelative(c.completedAt)}`}
             </p>
             {c.historyRole === "alias" && (
-              <p className="mt-0.5 text-[11px] text-amber-300">
+              <p className="mt-0.5 text-[11px] text-caution">
                 Alias history · canonical owner {c.canonicalOwner?.id ?? "unknown"}
               </p>
             )}
@@ -396,7 +410,7 @@ function ConversationRow({ c, onClick }: { c: Conversation; onClick: () => void 
             {/* An old journey has no receipts because none were ever collected.
                 Without this the older half of the table reads as failures. */}
             {markers.note && (
-              <p className="mt-0.5 text-[11px] text-muted-foreground/80">{markers.note}</p>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">{markers.note}</p>
             )}
           </div>
           {markers.recovery && (
@@ -404,7 +418,7 @@ function ConversationRow({ c, onClick }: { c: Conversation; onClick: () => void 
               className={cn(
                 "inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium",
                 markers.recovery.pending
-                  ? "bg-sky-400/10 text-sky-400"
+                  ? "bg-mark-soft text-funnel-mark"
                   : "bg-muted/40 text-muted-foreground",
               )}
             >
@@ -592,7 +606,7 @@ function ConversationDetail({
   const [showTech, setShowTech] = useState(false);
   const detailQ = useQuery<ConversationDetailResponse>({
     queryKey: ["conversation-detail", conversationId],
-    queryFn: () => api<ConversationDetailResponse>(`/conversations/${conversationId}/events`),
+    queryFn: ({ signal }) => apiRead<ConversationDetailResponse>(`/conversations/${conversationId}/events`, { signal }),
   });
 
   if (detailQ.isLoading) {
@@ -632,8 +646,8 @@ function ConversationDetail({
         <p
           className={cn(
             "mt-2 text-sm",
-            summary.tone === "done" && "text-emerald-400",
-            summary.tone === "failed" && "text-amber-400",
+            summary.tone === "done" && "text-signal",
+            summary.tone === "failed" && "text-caution",
             summary.tone === "pending" && "text-foreground",
           )}
         >
@@ -691,8 +705,8 @@ function ConversationDetail({
 }
 
 const STATUS_DOT: Record<StepStatus, string> = {
-  done: "bg-emerald-500 text-white",
-  failed: "bg-amber-500 text-white",
+  done: "bg-signal text-primary-foreground",
+  failed: "bg-caution text-primary-foreground",
   pending: "border border-border bg-muted text-muted-foreground",
 };
 
@@ -724,7 +738,7 @@ function JourneyRow({ step }: { step: JourneyStep }) {
           </span>
         </div>
         {step.note && (
-          <p className="mt-0.5 text-xs text-amber-400">{step.note}</p>
+          <p className="mt-0.5 text-xs text-caution">{step.note}</p>
         )}
 
         {/* Bubble(s) under the step */}
@@ -757,25 +771,25 @@ function GateRetryCard({ gate }: { gate: GateRetry }) {
     new Date(gate.commentAt).getTime() + 7 * 24 * 60 * 60 * 1000,
   );
   return (
-    <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3">
+    <div className="rounded-md border border-caution bg-caution-soft p-3">
       <div className="flex items-start gap-2">
-        <RotateCw className={cn("mt-0.5 size-4 shrink-0 text-amber-400", !exhausted && "animate-none")} />
+        <RotateCw className={cn("mt-0.5 size-4 shrink-0 text-caution", !exhausted && "animate-none")} />
         <div className="text-sm">
           {exhausted ? (
-            <p className="text-amber-300">
+            <p className="text-caution">
               Instagram only allows auto-DMs for 7 days after a comment, and that window has
               closed — so this DM couldn’t be delivered.
             </p>
           ) : (
             <>
-              <p className="font-medium text-amber-300">
+              <p className="font-medium text-caution">
                 We couldn’t DM them automatically — but we’re retrying.
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
                 Instagram temporarily limited how many auto-DMs this account can send, so this one
                 was held back. We’ll keep retrying as the limit frees up — no action needed from you.
               </p>
-              <p className="mt-2 text-xs text-amber-300/90">
+              <p className="mt-2 text-xs text-caution">
                 Attempt {gate.attempts + 1} · next try {formatRelativeFuture(gate.nextAttemptAt)} ·
                 retrying until {formatAbsolute(windowCloses.toISOString())}
               </p>

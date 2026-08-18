@@ -1,64 +1,67 @@
 import { NavLink } from "react-router-dom";
-import {
-  Home,
-  Tag,
-  Layers,
-  MessageCircle,
-  LayoutGrid,
-  Sparkles,
-  Activity,
-  Users,
-  BarChart3,
-  MailQuestion,
-  Filter,
-} from "lucide-react";
 import { cn } from "@/lib/utils";
+import { HOME_DESTINATION, NAV_GROUPS } from "@/lib/navigation";
 
-const items = [
-  { to: "/", label: "Home", icon: Home },
-  // "Content", not "Reels" — this page holds carousels too.
-  { to: "/content", label: "Content", icon: LayoutGrid },
-  { to: "/keywords", label: "Keywords", icon: Tag },
-  { to: "/sequences", label: "Sequences", icon: Layers },
-  { to: "/conversations", label: "Conversations", icon: MessageCircle },
-  { to: "/historical-recovery", label: "Recovery", icon: MailQuestion },
-  { to: "/assistant", label: "Assistant", icon: Sparkles },
-  { to: "/users", label: "Users", icon: Users },
-  { to: "/insights", label: "Insights", icon: BarChart3 },
-  // Next to Insights, but deliberately separate: Insights is scoped to reels,
-  // a funnel's axis is the conversation lifecycle.
-  { to: "/funnels", label: "Funnels", icon: Filter },
-  { to: "/activity", label: "Activity", icon: Activity },
-];
+/**
+ * The rail.
+ *
+ * Light and integrated rather than a dark chrome panel: the sidebar is where a
+ * console most reliably announces itself as generic, and a filled dark rectangle
+ * beside a light page is the single strongest tell. Here it is the same paper as
+ * the page, separated by one rule, and the active route is marked by a moss edge
+ * rather than a filled pill.
+ *
+ * Typographic, no icons. An icon beside every label adds a column of noise to a
+ * list a daily user learned by position within a week.
+ *
+ * The groups and destination names below come from PRODUCT.md's information
+ * architecture section, which is the record of what exists and what it is called.
+ * This file does not hold opinions about what should merge later: the comment
+ * that used to live here predicted three merges, two of which were subsequently
+ * rejected, which left a component quietly asserting design authority nobody had
+ * agreed to. Read the record, change the record, then change this list.
+ *
+ * The one rule that is a safety boundary rather than a preference: DM recovery
+ * and historical recovery are grouped but never tabbed. Approving in the latter
+ * posts public comments on hundreds of real posts, and peer tabs are exactly the
+ * surface on which a habitual click means something different. DM recovery was a
+ * pill in the Conversations filter row until it became the route below.
+ */
+/** One definition, so Home and the grouped items cannot drift apart. */
+const railLink = ({ isActive }: { isActive: boolean }) =>
+  cn(
+    "flex min-h-8 items-center border-l-2 px-5 py-1.5 text-[13px] transition-colors",
+    // 44px on touch only: the rail's rhythm depends on tight leading, so a mouse
+    // keeps the density and a thumb gets the target.
+    "[@media(pointer:coarse)]:min-h-11",
+    "active:opacity-60",
+    isActive
+      ? "border-l-signal font-medium text-foreground"
+      : "border-l-transparent text-muted-foreground hover:bg-muted hover:text-foreground",
+  );
 
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   return (
-    <aside className="flex h-full w-60 shrink-0 flex-col border-r bg-card/30 px-3 py-5">
-      <div className="mb-6 flex items-center gap-2 px-2">
-        <div className="flex size-7 items-center justify-center rounded-md bg-brand-gradient">
-          <Sparkles className="size-4 text-white" />
-        </div>
-        <span className="font-semibold tracking-tight">Tiny Soho</span>
+    <aside className="flex h-full w-52 shrink-0 flex-col overflow-y-auto border-r bg-background py-5">
+      <div className="flex items-center gap-2 px-5 pb-5">
+        <span className="size-3 shrink-0 rounded-[2px] bg-signal" />
+        <span className="text-sm font-medium tracking-tight">tinysoho</span>
       </div>
-      <nav className="flex flex-col gap-1">
-        {items.map(({ to, label, icon: Icon }) => (
-          <NavLink
-            key={to}
-            to={to}
-            end={to === "/"}
-            onClick={onNavigate}
-            className={({ isActive }) =>
-              cn(
-                "group flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm transition-colors",
-                isActive
-                  ? "bg-accent text-foreground"
-                  : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
-              )
-            }
-          >
-            <Icon className="size-4" />
-            <span>{label}</span>
-          </NavLink>
+
+      <nav>
+        <NavLink to={HOME_DESTINATION.path} end onClick={onNavigate} className={railLink}>
+          {HOME_DESTINATION.label}
+        </NavLink>
+
+        {NAV_GROUPS.map(({ heading, items }) => (
+          <div key={heading}>
+            <div className="label-caps px-5 pb-1.5 pt-4">{heading}</div>
+            {items.map(({ path, label }) => (
+              <NavLink key={path} to={path} onClick={onNavigate} className={railLink}>
+                {label}
+              </NavLink>
+            ))}
+          </div>
         ))}
       </nav>
     </aside>

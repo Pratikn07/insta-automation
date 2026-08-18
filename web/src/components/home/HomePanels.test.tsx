@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { FollowerDailyAddsPoint, FollowerStock } from "@/lib/types";
 import { summarizeFollowerFlow } from "@/lib/followerFlow";
 import { FollowerFlowPanel } from "./FollowerFlowPanel";
+import { CHART_MEAN, CHART_PROVISIONAL, REGION_CHART_COLORS } from "@/lib/chartPalette";
 
 function flowPoint(
   day: string,
@@ -267,5 +268,78 @@ describe("FollowerFlowPanel", () => {
       />,
     );
     expect(html).toContain("Waiting for follower snapshots");
+  });
+});
+
+/**
+ * The chart's marks, measured in the rendered SVG rather than trusted from the
+ * palette module. The palette can be correct while the component still paints a
+ * white stroke or fades a group — which is exactly what it did.
+ */
+describe("follower chart marks on paper", () => {
+  const points = [
+    flowPoint("2026-08-10", { us: 12, southAsian: 4, anglosphere: 3, other: 2 }),
+    flowPoint("2026-08-11", { us: 9, southAsian: 5, anglosphere: 2, other: 1 }),
+    flowPoint("2026-08-12", { us: 14, southAsian: 3, anglosphere: 4, other: 2 }),
+    flowPoint("2026-08-13", { us: 11, southAsian: 6, anglosphere: 1, other: 3 }),
+    flowPoint("2026-08-14", { us: 8, southAsian: 2, anglosphere: 5, other: 1 }),
+    flowPoint("2026-08-15", { us: 13, southAsian: 4, anglosphere: 2, other: 2 }),
+    flowPoint("2026-08-16", { us: 10, southAsian: 3, anglosphere: 3, other: 1 }),
+    // The last window is still filling, which used to be shown by fading it.
+    flowPoint("2026-08-17", { us: 5, southAsian: 1, anglosphere: 1, other: 0, provisional: true }),
+  ];
+
+  function markup(selectedDay: string | null = null) {
+    return renderToStaticMarkup(
+      <FollowerFlowPanel
+        points={points}
+        stock={flowStock}
+        summary={summarizeFollowerFlow(points)}
+        selectedDay={selectedDay}
+        isLoading={false}
+        isError={false}
+        onRetry={() => undefined}
+      />,
+    );
+  }
+
+  it("paints no white stroke or fill anywhere in the chart", () => {
+    const html = markup();
+
+    // Semi-transparent white was the mean line and the provisional outline. On
+    // #fffef9 that is about 1.05:1 — not dim, absent.
+    expect(html).not.toContain("255 255 255");
+    expect(html).not.toMatch(/stroke="white"/);
+    expect(html).not.toMatch(/stroke="#fff/i);
+  });
+
+  it("draws the rolling mean in near-ink", () => {
+    expect(markup()).toContain(`stroke="${CHART_MEAN}"`);
+  });
+
+  it("marks a provisional window with a dash rather than a fade", () => {
+    const html = markup();
+
+    expect(html).toContain('stroke-dasharray="3 3"');
+    expect(html).toContain(`stroke="${CHART_PROVISIONAL}"`);
+  });
+
+  it("leaves every semantic mark fully opaque", () => {
+    for (const html of [markup(), markup("2026-08-12"), markup("2026-08-17")]) {
+      // Any opacity below 1 on a bar group or its rects is the regression: it
+      // pushed those marks under the 3:1 floor their colour was chosen to clear.
+      const faded = html.match(/\sopacity="0(\.\d+)?"/g) ?? [];
+      expect(faded).toEqual([]);
+    }
+  });
+
+  it("uses the paper region colours, not the dark-ground tints", () => {
+    const html = markup();
+
+    expect(html).toContain(REGION_CHART_COLORS.us);
+    expect(html).toContain(REGION_CHART_COLORS.southAsian);
+    // emerald-400 / violet-400, the values that measured ~1.5:1 here.
+    expect(html).not.toContain("52 211 153");
+    expect(html).not.toContain("167 139 250");
   });
 });

@@ -6,7 +6,11 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.fn();
-vi.mock("@/lib/api", () => ({ api: (...args: unknown[]) => api(...args) }));
+vi.mock("@/lib/api", () => ({
+  api: (...args: unknown[]) => api(...args),
+  apiRead: (path: unknown) => api(path),
+  apiMutation: (...a: unknown[]) => api(...a),
+}));
 
 const { HistoricalCandidateDrawer } = await import("./HistoricalCandidateDrawer");
 

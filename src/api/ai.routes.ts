@@ -47,7 +47,11 @@ function sendRuntimeError(res: Response, error: unknown): void {
             ? 502
             : error.code === "runtime_timeout" || error.code === "runtime_unavailable"
               ? 503
-              : 502;
+              : // Already-in-progress and reused-key are the caller's business, and a
+                // 5xx here would read as "try again" — exactly wrong for both.
+                error.code === "advisor_outcome_pending" || error.code === "idempotency_conflict"
+                ? 409
+                : 502;
     res.status(status).json({
       error: error.code,
       retryAt: error.retryAt ? error.retryAt.toISOString() : null,

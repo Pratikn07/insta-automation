@@ -1,0 +1,80 @@
+export type NavGroup = "Measure" | "Publish" | "Audience" | "System";
+
+export type NavDestination = {
+  path: string;
+  label: string;
+  mobileTitle: string;
+  group: NavGroup | null;
+};
+
+export type NavDestinationGroup = {
+  heading: NavGroup;
+  items: readonly NavDestination[];
+};
+
+export const HOME_DESTINATION: NavDestination = {
+  path: "/",
+  label: "Home",
+  mobileTitle: "Home",
+  group: null,
+};
+
+export const NAV_GROUPS: readonly NavDestinationGroup[] = [
+  {
+    heading: "Measure",
+    items: [
+      { path: "/insights", label: "Insights", mobileTitle: "Insights", group: "Measure" },
+      { path: "/funnels", label: "Funnels", mobileTitle: "Funnels", group: "Measure" },
+    ],
+  },
+  {
+    heading: "Publish",
+    items: [
+      { path: "/content", label: "Content", mobileTitle: "Content", group: "Publish" },
+      { path: "/keywords", label: "Keywords", mobileTitle: "Keywords", group: "Publish" },
+      { path: "/sequences", label: "Sequences", mobileTitle: "Sequences", group: "Publish" },
+    ],
+  },
+  {
+    heading: "Audience",
+    items: [
+      {
+        path: "/conversations",
+        label: "Conversations",
+        mobileTitle: "Conversations",
+        group: "Audience",
+      },
+      {
+        path: "/dm-recovery",
+        label: "DM recovery",
+        mobileTitle: "DM recovery",
+        group: "Audience",
+      },
+      {
+        path: "/historical-recovery",
+        label: "Historical recovery",
+        mobileTitle: "Historical recovery",
+        group: "Audience",
+      },
+    ],
+  },
+  {
+    heading: "System",
+    items: [
+      { path: "/activity", label: "Activity", mobileTitle: "Activity", group: "System" },
+      { path: "/assistant", label: "Assistant", mobileTitle: "Assistant", group: "System" },
+    ],
+  },
+];
+
+export const NAV_DESTINATIONS: readonly NavDestination[] = [
+  HOME_DESTINATION,
+  ...NAV_GROUPS.flatMap((group) => group.items),
+];
+
+export function titleForPath(pathname: string): string {
+  const destination = NAV_DESTINATIONS.find((item) => item.path === pathname);
+  if (destination) return destination.mobileTitle;
+  if (pathname.startsWith("/sequences/")) return "Sequence editor";
+  return "Tiny Soho";
+}

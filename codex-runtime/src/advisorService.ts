@@ -34,7 +34,15 @@ export type AdvisorErrorCode =
   | "usage_limited"
   | "turn_timeout"
   | "invalid_advisor_output"
-  | "advisor_unavailable";
+  | "advisor_unavailable"
+  /**
+   * This question is already in flight, or we cannot prove it is not. The caller
+   * must wait and re-read rather than ask again — a model turn costs quota and
+   * would put the same question in the owner's history twice.
+   */
+  | "advisor_outcome_pending"
+  /** The same clientMessageId arrived carrying a different question. */
+  | "idempotency_conflict";
 
 export class AdvisorError extends Error {
   readonly code: AdvisorErrorCode;
@@ -78,6 +86,78 @@ export function createAdvisorService(deps: {
   // The thread the tool handler will serve. Set before any turn starts, and
   // compared on every tool call.
   let currentThreadId: string | null = null;
+
+  /**
+   * What this process knows about each question it has been asked.
+   *
+   * `clientMessageId` is the owner's intent, so a repeat of it is the same
+   * question, not a second one. While the process lives this registry is the
+   * precise answer: it distinguishes a turn still running from one that completed
+   * from one that failed, which no read of the thread can do.
+   */
+  type TurnRecord =
+    | { state: "running"; question: string }
+    | { state: "completed"; question: string; response: AdvisorResponse }
+    | { state: "failed"; question: string; code: AdvisorErrorCode };
+  const asked = new Map<string, TurnRecord>();
+
+  /**
+   * What the *thread* can tell us about a question, after a restart lost the
+   * registry.
+   *
+   * Deliberately narrow. `thread/read`'s turn shape is pinned only as
+   * `{ clientUserMessageId, input, items }` — a per-turn status field is not
+   * verified against the real app-server, so this does not pretend to read one.
+   * That means a turn present without a parseable answer is reported as *pending*,
+   * not failed: it may still be running, and calling it failed would invite a
+   * second turn for the same question.
+   *
+   * A failed read is likewise pending, never absence. "I could not look" and "it is
+   * not there" are different answers, and only the second permits asking again.
+   */
+  type ReplayVerdict =
+    | { kind: "absent" }
+    | { kind: "completed"; response: AdvisorResponse }
+    | { kind: "pending" }
+    | { kind: "conflict" };
+
+  async function replayFromThread(
+    clientMessageId: string,
+    question: string,
+  ): Promise<ReplayVerdict> {
+    const threadId = await deps.store.read();
+    if (!threadId) return { kind: "absent" };
+
+    let thread: {
+      turns?: Array<{
+        clientUserMessageId?: string;
+        input?: string;
+        items?: Array<{ type?: string; text?: string }>;
+      }>;
+    };
+    try {
+      thread = await deps.appServer.request("thread/read", { threadId, includeTurns: true }, THREAD_TIMEOUT_MS);
+    } catch {
+      return { kind: "pending" };
+    }
+
+    const turn = (thread.turns ?? []).find(
+      (candidate) => candidate.clientUserMessageId === clientMessageId,
+    );
+    if (!turn) return { kind: "absent" };
+    if (turn.input !== undefined && turn.input !== question) return { kind: "conflict" };
+
+    const agentText = [...(turn.items ?? [])]
+      .reverse()
+      .find((item) => item.type === "agentMessage")?.text;
+    if (!agentText) return { kind: "pending" };
+    try {
+      const parsed = advisorResponseSchema.safeParse(JSON.parse(agentText));
+      return parsed.success ? { kind: "completed", response: parsed.data } : { kind: "pending" };
+    } catch {
+      return { kind: "pending" };
+    }
+  }
   let handlerRegistered = false;
 
   /**
@@ -195,6 +275,32 @@ export function createAdvisorService(deps: {
         throw new AdvisorError("advisor_not_configured");
       }
 
+      // Has this exact question already been asked? The registry answers precisely
+      // while the process lives; the thread answers what it can after a restart.
+      const known = asked.get(input.clientMessageId);
+      if (known) {
+        if (known.question !== input.message) throw new AdvisorError("idempotency_conflict");
+        if (known.state === "running") throw new AdvisorError("advisor_outcome_pending");
+        if (known.state === "completed") return known.response;
+        throw new AdvisorError(known.code);
+      }
+
+      const replay = await replayFromThread(input.clientMessageId, input.message);
+      if (replay.kind === "conflict") throw new AdvisorError("idempotency_conflict");
+      if (replay.kind === "pending") throw new AdvisorError("advisor_outcome_pending");
+      if (replay.kind === "completed") {
+        asked.set(input.clientMessageId, {
+          state: "completed",
+          question: input.message,
+          response: replay.response,
+        });
+        return replay.response;
+      }
+
+      // Claimed before anything is awaited, so a second concurrent ask for the same
+      // id sees `running` instead of starting a second turn.
+      asked.set(input.clientMessageId, { state: "running", question: input.message });
+
       ensureToolHandler();
       try {
         currentThreadId = await openThread();
@@ -257,12 +363,27 @@ export function createAdvisorService(deps: {
           }
           const result = advisorResponseSchema.safeParse(parsed);
           if (!result.success) throw new AdvisorError("invalid_advisor_output");
+          asked.set(input.clientMessageId, {
+            state: "completed",
+            question: input.message,
+            response: result.data,
+          });
           return result.data;
         } finally {
           off();
         }
       } catch (error) {
-        throw classify(error);
+        const failure = classify(error);
+        // A timeout is the one failure whose effect is genuinely unknown: the turn
+        // may still be running, so this id stays claimed as pending rather than
+        // being recorded as a definite failure the caller could retry past.
+        asked.set(
+          input.clientMessageId,
+          failure.code === "turn_timeout"
+            ? { state: "running", question: input.message }
+            : { state: "failed", question: input.message, code: failure.code },
+        );
+        throw failure;
       }
     },
 
