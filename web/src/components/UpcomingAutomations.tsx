@@ -84,14 +84,33 @@ const STATUS: Record<
   },
 };
 
-const ERROR_LABELS: Record<string, string> = {
-  caption_instruction_missing: "The published caption has no Comment KEYWORD instruction.",
-  caption_instruction_mismatch: "The published caption uses a different keyword.",
-  caption_instruction_ambiguous:
-    "The published caption contains more than one Comment KEYWORD instruction.",
-  media_keyword_conflict: "This post already has a different keyword configuration.",
-  multiple_media_matches: "More than one new post matched this setup, so nothing was attached.",
-};
+/**
+ * Why nothing attached, in words that say what to change.
+ *
+ * Each reads as a fragment after the guide name, and each states the consequence
+ * rather than only the cause: "uses a different keyword" leaves her to go and find
+ * out which one, when the word she reserved is right here.
+ *
+ * The two caption cases name that word directly. They can, without re-parsing the
+ * caption in the browser, because both codes mean the same thing by definition —
+ * the published caption does not carry `Comment <triggerWord>`.
+ */
+function errorStory(errorCode: string, triggerWord: string): string {
+  switch (errorCode) {
+    case "caption_instruction_mismatch":
+      return `its caption doesn't say "Comment ${triggerWord}", so nothing is attached`;
+    case "caption_instruction_missing":
+      return `its caption has no "Comment ${triggerWord}" line, so nothing is attached`;
+    case "caption_instruction_ambiguous":
+      return "its caption asks for more than one keyword, so nothing is attached";
+    case "media_keyword_conflict":
+      return "that post already has a different keyword, so this one wasn't added";
+    case "multiple_media_matches":
+      return "more than one new post matched, so nothing was attached";
+    default:
+      return `needs review: ${errorCode}`;
+  }
+}
 
 const relative = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
 
@@ -120,7 +139,7 @@ function rowStory(row: UpcomingAutomation): string {
       return `${guide} · cancelled ${timeAgo(row.cancelledAt) ?? "just now"}`;
     case "needs_attention":
       return row.errorCode
-        ? `${guide} · ${ERROR_LABELS[row.errorCode] ?? `needs review: ${row.errorCode}`}`
+        ? `${guide} · ${errorStory(row.errorCode, row.triggerWord)}`
         : `${guide} · needs review`;
   }
 }
@@ -351,18 +370,24 @@ function UpcomingRow({
   const editable = row.status === "waiting" || row.status === "needs_attention";
 
   return (
-    <li className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b py-3 sm:flex-nowrap">
-      <span className="w-[8.5rem] shrink-0 font-mono text-sm font-medium tracking-[0.01em]">
+    // Narrow: a fixed three-line stack — word and chip, then the reason, then the
+    // actions. Letting one flex row wrap put the chip in a different place on every
+    // row, because each row's sentence is a different length.
+    // Wide: one row, which is what a list of four short columns wants to be.
+    <li
+      className={cn(
+        "grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-1.5 border-b py-3",
+        "sm:flex sm:gap-x-4 sm:gap-y-0",
+      )}
+    >
+      <span className="font-mono text-sm font-medium tracking-[0.01em] sm:w-[8.5rem] sm:shrink-0">
         {row.triggerWord}
-      </span>
-
-      <span className="min-w-[16rem] flex-1 text-[13px] text-muted-foreground">
-        {rowStory(row)}
       </span>
 
       <span
         className={cn(
-          "inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[11.5px] font-medium",
+          "inline-flex shrink-0 items-center gap-1 justify-self-end rounded-full px-2 py-0.5 text-[11.5px] font-medium",
+          "sm:order-3 sm:justify-self-auto",
           tone,
         )}
       >
@@ -370,7 +395,11 @@ function UpcomingRow({
         {label}
       </span>
 
-      <span className="flex shrink-0 items-center gap-1">
+      <span className="col-span-2 text-[13px] text-muted-foreground sm:order-2 sm:col-span-1 sm:min-w-[16rem] sm:flex-1">
+        {rowStory(row)}
+      </span>
+
+      <span className="col-span-2 flex shrink-0 items-center gap-1 sm:order-4 sm:col-span-1">
         {row.status === "needs_attention" && (
           <Button
             size="sm"

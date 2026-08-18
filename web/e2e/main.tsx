@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/reac
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { DmThreadDrawer } from "@/components/conversations/DmThreadDrawer";
 import { Assistant } from "@/pages/Assistant";
+import { Content } from "@/pages/Content";
 import { Conversations } from "@/pages/Conversations";
 import { DmRecovery } from "@/pages/DmRecovery";
 import { HistoricalRecovery } from "@/pages/HistoricalRecovery";
@@ -245,6 +246,11 @@ const RECOVERY_ROWS: Record<string, Record<string, unknown>[]> = {
 };
 
 function recoveryScenario(): string {
+  return new URLSearchParams(window.location.search).get("scenario") ?? "";
+}
+
+/** The scenario name, for stubs shared by more than one surface. */
+function activeScenario(): string {
   return new URLSearchParams(window.location.search).get("scenario") ?? "";
 }
 
@@ -535,8 +541,113 @@ const HOME_STATS = {
   gateQueuePending: 0,
   gateQueueExhausted: 0,
   gateQueueSendUncertain: 0,
+  // One unattached keyword, so Home's "Best next move" renders the item that
+  // outranks every other kind. Zero here would hide the surface being captured.
+  upcomingNeedsAttention: 1,
   tokenHealth: null,
 }
+
+// ── Content ───────────────────────────────────────────────────────────────
+// Content was the one migrated surface the Maison QA never captured. These
+// fixtures exist so the upcoming-setup rows and their status chips can be looked
+// at on real paper, which is the failure mode a unit test cannot see.
+
+const CONTENT_MEDIA = [
+  {
+    id: "media-1",
+    kind: "reel" as const,
+    caption: "Cardboard box play ideas for rainy afternoons. Comment CARDBOARD",
+    thumbnailUrl: null,
+    permalink: "https://www.instagram.com/reel/cardboard/",
+    timestamp: "2026-08-18T09:12:00+0000",
+  },
+  {
+    id: "media-2",
+    kind: "reel" as const,
+    caption: "The three-minute wind-down that finally worked. Comment SLEEPY",
+    thumbnailUrl: null,
+    permalink: "https://www.instagram.com/reel/sleep/",
+    timestamp: "2026-08-17T16:40:00+0000",
+  },
+  {
+    id: "media-3",
+    kind: "carousel" as const,
+    caption: "Five high-chair meals with no cooking",
+    thumbnailUrl: null,
+    permalink: "https://www.instagram.com/p/highchair/",
+    timestamp: "2026-08-15T11:05:00+0000",
+  },
+]
+
+const CONTENT_KEYWORDS = [
+  {
+    id: "keyword-1",
+    keyword: "CARDBOARD",
+    mediaId: "media-1",
+    mediaCaption: CONTENT_MEDIA[0]!.caption,
+    mediaPermalink: CONTENT_MEDIA[0]!.permalink,
+    mediaPostedAt: "2026-08-18T09:12:00.000Z",
+    resourceId: "resource-2",
+    publicReply: "Sent! Check your DMs.",
+    gateMessage: "Follow and reply DONE and it's yours.",
+    active: true,
+    createdAt: "2026-08-18T09:13:00.000Z",
+    updatedAt: "2026-08-18T09:13:00.000Z",
+    resource: { id: "resource-2", name: "Cardboard Play Guide", _count: { messages: 4 } },
+  },
+]
+
+function upcomingSetup(
+  overrides: Record<string, unknown> & { id: string; triggerWord: string },
+) {
+  return {
+    resourceId: "resource-2",
+    publicReply: "Sent! Check your DMs.",
+    gateMessage: "Follow and reply DONE and it's yours.",
+    active: true,
+    status: "waiting",
+    matchedMediaId: null,
+    keywordId: null,
+    errorCode: null,
+    createdBy: "owner@example.com",
+    lastAttemptAt: null,
+    retriedAt: null,
+    boundAt: null,
+    cancelledAt: null,
+    createdAt: "2026-08-16T18:00:00.000Z",
+    updatedAt: "2026-08-16T18:00:00.000Z",
+    resource: { id: "resource-2", name: "Sleep Reset Guide", _count: { messages: 4 } },
+    ...overrides,
+  }
+}
+
+// All three chips at once: the failure, the wait, and the receipt. The SLEEP row
+// is the real case — she wrote "Comment SLEEPY" and reserved SLEEP, so nothing
+// attached and every commenter on a live reel is getting silence.
+const CONTENT_UPCOMING = [
+  upcomingSetup({
+    id: "upcoming-1",
+    triggerWord: "SLEEP",
+    status: "needs_attention",
+    matchedMediaId: "media-2",
+    errorCode: "caption_instruction_mismatch",
+    lastAttemptAt: "2026-08-17T16:41:00.000Z",
+  }),
+  upcomingSetup({
+    id: "upcoming-2",
+    triggerWord: "PLAY",
+    resource: { id: "resource-1", name: "Toddler Activity Guide", _count: { messages: 3 } },
+  }),
+  upcomingSetup({
+    id: "upcoming-3",
+    triggerWord: "CARDBOARD",
+    status: "bound",
+    matchedMediaId: "media-1",
+    keywordId: "keyword-1",
+    boundAt: "2026-08-18T04:00:00.000Z",
+    resource: { id: "resource-2", name: "Cardboard Play Guide", _count: { messages: 4 } },
+  }),
+]
 
 // pct1 in the funnel layer returns 0-100 (64.9, not 0.649). A fixture using the
 // 0-1 form rendered "0.6488651535380507%" on Home, which looked like a formatting
@@ -922,7 +1033,18 @@ function installFetchStub(): void {
     }
 
     if (path === "/keywords" && method === "GET") {
-      return json([]);
+      // Only the Content scenario needs real keywords; every other surface reads
+      // this list solely to count badges, and an empty list is the quieter fixture.
+      return json(activeScenario() === "content" ? CONTENT_KEYWORDS : []);
+    }
+
+    // ── Content ─────────────────────────────────────────────────────────
+    if (path === "/media/content" && method === "GET") {
+      return json({ items: CONTENT_MEDIA, nextCursor: null });
+    }
+
+    if (path === "/upcoming-automations" && method === "GET") {
+      return json({ automations: CONTENT_UPCOMING, discoveryEnabled: true });
     }
 
     // ── Historical recovery dashboard ───────────────────────────────────
@@ -1263,6 +1385,13 @@ export function Harness() {
     return (
       <div className="p-4">
         <Assistant />
+      </div>
+    );
+  }
+  if (scenario === "content") {
+    return (
+      <div className="p-4">
+        <Content />
       </div>
     );
   }

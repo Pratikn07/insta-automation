@@ -22,6 +22,19 @@ async function open(page: import("@playwright/test").Page, scenario: string) {
   await page.goto(`/e2e/index.html?scenario=${scenario}`);
 }
 
+/**
+ * Advance the frozen clock past any entrance animation before capturing.
+ *
+ * `clock.install` stops time, and framer-motion drives its transitions from it, so
+ * a staggered list stays permanently mid-fade. Content's grid caps its stagger at
+ * 11 * 0.03s + 0.2s, so half a second settles every tile. Without this the artifact
+ * showed a 300px void where the third post should be — a screenshot that
+ * misrepresents the page is worse than no screenshot, because it gets believed.
+ */
+async function settleAnimations(page: import("@playwright/test").Page) {
+  await page.clock.runFor(600);
+}
+
 async function capture(
   page: import("@playwright/test").Page,
   project: string,
@@ -103,5 +116,55 @@ test.describe("visual QA artifacts", () => {
     await open(page, "advisor");
     await expect(page.getByPlaceholder("What should I focus on this week?")).toBeVisible();
     await capture(page, testInfo.project.name, "assistant");
+  });
+
+  /**
+   * Content, which the Maison QA never captured — so its dark-shell leftovers
+   * survived a release that looked at ten other surfaces. The status chips are the
+   * point: their predecessors measured 1.2:1 on this paper and no test could see it.
+   */
+  test("content and its upcoming setups", async ({ page }, testInfo) => {
+    await open(page, "content");
+    await expect(page.getByRole("heading", { level: 1, name: "Content" })).toBeVisible();
+
+    // All three chips in one frame — the failure, the wait, and the receipt.
+    // `exact` because each row's sentence also contains its status word.
+    await expect(page.getByText("Needs attention", { exact: true })).toBeVisible();
+    await expect(page.getByText("Waiting", { exact: true })).toBeVisible();
+    await expect(page.getByText("Attached", { exact: true })).toBeVisible();
+
+    // The grid comes first. This is a layout decision worth failing on: a handful
+    // of pending setups must not push 147 posts down the page.
+    const grid = page.getByRole("tab", { name: /All/ });
+    const upcoming = page.getByRole("heading", { name: "Set up in advance" });
+    await expect(grid).toBeVisible();
+    await expect(upcoming).toBeVisible();
+    const gridBox = await grid.boundingBox();
+    const upcomingBox = await upcoming.boundingBox();
+    expect(gridBox!.y).toBeLessThan(upcomingBox!.y);
+
+    await settleAnimations(page);
+    await capture(page, testInfo.project.name, "content");
+  });
+
+  /**
+   * The same failure as Home sees it. Content is where she fixes an unattached
+   * keyword; this is the surface that tells her to go there at all.
+   */
+  test("home surfaces an unattached keyword as the best next move", async ({ page }, testInfo) => {
+    await open(page, "home");
+    await expect(page.getByRole("heading", { level: 1, name: "Home" })).toBeVisible();
+
+    await expect(page.getByText("Best next move")).toBeVisible();
+    // `exact` targets the hero's own CTA. The same item also renders as row 01 of
+    // the attention list below, whose accessible name carries the "01" prefix.
+    await expect(
+      page.getByRole("link", {
+        name: "A keyword didn't attach to your new post",
+        exact: true,
+      }),
+    ).toBeVisible();
+
+    await capture(page, testInfo.project.name, "home-unattached-keyword");
   });
 });

@@ -37,6 +37,7 @@ idempotency_conflict` when one key was reused for two different intents.
 | `POST /keywords` | Keyword Form | body `id` | `GET /keywords` | a row with that `id` | Yes. An active exact replay re-enqueues the idempotent backfill. |
 | `POST /messages` | Sequence Editor | body `id` | `GET /messages/by-resource/:resourceId` | a step with that `id` | Yes. `order` is server-assigned and excluded from the replay comparison. |
 | `POST /insights/experiments` | Insights | body `id` | `GET /insights/experiments` | an experiment with that `id` | Yes. A replay never re-measures `baselineUsPct`. |
+| `POST /upcoming-automations` | Content, upcoming setups | body `id` | `GET /upcoming-automations` | a row with that `id` | Yes. `triggerWord` is compared after normalization, so a differently cased repeat is the same create. A `409 upcoming_keyword_reserved` is a **different** open setup owning that word — a definite refusal, not an unknown. |
 
 ## Entity patch, delete and reorder
 
@@ -54,6 +55,9 @@ idempotent in effect. The canonical read compares the *intended* fields, because
 | `DELETE /messages/:id` | Sequence Editor | message id | `GET /messages/by-resource/:resourceId` | the id is absent | Yes. |
 | `POST /messages/reorder/:resourceId` | Sequence Editor | resource id + the submitted id list | `GET /messages/by-resource/:resourceId` | the returned `order` sequence matches the submitted list | Yes — the request states the whole desired order, so reapplying it converges. **Never roll back to the pre-drag order after an unknown outcome**: the reorder may have landed, and a rollback would then undo it. |
 | `PATCH /insights/experiments/:id` | Insights | experiment id | `GET /insights/experiments` | `status`/`conclusion` equal the intended values. `measure: true` is **not** idempotent — it re-reads the current US% into `measuredUsPct`, so an unknown outcome must be reconciled by reading, never by repeating. | Only for status/conclusion edits. Never for `measure`. |
+| `PATCH /upcoming-automations/:id` | Content, upcoming setups | setup id | `GET /upcoming-automations` | the row's fields equal the intended ones | Yes. The write is `updateMany` fenced on `status IN (waiting, needs_attention)`, so a setup that bound between the read and the write answers `409 upcoming_automation_resolved` instead of editing a row the worker already resolved. |
+| `POST /upcoming-automations/:id/cancel` | Content, upcoming setups | setup id | `GET /upcoming-automations` | the row is absent from the list, or present as `cancelled` | Yes. Fenced the same way; `409 upcoming_automation_resolved` means binding won the race, which is a definite answer. Note the canonical read stops returning `cancelled` rows 24h after `cancelledAt`, so **absence is only proof once the row has been seen as cancelled** — an absent id alone could equally be an expired receipt. |
+| `POST /upcoming-automations/:id/retry` | Content, upcoming setups | setup id | `GET /upcoming-automations` | `status` is `waiting` and `errorCode` is null | Yes. A second retry against an already-`waiting` row answers `409 upcoming_automation_not_retryable` — a definite refusal, not an unknown. Retry only clears local lifecycle fields; it sends nothing and contacts no one. |
 
 ## Recovery actions
 

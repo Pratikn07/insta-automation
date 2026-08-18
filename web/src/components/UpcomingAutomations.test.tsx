@@ -195,7 +195,10 @@ describe("UpcomingAutomations", () => {
     renderUpcoming();
 
     expect(await screen.findByText("Needs attention")).toBeInTheDocument();
-    expect(screen.getByText(/published caption uses a different keyword/)).toBeInTheDocument();
+    // Names the word she reserved, so the fix is legible without opening anything.
+    expect(
+      screen.getByText(/its caption doesn't say "Comment HIGHCHAIR"/),
+    ).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Retry HIGHCHAIR" }));
 
     await waitFor(() =>
