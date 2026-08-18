@@ -44,6 +44,38 @@ export interface Keyword {
   _count?: { conversations: number };
 }
 
+export type UpcomingAutomationStatus =
+  | "waiting"
+  | "bound"
+  | "needs_attention"
+  | "cancelled";
+
+export interface UpcomingAutomation {
+  id: string;
+  triggerWord: string;
+  resourceId: string;
+  publicReply: string;
+  gateMessage: string;
+  active: boolean;
+  status: UpcomingAutomationStatus;
+  matchedMediaId: string | null;
+  keywordId: string | null;
+  errorCode: string | null;
+  createdBy: string;
+  lastAttemptAt: string | null;
+  retriedAt: string | null;
+  boundAt: string | null;
+  cancelledAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  resource: { id: string; name: string; _count: { messages: number } };
+}
+
+export interface UpcomingAutomationsResponse {
+  automations: UpcomingAutomation[];
+  discoveryEnabled: boolean;
+}
+
 // Mirrors src/meta/fetchMedia.ts. Only these two kinds exist on the account
 // (114 reels + 33 feed carousels); a single-image feed post would arrive as
 // "carousel", which is correct for keyword attachment.

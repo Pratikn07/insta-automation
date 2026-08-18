@@ -28,6 +28,7 @@ import { seedTokenFromEnv } from "./meta/tokenStore.js";
 import { runTokenRefreshTick } from "./meta/tokenRefresher.js";
 import { apiRouter } from "./api/router.js";
 import { buildDeploymentHealth } from "./services/deploymentHealth.js";
+import { startUpcomingAutomationScheduler } from "./services/upcomingAutomationScheduler.js";
 
 const app = express();
 let stopGuideDeliveryScheduler: (() => void) | undefined;
@@ -241,6 +242,15 @@ function startBackgroundWorkers(server: Server): void {
     clearInterval: globalThis.clearInterval,
     runTick: runOriginEnrichmentTick,
   });
+
+  // Upcoming automations. Enabling this starts an immediate catch-up scan and then
+  // a non-overlapping one-minute scan; each tick no-ops before calling Meta when
+  // nothing is waiting, so an enabled flag with no setups costs one indexed query.
+  //
+  // It lives in here rather than at module scope — where the branch that wrote it
+  // had it — because it reaches the Graph API, and a server started with
+  // WORKERS_ENABLED=false must make no outbound Instagram calls.
+  startUpcomingAutomationScheduler(env.UPCOMING_AUTOMATIONS_ENABLED);
 }
 
 const server = app.listen(env.PORT, () => {

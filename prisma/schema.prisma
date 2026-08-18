@@ -33,6 +33,7 @@ model Keyword {
   journeyIntents      JourneyIntent[]
   recoveryCandidates  RecoveryCandidate[]
   selectionExclusions RecoverySelectionExclusion[]
+  upcomingAutomations UpcomingAutomation[]
 
   @@unique([keyword, mediaId])
   // The cold-DM fallback ranks post-scoped candidates for one word by post date.
@@ -69,12 +70,50 @@ model Resource {
   ageMaxMonths Int?     @map("age_max_months")
   createdAt    DateTime @default(now()) @map("created_at")
 
-  messages        ResourceMessage[]
-  keywords        Keyword[]
-  guideDeliveries GuideDelivery[]
+  messages            ResourceMessage[]
+  keywords            Keyword[]
+  guideDeliveries     GuideDelivery[]
+  upcomingAutomations UpcomingAutomation[]
 
   @@index([theme, ageMinMonths, ageMaxMonths])
   @@map("resources")
+}
+
+enum UpcomingAutomationStatus {
+  waiting
+  bound
+  needs_attention
+  cancelled
+
+  @@map("upcoming_automation_status")
+}
+
+model UpcomingAutomation {
+  id             String                   @id @default(uuid()) @db.Uuid
+  triggerWord    String                   @map("trigger_word")
+  resourceId     String                   @map("resource_id") @db.Uuid
+  publicReply    String                   @map("public_reply")
+  gateMessage    String                   @map("gate_message")
+  active         Boolean                  @default(true)
+  status         UpcomingAutomationStatus @default(waiting)
+  matchedMediaId String?                  @map("matched_media_id")
+  keywordId      String?                  @map("keyword_id") @db.Uuid
+  errorCode      String?                  @map("error_code")
+  createdBy      String                   @map("created_by")
+  lastAttemptAt  DateTime?                @map("last_attempt_at") @db.Timestamptz(3)
+  retriedAt      DateTime?                @map("retried_at") @db.Timestamptz(3)
+  boundAt        DateTime?                @map("bound_at") @db.Timestamptz(3)
+  cancelledAt    DateTime?                @map("cancelled_at") @db.Timestamptz(3)
+  createdAt      DateTime                 @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  resource Resource @relation(fields: [resourceId], references: [id], onDelete: Restrict)
+  keyword  Keyword? @relation(fields: [keywordId], references: [id], onDelete: SetNull)
+
+  @@index([resourceId])
+  @@index([keywordId])
+  @@index([status, createdAt])
+  @@map("upcoming_automations")
 }
 
 enum ResourceMessageType {

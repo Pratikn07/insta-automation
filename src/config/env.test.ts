@@ -66,6 +66,14 @@ describe("env configuration schema for DM recovery", () => {
     expect(envSchema.safeParse({ ...baseEnv, [key]: value }).success).toBe(false);
   });
 
+  it("keeps upcoming automation discovery off unless explicitly enabled", () => {
+    expect(envSchema.parse(baseEnv).UPCOMING_AUTOMATIONS_ENABLED).toBe(false);
+    expect(
+      envSchema.parse({ ...baseEnv, UPCOMING_AUTOMATIONS_ENABLED: "true" })
+        .UPCOMING_AUTOMATIONS_ENABLED,
+    ).toBe(true);
+  });
+
   it("parses default DM recovery configuration correctly", () => {
     const parsed = envSchema.parse(baseEnv);
     expect(parsed).toMatchObject({

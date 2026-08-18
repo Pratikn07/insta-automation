@@ -67,6 +67,10 @@ export const envSchema = z.object({
     ),
   WEB_ORIGIN: z.string().optional(),
 
+  // Instagram owns publication scheduling. When enabled, the one-minute worker
+  // discovers newly published posts and binds locally prepared automations.
+  UPCOMING_AUTOMATIONS_ENABLED: booleanFlag(false),
+
   // Gate retry worker pacing. Defaults are conservative; can be tuned without a
   // code change. GATE_RETRY_BATCH = max private replies attempted per worker tick.
   GATE_RETRY_BATCH: z.coerce.number().int().min(1).max(100).default(8),
