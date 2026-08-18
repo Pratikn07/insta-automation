@@ -13,13 +13,16 @@ vi.mock("./supabase", () => ({
   },
 }));
 
-const { api, TimeoutError, ApiError, apiErrorCode, apiRead } = (await import(
+const { api, TimeoutError, ApiError, apiErrorCode, apiRead, apiMutation } = (await import(
   "./api"
 )) as typeof import("./api") & {
   apiErrorCode: (error: unknown) => string | null;
 };
 
 const { RequestTimeoutError } = await import("./requestDeadline");
+const { MutationNotDispatchedError, MutationOutcomeUnknownError } = await import(
+  "./mutationOutcome"
+);
 
 /** A session that resolves, so a test can reach the fetch call itself. */
 function withSession() {
@@ -155,6 +158,212 @@ describe("apiRead aborts the request it gave up on", () => {
     const assertion = expect(call).rejects.toBeInstanceOf(RequestTimeoutError);
     await vi.advanceTimersByTimeAsync(5_000);
     await assertion;
+  });
+});
+
+// A read that fails can be repeated. A mutation that fails can only be repeated
+// if you know it did not happen — and the moment fetch is called, you no longer
+// know. So the one thing this client must get right is *when* the request left
+// the browser, because that is the line between "safe to repeat" and "ask".
+describe("apiMutation dispatch phase", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    getSession.mockReset();
+    refreshSession.mockReset();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("reports a pre-dispatch auth stall as definitely not dispatched", async () => {
+    // Never settles: exactly the Supabase stall, and it happens before fetch.
+    getSession.mockImplementation(() => new Promise(() => {}));
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const call = apiMutation("/keywords", { method: "POST" });
+    const assertion = expect(call).rejects.toBeInstanceOf(MutationNotDispatchedError);
+    await vi.advanceTimersByTimeAsync(20_000);
+    await assertion;
+
+    // The claim has to be true: nothing was sent.
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("reports a timeout after dispatch as unknown, not as a timeout", async () => {
+    withSession();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        (_url: string, init: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+          }),
+      ),
+    );
+
+    const call = apiMutation("/keywords", { method: "POST", operationId: "op-1" });
+    const assertion = expect(call).rejects.toBeInstanceOf(MutationOutcomeUnknownError);
+    await vi.advanceTimersByTimeAsync(20_000);
+    await assertion;
+    await expect(call).rejects.not.toBeInstanceOf(RequestTimeoutError);
+  });
+
+  it("reports a caller abort after dispatch as unknown", async () => {
+    withSession();
+    const caller = new AbortController();
+    let fetchEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      fetchEntered = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string, init: RequestInit) => {
+        fetchEntered();
+        // Real fetch rejects at once for an already-aborted signal, and only
+        // later for one aborted mid-flight. Model both.
+        if (init.signal?.aborted) return Promise.reject(init.signal.reason);
+        return new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+        });
+      }),
+    );
+
+    const call = apiMutation("/keywords", { method: "POST", signal: caller.signal });
+    // Abort strictly after the request is in flight, which is the case that makes
+    // the outcome genuinely unknowable.
+    await entered;
+    caller.abort(new DOMException("Unmounted.", "AbortError"));
+
+    // Unmounting the component does not un-send the request.
+    await expect(call).rejects.toBeInstanceOf(MutationOutcomeUnknownError);
+  });
+
+  it("reports a network failure after dispatch as unknown", async () => {
+    withSession();
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new TypeError("Failed to fetch"))));
+
+    await expect(apiMutation("/keywords", { method: "POST" })).rejects.toBeInstanceOf(
+      MutationOutcomeUnknownError,
+    );
+  });
+
+  it("reports any post-dispatch 5xx as unknown", async () => {
+    withSession();
+    // A 502 from a proxy says nothing about whether the route ran behind it.
+    const fetchSpy = vi.fn(() => Promise.resolve(jsonResponse({ error: "bad_gateway" }, 502)));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await expect(apiMutation("/keywords", { method: "POST" })).rejects.toBeInstanceOf(
+      MutationOutcomeUnknownError,
+    );
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a definite 4xx a definite failure", async () => {
+    withSession();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse({ error: "idempotency_conflict" }, 409))),
+    );
+
+    const call = apiMutation("/keywords", { method: "POST" });
+    await expect(call).rejects.toBeInstanceOf(ApiError);
+    await expect(call).rejects.not.toBeInstanceOf(MutationOutcomeUnknownError);
+    await expect(call).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("never dispatches a second time on its own", async () => {
+    withSession();
+    const fetchSpy = vi.fn(() => Promise.reject(new TypeError("Failed to fetch")));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await expect(apiMutation("/keywords", { method: "POST" })).rejects.toBeInstanceOf(
+      MutationOutcomeUnknownError,
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends an Idempotency-Key only when the operation has an ID", async () => {
+    withSession();
+    const fetchSpy = vi.fn((_url: string, _init: RequestInit) =>
+      Promise.resolve(jsonResponse({ ok: true })),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await apiMutation("/keywords", { method: "POST", operationId: "op-7" });
+    await apiMutation("/keywords", { method: "POST" });
+
+    const keyed = new Headers(fetchSpy.mock.calls[0][1].headers);
+    const unkeyed = new Headers(fetchSpy.mock.calls[1][1].headers);
+    expect(keyed.get("idempotency-key")).toBe("op-7");
+    expect(unkeyed.has("idempotency-key")).toBe(false);
+  });
+
+  it("retries once after refreshing a rejected session, because 401 proves nothing ran", async () => {
+    getSession.mockImplementation(
+      () => Promise.resolve({ data: { session: { access_token: "stale" } } }) as never,
+    );
+    refreshSession.mockImplementation(
+      () => Promise.resolve({ data: { session: { access_token: "fresh" } }, error: null }) as never,
+    );
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ error: "unauthorized" }, 401))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await expect(apiMutation("/keywords", { method: "POST" })).resolves.toEqual({ ok: true });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(new Headers(fetchSpy.mock.calls[1][1].headers).get("authorization")).toBe(
+      "Bearer fresh",
+    );
+  });
+
+  it("does not refresh-retry a 5xx", async () => {
+    withSession();
+    refreshSession.mockImplementation(
+      () => Promise.resolve({ data: { session: { access_token: "fresh" } }, error: null }) as never,
+    );
+    const fetchSpy = vi.fn(() => Promise.resolve(jsonResponse({ error: "boom" }, 500)));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await expect(apiMutation("/keywords", { method: "POST" })).rejects.toBeInstanceOf(
+      MutationOutcomeUnknownError,
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(refreshSession).not.toHaveBeenCalled();
+  });
+
+  it("returns the parsed body on success and treats 204 as empty", async () => {
+    withSession();
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse({ id: "k-1" }, 201))));
+    await expect(apiMutation("/keywords", { method: "POST" })).resolves.toEqual({ id: "k-1" });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve({
+          status: 204,
+          ok: true,
+          headers: new Headers(),
+        } as unknown as Response),
+      ),
+    );
+    await expect(apiMutation("/keywords/1", { method: "DELETE" })).resolves.toBeUndefined();
+  });
+
+  it("refuses to be used for a read", async () => {
+    withSession();
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse({ ok: true }))));
+
+    await expect(
+      apiMutation("/stats", { method: "GET" } as unknown as { method: "POST" }),
+    ).rejects.toThrow(/GET/);
   });
 });
 

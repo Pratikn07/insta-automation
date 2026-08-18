@@ -1,5 +1,6 @@
 import { supabase } from "./supabase";
 import { awaitWithSignal, withDeadline } from "./requestDeadline";
+import { MutationNotDispatchedError, MutationOutcomeUnknownError } from "./mutationOutcome";
 import type {
   RecoveryCounts,
   RecoveryMetrics,
@@ -143,6 +144,73 @@ export async function apiRead<T>(path: string, options: ReadOptions = {}): Promi
     }
 
     return await readBody<T>(res);
+  } finally {
+    deadline.dispose();
+  }
+}
+
+export interface MutationOptions {
+  method: "POST" | "PATCH" | "PUT" | "DELETE";
+  body?: string;
+  /** Stable across explicit retries of the same owner intent. */
+  operationId?: string;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+/**
+ * A non-GET request whose failures are classified by dispatch phase.
+ *
+ * Everything before `fetch` is provably harmless: the request never left, so the
+ * caller may repeat it. Everything from `fetch` onward is `unknown` unless the
+ * server returned a definite answer, because a timeout after dispatch and a
+ * success we never heard about look identical from here.
+ *
+ * There is exactly one exception, and it is not a retry of an unknown: a 401 is a
+ * definite response proving `requireAdmin` rejected the request before any route
+ * ran, so refreshing the session and sending once more cannot duplicate an
+ * effect.
+ */
+export async function apiMutation<T>(path: string, options: MutationOptions): Promise<T> {
+  if ((options.method as string) === "GET") {
+    throw new Error(`apiMutation cannot be used for a GET (${path}); use apiRead.`);
+  }
+
+  const deadline = withDeadline(options.signal, options.timeoutMs ?? REQUEST_TIMEOUT_MS);
+  let dispatched = false;
+  try {
+    const token = await getAccessTokenBounded(false, deadline.signal);
+
+    const send = (bearer: string | undefined) => {
+      const headers = new Headers();
+      if (options.operationId) headers.set("idempotency-key", options.operationId);
+      dispatched = true;
+      return fetchOnce(
+        path,
+        { method: options.method, headers, signal: deadline.signal, ...(options.body ? { body: options.body } : {}) },
+        bearer,
+      );
+    };
+
+    let res = await send(token);
+
+    if (res.status === 401) {
+      const refreshed = await getAccessTokenBounded(true, deadline.signal);
+      if (refreshed) res = await send(refreshed);
+    }
+
+    // A 5xx is a response, but not an answer: the route behind the proxy may have
+    // completed. Only a definite 4xx or a success settles the question.
+    if (res.status >= 500) {
+      throw new MutationOutcomeUnknownError(path, options.operationId);
+    }
+
+    return await readBody<T>(res);
+  } catch (error) {
+    if (error instanceof ApiError || error instanceof MutationOutcomeUnknownError) throw error;
+    throw dispatched
+      ? new MutationOutcomeUnknownError(path, options.operationId)
+      : new MutationNotDispatchedError(path);
   } finally {
     deadline.dispose();
   }

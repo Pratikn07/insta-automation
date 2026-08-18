@@ -47,7 +47,12 @@ const queryClient = new QueryClient({
       // nothing cannot sit silently pretending to still be loading.
       networkMode: "always",
     },
-    mutations: { networkMode: "always" },
+    // Never retry a mutation. Once the request is dispatched its outcome is
+    // unknown, and a framework that retries on the caller's behalf is a
+    // framework that sends a second DM to a real person because a proxy timed
+    // out. Recovery from an unknown outcome is reconciliation — read the
+    // canonical state — and that is the route's decision, not a default.
+    mutations: { networkMode: "always", retry: false },
   },
 });
 
