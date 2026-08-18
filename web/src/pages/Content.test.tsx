@@ -5,8 +5,13 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const api = vi.fn();
-vi.mock("../lib/api", () => ({ api: (...args: unknown[]) => api(...args) }));
+const apiRead = vi.fn();
+const apiMutation = vi.fn();
+vi.mock("../lib/api", () => ({
+  apiRead: (...args: unknown[]) => apiRead(...args),
+  apiMutation: (...args: unknown[]) => apiMutation(...args),
+  ApiError: class ApiError extends Error {},
+}));
 
 const { Content } = await import("./Content");
 
@@ -45,7 +50,7 @@ let upcomingItems: unknown[];
 
 function renderContent() {
   const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   return {
     client,
@@ -72,8 +77,10 @@ beforeEach(() => {
   ];
   keywords = [];
   upcomingItems = [setup];
-  api.mockReset().mockImplementation((path: string) => {
-    if (path === "/media/content") return Promise.resolve({ items: contentItems, nextCursor: null });
+  apiRead.mockReset().mockImplementation((path: string) => {
+    if (path === "/media/content") {
+      return Promise.resolve({ items: contentItems, nextCursor: null });
+    }
     if (path === "/keywords") return Promise.resolve(keywords);
     if (path === "/resources") return Promise.resolve([resource]);
     if (path === "/upcoming-automations") {
@@ -81,30 +88,57 @@ beforeEach(() => {
     }
     return Promise.resolve({});
   });
+  apiMutation.mockReset().mockResolvedValue(setup);
 });
 
-describe("Content Published and Upcoming views", () => {
-  it("keeps Published as the default and opens the local Upcoming setup view", async () => {
-    const user = userEvent.setup();
+describe("Content", () => {
+  it("shows the published grid and the upcoming setups together, with no view tabs", async () => {
     renderContent();
 
     expect(await screen.findByText("Already published")).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Published" })).toHaveAttribute("aria-selected", "true");
-
-    await user.click(screen.getByRole("tab", { name: "Upcoming" }));
-
     expect(await screen.findByText("HIGHCHAIR")).toBeInTheDocument();
-    expect(screen.getByText(/Instagram does not provide scheduled previews/)).toBeInTheDocument();
-    expect(screen.queryByText("Already published")).not.toBeInTheDocument();
+    expect(screen.getByText("Set up in advance")).toBeInTheDocument();
+
+    // The Published/Upcoming pair is gone. All/Reels/Carousels is a filter on the
+    // grid, not a choice of what the page is, so it stays.
+    expect(screen.queryByRole("tab", { name: "Published" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Upcoming" })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /All/ })).toBeInTheDocument();
+  });
+
+  // The grid is the page's subject. Putting a handful of pending setups above 147
+  // posts would invert that on every visit.
+  it("puts the grid before the upcoming block in the document", async () => {
+    renderContent();
+
+    const post = await screen.findByText("Already published");
+    const heading = await screen.findByText("Set up in advance");
+    expect(post.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  // Content has no header action: the only route to a keyword is tile → drawer →
+  // Attach keyword, which needs a post that exists. If the block vanished when
+  // empty, the first upcoming setup would be unreachable.
+  it("keeps the upcoming entry point reachable when nothing is pending", async () => {
+    upcomingItems = [];
+    const user = userEvent.setup();
+    renderContent();
+
+    await screen.findByText("Already published");
+    const door = await screen.findByRole("button", { name: "Set up its keyword in advance" });
+
+    await user.click(door);
+    expect(screen.getByLabelText("Keyword")).toBeInTheDocument();
   });
 
   it("replaces a bound setup with the real published card and attached keyword", async () => {
     const user = userEvent.setup();
     const { client } = renderContent();
 
-    await user.click(await screen.findByRole("tab", { name: "Upcoming" }));
     expect(await screen.findByText("HIGHCHAIR")).toBeInTheDocument();
 
+    // What the worker does: the setup resolves, and the post it bound to arrives
+    // in the grid carrying an ordinary keyword.
     upcomingItems = [];
     contentItems = [
       {
@@ -140,8 +174,9 @@ describe("Content Published and Upcoming views", () => {
     client.setQueryData(["content"], { items: contentItems, nextCursor: null });
     client.setQueryData(["keywords"], keywords);
 
+    // No tab to click now: the setup leaves the list and the post appears in the
+    // grid on the same screen.
     await waitFor(() => expect(screen.queryByText("HIGHCHAIR")).not.toBeInTheDocument());
-    await user.click(screen.getByRole("tab", { name: "Published" }));
     await user.click(await screen.findByRole("button", { name: /Scheduled high chair post/ }));
 
     expect(await screen.findByText("HIGHCHAIR")).toBeInTheDocument();
