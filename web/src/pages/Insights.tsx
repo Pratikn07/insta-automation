@@ -3,7 +3,8 @@ import { motion } from "framer-motion";
 import { BarChart3, Film, ExternalLink, Sparkles, RefreshCw, ListChecks, FlaskConical, Target } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
-import { api, apiRead } from "@/lib/api";
+import { api, apiMutation, apiRead } from "@/lib/api";
+import { useOperationId } from "@/lib/useOperationId";
 import type {
   GeoStageSplit,
   LeaderboardRow,
@@ -1028,14 +1029,23 @@ function NewExperimentForm({ onCreated }: { onCreated: () => void }) {
   const [hypothesis, setHypothesis] = useState("");
   const [variable, setVariable] = useState("");
 
+  const { operationId, renew } = useOperationId();
+
   const createM = useMutation({
     mutationFn: () =>
-      api("/insights/experiments", {
+      apiMutation("/insights/experiments", {
         method: "POST",
-        body: JSON.stringify({ hypothesis, variable, reelMediaIds: [] }),
+        operationId,
+        body: JSON.stringify({
+          id: operationId,
+          hypothesis,
+          variable,
+          reelMediaIds: [],
+        }),
       }),
     onSuccess: () => {
       toast.success("Experiment started — baseline US% captured.");
+      renew();
       setHypothesis("");
       setVariable("");
       setOpen(false);

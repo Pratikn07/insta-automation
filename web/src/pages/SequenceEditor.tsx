@@ -29,7 +29,8 @@ import {
 import { useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { toast } from "sonner";
-import { api, apiRead, apiErrorCode, ApiError } from "@/lib/api";
+import { api, apiMutation, apiRead, apiErrorCode, ApiError } from "@/lib/api";
+import { useOperationId } from "@/lib/useOperationId";
 import type { MessageType, Resource, ResourceMessage } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -179,12 +180,18 @@ function SequenceEditorForm({
     onSettled: () => qc.invalidateQueries({ queryKey: ["resource-messages", id] }),
   });
 
+  // One UUID per pending "add step" attempt. Repeating an unknown add carries it
+  // again, so the server recognises the same step rather than appending a second.
+  const { operationId: addOperationId, renew: renewAddOperationId } = useOperationId();
+
   const addMutation = useMutation({
     mutationKey: saveKey,
     mutationFn: (type: MessageType) =>
-      api<ResourceMessage>("/messages", {
+      apiMutation<ResourceMessage>("/messages", {
         method: "POST",
+        operationId: addOperationId,
         body: JSON.stringify({
+          id: addOperationId,
           resourceId: id,
           type,
           ...(type === "text" ? { body: "New step — edit me." } : {}),
@@ -193,6 +200,7 @@ function SequenceEditorForm({
         }),
       }),
     onSuccess: (next) => {
+      renewAddOperationId();
       setItems((current) => [...current, next].sort((a, b) => a.order - b.order));
       qc.invalidateQueries({ queryKey: ["resource-messages", id] });
       qc.invalidateQueries({ queryKey: ["resources"] });

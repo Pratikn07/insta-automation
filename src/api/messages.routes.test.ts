@@ -4,10 +4,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const create = vi.fn();
 const findFirst = vi.fn();
+const findUnique = vi.fn();
 const update = vi.fn();
 
 vi.mock("../lib/prisma.js", () => ({
-  prisma: { resourceMessage: { create, findFirst, update } },
+  prisma: { resourceMessage: { create, findFirst, findUnique, update } },
 }));
 
 const { messagesRouter } = await import("./messages.routes.js");
@@ -30,6 +31,7 @@ function sendMessageRequest(
   const payload =
     method === "POST"
       ? {
+          id: MESSAGE_ID,
           resourceId: RESOURCE_ID,
           type,
           body,
@@ -45,6 +47,7 @@ function sendMessageRequest(
 beforeEach(() => {
   create.mockReset().mockResolvedValue({ id: MESSAGE_ID });
   findFirst.mockReset().mockResolvedValue(null);
+  findUnique.mockReset().mockResolvedValue(null);
   update.mockReset().mockResolvedValue({ id: MESSAGE_ID });
 });
 
@@ -99,4 +102,100 @@ describe("guide message length boundary", () => {
       expect(response.status).toBe(method === "POST" ? 201 : 200);
     },
   );
+});
+
+// A step's position is assigned by the server from the current tail, so it cannot
+// take part in deciding whether a repeated create is the same create.
+describe("resource message create replay", () => {
+  const body = {
+    id: MESSAGE_ID,
+    resourceId: RESOURCE_ID,
+    type: "text" as const,
+    body: "Step one",
+  };
+
+  function primaryKeyViolation() {
+    return Object.assign(new Error("Unique constraint failed"), {
+      code: "P2002",
+      meta: { target: ["id"] },
+    });
+  }
+
+  it("creates with the client's UUID at the computed order", async () => {
+    findFirst.mockResolvedValue({ order: 4 });
+
+    await request(makeApp()).post("/api/messages").send(body).expect(201);
+
+    expect(create).toHaveBeenCalledWith({
+      data: {
+        id: MESSAGE_ID,
+        resourceId: RESOURCE_ID,
+        order: 5,
+        type: "text",
+        body: "Step one",
+        mediaUrl: null,
+      },
+    });
+  });
+
+  it("treats a replay as a replay even though the stored order differs from the next one", async () => {
+    // The tail moved on since the first attempt. That is the server's business,
+    // not evidence of a different intent.
+    findFirst.mockResolvedValue({ order: 9 });
+    create.mockRejectedValueOnce(primaryKeyViolation());
+    findUnique.mockResolvedValueOnce({
+      id: MESSAGE_ID,
+      resourceId: RESOURCE_ID,
+      order: 5,
+      type: "text",
+      body: "Step one",
+      mediaUrl: null,
+    });
+
+    const response = await request(makeApp()).post("/api/messages").send(body).expect(200);
+
+    expect(response.body).toMatchObject({ id: MESSAGE_ID, order: 5 });
+  });
+
+  it("rejects the same UUID carrying different authored text", async () => {
+    create.mockRejectedValueOnce(primaryKeyViolation());
+    findUnique.mockResolvedValueOnce({
+      id: MESSAGE_ID,
+      resourceId: RESOURCE_ID,
+      order: 5,
+      type: "text",
+      body: "Something else entirely",
+      mediaUrl: null,
+    });
+
+    const response = await request(makeApp()).post("/api/messages").send(body).expect(409);
+
+    expect(response.body).toEqual({ error: "idempotency_conflict" });
+  });
+
+  it("rejects the same UUID moved to another guide", async () => {
+    create.mockRejectedValueOnce(primaryKeyViolation());
+    findUnique.mockResolvedValueOnce({
+      id: MESSAGE_ID,
+      resourceId: "10000000-0000-4000-8000-000000000009",
+      order: 5,
+      type: "text",
+      body: "Step one",
+      mediaUrl: null,
+    });
+
+    await request(makeApp()).post("/api/messages").send(body).expect(409);
+  });
+
+  it("rejects a mismatched header before touching Prisma", async () => {
+    const response = await request(makeApp())
+      .post("/api/messages")
+      .set("idempotency-key", "20000000-0000-4000-8000-000000000009")
+      .send(body)
+      .expect(400);
+
+    expect(response.body).toEqual({ error: "idempotency_key_mismatch" });
+    expect(create).not.toHaveBeenCalled();
+    expect(findFirst).not.toHaveBeenCalled();
+  });
 });

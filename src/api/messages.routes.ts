@@ -6,6 +6,11 @@ import {
   MESSAGE_BODY_TOO_LONG_ERROR,
   countInstagramCodePoints,
 } from "../../shared/guideMessagePolicy.js";
+import {
+  classifyCreateReplay,
+  idempotencyKeyMismatch,
+  isPrimaryKeyViolation,
+} from "./createReplay.js";
 
 export const messagesRouter = Router();
 
@@ -24,11 +29,19 @@ const messageBody = z
   .transform((codePoints) => codePoints.join(""));
 
 const createSchema = z.object({
+  id: z.string().uuid(),
   resourceId: z.string().uuid(),
   type: messageTypeSchema,
   body: messageBody.optional(),
   mediaUrl: z.string().url().optional(),
 });
+
+/**
+ * What the request owns. `order` is deliberately absent: the server assigns it
+ * from the current tail, so by the time a lost create is repeated the tail has
+ * usually moved, and comparing it would call an honest replay a conflict.
+ */
+const MESSAGE_REPLAY_KEYS = ["resourceId", "type", "body", "mediaUrl"] as const;
 
 const updateSchema = z.object({
   type: messageTypeSchema.optional(),
@@ -73,6 +86,10 @@ messagesRouter.post("/", async (req, res) => {
     return res.status(400).json({ error: "media_step_requires_url" });
   }
 
+  if (idempotencyKeyMismatch(req.headers["idempotency-key"], parsed.data.id)) {
+    return res.status(400).json({ error: "idempotency_key_mismatch" });
+  }
+
   const last = await prisma.resourceMessage.findFirst({
     where: { resourceId },
     orderBy: { order: "desc" },
@@ -80,10 +97,29 @@ messagesRouter.post("/", async (req, res) => {
   });
   const nextOrder = (last?.order ?? -1) + 1;
 
-  const created = await prisma.resourceMessage.create({
-    data: { resourceId, order: nextOrder, type, body: body ?? null, mediaUrl: mediaUrl ?? null },
-  });
-  res.status(201).json(created);
+  const intended = {
+    id: parsed.data.id,
+    resourceId,
+    type,
+    body: body ?? null,
+    mediaUrl: mediaUrl ?? null,
+  };
+
+  try {
+    res.status(201).json(
+      await prisma.resourceMessage.create({ data: { ...intended, order: nextOrder } }),
+    );
+  } catch (error) {
+    if (!isPrimaryKeyViolation(error)) throw error;
+    const existing = await prisma.resourceMessage.findUnique({ where: { id: intended.id } });
+    if (!existing) throw error;
+    if (
+      classifyCreateReplay({ existing, intended, keys: MESSAGE_REPLAY_KEYS }) === "conflict"
+    ) {
+      return res.status(409).json({ error: "idempotency_conflict" });
+    }
+    res.status(200).json(existing);
+  }
 });
 
 messagesRouter.patch("/:id", async (req, res) => {

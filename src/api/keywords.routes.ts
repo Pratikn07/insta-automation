@@ -4,10 +4,17 @@ import { prisma } from "../lib/prisma.js";
 import { normalizeKeyword } from "../services/keywordService.js";
 import { backfillKeyword } from "../services/keywordBackfillService.js";
 import { mediaTimestamp } from "./mediaTimestamp.js";
+import {
+  classifyCreateReplay,
+  idempotencyKeyMismatch,
+  isPrimaryKeyViolation,
+  isUniqueViolation,
+} from "./createReplay.js";
 
 export const keywordsRouter = Router();
 
 const createSchema = z.object({
+  id: z.string().uuid(),
   keyword: z.string().min(1).max(60),
   resourceId: z.string().uuid(),
   publicReply: z.string().min(1).max(280),
@@ -26,9 +33,25 @@ const createSchema = z.object({
   mediaPostedAt: mediaTimestamp,
 });
 
+/**
+ * Compared against the stored row on a replay. `keyword` is compared *after*
+ * normalization, because the request's casing is not part of the intent.
+ */
+const KEYWORD_REPLAY_KEYS = [
+  "keyword",
+  "mediaId",
+  "mediaCaption",
+  "mediaPermalink",
+  "mediaPostedAt",
+  "resourceId",
+  "publicReply",
+  "gateMessage",
+  "active",
+] as const;
+
 // PATCH stays permissive on mediaId so the legacy globals remain editable (their
 // mediaId is null and must be allowed to stay that way).
-const updateSchema = createSchema.partial().extend({
+const updateSchema = createSchema.omit({ id: true }).partial().extend({
   mediaId: z.string().nullable().optional(),
 });
 
@@ -53,26 +76,47 @@ keywordsRouter.post("/", async (req, res) => {
   // @@unique([keyword, mediaId]) fully covers duplicates (P2002 below). The old
   // explicit global-duplicate guard is gone with it: Postgres treats NULLs as
   // distinct, but no request can create a NULL mediaId anymore.
+  if (idempotencyKeyMismatch(req.headers["idempotency-key"], data.id)) {
+    return res.status(400).json({ error: "idempotency_key_mismatch" });
+  }
+
+  const intended = {
+    id: data.id,
+    keyword,
+    mediaId: data.mediaId,
+    mediaCaption: data.mediaCaption ?? null,
+    mediaPermalink: data.mediaPermalink ?? null,
+    mediaPostedAt: data.mediaPostedAt ? new Date(data.mediaPostedAt) : null,
+    resourceId: data.resourceId,
+    publicReply: data.publicReply,
+    gateMessage: data.gateMessage,
+    active: data.active ?? true,
+  };
+
   try {
-    const created = await prisma.keyword.create({
-      data: {
-        keyword,
-        mediaId: data.mediaId,
-        mediaCaption: data.mediaCaption ?? null,
-        mediaPermalink: data.mediaPermalink ?? null,
-        mediaPostedAt: data.mediaPostedAt ? new Date(data.mediaPostedAt) : null,
-        resourceId: data.resourceId,
-        publicReply: data.publicReply,
-        gateMessage: data.gateMessage,
-        active: data.active ?? true,
-      },
-    });
+    const created = await prisma.keyword.create({ data: intended });
     // Recover the last 7 days of commenters who used this keyword before it
     // existed — fire-and-forget; backfillKeyword is non-throwing and idempotent.
     if (created.active) void backfillKeyword(created.id);
     res.status(201).json(created);
   } catch (err: unknown) {
-    if (err && typeof err === "object" && "code" in err && (err as { code: string }).code === "P2002") {
+    // A clash on the primary key means this exact create already happened. A
+    // clash on [keyword, mediaId] means a different row owns that pair, which is
+    // the domain duplicate and keeps its own answer.
+    if (isPrimaryKeyViolation(err)) {
+      const existing = await prisma.keyword.findUnique({ where: { id: intended.id } });
+      if (!existing) throw err;
+      if (
+        classifyCreateReplay({ existing, intended, keys: KEYWORD_REPLAY_KEYS }) === "conflict"
+      ) {
+        return res.status(409).json({ error: "idempotency_conflict" });
+      }
+      // The lost response may have taken the enqueue with it, and the backfill is
+      // idempotent, so re-running it is the safe side of the bet.
+      if (existing.active) void backfillKeyword(existing.id);
+      return res.status(200).json(existing);
+    }
+    if (isUniqueViolation(err)) {
       return res.status(409).json({ error: "keyword_exists" });
     }
     throw err;

@@ -4,7 +4,8 @@ import { CircleAlert, Layers, MessageSquare, Plus, Tag, Trash2 } from "lucide-re
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
-import { api, apiRead, ApiError } from "@/lib/api";
+import { api, apiMutation, apiRead, ApiError } from "@/lib/api";
+import { useOperationId } from "@/lib/useOperationId";
 import type { Resource } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -175,15 +176,20 @@ function CreateSequenceForm({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  // The new row's UUID, owned by this attempt. A repeat carries the same one, so
+  // the server answers with the existing sequence instead of making a second.
+  const { operationId, renew } = useOperationId();
 
   const createMutation = useMutation({
     mutationFn: () =>
-      api<Resource>("/resources", {
+      apiMutation<Resource>("/resources", {
         method: "POST",
-        body: JSON.stringify({ name, description: description || null }),
+        operationId,
+        body: JSON.stringify({ id: operationId, name, description: description || null }),
       }),
     onSuccess: () => {
       toast.success("Sequence created");
+      renew();
       qc.invalidateQueries({ queryKey: ["resources"] });
       onClose();
     },

@@ -2,14 +2,28 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { isInstagramGuideTextTooLong } from "../../shared/guideMessagePolicy.js";
+import {
+  classifyCreateReplay,
+  idempotencyKeyMismatch,
+  isPrimaryKeyViolation,
+} from "./createReplay.js";
 
 export const resourcesRouter = Router();
 
+/**
+ * `id` is required, and supplied by the browser. A create whose response was
+ * lost can then be repeated safely: the same UUID either creates the row or
+ * proves the row is already there.
+ */
 const createSchema = z.object({
+  id: z.string().uuid(),
   name: z.string().min(1).max(120),
   description: z.string().max(500).nullish(),
 });
-const updateSchema = createSchema.partial();
+const updateSchema = createSchema.omit({ id: true }).partial();
+
+/** The fields this request owns, and therefore the fields a replay must match. */
+const RESOURCE_REPLAY_KEYS = ["name", "description"] as const;
 
 resourcesRouter.get("/", async (_req, res) => {
   const rows = await prisma.resource.findMany({
@@ -49,8 +63,24 @@ resourcesRouter.get("/:id", async (req, res) => {
 resourcesRouter.post("/", async (req, res) => {
   const parsed = createSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-  const created = await prisma.resource.create({ data: parsed.data });
-  res.status(201).json(created);
+  const data = { ...parsed.data, description: parsed.data.description ?? null };
+
+  if (idempotencyKeyMismatch(req.headers["idempotency-key"], data.id)) {
+    return res.status(400).json({ error: "idempotency_key_mismatch" });
+  }
+
+  try {
+    res.status(201).json(await prisma.resource.create({ data }));
+  } catch (error) {
+    if (!isPrimaryKeyViolation(error)) throw error;
+    const existing = await prisma.resource.findUnique({ where: { id: data.id } });
+    // The row must exist: the primary key just told us so.
+    if (!existing) throw error;
+    if (classifyCreateReplay({ existing, intended: data, keys: RESOURCE_REPLAY_KEYS }) === "conflict") {
+      return res.status(409).json({ error: "idempotency_conflict" });
+    }
+    res.status(200).json(existing);
+  }
 });
 
 resourcesRouter.patch("/:id", async (req, res) => {

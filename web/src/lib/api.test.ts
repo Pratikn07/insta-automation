@@ -288,9 +288,11 @@ describe("apiMutation dispatch phase", () => {
 
   it("sends an Idempotency-Key only when the operation has an ID", async () => {
     withSession();
-    const fetchSpy = vi.fn((_url: string, _init: RequestInit) =>
-      Promise.resolve(jsonResponse({ ok: true })),
-    );
+    const fetchSpy = vi.fn((url: string, init: RequestInit) => {
+      void url;
+      void init;
+      return Promise.resolve(jsonResponse({ ok: true }));
+    });
     vi.stubGlobal("fetch", fetchSpy);
 
     await apiMutation("/keywords", { method: "POST", operationId: "op-7" });
