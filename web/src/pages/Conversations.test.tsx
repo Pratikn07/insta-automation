@@ -273,3 +273,101 @@ describe("Conversations lenses", () => {
       .toBe(true);
   });
 });
+
+// An unresolved guide delivery is the automation's own unfinished business. It has
+// to be visible from the list without opening anything, and it has to be visible
+// even on a thread whose reply draft looks perfectly ordinary — those are two
+// independent facts about the same person.
+describe("guide delivery review in Conversations", () => {
+  const THREAD_ID = "44444444-4444-4444-8444-444444444444";
+
+  function threadRow(deliveryReviewCount: number) {
+    return {
+      id: THREAD_ID,
+      igUserId: "ig-99",
+      username: "geri",
+      name: "Geri",
+      needsReply: false,
+      latestInboundMessageId: "msg-1",
+      lastMessageAt: "2026-08-16T10:00:00.000Z",
+      lastInboundAt: "2026-08-16T09:00:00.000Z",
+      lastOutboundAt: "2026-08-16T10:00:00.000Z",
+      latestMessage: {
+        direction: "outbound",
+        text: "Sent you the guide",
+        type: "text",
+        source: "automation",
+        instagramTimestamp: "2026-08-16T10:00:00.000Z",
+      },
+      draft: null,
+      deliveryReviewCount,
+    };
+  }
+
+  const REVIEW = {
+    id: "55555555-5555-4555-8555-555555555555",
+    status: "needs_review",
+    confirmedUnits: 1,
+    totalUnits: 3,
+    sendWindowExpiresAt: "2026-08-17T10:00:00.000Z",
+    sendWindowOpen: true,
+    failureCode: null,
+    units: [
+      { id: "unit-a", position: 0, kind: "text", status: "sent" },
+      { id: "unit-b", position: 1, kind: "image", status: "uncertain" },
+      { id: "unit-c", position: 2, kind: "text", status: "pending" },
+    ],
+  };
+
+  function mockDmThreads(reviewCount: number) {
+    api.mockImplementation((path: string) => {
+      const p = String(path);
+      if (p.startsWith("/dm-threads?")) {
+        return Promise.resolve({ items: [threadRow(reviewCount)], nextCursor: null });
+      }
+      if (p === `/dm-threads/${THREAD_ID}`) {
+        return Promise.resolve({
+          ...threadRow(reviewCount),
+          messages: [],
+          deliveryReviews: reviewCount > 0 ? [REVIEW] : [],
+        });
+      }
+      if (p.startsWith("/keywords")) return Promise.resolve([]);
+      return Promise.resolve({ items: [], nextCursor: null });
+    });
+  }
+
+  it("badges a thread whose delivery needs review even with no draft", async () => {
+    mockDmThreads(1);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole("button", { name: "DMs" }));
+
+    expect(await screen.findByText("Delivery needs review")).toBeInTheDocument();
+  });
+
+  it("shows no delivery badge when nothing needs review", async () => {
+    mockDmThreads(0);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole("button", { name: "DMs" }));
+    await waitFor(() => expect(screen.getByText("@geri")).toBeInTheDocument());
+
+    expect(screen.queryByText("Delivery needs review")).not.toBeInTheDocument();
+  });
+
+  it("resolves the delivery from the thread drawer without exposing content", async () => {
+    mockDmThreads(1);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole("button", { name: "DMs" }));
+    await user.click(await screen.findByText("@geri"));
+
+    expect(await screen.findByText("1 of 3 messages confirmed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Already delivered" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Cancel delivery" })).toBeEnabled();
+  });
+});

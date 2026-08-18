@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Drawer } from "@/components/ui/drawer";
 import { IncomingBubble, OutgoingBubble } from "@/components/ChatBubbles";
 import { displayUser } from "@/lib/utils";
+import { GuideDeliveryReviewCard } from "./GuideDeliveryReviewCard";
 import { ReplyDraftCard } from "./ReplyDraftCard";
 import { draftActionErrorMessage, isStale, isVisibleDraft } from "./replyDraftView";
 
@@ -143,6 +144,12 @@ export function DmThreadDrawer({
               ),
             )}
           </div>
+
+          {/* Above the draft on purpose: an uncertain automated send is resolved
+              before the owner composes another reply into the same thread. */}
+          {thread.deliveryReviews?.map((review) => (
+            <GuideDeliveryReviewCard key={review.id} threadId={thread.id} review={review} />
+          ))}
 
           {isVisibleDraft(draft) && draft && (
             <ReplyDraftCard

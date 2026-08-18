@@ -80,6 +80,15 @@ export function DmThreadList({ rows, isLoading, onSelect }: DmThreadListProps) {
                     ? draftStatusLabel(row.draft.status, row.draft.kind)
                     : meta.label}
                 </span>
+                {/* Independent of draft state: an unresolved delivery is the
+                    automation's own unfinished business, and it stays visible
+                    whatever the reply draft happens to be doing. */}
+                {row.deliveryReviewCount > 0 && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-caution-soft px-2 py-0.5 text-[11px] font-medium text-caution">
+                    <AlertCircle className="size-3" />
+                    Delivery needs review
+                  </span>
+                )}
               </div>
               <p className="mt-0.5 truncate text-sm text-muted-foreground">{preview}</p>
               {row.draft && state !== "needs_review" && (
