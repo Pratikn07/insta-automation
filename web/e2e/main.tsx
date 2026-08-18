@@ -7,6 +7,7 @@ import { Assistant } from "@/pages/Assistant";
 import { Conversations } from "@/pages/Conversations";
 import { DmRecovery } from "@/pages/DmRecovery";
 import { HistoricalRecovery } from "@/pages/HistoricalRecovery";
+import { Home } from "@/pages/Home";
 import "../src/index.css";
 
 /**
@@ -473,6 +474,112 @@ function canonicalConversation(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/**
+ * Home fixtures. Deterministic, and deliberately synthetic: no real follower
+ * counts and no real usernames reach a committed screenshot.
+ *
+ * The last window is provisional so the dashed outline is visible, and the series
+ * are large enough that every region contributes a legible band.
+ */
+const HOME_FLOW_DAYS = [
+  { day: "2026-08-08", us: 21, southAsian: 6, anglosphere: 5, other: 3 },
+  { day: "2026-08-09", us: 18, southAsian: 8, anglosphere: 4, other: 2 },
+  { day: "2026-08-10", us: 25, southAsian: 5, anglosphere: 6, other: 4 },
+  { day: "2026-08-11", us: 22, southAsian: 7, anglosphere: 3, other: 3 },
+  { day: "2026-08-12", us: 27, southAsian: 4, anglosphere: 7, other: 2 },
+  { day: "2026-08-13", us: 19, southAsian: 9, anglosphere: 4, other: 5 },
+  { day: "2026-08-14", us: 24, southAsian: 6, anglosphere: 5, other: 3 },
+  { day: "2026-08-15", us: 30, southAsian: 5, anglosphere: 6, other: 2 },
+  { day: "2026-08-16", us: 26, southAsian: 7, anglosphere: 4, other: 4 },
+  { day: "2026-08-17", us: 12, southAsian: 3, anglosphere: 2, other: 1 },
+];
+
+const HOME_FLOW_POINTS = HOME_FLOW_DAYS.map((point, index) => {
+  const total = point.us + point.southAsian + point.anglosphere + point.other;
+  return {
+    ...point,
+    capturedAt: `${point.day}T23:00:00.000Z`,
+    total,
+    unattributed: 0,
+    reportedTotalDelta: total,
+    spanDays: 1,
+    stale: false,
+    // The newest window is still filling — the case the dashed outline exists for.
+    provisional: index === HOME_FLOW_DAYS.length - 1,
+    basis: "diff" as const,
+  };
+});
+
+const HOME_STOCK = {
+  capturedAt: "2026-08-17T23:10:00.000Z",
+  totalCounted: 4308,
+  followersTotal: 4578,
+  us: 1489,
+  southAsian: 1278,
+  anglosphere: 817,
+  other: 724,
+  countriesReported: 45,
+};
+
+const HOME_STATS = {
+  activeKeywords: 9,
+  totalKeywords: 12,
+  dmsSentToday: 34,
+  conversationsAwaiting: 74,
+  completedToday: 21,
+  lastError: null,
+  gateQueuePending: 0,
+  gateQueueExhausted: 0,
+  gateQueueSendUncertain: 0,
+  tokenHealth: null,
+}
+
+// pct1 in the funnel layer returns 0-100 (64.9, not 0.649). A fixture using the
+// 0-1 form rendered "0.6488651535380507%" on Home, which looked like a formatting
+// bug in the product and was a bug in the fixture.
+const rate = (numerator: number, denominator: number) => ({
+  numerator,
+  denominator,
+  pct: denominator === 0 ? null : Math.round((numerator / denominator) * 1000) / 10,
+  belowMinSample: false,
+});
+
+const stage = (
+  key: string,
+  label: string,
+  count: number,
+  ofEntryPct: number | null,
+  ofPrevPct: number | null,
+) => ({ key, label, definition: `Synthetic ${label} stage.`, count, ofEntryPct, ofPrevPct });
+
+const HOME_FUNNEL = {
+  key: "guide-follow",
+  name: "Guide and follow",
+  question: "Of the people who commented, how many followed and received the guide?",
+  window: { from: "2026-07-19", to: "2026-08-17" },
+  cohortSize: 812,
+  stages: [
+    stage("commented", "Commented", 812, 100, null),
+    stage("gated", "Gate DM sent", 749, 92.2, 92.2),
+    stage("replied", "Replied DONE", 486, 59.9, 64.9),
+    stage("delivered", "Guide delivered", 471, 58, 96.9),
+  ],
+  headline: {
+    fromStage: "gated",
+    toStage: "replied",
+    label: "Gate DM sent to Replied DONE",
+    rationale: "The largest measured loss in this cohort.",
+    rate: rate(486, 749),
+  },
+  followGateConversion: rate(486, 749),
+  stuckAtWall: 263,
+  askDistribution: [{ asks: 1, conversations: 749, cleared: 486 }],
+  expressLane: 37,
+  byEntryPath: [],
+  retention: rate(104, 471),
+  homeTileCohort: { deliveredToNonFollower: 12, ofWhichRedelivery: 3 },
+};
+
 function installFetchStub(): void {
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -495,6 +602,22 @@ function installFetchStub(): void {
         refresh_token: "e2e-refresh",
         user: { id: "e2e-user", email: "owner@example.com" },
       });
+    }
+
+    // Home. Added so the follower chart's paper palette can be inspected in a real
+    // browser: the marks, the rolling mean, and the provisional dash are SVG
+    // rendering decisions that a unit test can only assert about, not look at.
+    if (path === "/insights/follower-daily-adds" && method === "GET") {
+      return json({ points: HOME_FLOW_POINTS, stock: HOME_STOCK });
+    }
+    if (path === "/stats" && method === "GET") {
+      return json(HOME_STATS);
+    }
+    if (path === "/funnels/guide-follow" && method === "GET") {
+      return json(HOME_FUNNEL);
+    }
+    if (path.startsWith("/insights/feed-follow-attribution") && method === "GET") {
+      return json({ days: [], totals: null });
     }
 
     if (path === "/dm-threads/thread-1" && method === "GET") {
@@ -960,6 +1083,13 @@ export function Harness() {
         <Routes>
           <Route path="/dm-recovery" element={<DmRecovery />} />
         </Routes>
+      </div>
+    );
+  }
+  if (scenario === "home") {
+    return (
+      <div className="p-4">
+        <Home />
       </div>
     );
   }

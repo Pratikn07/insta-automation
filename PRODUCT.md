@@ -221,21 +221,30 @@ Two related traps, both cost time on 2026-08-16:
 
 ## Capabilities and Constraints
 
-### Console surfaces (12 routes)
+### Console surfaces (11 destinations)
 
-| Route | What it is for |
-| --- | --- |
-| `/` Home | Follower growth by day and region, in real counts. Feed-follow attribution, spike candidates. |
-| `/content` | Pick a post, attach a keyword. Reels and carousels. |
-| `/keywords` | The words that trigger a sequence. Scoped per post, so one word can send different guides. |
-| `/sequences`, `/sequences/:id` | The DMs sent after a follower replies `DONE`. Text / image / PDF. |
-| `/conversations` | Every comment that triggered a keyword, with its full event log and AI reply drafts. |
-| `/historical-recovery` | Reviewing and approving contact with people whose requests are weeks old. |
-| `/assistant` | A read-only business advisor on a persistent thread. Can ask and navigate; cannot send, approve, or configure. |
-| `/users` | Everyone who triggered a keyword, and their full journey. |
-| `/insights` | Reel-scoped: leaderboard, recipe (top-vs-bottom US-fit contrast), experiments. |
-| `/funnels` | Conversation-lifecycle-scoped cohort funnels with drop-off drill-down. Deliberately separate from Insights. |
-| `/activity` | Every event the system records, including undeliverable DMs. The diagnostic feed. |
+Home sits above four groups — **Measure / Publish / Audience / System** — as built in
+`web/src/lib/navigation.ts`, which is the single definition the rail and the mobile
+titles both read.
+
+| Route | Group | What it is for |
+| --- | --- | --- |
+| `/` Home | — | Follower growth by day and region, in real counts. Feed-follow attribution, spike candidates. |
+| `/insights` | Measure | Reel-scoped: leaderboard, recipe (top-vs-bottom US-fit contrast), experiments. |
+| `/funnels` | Measure | Conversation-lifecycle-scoped cohort funnels with drop-off drill-down. Deliberately separate from Insights. |
+| `/content` | Publish | Pick a post, attach a keyword. Reels and carousels. |
+| `/keywords` | Publish | The words that trigger a sequence. Scoped per post, so one word can send different guides. |
+| `/sequences`, `/sequences/:id` | Publish | The DMs sent after a follower replies `DONE`. Text / image / PDF. |
+| `/conversations` | Audience | Every comment that triggered a keyword, with its full event log and AI reply drafts. Also the People lens. |
+| `/dm-recovery` | Audience | Prospective recovery. **Automatically publishes a public comment** on the original post when policy says so; there is no approval step and no way to force a send. |
+| `/historical-recovery` | Audience | Reviewing and approving contact with people whose requests are weeks old. One approval posts publicly on hundreds of real posts. |
+| `/activity` | System | Every event the system records, including undeliverable DMs. The diagnostic feed. |
+| `/assistant` | System | A read-only business advisor on a persistent thread. Can ask and navigate; cannot send, approve, or configure. |
+
+`/users` is **not** a destination. It redirects to `/conversations?lens=people` —
+the same dataset indexed by person, with the same lineage drawer — so old bookmarks
+land on the People lens rather than the default Needs reply one
+(`AppRoutes.tsx:37`).
 
 ### Backend capabilities
 
