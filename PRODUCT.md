@@ -246,6 +246,34 @@ reconciliation; AI reply drafts and advisor via the Codex runtime; Gemini reel
 analysis with a daily spend cap; insights, cohort funnels, follower flow, geo
 demographics, feed-follow attribution, spike detection.
 
+#### Durable guide delivery (built, disabled)
+
+A guide send can be planned into a ledger of units, each with its own recorded
+outcome, so a resumed delivery continues from the first unsent unit instead of
+replaying the whole guide. A captioned image compiles into two units — the media,
+then the caption — because Instagram sends them separately.
+
+Delivery states are `planned`, `sending`, `needs_review`, `failed`, `completed`,
+and `cancelled`. Unit states are `pending`, `sending`, `sent`, `retryable`,
+`failed`, `uncertain`, and `cancelled`.
+
+**`uncertain` is never retried automatically.** When a provider call cannot be
+classified, the request may already have delivered a message to a real person, so
+the unit is recorded `uncertain`, the delivery moves to `needs_review`, and the
+automation stops. The owner resolves it in Conversations with one of three
+actions: confirm it was already delivered, retry it while explicitly
+acknowledging the duplicate risk, or cancel the delivery. Retry disappears once
+Instagram's messaging window closes, because a send is then impossible.
+
+**This path owns no production traffic.** `GUIDE_DELIVERY_ENABLED` is false,
+`GUIDE_DELIVERY_ROLLOUT_PERCENT` is 0, and the cohort allowlist is empty, so every
+real trigger is still delivered by the legacy sequence sender. Ownership per
+trigger is decided once and the two paths are mutually exclusive. Enabling it is a
+separate authorized phase; see `docs/guide-delivery-operations.md`.
+
+Guide text is limited to 1,000 Unicode code points, counted as `[...value].length`
+— not UTF-16 code units, which would charge an emoji twice.
+
 ### Hard constraints
 
 - **One permission level.** `ADMIN_EMAIL` is a comma-separated allowlist and every
