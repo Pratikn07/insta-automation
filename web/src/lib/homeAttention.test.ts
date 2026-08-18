@@ -29,6 +29,7 @@ function clearStats(): Stats {
     gateQueuePending: 0,
     gateQueueExhausted: 0,
     gateQueueSendUncertain: 0,
+    upcomingNeedsAttention: 0,
   };
 }
 
@@ -170,6 +171,7 @@ describe("deriveAttentionItems", () => {
     const items = deriveAttentionItems(
       {
         ...clearStats(),
+        upcomingNeedsAttention: 1,
         gateQueueSendUncertain: 2,
         gateQueueExhausted: 3,
         conversationsAwaiting: 4,
@@ -177,16 +179,57 @@ describe("deriveAttentionItems", () => {
       funnelWithLoss(),
     );
     expect(items.map((item) => item.kind)).toEqual([
+      "upcoming_needs_attention",
       "uncertain_gate_sends",
       "failed_gates",
       "funnel_loss",
       "conversations_awaiting",
     ]);
-    expect(items[2]).toMatchObject({
+    expect(items[3]).toMatchObject({
       title: "Inspect the gate sent → replied loss",
       detail: expect.stringContaining("52 of 92"),
     });
   });
+
+  /**
+   * Home takes `attention[0]` as its "Best next move", so this position is a
+   * product decision, not a list detail.
+   *
+   * An unattached keyword outranks the gate items because it is the only one where
+   * the automation is not running at all: the post is live, nobody commenting on it
+   * gets anything, and it keeps costing until she changes one word.
+   */
+  it("makes an unattached keyword the best next move when one exists", () => {
+    const items = deriveAttentionItems(
+      { ...clearStats(), upcomingNeedsAttention: 1, gateQueueExhausted: 12 },
+      undefined,
+    );
+
+    expect(items[0]).toMatchObject({
+      kind: "upcoming_needs_attention",
+      title: "A keyword didn't attach to your new post",
+      tag: "Now",
+      to: "/content",
+      action: "Fix",
+    });
+  });
+
+  it("counts more than one unattached keyword in the plural", () => {
+    const items = deriveAttentionItems({ ...clearStats(), upcomingNeedsAttention: 3 }, undefined);
+
+    expect(items[0]!.title).toBe("3 keywords didn't attach to your new posts");
+    expect(items[0]!.detail).toContain("Those posts published");
+  });
+
+  // A count of zero is nothing to do. A missing count is an older API build that
+  // never measured it — neither may invent an item.
+  it.each([{ upcomingNeedsAttention: 0 }, { upcomingNeedsAttention: undefined }])(
+    "derives no upcoming item from %j",
+    (patch) => {
+      const items = deriveAttentionItems({ ...clearStats(), ...patch }, undefined);
+      expect(items.map((item) => item.kind)).not.toContain("upcoming_needs_attention");
+    },
+  );
 
   it("derives nothing from an unavailable source", () => {
     expect(deriveAttentionItems(undefined, undefined)).toEqual([]);

@@ -180,6 +180,15 @@ export interface Stats {
    * their gate. Optional because an older API build omits it.
    */
   gateQueueSendUncertain?: number;
+  /**
+   * Upcoming setups whose post published but whose caption didn't match, so
+   * nothing is attached. An ongoing outage rather than a historical one — the post
+   * is live and every commenter gets nothing until it is fixed.
+   *
+   * Optional for the same reason as the field above: an older API build omits it,
+   * and a missing count must read as "not measured", never as zero.
+   */
+  upcomingNeedsAttention?: number;
   followConversion?: FollowConversion;
   tokenHealth?: TokenHealth | null;
 }
