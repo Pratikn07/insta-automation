@@ -252,9 +252,8 @@ describeWithDatabase("guide delivery owner review PostgreSQL contract", () => {
     expect(JSON.stringify(windowEvent.payload)).not.toContain(PRIVATE_TEXT);
   });
 
-  it("requires literal duplicate-risk acknowledgement and rejects retry after window close", async () => {
+  it("requires literal duplicate-risk acknowledgement", async () => {
     const open = await createDelivery();
-    const closed = await createDelivery({ sendWindowExpiresAt: new Date(NOW.getTime() - 1) });
     const service = createGuideDeliveryReviewService({ database: prisma, dispatchAfterCommit: vi.fn() });
 
     await expect(
@@ -266,15 +265,64 @@ describeWithDatabase("guide delivery owner review PostgreSQL contract", () => {
         now: NOW,
       }),
     ).rejects.toEqual(expectReviewError("duplicate_risk_acknowledgement_required"));
+  });
+
+  it("durably records one safe retry-skipped action before concurrent expired retries return window closed", async () => {
+    const fixture = await createDelivery({ sendWindowExpiresAt: new Date(NOW.getTime() - 1) });
+    const dispatchAfterCommit = vi.fn();
+    const service = createGuideDeliveryReviewService({ database: prisma, dispatchAfterCommit });
+    const input = {
+      deliveryId: fixture.deliveryId,
+      unitId: fixture.units[1]!.id,
+      actor: OWNER,
+      acknowledgeDuplicateRisk: true as const,
+      now: NOW,
+    };
+
+    const results = await Promise.allSettled([
+      service.retryUncertainUnit(input),
+      service.retryUncertainUnit(input),
+    ]);
+
+    expect(results).toHaveLength(2);
+    for (const result of results) {
+      expect(result).toMatchObject({
+        status: "rejected",
+        reason: expectReviewError("messaging_window_closed"),
+      });
+    }
+    expect(dispatchAfterCommit).not.toHaveBeenCalled();
     await expect(
-      service.retryUncertainUnit({
-        deliveryId: closed.deliveryId,
-        unitId: closed.units[1]!.id,
+      prisma.guideDelivery.findUnique({ where: { id: fixture.deliveryId } }),
+    ).resolves.toMatchObject({
+      status: "failed",
+      failureCode: "messaging_window_closed",
+      nextAttemptAt: null,
+      claimToken: null,
+    });
+    await expect(
+      prisma.guideDeliveryUnit.findUnique({ where: { id: fixture.units[1]!.id } }),
+    ).resolves.toMatchObject({
+      status: "uncertain",
+      ownerRetryAuthorizedAt: null,
+      ownerRetryConsumedAt: null,
+    });
+
+    const events = await ownerEvents(fixture.deliveryId);
+    expect(events.map((event) => event.payload)).toEqual([
+      {
         actor: OWNER,
-        acknowledgeDuplicateRisk: true,
-        now: NOW,
-      }),
-    ).rejects.toEqual(expectReviewError("messaging_window_closed"));
+        action: "retry_skipped_window_closed",
+        deliveryId: fixture.deliveryId,
+        resourceId: fixture.resourceId,
+        unitId: fixture.units[1]!.id,
+        at: NOW.toISOString(),
+      },
+    ]);
+    const serialized = JSON.stringify(events);
+    expect(serialized).not.toContain(PRIVATE_TEXT);
+    expect(serialized).not.toContain(PRIVATE_MEDIA_URL);
+    expect(serialized).not.toContain(PRIVATE_TRACE);
   });
 
   it("authorizes only the uncertain unit and atomically consumes one retry before any provider work", async () => {

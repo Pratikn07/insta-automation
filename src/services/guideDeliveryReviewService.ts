@@ -56,6 +56,7 @@ type LockedReviewUnit = {
 type ReviewTransition = {
   deliveryId: string;
   directive: "finalize" | "resume" | "none";
+  rejection?: "messaging_window_closed";
 };
 
 type ReviewDependencies = {
@@ -303,14 +304,47 @@ export function createGuideDeliveryReviewService(dependencies: ReviewDependencie
         throw new GuideDeliveryReviewError("duplicate_risk_acknowledgement_required");
       }
       assertReviewInput(input);
-      const transition = await database.$transaction(async (tx) => {
+      const transition: ReviewTransition = await database.$transaction(async (tx) => {
         const delivery = await lockDelivery(tx, input.deliveryId);
         if (!delivery) throw new GuideDeliveryReviewError("delivery_not_found");
         const units = await lockUnits(tx, input.deliveryId);
         const unit = requireUnit(units, input.unitId);
+        if (
+          delivery.status === "failed" &&
+          delivery.failureCode === "messaging_window_closed" &&
+          unit.status === "uncertain"
+        ) {
+          return {
+            deliveryId: delivery.id,
+            directive: "none",
+            rejection: "messaging_window_closed",
+          };
+        }
         requireReviewableUnit(delivery, unit);
         if (delivery.sendWindowExpiresAt <= input.now) {
-          throw new GuideDeliveryReviewError("messaging_window_closed");
+          await tx.guideDelivery.update({
+            where: { id: delivery.id },
+            data: {
+              status: "failed",
+              failureCode: "messaging_window_closed",
+              nextAttemptAt: null,
+              claimToken: null,
+              claimedAt: null,
+              claimExpiresAt: null,
+              updatedAt: input.now,
+            },
+          });
+          await writeOwnerAction(tx, delivery, {
+            actor: input.actor,
+            action: "retry_skipped_window_closed",
+            unitId: unit.id,
+            now: input.now,
+          });
+          return {
+            deliveryId: delivery.id,
+            directive: "none",
+            rejection: "messaging_window_closed",
+          };
         }
 
         await tx.guideDeliveryUnit.update({
@@ -341,6 +375,9 @@ export function createGuideDeliveryReviewService(dependencies: ReviewDependencie
         });
         return { deliveryId: delivery.id, directive: "resume" } as const;
       });
+      if (transition.rejection === "messaging_window_closed") {
+        throw new GuideDeliveryReviewError(transition.rejection);
+      }
       return finishTransition(transition, input.now);
     },
 
