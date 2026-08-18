@@ -274,6 +274,41 @@ separate authorized phase; see `docs/guide-delivery-operations.md`.
 Guide text is limited to 1,000 Unicode code points, counted as `[...value].length`
 — not UTF-16 code units, which would charge an emoji twice.
 
+#### DM recovery states are automation states, not an approval queue
+
+`Scheduled` and `Due` describe what the worker will do and when — they are not a
+queue awaiting a human decision. Nothing on the DM recovery page has to be approved
+for a reminder to be published; the policy already decided, and there is
+deliberately no way to force a send from the dashboard. The only owner actions are
+cancel (prevents a future attempt) and mark reviewed (records that a failure was
+looked at). Neither can retract a comment Instagram already accepted.
+
+`send_uncertain` is a fourth thing again: the attempt was dispatched and its
+outcome was never confirmed. **It is never retried automatically.** Resolving it is
+an explicit owner action, because the alternative is publishing the same public
+comment twice on a real person's post.
+
+Historical Recovery keeps its own destination and its own safety boundary. One
+approval there posts public comments on hundreds of real posts, so the two recovery
+surfaces are grouped in the rail but never made peer tabs — tabs are the
+habituation surface.
+
+#### Client transport guarantees
+
+Two properties the console now depends on, recorded because the UI's copy is built
+on them:
+
+- **Reads are abortable.** A read that exceeds its deadline aborts the request
+  rather than abandoning it, so a page settles into a real error state instead of
+  holding skeletons, and a cancelled read stops costing the user data. Retry is
+  once, and only for a timeout, a transport failure, or a 5xx.
+- **A mutation's outcome can be unknown.** Once the request is dispatched, a
+  timeout, a dropped connection, or a 502 all leave the same question open, so the
+  console reports *"Still confirming"* rather than *"failed"*, and never retries on
+  the owner's behalf. Recovery is reconciliation: read the canonical state and find
+  out. Every route's canonical read is written down in
+  `docs/client-operation-contracts.md`.
+
 ### Hard constraints
 
 - **One permission level.** `ADMIN_EMAIL` is a comma-separated allowlist and every
