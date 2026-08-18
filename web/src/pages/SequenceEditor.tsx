@@ -29,7 +29,7 @@ import {
 import { useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { toast } from "sonner";
-import { api, apiErrorCode, ApiError } from "@/lib/api";
+import { api, apiRead, apiErrorCode, ApiError } from "@/lib/api";
 import type { MessageType, Resource, ResourceMessage } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -61,13 +61,13 @@ export function SequenceEditor() {
   const { id } = useParams<{ id: string }>();
   const resourceQ = useQuery<Resource>({
     queryKey: ["resource", id],
-    queryFn: () => api<Resource>(`/resources/${id}`),
+    queryFn: ({ signal }) => apiRead<Resource>(`/resources/${id}`, { signal }),
     enabled: !!id,
   });
 
   const messagesQ = useQuery<ResourceMessage[]>({
     queryKey: ["resource-messages", id],
-    queryFn: () => api<ResourceMessage[]>(`/messages/by-resource/${id}`),
+    queryFn: ({ signal }) => apiRead<ResourceMessage[]>(`/messages/by-resource/${id}`, { signal }),
     enabled: !!id,
   });
 

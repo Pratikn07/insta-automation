@@ -1,4 +1,5 @@
 import { supabase } from "./supabase";
+import { awaitWithSignal, withDeadline } from "./requestDeadline";
 import type {
   RecoveryCounts,
   RecoveryMetrics,
@@ -92,6 +93,18 @@ async function getAccessToken(forceRefresh: boolean): Promise<string | undefined
   return data.session?.access_token;
 }
 
+/**
+ * The Supabase auth client takes no signal, so its promise is the one thing we
+ * can only stop waiting on rather than cancel. Everything downstream of it is
+ * genuinely abortable.
+ */
+async function getAccessTokenBounded(
+  forceRefresh: boolean,
+  signal: AbortSignal,
+): Promise<string | undefined> {
+  return awaitWithSignal(getAccessToken(forceRefresh), signal);
+}
+
 async function fetchOnce(path: string, init: RequestInit, token: string | undefined) {
   const headers = new Headers(init.headers);
   headers.set("content-type", "application/json");
@@ -101,6 +114,49 @@ async function fetchOnce(path: string, init: RequestInit, token: string | undefi
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return withTimeout(request<T>(path, init), path);
+}
+
+export interface ReadOptions {
+  /** TanStack Query supplies this; forwarding it makes cancellation real. */
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+/**
+ * A GET whose deadline aborts the request instead of merely abandoning it.
+ *
+ * Reads are safe to abandon and safe to repeat, which is exactly what makes a
+ * deadline the right answer for them — and exactly what is not true of the
+ * mutations that live in `apiMutation`.
+ */
+export async function apiRead<T>(path: string, options: ReadOptions = {}): Promise<T> {
+  const deadline = withDeadline(options.signal, options.timeoutMs ?? REQUEST_TIMEOUT_MS);
+  try {
+    const token = await getAccessTokenBounded(false, deadline.signal);
+    let res = await fetchOnce(path, { signal: deadline.signal }, token);
+
+    if (res.status === 401) {
+      // One refresh, one retry. More than that turns an expired session into a
+      // loop against the auth server.
+      const refreshed = await getAccessTokenBounded(true, deadline.signal);
+      if (refreshed) res = await fetchOnce(path, { signal: deadline.signal }, refreshed);
+    }
+
+    return await readBody<T>(res);
+  } finally {
+    deadline.dispose();
+  }
+}
+
+async function readBody<T>(res: Response): Promise<T> {
+  if (res.status === 204) return undefined as T;
+
+  const contentType = res.headers.get("content-type") ?? "";
+  const body = contentType.includes("application/json") ? await res.json() : await res.text();
+
+  if (!res.ok) throw new ApiError(res.status, body, extractErrorMessage(body, res.status));
+
+  return body as T;
 }
 
 async function request<T>(path: string, init: RequestInit): Promise<T> {
@@ -127,18 +183,28 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
 
 // ── DM recovery ───────────────────────────────────────────────────────────
 
+/**
+ * Reads here take the same optional `ReadOptions` as `apiRead`, so a recovery
+ * query cancelled by its component stops rather than finishing into a discarded
+ * cache entry. The actions do not: a cancelled mutation is an unknown outcome,
+ * not a cancelled effect, and Task 7 gives each one a reconciliation rule.
+ */
 export const recoveryApi = {
-  list: (query: string) =>
+  list: (query: string, options: ReadOptions = {}) =>
     // `asOf` is the eligibleAt boundary this page was read at. Echo it back with
     // the cursor so a paginated run stays on one boundary.
-    api<{ rows: RecoveryReminderRow[]; nextCursor: string | null; asOf: string }>(
+    apiRead<{ rows: RecoveryReminderRow[]; nextCursor: string | null; asOf: string }>(
       `/recovery-reminders${query ? `?${query}` : ""}`,
+      options,
     ),
-  counts: () => api<RecoveryCounts>("/recovery-reminders/counts"),
-  metrics: () => api<RecoveryMetrics>("/recovery-reminders/metrics"),
-  settingsVerifications: () =>
-    api<{ records: SettingsBlockedVerificationRecord[] }>(
+  counts: (options: ReadOptions = {}) =>
+    apiRead<RecoveryCounts>("/recovery-reminders/counts", options),
+  metrics: (options: ReadOptions = {}) =>
+    apiRead<RecoveryMetrics>("/recovery-reminders/metrics", options),
+  settingsVerifications: (options: ReadOptions = {}) =>
+    apiRead<{ records: SettingsBlockedVerificationRecord[] }>(
       "/recovery-reminders/settings-verifications",
+      options,
     ),
   activateSettingsVerification: (id: string) =>
     api<void>(`/recovery-reminders/settings-verifications/${id}/activate`, { method: "POST" }),
@@ -147,7 +213,8 @@ export const recoveryApi = {
       method: "POST",
       body: JSON.stringify({ reason }),
     }),
-  detail: (id: string) => api<RecoveryReminderDetail>(`/recovery-reminders/${id}`),
+  detail: (id: string, options: ReadOptions = {}) =>
+    apiRead<RecoveryReminderDetail>(`/recovery-reminders/${id}`, options),
   cancel: (id: string) => api<void>(`/recovery-reminders/${id}/cancel`, { method: "POST" }),
   markReviewed: (id: string) =>
     api<void>(`/recovery-reminders/${id}/mark-reviewed`, { method: "POST" }),

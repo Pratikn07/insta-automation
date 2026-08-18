@@ -14,8 +14,9 @@ const api = vi.fn();
 
 vi.mock("../lib/api", () => ({
   api: (...a: unknown[]) => api(...a),
+  apiRead: (path: unknown) => api(path),
   recoveryApi: {
-    list: (...a: unknown[]) => recoveryList(...a),
+    list: (query: unknown) => recoveryList(query),
     counts: () => recoveryCounts(),
     metrics: () => recoveryMetrics(),
     detail: vi.fn(),

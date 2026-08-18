@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, Loader2, MessageSquare, Send } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, apiRead } from "@/lib/api";
 import type { AdvisorHistoryItem, AdvisorResponse, AiConnectionStatus } from "@/lib/types";
 import { AiConnectionCard } from "@/components/ai/AiConnectionCard";
 import { AdvisorMessage } from "@/components/assistant/AdvisorMessage";
@@ -60,12 +60,12 @@ export function Assistant() {
 
   const statusQ = useQuery<AiConnectionStatus>({
     queryKey: ["ai", "connection"],
-    queryFn: () => api<AiConnectionStatus>("/ai/connection"),
+    queryFn: ({ signal }) => apiRead<AiConnectionStatus>("/ai/connection", { signal }),
   });
 
   const historyQ = useQuery<{ items: AdvisorHistoryItem[] }>({
     queryKey: ["ai", "advisor", "history"],
-    queryFn: () => api<{ items: AdvisorHistoryItem[] }>("/ai/advisor/history"),
+    queryFn: ({ signal }) => apiRead<{ items: AdvisorHistoryItem[] }>("/ai/advisor/history", { signal }),
     enabled: statusQ.data?.connected === true,
     retry: false,
   });

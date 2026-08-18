@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { AlertTriangle, Pause, Play, Check, X, Gauge } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, apiRead } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -81,7 +81,7 @@ export function HistoricalRecovery() {
 
   const campaigns = useQuery({
     queryKey: ["historical-campaigns"],
-    queryFn: () => api<CampaignsResponse>("/historical-recovery/campaigns"),
+    queryFn: ({ signal }) => apiRead<CampaignsResponse>("/historical-recovery/campaigns", { signal }),
   });
 
   const campaignRows = campaigns.data?.campaigns ?? [];
@@ -91,14 +91,15 @@ export function HistoricalRecovery() {
   const candidates = useInfiniteQuery({
     queryKey: ["historical-candidates", active?.id, tab],
     initialPageParam: null as CandidatePageParam | null,
-    queryFn: ({ pageParam }) => {
+    queryFn: ({ pageParam, signal }) => {
       const params = new URLSearchParams({ view: tab, campaignId: active!.id });
       if (pageParam !== null) {
         params.set("cursor", pageParam.cursor);
         params.set("asOf", pageParam.asOf);
       }
-      return api<CandidatesResponse>(
+      return apiRead<CandidatesResponse>(
         `/historical-recovery/candidates?${params.toString()}`,
+        { signal },
       );
     },
     getNextPageParam: (last): CandidatePageParam | undefined =>

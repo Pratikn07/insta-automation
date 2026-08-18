@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { Film, Images, LayoutGrid, Plus, Tag, ExternalLink } from "lucide-react";
 import { useMemo, useState } from "react";
-import { api } from "@/lib/api";
+import { apiRead } from "@/lib/api";
 import type { Keyword, MediaItem, MediaKind, MediaPage, Resource } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -23,15 +23,15 @@ const KIND = {
 export function Content() {
   const mediaQ = useQuery<MediaPage>({
     queryKey: ["content"],
-    queryFn: () => api<MediaPage>("/media/content"),
+    queryFn: ({ signal }) => apiRead<MediaPage>("/media/content", { signal }),
   });
   const keywordsQ = useQuery<Keyword[]>({
     queryKey: ["keywords"],
-    queryFn: () => api<Keyword[]>("/keywords"),
+    queryFn: ({ signal }) => apiRead<Keyword[]>("/keywords", { signal }),
   });
   const resourcesQ = useQuery<Resource[]>({
     queryKey: ["resources"],
-    queryFn: () => api<Resource[]>("/resources"),
+    queryFn: ({ signal }) => apiRead<Resource[]>("/resources", { signal }),
   });
 
   const [selected, setSelected] = useState<MediaItem | null>(null);

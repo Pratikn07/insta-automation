@@ -15,7 +15,7 @@ import {
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { journeyRowMarkers } from "../components/conversations/journeyRowMarkers";
-import { api } from "@/lib/api";
+import { apiRead } from "@/lib/api";
 import type {
   Conversation,
   ConversationCounts,
@@ -121,7 +121,7 @@ export function Conversations() {
   const dmScope = lens === "needs_reply" ? "needs_reply" : "all";
   const dmThreadsQ = useQuery<Paginated<DmThreadRow>>({
     queryKey: ["dm-threads", dmScope],
-    queryFn: () => api<Paginated<DmThreadRow>>(`/dm-threads?scope=${dmScope}`),
+    queryFn: ({ signal }) => apiRead<Paginated<DmThreadRow>>(`/dm-threads?scope=${dmScope}`, { signal }),
     enabled: lens === "needs_reply" || lens === "dms",
   });
 
@@ -130,18 +130,18 @@ export function Conversations() {
   // the only two, and adding People would have quietly widened it.
   const capabilitiesQ = useQuery<AiCapabilities>({
     queryKey: ["ai-capabilities"],
-    queryFn: () => api<AiCapabilities>("/ai/capabilities"),
+    queryFn: ({ signal }) => apiRead<AiCapabilities>("/ai/capabilities", { signal }),
     enabled: lens === "needs_reply" || lens === "dms",
   });
 
   const conversationsQ = useInfiniteQuery({
     queryKey: ["conversations", historyMode, filter],
-    queryFn: ({ pageParam }) => {
+    queryFn: ({ pageParam, signal }) => {
       const params = new URLSearchParams();
       params.set("mode", historyMode);
       if (filter !== "all") params.set("state", filter);
       if (pageParam) params.set("cursor", pageParam);
-      return api<Paginated<Conversation>>(`/conversations?${params.toString()}`);
+      return apiRead<Paginated<Conversation>>(`/conversations?${params.toString()}`, { signal });
     },
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last) => last.nextCursor ?? undefined,
@@ -154,7 +154,7 @@ export function Conversations() {
   // Tab counts so the page reads like a dashboard ("Waiting 416 · Delivered 351").
   const countsQ = useQuery<ConversationCounts>({
     queryKey: ["conversation-counts", historyMode],
-    queryFn: () => api<ConversationCounts>(`/conversations/counts?mode=${historyMode}`),
+    queryFn: ({ signal }) => apiRead<ConversationCounts>(`/conversations/counts?mode=${historyMode}`, { signal }),
   });
   const counts = countsQ.data;
 
@@ -606,7 +606,7 @@ function ConversationDetail({
   const [showTech, setShowTech] = useState(false);
   const detailQ = useQuery<ConversationDetailResponse>({
     queryKey: ["conversation-detail", conversationId],
-    queryFn: () => api<ConversationDetailResponse>(`/conversations/${conversationId}/events`),
+    queryFn: ({ signal }) => apiRead<ConversationDetailResponse>(`/conversations/${conversationId}/events`, { signal }),
   });
 
   if (detailQ.isLoading) {

@@ -12,6 +12,7 @@ const toastError = vi.fn();
 
 vi.mock("@/lib/api", () => ({
   api: (...args: unknown[]) => api(...args),
+  apiRead: (path: unknown) => api(path),
   ApiError: class ApiError extends Error {},
   apiErrorCode: (error: { code?: unknown }) =>
     typeof error?.code === "string" ? error.code : null,

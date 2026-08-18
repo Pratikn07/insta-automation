@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Plus, Tag, Trash2, MessageSquare, Globe } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
-import { api, ApiError } from "@/lib/api";
+import { api, apiRead, ApiError } from "@/lib/api";
 import type { Keyword, Resource } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -18,11 +18,11 @@ export function Keywords() {
   const qc = useQueryClient();
   const keywordsQ = useQuery<Keyword[]>({
     queryKey: ["keywords"],
-    queryFn: () => api<Keyword[]>("/keywords"),
+    queryFn: ({ signal }) => apiRead<Keyword[]>("/keywords", { signal }),
   });
   const resourcesQ = useQuery<Resource[]>({
     queryKey: ["resources"],
-    queryFn: () => api<Resource[]>("/resources"),
+    queryFn: ({ signal }) => apiRead<Resource[]>("/resources", { signal }),
   });
 
   const [editing, setEditing] = useState<Keyword | null>(null);

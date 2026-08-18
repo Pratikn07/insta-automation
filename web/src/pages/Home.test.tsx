@@ -21,6 +21,8 @@ const api = vi.fn(<T,>(path: string) => {
 
 vi.mock("@/lib/api", () => ({
   api: <T,>(path: string) => api(path) as Promise<T>,
+  // Reads take a signal now. The mock drops it so assertions stay about paths.
+  apiRead: <T,>(path: string) => api(path) as Promise<T>,
 }));
 
 vi.mock("@/components/home/FollowerFlowPanel", () => ({

@@ -7,7 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.fn();
 
-vi.mock("@/lib/api", () => ({ api: (...args: unknown[]) => api(...args) }));
+vi.mock("@/lib/api", () => ({
+  api: (...args: unknown[]) => api(...args),
+  apiRead: (path: unknown) => api(path),
+}));
 
 const { HistoricalRecovery } = await import("./HistoricalRecovery");
 

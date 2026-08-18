@@ -16,8 +16,9 @@ const activateSettingsVerification = vi.fn();
 vi.mock("../../lib/api", () => ({
   // The keyword filter's options come from the generic client, not recoveryApi.
   api: (path: string) => apiGet(path),
+  apiRead: (path: string) => apiGet(path),
   recoveryApi: {
-    list: (...a: unknown[]) => list(...a),
+    list: (query: unknown) => list(query),
     counts: () => counts(),
     metrics: () => metrics(),
     settingsVerifications: () => settingsVerifications(),

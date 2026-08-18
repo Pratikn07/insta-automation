@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ExternalLink } from "lucide-react";
 import { toast } from "sonner";
-import { api } from "@/lib/api";
+import { api, apiRead } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Drawer } from "@/components/ui/drawer";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -99,8 +99,11 @@ export function HistoricalCandidateDrawer({
   const queryClient = useQueryClient();
   const detail = useQuery({
     queryKey: ["historical-candidate", candidateId],
-    queryFn: () =>
-      api<HistoricalCandidateDetail>(`/historical-recovery/candidates/${candidateId}`),
+    queryFn: ({ signal }) =>
+      apiRead<HistoricalCandidateDetail>(
+        `/historical-recovery/candidates/${candidateId}`,
+        { signal },
+      ),
     enabled: candidateId !== null,
   });
 

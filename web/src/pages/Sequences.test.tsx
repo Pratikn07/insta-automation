@@ -9,6 +9,7 @@ const api = vi.fn();
 
 vi.mock("../lib/api", () => ({
   api: (...args: unknown[]) => api(...args),
+  apiRead: (path: unknown) => api(path),
   ApiError: class ApiError extends Error {},
 }));
 

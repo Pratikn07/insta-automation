@@ -1,6 +1,6 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { api, recoveryApi } from "../../lib/api";
+import { apiRead, recoveryApi } from "../../lib/api";
 import type {
   Keyword,
   RecoveryCohort,
@@ -62,24 +62,24 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
 
   const keywordsQ = useQuery<Keyword[]>({
     queryKey: ["keywords"],
-    queryFn: () => api<Keyword[]>("/keywords"),
+    queryFn: ({ signal }) => apiRead<Keyword[]>("/keywords", { signal }),
   });
 
   const countsQ = useQuery<RecoveryCounts>({
     queryKey: ["recovery-reminders", "counts"],
-    queryFn: () => recoveryApi.counts(),
+    queryFn: ({ signal }) => recoveryApi.counts({ signal }),
   });
 
   // Health rides along with metrics rather than its own endpoint, so the banner
   // and the experiment readout can never disagree about the circuit.
   const metricsQ = useQuery<RecoveryMetrics>({
     queryKey: ["recovery-reminders", "metrics"],
-    queryFn: () => recoveryApi.metrics(),
+    queryFn: ({ signal }) => recoveryApi.metrics({ signal }),
   });
 
   const settingsVerificationsQ = useQuery<{ records: SettingsBlockedVerificationRecord[] }>({
     queryKey: ["recovery-reminders", "settings-verifications"],
-    queryFn: () => recoveryApi.settingsVerifications(),
+    queryFn: ({ signal }) => recoveryApi.settingsVerifications({ signal }),
   });
 
   const activateVerificationM = useMutation({
@@ -99,7 +99,7 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
     // filter's badge is the same lie as the wrong tab's rows.
     queryKey: ["recovery-reminders", "list", view, keywordId, cohort],
     initialPageParam: null as { cursor: string; asOf: string } | null,
-    queryFn: ({ pageParam }) => {
+    queryFn: ({ pageParam, signal }) => {
       const params = new URLSearchParams({ view });
       if (keywordId) params.set("keywordId", keywordId);
       if (cohort) params.set("cohort", cohort);
@@ -110,7 +110,7 @@ export function DmRecoveryList({ onSelect }: { onSelect: (id: string) => void })
         // boundary; letting it advance drops the rows that cross it.
         params.set("asOf", pageParam.asOf);
       }
-      return recoveryApi.list(params.toString());
+      return recoveryApi.list(params.toString(), { signal });
     },
     getNextPageParam: (last: { nextCursor: string | null; asOf: string }) =>
       last.nextCursor ? { cursor: last.nextCursor, asOf: last.asOf } : null,

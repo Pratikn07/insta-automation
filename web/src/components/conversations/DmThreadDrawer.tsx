@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Sparkles } from "lucide-react";
-import { ApiError, api } from "@/lib/api";
+import { ApiError, api, apiRead } from "@/lib/api";
 import type { DmThreadDetail } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Drawer } from "@/components/ui/drawer";
@@ -36,7 +36,7 @@ export function DmThreadDrawer({
 
   const detailQ = useQuery<DmThreadDetail>({
     queryKey: ["dm-thread", threadId],
-    queryFn: () => api<DmThreadDetail>(`/dm-threads/${threadId}`),
+    queryFn: ({ signal }) => apiRead<DmThreadDetail>(`/dm-threads/${threadId}`, { signal }),
     enabled: threadId !== null,
   });
 

@@ -59,7 +59,7 @@ export function DmRecoveryDrawer({
 
   const detailQ = useQuery<RecoveryReminderDetail>({
     queryKey: ["recovery-reminders", "detail", id],
-    queryFn: () => recoveryApi.detail(id),
+    queryFn: ({ signal }) => recoveryApi.detail(id, { signal }),
   });
 
   // Both actions can lose a race with the worker, so the whole recovery tree is

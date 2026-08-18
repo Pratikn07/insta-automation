@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, Check, ExternalLink, Loader2, Sparkles } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, apiRead } from "@/lib/api";
 import type { AiConnectionStatus, AiLoginStart } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -41,7 +41,7 @@ export function AiConnectionCard() {
 
   const statusQ = useQuery<AiConnectionStatus>({
     queryKey: ["ai", "connection"],
-    queryFn: () => api<AiConnectionStatus>("/ai/connection"),
+    queryFn: ({ signal }) => apiRead<AiConnectionStatus>("/ai/connection", { signal }),
     // Poll ONLY while a device code is outstanding: sign-in completes in the
     // browser at OpenAI, so this is the only way to notice. Idle otherwise.
     refetchInterval: (query) =>

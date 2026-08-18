@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Users as UsersIcon, User, Search } from "lucide-react";
 import { useState } from "react";
-import { api } from "@/lib/api";
+import { apiRead } from "@/lib/api";
 import type { UserDirItem } from "@/lib/types";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -27,10 +27,10 @@ export function PeopleDirectory({ onSelect }: { onSelect: (igUserId: string) => 
 
   const usersQ = useQuery<{ items: UserDirItem[] }>({
     queryKey: ["users", q],
-    queryFn: () => {
+    queryFn: ({ signal }) => {
       const params = new URLSearchParams();
       if (q.trim()) params.set("q", q.trim());
-      return api<{ items: UserDirItem[] }>(`/users?${params.toString()}`);
+      return apiRead<{ items: UserDirItem[] }>(`/users?${params.toString()}`, { signal });
     },
   });
 

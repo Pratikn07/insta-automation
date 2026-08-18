@@ -3,7 +3,7 @@ import { Film, Images } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { api, ApiError } from "@/lib/api";
+import { api, apiRead, ApiError } from "@/lib/api";
 import type { Keyword, MediaKind, MediaPage, Resource } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -399,11 +399,11 @@ function PostPicker({
   const [query, setQuery] = useState("");
   const mediaQ = useQuery<MediaPage>({
     queryKey: ["content"],
-    queryFn: () => api<MediaPage>("/media/content"),
+    queryFn: ({ signal }) => apiRead<MediaPage>("/media/content", { signal }),
   });
   const keywordsQ = useQuery<Keyword[]>({
     queryKey: ["keywords"],
-    queryFn: () => api<Keyword[]>("/keywords"),
+    queryFn: ({ signal }) => apiRead<Keyword[]>("/keywords", { signal }),
   });
 
   const countByMedia = useMemo(() => {

@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Info } from "lucide-react";
-import { api } from "@/lib/api";
+import { apiRead } from "@/lib/api";
 import type { LineageEvent, UserLineageResponse } from "@/lib/types";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EventRow } from "@/pages/Conversations";
@@ -43,7 +43,7 @@ function bubbleText(e: LineageEvent): string {
 export function UserLineage({ igUserId }: { igUserId: string }) {
   const q = useQuery<UserLineageResponse>({
     queryKey: ["user-lineage", igUserId],
-    queryFn: () => api<UserLineageResponse>(`/users/${igUserId}/lineage`),
+    queryFn: ({ signal }) => apiRead<UserLineageResponse>(`/users/${igUserId}/lineage`, { signal }),
   });
 
   if (q.isLoading) {

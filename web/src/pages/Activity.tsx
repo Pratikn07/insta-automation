@@ -1,7 +1,7 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Activity as ActivityIcon } from "lucide-react";
 import { useState } from "react";
-import { api } from "@/lib/api";
+import { apiRead } from "@/lib/api";
 import type { Stats } from "@/lib/types";
 import { AutomationHealthStrip } from "@/components/activity/AutomationHealthStrip";
 import { cn, displayUser, type IgUserLite } from "@/lib/utils";
@@ -44,11 +44,11 @@ export function Activity() {
 
   const eventsQ = useInfiniteQuery({
     queryKey: ["activity", kind],
-    queryFn: ({ pageParam }) => {
+    queryFn: ({ pageParam, signal }) => {
       const params = new URLSearchParams();
       if (kind !== "all") params.set("kind", kind);
       if (pageParam) params.set("cursor", pageParam);
-      return api<EventsPage>(`/stats/events?${params.toString()}`);
+      return apiRead<EventsPage>(`/stats/events?${params.toString()}`, { signal });
     },
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last) => last.nextCursor ?? undefined,
@@ -57,7 +57,7 @@ export function Activity() {
   // Same key as elsewhere, so this shares one cached fetch across pages.
   const statsQ = useQuery<Stats>({
     queryKey: ["stats"],
-    queryFn: () => api<Stats>("/stats"),
+    queryFn: ({ signal }) => apiRead<Stats>("/stats", { signal }),
   });
 
   const items = eventsQ.data?.pages.flatMap((p) => p.items) ?? [];

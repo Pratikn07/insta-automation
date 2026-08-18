@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 import { BarChart3, Film, ExternalLink, Sparkles, RefreshCw, ListChecks, FlaskConical, Target } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
-import { api } from "@/lib/api";
+import { api, apiRead } from "@/lib/api";
 import type {
   GeoStageSplit,
   LeaderboardRow,
@@ -87,7 +87,7 @@ export function Insights() {
 function GeoHeader() {
   const geoQ = useQuery<{ stages: GeoStageSplit[] }>({
     queryKey: ["insights", "geo"],
-    queryFn: () => api<{ stages: GeoStageSplit[] }>("/insights/geo"),
+    queryFn: ({ signal }) => apiRead<{ stages: GeoStageSplit[] }>("/insights/geo", { signal }),
   });
 
   const stages = geoQ.data?.stages ?? [];
@@ -137,7 +137,7 @@ function GeoHeader() {
 function Leaderboard() {
   const q = useQuery<{ items: LeaderboardRow[] }>({
     queryKey: ["insights", "leaderboard"],
-    queryFn: () => api<{ items: LeaderboardRow[] }>("/insights/leaderboard"),
+    queryFn: ({ signal }) => apiRead<{ items: LeaderboardRow[] }>("/insights/leaderboard", { signal }),
   });
   const [selected, setSelected] = useState<string | null>(null);
 
@@ -294,7 +294,7 @@ function ReelDetailDrawer({ mediaId }: { mediaId: string }) {
   const qc = useQueryClient();
   const detailQ = useQuery<ReelInsightDetail>({
     queryKey: ["insights", "reel", mediaId],
-    queryFn: () => api<ReelInsightDetail>(`/insights/reels/${mediaId}`),
+    queryFn: ({ signal }) => apiRead<ReelInsightDetail>(`/insights/reels/${mediaId}`, { signal }),
   });
 
   const analyzeM = useMutation({
@@ -465,7 +465,7 @@ function fmt(n: number | null): string {
 function Recipe() {
   const q = useQuery<RecipeData>({
     queryKey: ["insights", "recipe"],
-    queryFn: () => api<RecipeData>("/insights/recipe"),
+    queryFn: ({ signal }) => apiRead<RecipeData>("/insights/recipe", { signal }),
   });
 
   if (q.isError) {
@@ -554,7 +554,7 @@ function Recipe() {
 function GateAudiencePanel() {
   const q = useQuery<{ items: ReelOriginRow[] }>({
     queryKey: ["insights", "reel-origin"],
-    queryFn: () => api<{ items: ReelOriginRow[] }>("/insights/reel-origin"),
+    queryFn: ({ signal }) => apiRead<{ items: ReelOriginRow[] }>("/insights/reel-origin", { signal }),
   });
   const items = (q.data?.items ?? []).filter((r) => r.total > 0);
 
@@ -826,20 +826,20 @@ function Experiments() {
   const qc = useQueryClient();
   const trendQ = useQuery<{ points: UsReachTrendPoint[] }>({
     queryKey: ["insights", "us-reach-trend"],
-    queryFn: () => api<{ points: UsReachTrendPoint[] }>("/insights/us-reach-trend"),
+    queryFn: ({ signal }) => apiRead<{ points: UsReachTrendPoint[] }>("/insights/us-reach-trend", { signal }),
   });
   const windowQ = useQuery<{ points: GeoWindowPoint[] }>({
     queryKey: ["insights", "geo-window-trend"],
-    queryFn: () => api<{ points: GeoWindowPoint[] }>("/insights/geo-window-trend"),
+    queryFn: ({ signal }) => apiRead<{ points: GeoWindowPoint[] }>("/insights/geo-window-trend", { signal }),
   });
   const expsQ = useQuery<{ items: Experiment[] }>({
     queryKey: ["insights", "experiments"],
-    queryFn: () => api<{ items: Experiment[] }>("/insights/experiments"),
+    queryFn: ({ signal }) => apiRead<{ items: Experiment[] }>("/insights/experiments", { signal }),
   });
   // Reuses the Leaderboard tab's cached query (same key) for the capture card.
   const leaderboardQ = useQuery<{ items: LeaderboardRow[] }>({
     queryKey: ["insights", "leaderboard"],
-    queryFn: () => api<{ items: LeaderboardRow[] }>("/insights/leaderboard"),
+    queryFn: ({ signal }) => apiRead<{ items: LeaderboardRow[] }>("/insights/leaderboard", { signal }),
   });
 
   const points = trendQ.data?.points ?? [];

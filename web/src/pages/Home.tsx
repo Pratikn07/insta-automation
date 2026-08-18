@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { api } from "@/lib/api";
+import { apiRead } from "@/lib/api";
 import { feedFollowAttributionPath } from "@/lib/feedFollowAttribution";
 import type {
   FeedFollowAttributionResponse,
@@ -71,22 +71,24 @@ export function Home() {
 
   const flowQ = useQuery<FollowerFlowResponse>({
     queryKey: ["insights", "follower-daily-adds"],
-    queryFn: () => api<FollowerFlowResponse>("/insights/follower-daily-adds"),
+    queryFn: ({ signal }) => apiRead<FollowerFlowResponse>("/insights/follower-daily-adds", { signal }),
   });
   const statsQ = useQuery<Stats>({
     queryKey: ["stats"],
-    queryFn: () => api<Stats>("/stats"),
+    queryFn: ({ signal }) => apiRead<Stats>("/stats", { signal }),
   });
   // Default window (30 days) — no params, so this shares a cache key with the
   // Funnels page's default view rather than re-running the cohort scan.
   const funnelQ = useQuery<GuideFollowResult>({
     queryKey: ["funnels", "guide-follow", "default"],
-    queryFn: () => api<GuideFollowResult>("/funnels/guide-follow"),
+    queryFn: ({ signal }) => apiRead<GuideFollowResult>("/funnels/guide-follow", { signal }),
   });
   const attributionQ = useQuery<FeedFollowAttributionResponse>({
     queryKey: ["insights", "feed-follow-attribution", attributionDay],
     queryFn: ({ signal }) =>
-      api<FeedFollowAttributionResponse>(feedFollowAttributionPath(attributionDay!), { signal }),
+      apiRead<FeedFollowAttributionResponse>(feedFollowAttributionPath(attributionDay!), {
+        signal,
+      }),
     enabled: attributionDay !== null,
   });
 

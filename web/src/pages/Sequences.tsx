@@ -4,7 +4,7 @@ import { CircleAlert, Layers, MessageSquare, Plus, Tag, Trash2 } from "lucide-re
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
-import { api, ApiError } from "@/lib/api";
+import { api, apiRead, ApiError } from "@/lib/api";
 import type { Resource } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -20,7 +20,7 @@ export function Sequences() {
   const qc = useQueryClient();
   const resourcesQ = useQuery<Resource[]>({
     queryKey: ["resources"],
-    queryFn: () => api<Resource[]>("/resources"),
+    queryFn: ({ signal }) => apiRead<Resource[]>("/resources", { signal }),
   });
 
   const [creating, setCreating] = useState(false);

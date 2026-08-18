@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Filter, RefreshCw } from "lucide-react";
 import { useState } from "react";
-import { api } from "@/lib/api";
+import { apiRead } from "@/lib/api";
 import type { DropOffSummary, GuideFollowResult } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -48,12 +48,12 @@ export function Funnels() {
 
   const funnelQ = useQuery<GuideFollowResult>({
     queryKey: ["funnels", "guide-follow", range.from, range.to],
-    queryFn: () => api<GuideFollowResult>(`/funnels/guide-follow${query}`),
+    queryFn: ({ signal }) => apiRead<GuideFollowResult>(`/funnels/guide-follow${query}`, { signal }),
   });
 
   const dropOffQ = useQuery<DropOffSummary>({
     queryKey: ["funnels", "guide-follow", "no-reply", range.from, range.to],
-    queryFn: () => api<DropOffSummary>(`/funnels/guide-follow/drop-off/no-reply${query}`),
+    queryFn: ({ signal }) => apiRead<DropOffSummary>(`/funnels/guide-follow/drop-off/no-reply${query}`, { signal }),
   });
 
   return (
