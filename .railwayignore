@@ -1,0 +1,27 @@
+# What `railway up` must never upload.
+#
+# `railway up` sends the WORKING DIRECTORY, not a git ref, so anything sitting
+# untracked in this tree ships to the API image. Two things made that expensive:
+#
+#   .claude/worktrees/ alone is ~193MB and holds a full nested copy of this repo,
+#   so a deploy uploaded the source twice — and a nested worktree being written to
+#   by another agent mid-upload is how a half-written file once shipped.
+#
+# .gitignore already covers node_modules/, dist/ and .env*. This file covers the
+# untracked working material that .gitignore deliberately does not.
+.claude/
+.impeccable/
+.superpowers/
+.rollout-audit-backups/
+.worktrees/
+
+# Local scratch.
+probe-tmp.mjs
+*.local.mjs
+
+# Documentation and QA evidence. Read by people, never by the running API.
+docs/
+
+# Test-only artifacts.
+web/test-results/
+web/playwright-report/
