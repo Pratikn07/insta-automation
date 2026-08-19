@@ -25,7 +25,15 @@ export function PanelShell({
   tall?: boolean;
 }) {
   return (
-    <section className={cn("border-t pt-5", tall && "min-h-[360px]", className)}>
+    // The rule is named, not bare. `border-t` alone takes `--color-border`
+    // (#EBE8DF), which measures 1.12:1 on the #F7F5EF ground — a section opening
+    // on a rule nobody can see. DESIGN.md: "Section headings sit above a
+    // full-strength ink rule; rows separate on the quiet border." This is a
+    // section with a heading, and it now matches the ink rules Home already
+    // draws above "Evidence", "What needs attention", and "System pulse".
+    <section
+      className={cn("border-t border-foreground pt-5", tall && "min-h-[360px]", className)}
+    >
       {children}
     </section>
   );
