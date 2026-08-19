@@ -167,6 +167,10 @@ function FlagRow({
             defaultValue={flag.valuePercent ?? 0}
             disabled={busy}
             aria-label={flag.name}
+            // accent-color, or the browser paints its own blue — which is the one
+            // colour on this page that belongs to no token. Caught by looking at
+            // the artifact; a test cannot see it.
+            className="w-32 accent-signal"
             onMouseUp={(event) =>
               onChange({ valuePercent: Number((event.target as HTMLInputElement).value) })
             }

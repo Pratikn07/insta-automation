@@ -1,0 +1,93 @@
+# Experiments and flags
+
+Every switch in this system is described in `src/config/flagRegistry.ts`, and
+`flagRegistry.test.ts` fails the build when one is added to `env.ts` without a
+description. This document is why those rules exist.
+
+Before this existed, sixteen switches were split between schema defaults and the
+Railway variables page, five of them running on values nobody had chosen, and nothing
+anywhere said what any of them did.
+
+## The seven rules
+
+**1. Plain English or it does not ship.** Three answers per flag: what it does, who it
+affects, and what changes if it is off. The third is the one an operator actually needs
+and the one nobody thinks to write. A length floor in the test is a crude proxy for
+"did you answer" — if it rejects a genuinely complete sentence, say more rather than
+lowering the floor.
+
+**2. The outcome is a funnel stage, not a sentence you invented.** An experiment's
+outcome names a stage in a `FunnelDef` (`src/services/funnels/registry.ts`) —
+*Asked for a guide*, *Got the unlock DM*, *Replied*, *Got the guide*, *Following*,
+*Still following (21 days)*. A metric typed into a text box is a metric nobody
+implemented. New metrics are added as funnel definitions, which `funnels.md` already
+names as the intended way to extend.
+
+**3. A rate below `minSample` prints counts, never a percentage.** Straight from
+`funnels.md`: "15.6%" over 32 people and over 3,200 are different claims and only one
+of them is a number. Reuse `guardedRate`. When it returns null, say what is still
+missing — *"about 400 more people needed"* — rather than showing a p-value.
+
+**4. Arms are immutable once anyone is assigned.** Recutting the split mid-flight
+invalidates the result you were waiting for.
+
+**5. There is a do-nothing arm.** Otherwise you learn that two hours beats six and
+never whether reminding beats silence. It costs roughly a tenth of people getting
+nothing, and that is the price of an answer. It is also what makes every number
+legible: *68 in 100 got their guide* means nothing until you know that saying nothing
+gets 44.
+
+**6. Every experiment states what happens when it ends, and the system does it.**
+Earned the hard way. The first timing experiment's real landing behaviour was "silently
+stop sending reminders" — nobody chose that; it was a default falling through, and
+nothing announced it.
+
+**7. Off is one click. On is a deploy.** And a stop is offered *only* where the flag is
+read per operation. This one has teeth because it was nearly broken: guide delivery
+captured its flag at module load, so switching it off would have stopped new deliveries
+while the worker kept draining the queue — a stop button that appears to have worked.
+`pageMayStop` now requires a test proving the next operation halts.
+
+Two flags offer no console control at all, for two different reasons.
+`WORKERS_ENABLED` is read once at boot, so a change could not take effect without a
+restart. `DM_RECOVERY_FAILURE_RATE_PERCENT` is the point at which the system stops
+sending by itself, so *raising* it would make the system tolerate more failures — the
+one direction this console may not move anything.
+
+## Adding a flag
+
+1. Add it to `src/config/env.ts` with `booleanFlag()` or a bounded number. Never
+   `z.coerce.boolean()` — `AI_SEND_ENABLED=false` parses to `true` under coercion, and
+   `booleanFlag.ts` explains why that nearly shipped.
+2. Add a `FlagDefinition` in the same commit. `flagRegistry.test.ts` parses `env.ts` and
+   fails otherwise, so this is not optional.
+3. Read it through `flags.bool(key)` or `flags.percent(key)`, never `env.KEY`.
+   `flagCallSites.test.ts` enforces this. Two exemptions, both recorded there: `env.ts`
+   itself, whose cross-field checks validate what the operator wrote rather than what is
+   in force, and `server.ts`, whose scheduler options decide at boot whether to start a
+   worker at all — a stored row cannot start a scheduler that never started.
+4. If you set `pageMayStop: true`, write the test that proves the stop works.
+
+## Where a value comes from
+
+Three places, in order: the `flag_override` row, then the deployed environment value,
+then the schema default. An absent row means "no override", so an empty table behaves
+exactly like production before any of this existed.
+
+Values live in a table rather than only in the environment because an environment
+variable is parsed once at boot: changing one takes effect only by restarting, and on
+Railway that restart happens automatically. A console slider wired to a restart is not
+a slider. `ig_token` solved this first — the environment seeds it, the table owns it
+while running.
+
+The resolver **fails closed**. A stored `false` is always honoured; a stored `true`
+only where the definition permits it. An unreadable table serves the environment value
+and keeps whatever it had, rather than clearing the cache and reverting every override
+at once. So the worst this system can do is make itself quieter.
+
+## Not built yet
+
+Closing experiments — the decisions surface, the diagram drawn from stored steps and
+arms, funnel-backed outcomes, the verdict language, and the worker that executes rule 6
+— is specified in
+`docs/superpowers/specs/2026-08-18-experiments-and-flags-design.md` as Phase 2.
