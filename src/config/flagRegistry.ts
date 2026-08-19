@@ -43,6 +43,19 @@ export interface FlagDefinition {
    * effect. A stop button that appears to work is worse than none.
    */
   pageMayStop: boolean;
+  /**
+   * The experiment this flag is part of, if any.
+   *
+   * Five of these belong to recovery reminder timing — its kill switch, its split,
+   * its eligibility rule, its circuit breaker, and what happens when it ends. Listed
+   * flat they looked like five unrelated things, which is most of why the single
+   * page felt arbitrary.
+   *
+   * Absent is the honest answer for a flag where a comparison is merely
+   * *conceivable* but has never been declared. `experimentRegistry.ts` explains why
+   * that distinction is worth holding.
+   */
+  experimentKey?: string;
 }
 
 export const FLAG_REGISTRY: readonly FlagDefinition[] = [
@@ -60,6 +73,7 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
       "No public reminders are posted. People who miss the message simply never get the guide.",
     pageMayEnable: false,
     pageMayStop: true,
+    experimentKey: "recovery-reminder-timing",
   },
   {
     key: "GUIDE_DELIVERY_ENABLED",
@@ -72,10 +86,15 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
       "New guides stop being sent through this path, and anything already queued stops on the next check.",
     pageMayEnable: false,
     pageMayStop: true,
+    experimentKey: "guide-delivery-rollout",
   },
   {
     key: "GUIDE_DELIVERY_ROLLOUT_PERCENT",
-    name: "Guide delivery rollout",
+    // Not "Guide delivery rollout" — that is the name of the experiment this
+    // belongs to, and the switch row then read "Guide delivery rollout · part of
+    // Guide delivery rollout". This switch is the dial; the experiment is the
+    // comparison the dial starts.
+    name: "Share on the new path",
     group: "outbound",
     kind: "percent",
     doesWhat:
@@ -84,6 +103,7 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
     ifOff: "At zero, everyone is served by the older path.",
     pageMayEnable: true,
     pageMayStop: true,
+    experimentKey: "guide-delivery-rollout",
   },
   {
     key: "AI_SEND_ENABLED",
@@ -137,12 +157,15 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
     // direction this console is not allowed to move anything.
     pageMayEnable: false,
     pageMayStop: false,
+    experimentKey: "recovery-reminder-timing",
   },
 
   // ── Experiments: measuring something ─────────────────────────────────────
   {
     key: "GATE_DM_EXPERIMENT",
-    name: "Cold message test",
+    // Not "Cold message test" — that is the experiment. This is the switch that
+    // starts it.
+    name: "Try a cold message",
     group: "experiment",
     kind: "boolean",
     doesWhat:
@@ -151,6 +174,7 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
     ifOff: "Those conversations are left alone.",
     pageMayEnable: true,
     pageMayStop: true,
+    experimentKey: "cold-message-test",
   },
   {
     key: "DM_RECOVERY_HOLDOUT_PERCENT",
@@ -164,6 +188,7 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
       "At zero, everyone eligible gets a reminder and there is no way left to prove the reminder is what worked.",
     pageMayEnable: true,
     pageMayStop: true,
+    experimentKey: "recovery-reminder-timing",
   },
   {
     key: "DM_RECOVERY_POST_EXPERIMENT_ENABLED",
@@ -177,6 +202,7 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
       "Once the window closes, reminders stop and wait for a decision. Nothing announces it, which is why this one is worth watching.",
     pageMayEnable: true,
     pageMayStop: true,
+    experimentKey: "recovery-reminder-timing",
   },
   {
     key: "DM_RECOVERY_WESTERN_ONLY",
@@ -190,6 +216,7 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
     ifOff: "Reminders are posted regardless of where the person appears to be from.",
     pageMayEnable: true,
     pageMayStop: true,
+    experimentKey: "recovery-reminder-timing",
   },
   {
     key: "DM_RECOVERY_ORIGIN_LLM_ENABLED",

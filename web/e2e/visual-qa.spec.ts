@@ -152,17 +152,20 @@ test.describe("visual QA artifacts", () => {
   });
 
   /**
-   * Every switch in the system, with the safety model visible rather than
-   * described: a Stop now that has no matching start beside it, and a flag the
-   * console cannot touch at all.
+   * The switch list. A screenshot is the only thing that can show it is scannable:
+   * the page it replaced carried three sentences on every one of sixteen rows, and
+   * "too overwhelming" is a judgment about the whole page at once.
    */
-  test("things we're testing", async ({ page }, testInfo) => {
-    await open(page, "flags");
-    await expect(
-      page.getByRole("heading", { level: 1, name: "Things we're testing" }),
-    ).toBeVisible();
+  test("switches", async ({ page }, testInfo) => {
+    await open(page, "switches");
+    await expect(page.getByRole("heading", { level: 1, name: "Switches" })).toBeVisible();
 
-    // Grouped loudest-first, so the group that can reach a real parent is the one
+    // The rewrite's whole point: no descriptions and no controls in the list.
+    await expect(page.getByText("Who it affects:")).toHaveCount(0);
+    await expect(page.getByRole("switch")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /^Stop / })).toHaveCount(0);
+
+    // Grouped loudest-first, so the group that can reach a real person is the one
     // you land on during an incident.
     const outbound = page.getByText("Reaches real people");
     const assistive = page.getByText("Nothing leaves the app");
@@ -172,14 +175,82 @@ test.describe("visual QA artifacts", () => {
     const assistiveBox = await assistive.boundingBox();
     expect(outboundBox!.y).toBeLessThan(assistiveBox!.y);
 
-    // A stop with no start, and a row offering neither.
-    await expect(page.getByRole("button", { name: "Stop Recovery reminders" })).toBeVisible();
-    await expect(page.getByText("changed in Railway")).toBeVisible();
-    // The drift warning, which only a screenshot can show is legible on paper.
-    await expect(page.getByText(/a restart would change this back/i)).toBeVisible();
+    // Five switches move together and nothing used to say so.
+    await expect(page.getByText("part of Recovery reminder timing").first()).toBeVisible();
 
     await settleAnimations(page);
-    await capture(page, testInfo.project.name, "flags");
+    await capture(page, testInfo.project.name, "switches");
+  });
+
+  /**
+   * One switch, where the safety model is visible rather than described: a Stop now
+   * with no matching start beside it, and the drift warning, which only a screenshot
+   * can show is legible on paper.
+   */
+  test("switch detail", async ({ page }, testInfo) => {
+    await open(page, "switch-detail");
+    await expect(
+      page.getByRole("heading", { level: 1, name: "Recovery reminders" }),
+    ).toBeVisible();
+
+    // All three questions, now with room for them.
+    await expect(page.getByText("Who it affects:")).toBeVisible();
+    await expect(page.getByText("If you turn it off:")).toBeVisible();
+
+    await expect(page.getByRole("button", { name: "Stop Recovery reminders" })).toBeVisible();
+    await expect(page.getByRole("switch")).toHaveCount(0);
+    await expect(page.getByText("Turning this back on needs a deploy")).toBeVisible();
+    await expect(
+      page.getByRole("link", { name: "Recovery reminder timing" }),
+    ).toBeVisible();
+
+    await settleAnimations(page);
+    await capture(page, testInfo.project.name, "switch-detail");
+  });
+
+  /**
+   * Three lines. The two not-started rows are why this artifact matters: they must
+   * read as a decision, never as a row of zeroes.
+   */
+  test("experiments", async ({ page }, testInfo) => {
+    await open(page, "experiments");
+    await expect(page.getByRole("heading", { level: 1, name: "Experiments" })).toBeVisible();
+
+    await expect(page.getByText("Running")).toBeVisible();
+    await expect(page.getByText("Not started").first()).toBeVisible();
+    await expect(page.getByText(/never been switched on/)).toBeVisible();
+    // Running sorts above not-started: it is the only one that can need a decision.
+    const running = page.getByText("Running");
+    const notStarted = page.getByText("Not started").first();
+    const runningBox = await running.boundingBox();
+    const notStartedBox = await notStarted.boundingBox();
+    expect(runningBox!.y).toBeLessThan(notStartedBox!.y);
+
+    await settleAnimations(page);
+    await capture(page, testInfo.project.name, "experiments");
+  });
+
+  /**
+   * The result page. Counts in whole people, the suppression breakdown that makes
+   * the books close, and no statistics anywhere.
+   */
+  test("experiment detail", async ({ page }, testInfo) => {
+    await open(page, "experiment-detail");
+    await expect(
+      page.getByRole("heading", { level: 1, name: "Recovery reminder timing" }),
+    ).toBeVisible();
+
+    await expect(page.getByText("Got a reminder")).toBeVisible();
+    await expect(page.getByText("Got nothing")).toBeVisible();
+    await expect(page.getByText("People, not rates.")).toBeVisible();
+    // The buckets an earlier version dropped, now named.
+    await expect(page.getByText("Waiting to be posted")).toBeVisible();
+    await expect(page.getByText("The reminder could not be posted")).toBeVisible();
+    // The window that stops sending when it shuts.
+    await expect(page.getByText(/Closes 21 Aug 2026/)).toBeVisible();
+
+    await settleAnimations(page);
+    await capture(page, testInfo.project.name, "experiment-detail");
   });
 
   /**

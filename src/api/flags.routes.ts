@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { FLAG_REGISTRY, flagDefinition } from "../config/flagRegistry.js";
+import { experimentName } from "../config/experimentRegistry.js";
 import { prisma } from "../lib/prisma.js";
 import { flags } from "../services/flagService.js";
 import { logEvent } from "../services/eventLogger.js";
@@ -33,8 +34,27 @@ flagsRouter.get("/", (_req, res) => {
   res.json({
     flags: FLAG_REGISTRY.map((definition) => ({
       ...definition,
+      experimentName: experimentName(definition.experimentKey),
       ...(byKey.get(definition.key) ?? {}),
     })),
+  });
+});
+
+/**
+ * One flag, for its detail page. Same shape as a row of the list.
+ *
+ * The list no longer carries descriptions, so the detail page has to fetch its own
+ * rather than filter a cached list — which also means a bookmarked switch URL works
+ * without the list ever having been opened.
+ */
+flagsRouter.get("/:key", (req, res) => {
+  const definition = flagDefinition(req.params.key);
+  if (!definition) return res.status(404).json({ error: "not_found" });
+  const row = flags.snapshot().find((entry) => entry.key === definition.key);
+  res.json({
+    ...definition,
+    experimentName: experimentName(definition.experimentKey),
+    ...row,
   });
 });
 
@@ -118,5 +138,9 @@ flagsRouter.patch("/:key", async (req, res) => {
   // the workers will read — rather than whatever the cache held a moment ago.
   await flags.refresh();
   const row = flags.snapshot().find((entry) => entry.key === definition.key);
-  res.json({ ...definition, ...row });
+  res.json({
+    ...definition,
+    experimentName: experimentName(definition.experimentKey),
+    ...row,
+  });
 });

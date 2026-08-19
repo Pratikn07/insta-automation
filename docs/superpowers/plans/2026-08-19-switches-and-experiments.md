@@ -1977,13 +1977,13 @@ Append to `web/src/AppRoutes.test.tsx`:
 
 ```tsx
   it("sends the old /flags address to Switches", async () => {
-    renderAt("/flags");
+    await renderRoute("/flags");
     expect(await screen.findByText("Switches")).toBeInTheDocument();
   });
 ```
 
-Match the helper name the file already uses for rendering at a path — check with
-`grep -n "function render" web/src/AppRoutes.test.tsx` and reuse it.
+`renderRoute(initialEntry)` is the helper that file already uses (line 28), and it is
+async — verified, not assumed.
 
 - [ ] **Step 6: Update the E2E harness**
 

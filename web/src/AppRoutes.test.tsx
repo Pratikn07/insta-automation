@@ -15,7 +15,10 @@ vi.mock("@/pages/Conversations", () => ({ Conversations: () => null }));
 vi.mock("@/pages/DmRecovery", () => ({ DmRecovery: () => null }));
 vi.mock("@/pages/Assistant", () => ({ Assistant: () => null }));
 vi.mock("@/pages/Activity", () => ({ Activity: () => null }));
-vi.mock("@/pages/Flags", () => ({ Flags: () => null }));
+vi.mock("@/pages/Experiments", () => ({ Experiments: () => null }));
+vi.mock("@/pages/ExperimentDetail", () => ({ ExperimentDetail: () => null }));
+vi.mock("@/pages/Switches", () => ({ Switches: () => null }));
+vi.mock("@/pages/SwitchDetail", () => ({ SwitchDetail: () => null }));
 vi.mock("@/pages/Insights", () => ({ Insights: () => null }));
 vi.mock("@/pages/Funnels", () => ({ Funnels: () => null }));
 vi.mock("@/pages/HistoricalRecovery", () => ({ HistoricalRecovery: () => null }));
@@ -54,6 +57,15 @@ describe("legacy routes", () => {
       expect(screen.getByLabelText("location")).toHaveTextContent("/content"),
     );
   });
+
+  // /flags shipped and may be bookmarked. The switches are most of what it was, so
+  // it lands there rather than on the catch-all back to Home.
+  it("sends the old /flags address to Switches", async () => {
+    await renderRoute("/flags");
+    await waitFor(() =>
+      expect(screen.getByLabelText("location")).toHaveTextContent("/switches"),
+    );
+  });
 });
 
 describe("authenticated destinations", () => {
@@ -83,5 +95,15 @@ describe("authenticated destinations", () => {
       await renderRoute("/sequences/resource-42");
       expect(screen.getByLabelText("location")).toHaveTextContent("/guides/resource-42");
     });
+  });
+
+  // The two-page split only works if a deep link resolves rather than falling
+  // through to the catch-all redirect home.
+  it.each([
+    ["/switches/DM_RECOVERY_ENABLED"],
+    ["/experiments/recovery-reminder-timing"],
+  ])("matches the detail route %s", async (path) => {
+    await renderRoute(path);
+    expect(screen.getByLabelText("location")).toHaveTextContent(path);
   });
 });

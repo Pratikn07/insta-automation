@@ -71,10 +71,72 @@ export interface FlagView {
   driftsFromEnv: boolean;
   updatedBy: string | null;
   updatedAt: string | null;
+  /** The experiment this switch belongs to, if any. */
+  experimentKey?: string;
+  /**
+   * That experiment's display name, served with the flag.
+   *
+   * The console deliberately keeps no key-to-name map of its own — renaming an
+   * experiment would otherwise leave the old name on every switch it owns.
+   */
+  experimentName?: string | null;
 }
 
 export interface FlagsResponse {
   flags: FlagView[];
+}
+
+export type ExperimentState = "running" | "not_started" | "ended";
+
+export interface ExperimentArmView {
+  key: string;
+  /** Share of eligible people, 0-100. Null when the split is not fixed in code. */
+  percent: number | null;
+  doesWhat: string;
+  isControl: boolean;
+}
+
+/**
+ * What an experiment measured, or — if it never ran — what it would.
+ *
+ * A discriminated union rather than one shape with nullable counts, because zeroes
+ * read as "we tried and nothing happened" and that is a different claim from "never
+ * switched on".
+ */
+export type ExperimentSummaryView =
+  | { kind: "not_started"; wouldCompare: string; blocker: string }
+  | {
+      kind: "running";
+      arms: { key: string; label: string; people: number }[];
+      notCounted: { reason: string; people: number }[];
+      endsAt: string | null;
+      whenItEnds: string;
+    };
+
+export interface ExperimentListItem {
+  key: string;
+  name: string;
+  state: ExperimentState;
+  armCount: number;
+  blocker: string;
+  summary: ExperimentSummaryView;
+}
+
+export interface ExperimentsResponse {
+  experiments: ExperimentListItem[];
+}
+
+export interface ExperimentDetailView {
+  key: string;
+  name: string;
+  state: ExperimentState;
+  doesWhat: string;
+  affectsWho: string;
+  outcome: string;
+  arms: ExperimentArmView[];
+  blocker: string;
+  summary: ExperimentSummaryView;
+  ownedFlags: FlagView[];
 }
 
 export type UpcomingAutomationStatus =

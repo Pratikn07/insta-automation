@@ -87,6 +87,39 @@ describe("flags API", () => {
     expect(response.body.flags).toHaveLength(16);
   });
 
+  /**
+   * The detail page fetches its own flag rather than filtering a cached list, so a
+   * bookmarked switch URL works before the list has ever been opened.
+   */
+  it("returns a single flag with its description, its value, and its experiment", async () => {
+    const response = await request(app()).get("/api/flags/DM_RECOVERY_ENABLED").expect(200);
+
+    expect(response.body).toMatchObject({
+      key: "DM_RECOVERY_ENABLED",
+      name: "Recovery reminders",
+      kind: "boolean",
+      pageMayEnable: false,
+      pageMayStop: true,
+      experimentKey: "recovery-reminder-timing",
+      // Served, not looked up client-side: the console keeping its own key-to-name
+      // map is how a renamed experiment would keep its old name on this switch.
+      experimentName: "Recovery reminder timing",
+    });
+    expect(response.body.ifOff.length).toBeGreaterThan(10);
+  });
+
+  it("returns a standalone flag with no experiment attached", async () => {
+    const response = await request(app()).get("/api/flags/AI_ADVISOR_ENABLED").expect(200);
+
+    expect(response.body.key).toBe("AI_ADVISOR_ENABLED");
+    expect(response.body.experimentKey).toBeUndefined();
+    expect(response.body.experimentName).toBeNull();
+  });
+
+  it("404s a single flag that does not exist", async () => {
+    await request(app()).get("/api/flags/NOPE").expect(404);
+  });
+
   it("saves a permitted change and refreshes the cache", async () => {
     await request(app())
       .patch("/api/flags/AI_DRAFTS_ENABLED")
