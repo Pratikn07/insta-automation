@@ -22,7 +22,13 @@ vi.mock("../lib/prisma.js", () => ({
 vi.mock("../meta/fetchMedia.js", () => ({ fetchMediaById }));
 vi.mock("./upcomingAutomationBinding.js", () => ({ bindUpcomingAutomationToMedia }));
 vi.mock("./eventLogger.js", () => ({ logEvent, describeGraphError }));
-vi.mock("../config/env.js", () => ({ env: { UPCOMING_AUTOMATIONS_ENABLED: true } }));
+vi.mock("../config/env.js", () => ({ env: {} }));
+// Binding reads this flag through the service now. Fixed true, which is what the
+// previous env mock supplied — this suite has never covered the paused path, where
+// a reserved word blocks the legacy reply. That gap predates this change.
+vi.mock("./flagService.js", () => ({
+  flags: { bool: () => true, percent: () => 0 },
+}));
 
 const { bindUpcomingAutomationFromComment } = await import(
   "./upcomingAutomationCommentBinding.js"

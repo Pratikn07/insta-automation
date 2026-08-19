@@ -15,6 +15,7 @@ vi.mock("@/pages/Conversations", () => ({ Conversations: () => null }));
 vi.mock("@/pages/DmRecovery", () => ({ DmRecovery: () => null }));
 vi.mock("@/pages/Assistant", () => ({ Assistant: () => null }));
 vi.mock("@/pages/Activity", () => ({ Activity: () => null }));
+vi.mock("@/pages/Flags", () => ({ Flags: () => null }));
 vi.mock("@/pages/Insights", () => ({ Insights: () => null }));
 vi.mock("@/pages/Funnels", () => ({ Funnels: () => null }));
 vi.mock("@/pages/HistoricalRecovery", () => ({ HistoricalRecovery: () => null }));

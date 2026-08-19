@@ -5,6 +5,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { DmThreadDrawer } from "@/components/conversations/DmThreadDrawer";
 import { Assistant } from "@/pages/Assistant";
 import { Content } from "@/pages/Content";
+import { Flags } from "@/pages/Flags";
 import { Conversations } from "@/pages/Conversations";
 import { DmRecovery } from "@/pages/DmRecovery";
 import { HistoricalRecovery } from "@/pages/HistoricalRecovery";
@@ -649,6 +650,109 @@ const CONTENT_UPCOMING = [
   }),
 ]
 
+// ── Flags ─────────────────────────────────────────────────────────────────
+// One row per group and per capability, so the artifact shows all four controls
+// at once: a switch, a lone Stop now, a slider, and a flag the console may not
+// touch. The safety model is only visible when a stop appears with no matching
+// start beside it.
+const FLAG_ROWS = [
+  {
+    key: "DM_RECOVERY_ENABLED",
+    name: "Recovery reminders",
+    group: "outbound",
+    kind: "boolean",
+    doesWhat:
+      "When someone asks for a guide but never opens our message, leaves a public comment on the reel telling them to check their message requests.",
+    affectsWho:
+      "People who commented a keyword and were sent a guide, but have not opened it. Around 190 a week.",
+    ifOff:
+      "No public reminders are posted. People who miss the message simply never get the guide.",
+    pageMayEnable: false,
+    pageMayStop: true,
+    valueBool: true,
+    valuePercent: null,
+    source: "environment",
+    driftsFromEnv: false,
+    updatedBy: null,
+    updatedAt: null,
+  },
+  {
+    key: "GUIDE_DELIVERY_ROLLOUT_PERCENT",
+    name: "Guide delivery rollout",
+    group: "outbound",
+    kind: "percent",
+    doesWhat:
+      "How many people are served by the newer delivery path rather than the older one.",
+    affectsWho: "New guide requests only. Deliveries already under way are unaffected.",
+    ifOff: "At zero, everyone is served by the older path.",
+    pageMayEnable: true,
+    pageMayStop: true,
+    valueBool: null,
+    valuePercent: 45,
+    source: "override",
+    driftsFromEnv: true,
+    updatedBy: "owner@example.com",
+    updatedAt: "2026-08-18T04:00:00.000Z",
+  },
+  {
+    key: "DM_RECOVERY_WESTERN_ONLY",
+    name: "Western audience only",
+    group: "experiment",
+    kind: "boolean",
+    doesWhat:
+      "Withholds the public reminder when someone looks likely to be outside the audience this account sells to.",
+    affectsWho:
+      "People whose name suggests an origin outside that audience. It withheld 265 reminders in the last eleven days.",
+    ifOff: "Reminders are posted regardless of where the person appears to be from.",
+    pageMayEnable: true,
+    pageMayStop: true,
+    valueBool: true,
+    valuePercent: null,
+    source: "environment",
+    driftsFromEnv: false,
+    updatedBy: null,
+    updatedAt: null,
+  },
+  {
+    key: "AI_DRAFTS_ENABLED",
+    name: "Reply drafts",
+    group: "assistive",
+    kind: "boolean",
+    doesWhat:
+      "Writes a suggested reply for each conversation waiting on you, so you can send it with one tap instead of typing from scratch.",
+    affectsWho: "Only you. A draft sits in Conversations until you approve it.",
+    ifOff: "Suggestions stop appearing. You can still reply by hand.",
+    pageMayEnable: true,
+    pageMayStop: true,
+    valueBool: true,
+    valuePercent: null,
+    source: "environment",
+    driftsFromEnv: false,
+    updatedBy: null,
+    updatedAt: null,
+  },
+  {
+    key: "WORKERS_ENABLED",
+    name: "Background jobs",
+    group: "infrastructure",
+    kind: "boolean",
+    doesWhat:
+      "Runs everything that happens without you: sending queued messages, refreshing the Instagram connection, taking daily follower readings.",
+    affectsWho:
+      "All automation. The console still works with this off; the system just does nothing on its own.",
+    ifOff:
+      "Nothing is sent, no readings are taken, and the Instagram connection stops renewing itself.",
+    pageMayEnable: false,
+    pageMayStop: false,
+    valueBool: true,
+    valuePercent: null,
+    source: "environment",
+    driftsFromEnv: false,
+    updatedBy: null,
+    updatedAt: null,
+  },
+]
+
 // pct1 in the funnel layer returns 0-100 (64.9, not 0.649). A fixture using the
 // 0-1 form rendered "0.6488651535380507%" on Home, which looked like a formatting
 // bug in the product and was a bug in the fixture.
@@ -1043,6 +1147,10 @@ function installFetchStub(): void {
       return json({ items: CONTENT_MEDIA, nextCursor: null });
     }
 
+    if (path === "/flags" && method === "GET") {
+      return json({ flags: FLAG_ROWS });
+    }
+
     if (path === "/upcoming-automations" && method === "GET") {
       return json({ automations: CONTENT_UPCOMING, discoveryEnabled: true });
     }
@@ -1392,6 +1500,13 @@ export function Harness() {
     return (
       <div className="p-4">
         <Content />
+      </div>
+    );
+  }
+  if (scenario === "flags") {
+    return (
+      <div className="p-4">
+        <Flags />
       </div>
     );
   }

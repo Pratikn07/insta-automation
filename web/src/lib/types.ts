@@ -44,6 +44,39 @@ export interface Keyword {
   _count?: { conversations: number };
 }
 
+export type FlagGroup = "outbound" | "experiment" | "assistive" | "infrastructure";
+
+/**
+ * One switch, with everything needed to decide whether to touch it.
+ *
+ * The three sentences are required server-side — `src/config/flagRegistry.ts` is
+ * the source and a build fails without them — so they are non-optional here.
+ */
+export interface FlagView {
+  key: string;
+  name: string;
+  group: FlagGroup;
+  kind: "boolean" | "percent";
+  doesWhat: string;
+  affectsWho: string;
+  ifOff: string;
+  /** False where switching it on begins contacting people, or raising it is unsafe. */
+  pageMayEnable: boolean;
+  /** True only where the flag is read per operation, so a stop actually stops. */
+  pageMayStop: boolean;
+  valueBool: boolean | null;
+  valuePercent: number | null;
+  source: "override" | "environment";
+  /** A restart would change the value in force back to the deployed one. */
+  driftsFromEnv: boolean;
+  updatedBy: string | null;
+  updatedAt: string | null;
+}
+
+export interface FlagsResponse {
+  flags: FlagView[];
+}
+
 export type UpcomingAutomationStatus =
   | "waiting"
   | "bound"

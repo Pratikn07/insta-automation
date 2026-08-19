@@ -2,6 +2,7 @@ import { Router } from "express";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
+import { flags } from "../services/flagService.js";
 import { getIgUsers } from "../services/igUserService.js";
 import { logEvent } from "../services/eventLogger.js";
 import { getRecoveryHealthSnapshot } from "../services/dmRecoveryHealth.js";
@@ -702,7 +703,7 @@ async function metricsHandler(_req: import("express").Request, res: import("expr
   // the snapshot column have a null origin and are kept — excluding them would
   // silently drop the start of the experiment.
   const inMarket = (row: { audienceOrigin: string | null }) =>
-    !env.DM_RECOVERY_WESTERN_ONLY || row.audienceOrigin !== "south_asian";
+    !flags.bool("DM_RECOVERY_WESTERN_ONLY") || row.audienceOrigin !== "south_asian";
 
   const comparableRows = experimentRows.filter(inMarket);
   const treatmentRows = comparableRows.filter((row) => row.cohort === "treatment");

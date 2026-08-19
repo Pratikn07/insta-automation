@@ -17,6 +17,7 @@ import { historicalRecoveryRouter } from "./historicalRecovery.routes.js";
 import { funnelsRouter } from "./funnels.routes.js";
 import { guideDeliveriesRouter } from "./guideDeliveries.routes.js";
 import { upcomingAutomationsRouter } from "./upcomingAutomations.routes.js";
+import { flagsRouter } from "./flags.routes.js";
 import { logger } from "../lib/logger.js";
 
 export const apiRouter = Router();
@@ -49,6 +50,9 @@ apiRouter.use("/historical-recovery", historicalRecoveryRouter);
 // conversation lifecycle. Same reason they get their own page.
 apiRouter.use("/funnels", funnelsRouter);
 apiRouter.use("/upcoming-automations", upcomingAutomationsRouter);
+// Every switch in the system, and the only path that may change one. The enable
+// fence lives in the route rather than the client.
+apiRouter.use("/flags", flagsRouter);
 
 apiRouter.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   const code = err && typeof err === "object" && "code" in err ? (err as { code: string }).code : undefined;

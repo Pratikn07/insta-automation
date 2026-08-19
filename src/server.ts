@@ -29,6 +29,7 @@ import { runTokenRefreshTick } from "./meta/tokenRefresher.js";
 import { apiRouter } from "./api/router.js";
 import { buildDeploymentHealth } from "./services/deploymentHealth.js";
 import { startUpcomingAutomationScheduler } from "./services/upcomingAutomationScheduler.js";
+import { flags } from "./services/flagService.js";
 
 const app = express();
 let stopGuideDeliveryScheduler: (() => void) | undefined;
@@ -251,6 +252,15 @@ function startBackgroundWorkers(server: Server): void {
   // had it — because it reaches the Graph API, and a server started with
   // WORKERS_ENABLED=false must make no outbound Instagram calls.
   startUpcomingAutomationScheduler(env.UPCOMING_AUTOMATIONS_ENABLED);
+
+  // Console-set flag values, refreshed on a timer so a change from the Flags page
+  // reaches the workers within seconds and nothing restarts. Same shape as
+  // ig_token: the environment seeds it, the table owns it while running.
+  //
+  // Started here rather than at module scope so a workers-off server does no
+  // periodic database work either. Every getter falls back to the environment
+  // until the first refresh lands, so a cold cache behaves exactly like today.
+  flags.start();
 }
 
 const server = app.listen(env.PORT, () => {

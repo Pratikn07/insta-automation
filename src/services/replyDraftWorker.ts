@@ -1,4 +1,5 @@
 import { env } from "../config/env.js";
+import { flags } from "./flagService.js";
 import { logger } from "../lib/logger.js";
 import { CodexRuntimeError, runtimeClient } from "./codexRuntimeClient.js";
 import {
@@ -27,7 +28,7 @@ function newRequestId(): string {
 }
 
 export async function runReplyDraftTick(): Promise<void> {
-  if (!env.AI_DRAFTS_ENABLED) return;
+  if (!flags.bool("AI_DRAFTS_ENABLED")) return;
 
   try {
     const now = new Date();

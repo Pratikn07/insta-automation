@@ -1522,3 +1522,20 @@ model RecoveryCandidateSource {
   @@index([commentId])
   @@map("recovery_candidate_source")
 }
+
+/// A console-set value for one flag. VALUES ONLY.
+///
+/// What the flag does, who it affects, and whether the console may change it live
+/// in src/config/flagRegistry.ts — facts about the code, reviewed with the code.
+///
+/// An absent row means "no override": the resolver uses the deployed environment
+/// value, so an empty table behaves exactly like production does today.
+model FlagOverride {
+  key          String   @id
+  valueBool    Boolean? @map("value_bool")
+  valuePercent Int?     @map("value_percent")
+  updatedBy    String   @map("updated_by")
+  updatedAt    DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  @@map("flag_override")
+}

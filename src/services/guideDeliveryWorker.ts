@@ -1,5 +1,6 @@
 import { env } from "../config/env.js";
 import { logger } from "../lib/logger.js";
+import { flags } from "./flagService.js";
 import { finalizeGuideDelivery } from "./guideDeliveryCompletion.js";
 import {
   guideDeliveryRepository,
@@ -19,7 +20,16 @@ type WorkerRepository = Pick<
 >;
 
 export type GuideDeliveryWorkerOptions = {
-  enabled: boolean;
+  /**
+   * Read at the START OF EVERY TICK, never captured.
+   *
+   * A captured boolean made the console's stop a half-truth: switching guide
+   * delivery off stopped new deliveries at the message handler while this worker
+   * kept draining everything already queued. Nothing reconstructs the worker at
+   * runtime, so the flag has to be read inside the tick for a stop to mean
+   * anything.
+   */
+  isEnabled: () => boolean;
   batchSize: number;
   leaseMs: number;
   repository: WorkerRepository;
@@ -46,7 +56,7 @@ function validate(options: GuideDeliveryWorkerOptions): void {
 export function createGuideDeliveryWorker(options: GuideDeliveryWorkerOptions) {
   validate(options);
   return async function runGuideDeliveryTick(): Promise<void> {
-    if (!options.enabled) return;
+    if (!options.isEnabled()) return;
 
     const now = options.now();
     const reconciliation = await options.repository.reconcileExpiredClaims({
@@ -85,7 +95,9 @@ export function createGuideDeliveryWorker(options: GuideDeliveryWorkerOptions) {
 }
 
 export const runGuideDeliveryTick = createGuideDeliveryWorker({
-  enabled: env.GUIDE_DELIVERY_ENABLED,
+  // Through the service, so switching guide delivery off from the console halts
+  // this worker on its next tick rather than waiting for a restart.
+  isEnabled: () => flags.bool("GUIDE_DELIVERY_ENABLED"),
   batchSize: env.GUIDE_DELIVERY_BATCH_SIZE,
   leaseMs: env.GUIDE_DELIVERY_LEASE_MS,
   repository: guideDeliveryRepository,

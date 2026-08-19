@@ -5,6 +5,7 @@ import type {
   PrismaClient,
 } from "@prisma/client";
 import { env } from "../config/env.js";
+import { flags } from "./flagService.js";
 import { logger } from "../lib/logger.js";
 import { prisma } from "../lib/prisma.js";
 import { markCompleted } from "./conversationService.js";
@@ -268,7 +269,7 @@ const defaultCompletionService = createGuideDeliveryCompletionService({
   markConversationCompleted: markCompleted,
   scheduleEngagementFollowUp,
   markThreadResolved,
-  followUpsEnabled: () => env.AI_FOLLOW_UPS_ENABLED,
+  followUpsEnabled: () => flags.bool("AI_FOLLOW_UPS_ENABLED"),
   logger,
   now: () => new Date(),
 });

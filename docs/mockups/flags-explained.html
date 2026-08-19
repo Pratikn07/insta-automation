@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Flags — plain-English requirement</title>
+<style>
+  :root {
+    --background:#f7f5ef; --foreground:#171812; --card:#fffef9;
+    --secondary:#ebe8df; --muted:#ebe8df; --muted-foreground:#66665f;
+    --signal:#2c4a3b; --signal-soft:#dce9e2;
+    --urgent:#a8412b; --urgent-soft:#f5ddd6;
+    --caution:#7a5a0c; --caution-soft:#f0e6cc;
+    --destructive:#8c3a2b; --border:#ebe8df; --line:#cac7bd;
+    --mark:#2a4a6b; --mark-soft:#dce4ee;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--background); color:var(--foreground);
+    font:15px/1.5 "Archivo", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing:antialiased; }
+  .page { max-width:1120px; margin:0 auto; padding:28px 32px 72px; }
+  .label-caps { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted-foreground); font-weight:500; }
+  h1 { font-size:24px; font-weight:500; letter-spacing:-.01em; margin:6px 0 0; }
+  h2 { font-size:17px; font-weight:500; margin:0; }
+  h3 { font-size:14px; font-weight:500; margin:0; }
+  .sub { color:var(--muted-foreground); font-size:14px; margin:4px 0 0; }
+  .rule { height:1px; background:var(--border); margin:26px 0; }
+  .note { font-size:13px; color:var(--muted-foreground); margin-top:12px; max-width:76ch; }
+  .note strong { color:var(--foreground); font-weight:500; }
+  code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; background:var(--secondary); padding:1px 5px; border-radius:3px; }
+  .req { color:var(--urgent); font-weight:600; }
+
+  .chip { display:inline-flex; align-items:center; gap:5px; padding:2px 8px; border-radius:999px; font-size:11.5px; font-weight:500; white-space:nowrap; }
+  .chip .dot { width:6px; height:6px; border-radius:50%; flex:none; }
+  .live { background:var(--signal-soft); color:var(--signal); } .live .dot { background:var(--signal); }
+  .off  { background:var(--muted); color:var(--muted-foreground); } .off .dot { background:var(--muted-foreground); }
+  .attn { background:var(--urgent-soft); color:var(--urgent); } .attn .dot { background:var(--urgent); }
+
+  .panel { border:1px solid var(--border); border-radius:8px; background:var(--card); padding:20px 22px; margin-top:16px; }
+  .phead { display:flex; align-items:baseline; justify-content:space-between; gap:16px; padding-bottom:12px; border-bottom:1px solid var(--border); margin-bottom:16px; }
+  .key { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11.5px; color:var(--muted-foreground); margin-top:2px; }
+
+  .plain { background:var(--signal-soft); border-radius:6px; padding:14px 16px; margin-bottom:18px; }
+  .plain .label-caps { color:var(--signal); }
+  .plain p { margin:6px 0 0; font-size:14.5px; line-height:1.5; }
+  .plain p + p { margin-top:8px; }
+
+  .kv { display:grid; grid-template-columns:150px 1fr; gap:7px 16px; font-size:13.5px; align-items:baseline; }
+  .kv dt { color:var(--muted-foreground); }
+
+  /* ── Auto-drawn story diagram ───────────────────────────────── */
+  .story { border-top:1px solid var(--border); margin-top:18px; padding-top:16px; }
+  .step { display:flex; align-items:center; gap:10px; }
+  .box  { border:1px solid var(--line); border-radius:6px; padding:8px 12px; font-size:13px; background:var(--background); }
+  .down { color:var(--muted-foreground); font-size:14px; margin:4px 0 4px 22px; }
+  .fork { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-top:10px; }
+  .arm  { border:1px solid var(--line); border-radius:6px; padding:12px 14px; background:var(--background); }
+  .arm.control { border-style:dashed; }
+  .arm .pc { font-size:19px; font-weight:500; font-variant-numeric:tabular-nums; letter-spacing:-.01em; }
+  .arm .an { font-size:11px; letter-spacing:.07em; text-transform:uppercase; color:var(--muted-foreground); margin-top:2px; }
+  .arm .ad { font-size:13px; margin-top:8px; }
+  .measure { margin-top:14px; background:var(--mark-soft); color:var(--mark); border-radius:6px; padding:11px 14px; font-size:13.5px; }
+  .measure b { font-weight:600; }
+
+  /* ── Create form ─────────────────────────────────────────────── */
+  .field { margin-bottom:16px; }
+  .field label { display:block; font-size:13px; font-weight:500; margin-bottom:5px; }
+  .field .hint { font-size:12.5px; color:var(--muted-foreground); margin-bottom:6px; }
+  .input, .ta { width:100%; font:inherit; font-size:13.5px; padding:8px 10px; border:1px solid var(--line); border-radius:6px; background:var(--card); color:var(--foreground); }
+  .ta { min-height:52px; resize:vertical; }
+  .filled { color:var(--foreground); }
+  .empty-req { border-color:var(--urgent); }
+  .err { font-size:12.5px; color:var(--urgent); margin-top:5px; }
+  .armrow { display:grid; grid-template-columns:120px 62px 1fr; gap:10px; margin-bottom:8px; }
+  .btn { font:inherit; font-size:12.5px; padding:6px 12px; border-radius:6px; border:1px solid var(--line); background:transparent; color:var(--foreground); cursor:pointer; }
+  .btn-solid { background:var(--foreground); color:var(--background); border-color:var(--foreground); }
+  .btn[disabled] { opacity:.45; cursor:not-allowed; }
+  .gate { display:flex; gap:9px; align-items:flex-start; background:var(--urgent-soft); color:var(--urgent); padding:11px 13px; border-radius:6px; font-size:13px; margin-top:6px; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<!-- ═══════════ 1. EXPERIMENT PANEL ═══════════ -->
+<div class="label-caps">1 of 3 · an experiment, expanded</div>
+<h1>Recovery reminder timing</h1>
+<p class="sub">Everything below the green box is drawn from fields, not written by hand.</p>
+
+<div class="panel">
+  <div class="phead">
+    <span><h3>Recovery reminder timing</h3><div class="key">read-recovery-v1 · 3 arms</div></span>
+    <span class="chip attn"><span class="dot"></span>Ends in 3 days</span>
+  </div>
+
+  <div class="plain">
+    <div class="label-caps">What this does</div>
+    <p>
+      When someone asks for a guide but never opens our DM, we leave a public comment on
+      the reel telling them to check their message requests. We are testing how long to
+      wait before doing that.
+    </p>
+    <p>
+      <strong>Who it affects:</strong> people who commented a keyword and were sent a
+      guide, but have not opened the message. Roughly 190 people a week.
+    </p>
+  </div>
+
+  <div class="story">
+    <div class="label-caps" style="margin-bottom:10px">What happens</div>
+
+    <div class="step"><span class="box">Someone comments <b>SLEEP</b> on your reel</span></div>
+    <div class="down">↓</div>
+    <div class="step"><span class="box">We send them the guide by DM</span></div>
+    <div class="down">↓</div>
+    <div class="step"><span class="box">Two hours pass and they never opened it</span></div>
+    <div class="down">↓ &nbsp;<span style="font-size:12.5px">then we split them three ways</span></div>
+
+    <div class="fork">
+      <div class="arm">
+        <div class="pc">45%</div><div class="an">Two hour</div>
+        <div class="ad">We comment publicly: <em>"I sent your guide 💛 Check your DMs/Requests."</em></div>
+      </div>
+      <div class="arm">
+        <div class="pc">45%</div><div class="an">Six hour</div>
+        <div class="ad">Same comment, but we wait until six hours have passed.</div>
+      </div>
+      <div class="arm control">
+        <div class="pc">10%</div><div class="an">No reminder</div>
+        <div class="ad">We say nothing at all, so we can tell whether reminding helps.</div>
+      </div>
+    </div>
+
+    <div class="measure">
+      <b>What decides the winner:</b> did they receive the guide within 48 hours of first
+      asking? Nothing else counts.
+    </div>
+  </div>
+
+  <dl class="kv" style="margin-top:18px; border-top:1px solid var(--border); padding-top:14px">
+    <dt>Running since</dt><dd>7 Aug · ends 21 Aug 21:45 UTC</dd>
+    <dt>Assignment</dt><dd>Fixed per follower at first contact, never re-rolled</dd>
+    <dt>So far</dt><dd>585 reminded · 394 left alone · 1,275 skipped for other reasons</dd>
+  </dl>
+</div>
+
+<p class="note">
+  <strong>The diagram is not a drawing.</strong> It is the trigger steps, the arms, and
+  the outcome laid out — the same fields the experiment needs in order to run. So there
+  is no version of this that has arms but no picture.
+</p>
+
+<div class="rule"></div>
+
+<!-- ═══════════ 2. PLAIN FLAG PANEL ═══════════ -->
+<div class="label-caps">2 of 3 · a plain on/off flag, expanded</div>
+<h1>AI reply drafts</h1>
+<p class="sub">Same requirement, much shorter. No arms, so no fork — but still no jargon.</p>
+
+<div class="panel">
+  <div class="phead">
+    <span><h3>AI reply drafts</h3><div class="key">AI_DRAFTS_ENABLED</div></span>
+    <span class="chip live"><span class="dot"></span>Live</span>
+  </div>
+
+  <div class="plain">
+    <div class="label-caps">What this does</div>
+    <p>
+      Writes a suggested reply for each conversation waiting on you, so you can send it
+      with one tap instead of typing from scratch.
+    </p>
+    <p>
+      <strong>Who it affects:</strong> only you. Nothing is sent to anyone — a draft sits
+      in the Conversations screen until you approve it.
+    </p>
+    <p>
+      <strong>If you turn it off:</strong> the suggestions stop appearing. Nothing already
+      sent is affected, and you can still reply by hand.
+    </p>
+  </div>
+
+  <dl class="kv">
+    <dt>Value in force</dt><dd>On · saved here, changed 4 Aug</dd>
+    <dt>Railway seed</dt><dd>true · agrees</dd>
+    <dt>Sends anything?</dt><dd>No</dd>
+  </dl>
+</div>
+
+<p class="note">
+  Three sentences, always the same three questions: <strong>what it does, who it affects,
+  what changes if it is off.</strong> That third one is what a marketer actually needs
+  before touching a switch.
+</p>
+
+<div class="rule"></div>
+
+<!-- ═══════════ 3. THE GATE ═══════════ -->
+<div class="label-caps">3 of 3 · you cannot create one without it</div>
+<h1>New experiment</h1>
+<p class="sub">The plain-English fields are required, so an unexplained experiment cannot exist.</p>
+
+<div class="panel">
+  <div class="field">
+    <label>Name <span class="req">*</span></label>
+    <input class="input filled" value="Recovery reminder timing" readonly />
+  </div>
+
+  <div class="field">
+    <label>What this does, in one or two plain sentences <span class="req">*</span></label>
+    <div class="hint">No jargon, no field names. Write it for someone who has never seen the code.</div>
+    <textarea class="ta filled" readonly>When someone asks for a guide but never opens our DM, we leave a public comment on the reel telling them to check their message requests. We are testing how long to wait.</textarea>
+  </div>
+
+  <div class="field">
+    <label>Who it affects <span class="req">*</span></label>
+    <textarea class="ta empty-req" placeholder="e.g. people who commented a keyword and were sent a guide but never opened it"></textarea>
+    <div class="err">Required. An experiment nobody can describe the audience for cannot be reviewed.</div>
+  </div>
+
+  <div class="field">
+    <label>What happens, step by step <span class="req">*</span></label>
+    <div class="hint">These become the diagram. One short sentence per step.</div>
+    <input class="input filled" style="margin-bottom:7px" value="Someone comments SLEEP on your reel" readonly />
+    <input class="input filled" style="margin-bottom:7px" value="We send them the guide by DM" readonly />
+    <input class="input filled" value="Two hours pass and they never opened it" readonly />
+    <button class="btn" style="margin-top:8px">+ Add step</button>
+  </div>
+
+  <div class="field">
+    <label>Arms <span class="req">*</span></label>
+    <div class="hint">Name, share of people, and what happens to them. Must total 100%.</div>
+    <div class="armrow">
+      <input class="input filled" value="two_hour" readonly />
+      <input class="input filled" value="45" readonly />
+      <input class="input filled" value="Comment publicly after 2 hours" readonly />
+    </div>
+    <div class="armrow">
+      <input class="input filled" value="six_hour" readonly />
+      <input class="input filled" value="45" readonly />
+      <input class="input filled" value="Comment publicly after 6 hours" readonly />
+    </div>
+    <div class="armrow">
+      <input class="input filled" value="no_reminder" readonly />
+      <input class="input filled" value="10" readonly />
+      <input class="input filled" value="Say nothing" readonly />
+    </div>
+  </div>
+
+  <div class="field">
+    <label>What decides the winner <span class="req">*</span></label>
+    <input class="input filled" value="Guide received within 48 hours of first asking" readonly />
+  </div>
+
+  <div class="gate">
+    <span>⚠</span>
+    <span><strong>Who it affects</strong> is still empty. Fill it in to continue.</span>
+  </div>
+
+  <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:16px">
+    <button class="btn">Cancel</button>
+    <button class="btn btn-solid" disabled>Create as draft</button>
+  </div>
+</div>
+
+<p class="note">
+  <strong>And the same gate applies to the 16 flags you already have.</strong> A test can
+  read every flag name out of <code>src/config/env.ts</code> and fail if any of them has
+  no plain-English entry — the way <code>check:guide-delivery-bypasses</code> already
+  guards a different rule. That is what makes "every time" true rather than a good
+  intention.
+</p>
+
+</div>
+</body>
+</html>

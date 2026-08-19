@@ -18,7 +18,13 @@ vi.mock("../lib/prisma.js", () => ({
 }));
 
 vi.mock("../services/eventLogger.js", () => ({ logEvent }));
-vi.mock("../config/env.js", () => ({ env: { UPCOMING_AUTOMATIONS_ENABLED: false } }));
+vi.mock("../config/env.js", () => ({ env: {} }));
+// The route reads this flag through the service now, so the stub is where the
+// value comes from. False keeps every existing expectation: the list reports
+// discoveryEnabled false.
+vi.mock("../services/flagService.js", () => ({
+  flags: { bool: () => false, percent: () => 0 },
+}));
 
 const { upcomingAutomationsRouter } = await import("./upcomingAutomations.routes.js");
 
@@ -29,6 +35,14 @@ function makeApp() {
     req.adminEmail = "owner@example.com";
     next();
   });
+  app.use("/api/upcoming-automations", upcomingAutomationsRouter);
+  return app;
+}
+
+/** Mounted without the requireAdmin stub, so `adminEmail` is absent. */
+function appWithoutIdentity() {
+  const app = express();
+  app.use(express.json());
   app.use("/api/upcoming-automations", upcomingAutomationsRouter);
   return app;
 }
@@ -311,6 +325,47 @@ describe("upcoming automations API", () => {
         matchedMediaId: null,
         retriedAt: expect.any(Date),
       },
+    });
+  });
+
+  /**
+   * These four writes persist the actor into `created_by`, `updated_by`,
+   * `cancelled_by` and `retried_by`. `requireAdmin` gates the whole apiRouter, so
+   * an unidentified request cannot reach here in the running app — but the columns
+   * are an audit trail, and the previous `?? "unknown"` would have written a name
+   * indistinguishable afterwards from a real one.
+   */
+  describe("without a verified identity", () => {
+    it.each([
+      ["create", "post", "/api/upcoming-automations"],
+      ["edit", "patch", "/api/upcoming-automations/upcoming-1"],
+      ["cancel", "post", "/api/upcoming-automations/upcoming-1/cancel"],
+      ["retry", "post", "/api/upcoming-automations/upcoming-1/retry"],
+    ] as const)("refuses to %s", async (_label, method, path) => {
+      const response = await request(appWithoutIdentity())[method](path)
+        .send(validBody)
+        .expect(401);
+
+      expect(response.body).toEqual({ error: "owner_auth_required" });
+    });
+
+    it("writes nothing and records nothing", async () => {
+      await request(appWithoutIdentity())
+        .post("/api/upcoming-automations")
+        .send(validBody)
+        .expect(401);
+
+      expect(create).not.toHaveBeenCalled();
+      expect(updateMany).not.toHaveBeenCalled();
+      expect(logEvent).not.toHaveBeenCalled();
+    });
+
+    // Reading is protected by the router-level guard, not by this helper. Asserted
+    // so hardening the writes cannot quietly break the list.
+    it("still allows the list to be read", async () => {
+      findMany.mockResolvedValue([]);
+
+      await request(appWithoutIdentity()).get("/api/upcoming-automations").expect(200);
     });
   });
 });

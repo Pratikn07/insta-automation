@@ -148,6 +148,37 @@ test.describe("visual QA artifacts", () => {
   });
 
   /**
+   * Every switch in the system, with the safety model visible rather than
+   * described: a Stop now that has no matching start beside it, and a flag the
+   * console cannot touch at all.
+   */
+  test("things we're testing", async ({ page }, testInfo) => {
+    await open(page, "flags");
+    await expect(
+      page.getByRole("heading", { level: 1, name: "Things we're testing" }),
+    ).toBeVisible();
+
+    // Grouped loudest-first, so the group that can reach a real parent is the one
+    // you land on during an incident.
+    const outbound = page.getByText("Reaches real people");
+    const assistive = page.getByText("Nothing leaves the app");
+    await expect(outbound).toBeVisible();
+    await expect(assistive).toBeVisible();
+    const outboundBox = await outbound.boundingBox();
+    const assistiveBox = await assistive.boundingBox();
+    expect(outboundBox!.y).toBeLessThan(assistiveBox!.y);
+
+    // A stop with no start, and a row offering neither.
+    await expect(page.getByRole("button", { name: "Stop Recovery reminders" })).toBeVisible();
+    await expect(page.getByText("changed in Railway")).toBeVisible();
+    // The drift warning, which only a screenshot can show is legible on paper.
+    await expect(page.getByText(/a restart would change this back/i)).toBeVisible();
+
+    await settleAnimations(page);
+    await capture(page, testInfo.project.name, "flags");
+  });
+
+  /**
    * The same failure as Home sees it. Content is where she fixes an unattached
    * keyword; this is the surface that tells her to go there at all.
    */

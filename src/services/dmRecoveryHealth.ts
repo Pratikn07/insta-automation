@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma.js";
+import { flags } from "./flagService.js";
 import { env } from "../config/env.js";
 import { logEvent } from "./eventLogger.js";
 
@@ -138,7 +139,7 @@ function chooseOpenReason(o: Observations, failureRate: number | null): Recovery
     return "webhook_signal_gap";
   }
   if (o.dueCount >= env.DM_RECOVERY_BACKLOG_ALERT_THRESHOLD) return "backlog_anomaly";
-  if (failureRate !== null && failureRate >= env.DM_RECOVERY_FAILURE_RATE_PERCENT) {
+  if (failureRate !== null && failureRate >= flags.percent("DM_RECOVERY_FAILURE_RATE_PERCENT")) {
     return "public_failure_rate";
   }
   if (o.sentLastHour >= env.DM_RECOVERY_HOURLY_CAP) return "hourly_cap";

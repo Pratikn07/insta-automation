@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { DmRecoveryReminder, Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
+import { flags } from "./flagService.js";
 import { logger } from "../lib/logger.js";
 import { env } from "../config/env.js";
 import { logEvent } from "./eventLogger.js";
@@ -289,7 +290,7 @@ function toPolicyInput(
     isSourceCommentAvailable: Boolean(row.commentId),
     audienceOrigin: ctx.audienceOrigin,
     audienceOriginConfidence: ctx.audienceOriginConfidence,
-    westernOnly: env.DM_RECOVERY_WESTERN_ONLY,
+    westernOnly: flags.bool("DM_RECOVERY_WESTERN_ONLY"),
   };
 }
 

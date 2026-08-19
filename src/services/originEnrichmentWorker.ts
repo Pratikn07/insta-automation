@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma.js";
+import { flags } from "./flagService.js";
 import type { Prisma } from "@prisma/client";
 import { logger } from "../lib/logger.js";
 import { env } from "../config/env.js";
@@ -127,7 +128,7 @@ async function compareAndSetOrigin(
  * user — the recovery gate falls back to the name-token screen.
  */
 export async function runOriginEnrichmentTick(): Promise<OriginEnrichmentResult> {
-  if (!env.DM_RECOVERY_ORIGIN_LLM_ENABLED) return emptyResult("disabled");
+  if (!flags.bool("DM_RECOVERY_ORIGIN_LLM_ENABLED")) return emptyResult("disabled");
   if (!geminiEnabled) return emptyResult("disabled");
   if (running) return emptyResult("already_running");
   running = true;

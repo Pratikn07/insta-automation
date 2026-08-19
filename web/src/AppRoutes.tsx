@@ -9,6 +9,7 @@ import { Conversations } from "@/pages/Conversations";
 import { DmRecovery } from "@/pages/DmRecovery";
 import { Assistant } from "@/pages/Assistant";
 import { Activity } from "@/pages/Activity";
+import { Flags } from "@/pages/Flags";
 import { Insights } from "@/pages/Insights";
 import { Funnels } from "@/pages/Funnels";
 import { HistoricalRecovery } from "@/pages/HistoricalRecovery";
@@ -40,6 +41,7 @@ export function AppRoutes() {
         />
         <Route path="insights" element={<Insights />} />
         <Route path="funnels" element={<Funnels />} />
+        <Route path="flags" element={<Flags />} />
         <Route path="activity" element={<Activity />} />
         <Route path="historical-recovery" element={<HistoricalRecovery />} />
         <Route path="*" element={<Navigate to="/" replace />} />
