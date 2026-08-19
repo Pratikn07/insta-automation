@@ -450,6 +450,30 @@ model FollowerTotalSnapshot {
   @@map("follower_total_snapshot")
 }
 
+// Meta's daily follows/unfollows ledger (`follows_and_unfollows`), one row per
+// Pacific analytics day.
+//
+// followers_count answers "how many net" exactly; only this answers "out of how
+// many gained and how many lost". A day that gained 400 and lost 380 is
+// indistinguishable from one that gained 20 in the net figure, and they are very
+// different days.
+//
+// Unlike followers_count this IS backfillable — the metric answers historical
+// since/until windows — so the worker fills gaps behind itself instead of only
+// capturing forward. `status` follows FeedFollowDailySnapshot's pattern: a day
+// Meta declines to answer is RECORDED as unavailable rather than left missing,
+// so the backfill does not re-request it on every tick forever.
+model FollowerChurnDaySnapshot {
+  day        DateTime @id @db.Date
+  follows    Int?
+  unfollows  Int?
+  status     String // ok | unavailable
+  capturedAt DateTime @default(now()) @map("captured_at") @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("follower_churn_day_snapshot")
+}
+
 // Gemini analysis queue. Queue state kept separate from the result (same reason
 // GateQueue is separate from Conversation). Mirrors GateQueue's shape/backoff.
 model GeminiJob {

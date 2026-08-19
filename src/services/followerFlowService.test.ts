@@ -4,6 +4,7 @@ vi.mock("../lib/prisma.js", () => ({
   prisma: {
     geoDemographicSnapshot: { findMany: vi.fn() },
     followerTotalSnapshot: { findMany: vi.fn() },
+    followerChurnDaySnapshot: { findMany: vi.fn() },
   },
 }));
 vi.mock("../meta/profileFetcher.js", () => ({
@@ -22,6 +23,7 @@ const { getFollowerDailyAdds, getFollowerDailyAddsPointsForRange } = await impor
 // it. Tests that DO exercise the anchoring override this per call.
 beforeEach(() => {
   vi.mocked(prisma.followerTotalSnapshot.findMany).mockResolvedValue([] as never);
+  vi.mocked(prisma.followerChurnDaySnapshot.findMany).mockResolvedValue([] as never);
 });
 
 describe("getFollowerDailyAddsPointsForRange", () => {
@@ -159,6 +161,29 @@ describe("getFollowerDailyAddsPointsForRange", () => {
       { day: "2026-07-22", total: 100, spanDays: 1, basis: "diff", estimated: true, exactTotal: 100 },
     ]);
     expect(points.every((point) => point.byCountry?.US === point.total)).toBe(true);
+  });
+
+  it("attaches Meta's churn ledger only to the days it answered", async () => {
+    vi.mocked(prisma.geoDemographicSnapshot.findMany).mockResolvedValueOnce([
+      { capturedAt: new Date("2026-07-20T12:00:00Z"), counts: { US: 100 }, totalCounted: 100 },
+      { capturedAt: new Date("2026-07-21T12:00:00Z"), counts: { US: 140 }, totalCounted: 140 },
+      { capturedAt: new Date("2026-07-22T12:00:00Z"), counts: { US: 168 }, totalCounted: 168 },
+    ] as never);
+    vi.mocked(prisma.followerChurnDaySnapshot.findMany).mockResolvedValueOnce([
+      { day: new Date("2026-07-21T00:00:00Z"), follows: 190, unfollows: 50 },
+    ] as never);
+
+    const points = await getFollowerDailyAddsPointsForRange({
+      from: "2026-07-21",
+      to: "2026-07-22",
+    });
+
+    expect(points.map(({ day, follows, unfollows }) => ({ day, follows, unfollows }))).toEqual([
+      { day: "2026-07-21", follows: 190, unfollows: 50 },
+      // Meta gave no figure for the 22nd: null, never 0 — "nobody unfollowed"
+      // and "we do not know" must not render the same way.
+      { day: "2026-07-22", follows: null, unfollows: null },
+    ]);
   });
 
   it("reads followers_count over the same window as the demographic anchors", async () => {

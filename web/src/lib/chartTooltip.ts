@@ -150,6 +150,15 @@ export function tooltipModel(
   // a legend nobody reads while hovering: the TOTAL here is exact, the country
   // rows underneath it are the best available estimate.
   if (point.estimated) notes.push("Total exact — country split estimated");
+  // The net bar hides the churn behind it: +20 from 400 follows and 380
+  // unfollows is a completely different day from +20 from 20 follows, and only
+  // follows_and_unfollows can tell them apart. Both sides are required — one
+  // alone would render as "0 unfollowed", which reads as a fact rather than as
+  // a figure Meta withheld.
+  const { follows, unfollows } = point;
+  if (typeof follows === "number" && typeof unfollows === "number") {
+    notes.push(`${follows} followed, ${unfollows} unfollowed`);
+  }
   if (point.unattributed) {
     notes.push(`${formatSignedCount(point.unattributed)} unplaced (top-country cutoff)`);
   }

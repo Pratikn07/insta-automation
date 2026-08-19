@@ -242,6 +242,21 @@ export function FollowerFlowPanel({
   // count, not a blanket caveat, so it stays proportionate: 1 of 30 days reads
   // very differently from 30 of 30, and the reader can tell which they have.
   const estimatedDays = rangePoints.filter((p) => p.estimated).length;
+  // Meta answers follows_and_unfollows only for the days it chooses to, so the
+  // day COUNT is reported alongside the sums. A churn total drawn from 4 of 30
+  // days, presented as if it described the window, would understate both sides
+  // by an order of magnitude.
+  const churnDays = rangePoints.filter(
+    (p) => typeof p.follows === "number" && typeof p.unfollows === "number",
+  );
+  const churn =
+    churnDays.length > 0
+      ? {
+          days: churnDays.length,
+          follows: churnDays.reduce((sum, p) => sum + p.follows!, 0),
+          unfollows: churnDays.reduce((sum, p) => sum + p.unfollows!, 0),
+        }
+      : null;
 
   return (
     <PanelShell className="relative overflow-hidden">
@@ -366,7 +381,7 @@ export function FollowerFlowPanel({
               </span>
             )}
           </div>
-          {(showUnattributed || estimatedDays > 0) && (
+          {(showUnattributed || estimatedDays > 0 || churn) && (
             <div className="mt-2 space-y-1.5 border-t border-border pt-2 text-[11px] leading-relaxed text-muted-foreground">
               {showUnattributed && (
                 <p>
@@ -379,6 +394,13 @@ export function FollowerFlowPanel({
                   Daily totals are your real follower count. Meta publishes no per-country
                   daily figures, so the split between countries is estimated from its own
                   audience geography on {estimatedDays} of these days.
+                </p>
+              )}
+              {churn && (
+                <p>
+                  {churn.follows.toLocaleString()} followed and{" "}
+                  {churn.unfollows.toLocaleString()} unfollowed across the {churn.days}{" "}
+                  {churn.days === 1 ? "day" : "days"} Meta reported both.
                 </p>
               )}
             </div>

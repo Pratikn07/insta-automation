@@ -15,6 +15,7 @@ import {
   toAnalyticsDayKey,
 } from "./analyticsDay.js";
 import { getSpikesByDay } from "./spikeService.js";
+import { dayKeyToSqlDate, sqlDateToDayKey } from "./analyticsDay.js";
 import {
   allocateDailyPoints,
   exactNetAddsByDay,
@@ -26,9 +27,23 @@ import {
 // DB-facing wrapper around the pure follower-flow core (followerFlowCore.ts) —
 // all diff/gap/staleness semantics live there.
 
+/**
+ * A chart point with Meta's follow/unfollow ledger attached where it has one.
+ *
+ * Kept separate from the allocation core's shape because it answers a different
+ * question. `total` is NET — a day that gained 400 and lost 380 looks identical
+ * to one that gained 20 — and no amount of arithmetic on followers_count can
+ * recover the two sides. Only `follows_and_unfollows` reports them, and only for
+ * the days Meta chooses to answer, so both fields are independently nullable.
+ */
+export interface FollowerFlowPoint extends AllocatedDailyAddsPoint {
+  follows: number | null;
+  unfollows: number | null;
+}
+
 export interface FollowerFlowResult {
   analyticsTimeZone: typeof ANALYTICS_TIME_ZONE;
-  points: AllocatedDailyAddsPoint[];
+  points: FollowerFlowPoint[];
   stock: FollowerStock | null;
 }
 
@@ -59,6 +74,33 @@ function totalAnchorsFromRows(rows: FollowerTotalRow[]): TotalAnchor[] {
     byDay.set(day, { day, capturedAt: row.capturedAt, followersTotal: row.followersTotal });
   }
   return [...byDay.values()];
+}
+
+interface ChurnRow {
+  day: Date;
+  follows: number | null;
+  unfollows: number | null;
+}
+
+/**
+ * Attach the follow/unfollow ledger to the days that have one.
+ *
+ * A day with no row, or a row Meta declined to fill, carries nulls rather than
+ * zeroes: "no unfollows" and "we do not know" must not render the same way.
+ */
+function withChurn(
+  points: AllocatedDailyAddsPoint[],
+  churnRows: ChurnRow[],
+): FollowerFlowPoint[] {
+  const byDay = new Map(churnRows.map((row) => [sqlDateToDayKey(row.day), row]));
+  return points.map((point) => {
+    const churn = byDay.get(point.day);
+    return {
+      ...point,
+      follows: churn?.follows ?? null,
+      unfollows: churn?.unfollows ?? null,
+    };
+  });
 }
 
 /**
@@ -101,9 +143,9 @@ function anchorsFromRows(rows: FollowerSnapshotRow[]): AnchorSnapshot[] {
 export async function getFollowerDailyAddsPointsForRange(range: {
   from: string;
   to: string;
-}): Promise<AllocatedDailyAddsPoint[]> {
+}): Promise<FollowerFlowPoint[]> {
   const toSuccessorExclusive = analyticsDayBounds(shiftDayKey(range.to, 3)).start;
-  const [rows, totalRows] = await Promise.all([
+  const [rows, totalRows, churnRows] = await Promise.all([
     prisma.geoDemographicSnapshot.findMany({
       where: { stage: "follower", capturedAt: { lt: toSuccessorExclusive } },
       orderBy: { capturedAt: "asc" },
@@ -114,10 +156,18 @@ export async function getFollowerDailyAddsPointsForRange(range: {
       orderBy: { capturedAt: "asc" },
       select: { capturedAt: true, followersTotal: true },
     }),
+    prisma.followerChurnDaySnapshot.findMany({
+      where: {
+        status: "ok",
+        day: { gte: dayKeyToSqlDate(range.from), lte: dayKeyToSqlDate(range.to) },
+      },
+      select: { day: true, follows: true, unfollows: true },
+    }),
   ]);
-  return anchorToExactTotals(buildDailyPoints(anchorsFromRows(rows)), totalRows).filter(
-    (point) => point.day >= range.from && point.day <= range.to,
-  );
+  return withChurn(
+    anchorToExactTotals(buildDailyPoints(anchorsFromRows(rows)), totalRows),
+    churnRows,
+  ).filter((point) => point.day >= range.from && point.day <= range.to);
 }
 
 /**
@@ -135,7 +185,7 @@ export async function getFollowerDailyAdds(): Promise<FollowerFlowResult> {
   // Instagram shows on the profile.
   const profileTotalsPromise = fetchProfileTotals();
 
-  const [rows, totalRows] = await Promise.all([
+  const [rows, totalRows, churnRows] = await Promise.all([
     prisma.geoDemographicSnapshot.findMany({
       where: { stage: "follower", capturedAt: { gte: cutoff } },
       orderBy: { capturedAt: "asc" },
@@ -146,11 +196,15 @@ export async function getFollowerDailyAdds(): Promise<FollowerFlowResult> {
       orderBy: { capturedAt: "asc" },
       select: { capturedAt: true, followersTotal: true },
     }),
+    prisma.followerChurnDaySnapshot.findMany({
+      where: { status: "ok", day: { gte: dayKeyToSqlDate(shiftDayKey(today, -LOOKBACK_DAYS)) } },
+      select: { day: true, follows: true, unfollows: true },
+    }),
   ]);
 
   // Last row per Pacific analytics day wins.
   const anchors = anchorsFromRows(rows);
-  const points = anchorToExactTotals(buildDailyPoints(anchors), totalRows);
+  const points = withChurn(anchorToExactTotals(buildDailyPoints(anchors), totalRows), churnRows);
 
   // Spike attribution needs the finished points, so it can only start here.
   const spikesByDay = await getSpikesByDay(points);

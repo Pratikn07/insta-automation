@@ -5,6 +5,7 @@ import { fetchAllReels } from "../meta/fetchMedia.js";
 import { fetchReelInsights } from "../meta/mediaInsightsFetcher.js";
 import { fetchAllCountrySplits } from "../meta/demographicsFetcher.js";
 import { fetchProfileTotals } from "../meta/profileFetcher.js";
+import { collectFollowerChurn, type ChurnCollectionResult } from "./followerChurnWorker.js";
 import { autoCreateExperimentsForNewReels, autoMeasureDueExperiments } from "./experimentService.js";
 import { describeGraphError, logEvent } from "./eventLogger.js";
 
@@ -23,10 +24,11 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  *   1. Self-throttle on the newest snapshot's age.
  *   2. Snapshot the account's true follower total (followers_count).
  *   3. Snapshot account-level geo demographics (3 stages).
- *   4. Upsert ReelMeta from the Graph media list; enqueue GeminiJob for any reel
+ *   4. Collect Meta's follows/unfollows ledger, backfilling behind itself.
+ *   5. Upsert ReelMeta from the Graph media list; enqueue GeminiJob for any reel
  *      that has no content profile yet.
- *   5. Snapshot per-reel performance metrics (paced).
- *   6. Auto-create/measure experiments.
+ *   6. Snapshot per-reel performance metrics (paced).
+ *   7. Auto-create/measure experiments.
  *
  * ORDER MATTERS, and it is not the order these were written in. The follower
  * captures are one Graph call each and are the only irreplaceable ones — the
@@ -83,7 +85,18 @@ export async function runSnapshotTick(): Promise<void> {
       logger.warn(describeGraphError(err), "geo demographic snapshot failed");
     }
 
-    // 3. Reel universe → upsert anchors + enqueue analysis for new reels.
+    // 3. Meta's follows/unfollows ledger. Sits with the other follower captures
+    //    rather than at the end, but is the least urgent of them: unlike
+    //    followers_count this metric answers historical windows, so a missed
+    //    tick is recoverable on the next one.
+    let churn: ChurnCollectionResult = { ok: 0, unavailable: 0, kept: 0, remaining: 0 };
+    try {
+      churn = await collectFollowerChurn();
+    } catch (err) {
+      logger.warn(describeGraphError(err), "follower churn collection failed");
+    }
+
+    // 4. Reel universe → upsert anchors + enqueue analysis for new reels.
     let reels: Awaited<ReturnType<typeof fetchAllReels>> = [];
     try {
       reels = await fetchAllReels();
@@ -132,7 +145,7 @@ export async function runSnapshotTick(): Promise<void> {
       }
     }
 
-    // 4. Per-reel performance snapshots (paced).
+    // 5. Per-reel performance snapshots (paced).
     let perfWritten = 0;
     for (const r of reels) {
       try {
@@ -163,7 +176,7 @@ export async function runSnapshotTick(): Promise<void> {
       await sleep(PER_REEL_GAP_MS);
     }
 
-    // 5. Auto-experiments: create one per newly-profiled recent reel, and
+    // 6. Auto-experiments: create one per newly-profiled recent reel, and
     //    measure any that have completed their ~14d window. Non-fatal — a failure
     //    here must not lose the snapshot we just wrote.
     let autoCreated = 0;
@@ -177,6 +190,8 @@ export async function runSnapshotTick(): Promise<void> {
 
     await logEvent("snapshot_run", {
       followersTotal,
+      churnDays: churn.ok,
+      churnBacklog: churn.remaining,
       reels: reels.length,
       enqueued,
       perfWritten,
@@ -187,6 +202,7 @@ export async function runSnapshotTick(): Promise<void> {
     logger.info(
       {
         followersTotal,
+        churn,
         reels: reels.length,
         enqueued,
         perfWritten,

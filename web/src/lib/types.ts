@@ -489,6 +489,13 @@ export interface FollowerDailyAddsPoint {
   // follower data, so this is set on essentially every recent day — it marks
   // inference, not error.
   estimated?: boolean;
+  // --- churn (follows_and_unfollows) -----------------------------------------
+  // Meta's own daily ledger, present only for the days it answers. `total` is
+  // NET, so a day that gained 400 and lost 380 is indistinguishable from one
+  // that gained 20 without these. Null means Meta gave no figure — never zero,
+  // which would read as "nobody unfollowed".
+  follows?: number | null;
+  unfollows?: number | null;
   // Present only on days that cleared the spike thresholds; absent is normal.
   spike?: SpikeInfo;
 }
