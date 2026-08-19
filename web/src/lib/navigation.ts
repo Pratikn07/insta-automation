@@ -61,12 +61,16 @@ export const NAV_GROUPS: readonly NavDestinationGroup[] = [
   {
     heading: "System",
     items: [
+      // Two destinations, not one. A switch has a state; an experiment has a
+      // result. One page called "Things we're testing" promised a test behind
+      // every row and only two of sixteen were ever tests.
       {
-        path: "/flags",
-        label: "Things we're testing",
-        mobileTitle: "Testing",
+        path: "/experiments",
+        label: "Experiments",
+        mobileTitle: "Experiments",
         group: "System",
       },
+      { path: "/switches", label: "Switches", mobileTitle: "Switches", group: "System" },
       { path: "/activity", label: "Activity", mobileTitle: "Activity", group: "System" },
       { path: "/assistant", label: "Assistant", mobileTitle: "Assistant", group: "System" },
     ],

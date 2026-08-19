@@ -61,6 +61,20 @@ describe("experiment registry", () => {
     expect(problems).toEqual([]);
   });
 
+  /**
+   * A switch must not be called the same thing as the experiment it belongs to.
+   *
+   * The list prints "<switch> · part of <experiment>", so identical names rendered
+   * "Guide delivery rollout · part of Guide delivery rollout" — a tautology that
+   * looked like a bug and told the reader nothing.
+   */
+  it("never names a flag the same as the experiment it belongs to", () => {
+    const clashes = FLAG_REGISTRY.filter(
+      (f) => f.experimentKey && f.name === experimentDefinition(f.experimentKey)?.name,
+    ).map((f) => `${f.key} is named "${f.name}", the same as its experiment`);
+    expect(clashes).toEqual([]);
+  });
+
   it("gives a not-started experiment a blocker rather than pretending it runs", () => {
     for (const e of EXPERIMENT_REGISTRY) {
       if (e.state === "not_started") expect(e.blocker.length, e.key).toBeGreaterThan(10);

@@ -130,7 +130,7 @@ describe("Switches list", () => {
       flags: [
         flag({
           key: "GUIDE_DELIVERY_ROLLOUT_PERCENT",
-          name: "Guide delivery rollout",
+          name: "Share on the new path",
           group: "outbound",
           kind: "percent",
           valueBool: null,

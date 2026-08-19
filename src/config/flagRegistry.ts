@@ -90,7 +90,11 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
   },
   {
     key: "GUIDE_DELIVERY_ROLLOUT_PERCENT",
-    name: "Guide delivery rollout",
+    // Not "Guide delivery rollout" — that is the name of the experiment this
+    // belongs to, and the switch row then read "Guide delivery rollout · part of
+    // Guide delivery rollout". This switch is the dial; the experiment is the
+    // comparison the dial starts.
+    name: "Share on the new path",
     group: "outbound",
     kind: "percent",
     doesWhat:
@@ -159,7 +163,9 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
   // ── Experiments: measuring something ─────────────────────────────────────
   {
     key: "GATE_DM_EXPERIMENT",
-    name: "Cold message test",
+    // Not "Cold message test" — that is the experiment. This is the switch that
+    // starts it.
+    name: "Try a cold message",
     group: "experiment",
     kind: "boolean",
     doesWhat:

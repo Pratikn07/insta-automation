@@ -9,7 +9,10 @@ import { Conversations } from "@/pages/Conversations";
 import { DmRecovery } from "@/pages/DmRecovery";
 import { Assistant } from "@/pages/Assistant";
 import { Activity } from "@/pages/Activity";
-import { Flags } from "@/pages/Flags";
+import { Experiments } from "@/pages/Experiments";
+import { ExperimentDetail } from "@/pages/ExperimentDetail";
+import { Switches } from "@/pages/Switches";
+import { SwitchDetail } from "@/pages/SwitchDetail";
 import { Insights } from "@/pages/Insights";
 import { Funnels } from "@/pages/Funnels";
 import { HistoricalRecovery } from "@/pages/HistoricalRecovery";
@@ -41,7 +44,13 @@ export function AppRoutes() {
         />
         <Route path="insights" element={<Insights />} />
         <Route path="funnels" element={<Funnels />} />
-        <Route path="flags" element={<Flags />} />
+        <Route path="experiments" element={<Experiments />} />
+        <Route path="experiments/:key" element={<ExperimentDetail />} />
+        <Route path="switches" element={<Switches />} />
+        <Route path="switches/:key" element={<SwitchDetail />} />
+        {/* /flags shipped and may be bookmarked. The switches are what that page
+            mostly was, so send it there rather than 404ing it. */}
+        <Route path="flags" element={<Navigate to="/switches" replace />} />
         <Route path="activity" element={<Activity />} />
         <Route path="historical-recovery" element={<HistoricalRecovery />} />
         <Route path="*" element={<Navigate to="/" replace />} />

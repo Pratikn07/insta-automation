@@ -85,6 +85,51 @@ only where the definition permits it. An unreadable table serves the environment
 and keeps whatever it had, rather than clearing the cache and reverting every override
 at once. So the worst this system can do is make itself quieter.
 
+## Switches versus experiments
+
+An experiment is **a flag with declared arms** — named, split stated, outcome chosen.
+No arms means it is a switch. Checkable rather than debatable, which is the point: the
+older Insights → Experiments tab defined it by feeling and holds 94 rows nobody can
+close.
+
+The two live at separate addresses, because a switch has a *state* and an experiment
+has a *result*:
+
+| | Switches | Experiments |
+| --- | --- | --- |
+| Address | `/switches` | `/experiments` |
+| A row shows | name, state, owning experiment | name, state, the one number that matters |
+| A detail page shows | the three sentences, the value in force, the control | arms in whole people, what was skipped, the countdown |
+| Registered in | `src/config/flagRegistry.ts` | `src/config/experimentRegistry.ts` |
+
+Rules that follow from this, all enforced by tests rather than review:
+
+1. **Lists carry no controls and no descriptions.** One line per row. Three sentences
+   are right on a detail page and wrong on a list — a list is for finding the thing.
+   Stopping stays deliberate, which a stop button inside a list you are scanning is
+   not.
+2. **A flag belongs to at most one experiment**, and the two directions must agree.
+   Owned twice, it would appear under two experiments and its numbers would seem to
+   contradict themselves.
+3. **A switch is never named the same as its experiment.** The row prints
+   "*switch* · part of *experiment*", and identical names read as a tautology.
+4. **`not_started` returns intent and a blocker, never zeroes.** Zeroes read as "we
+   tried and nobody converted"; "never switched on" reads as a decision. It is listed
+   rather than hidden, because a list of experiments you could run tomorrow is the most
+   useful thing on the page.
+5. **Counts in whole people, never rates.** No confidence intervals, no significance,
+   no "visitors remaining". The Optimizely pages this borrows its shape from report
+   285,991 visitors; recovery reminders have 594 sends. `docs/funnels.md` already
+   refuses to print a rate its sample cannot support.
+6. **Every person lands in exactly one bucket.** An arm, or a named skip. The obvious
+   implementation — treatment is `sent`, skipped is `suppressed` — silently dropped 71
+   real people out of 2,360 and still looked complete.
+7. **Each experiment supplies its own summary function**, registered by key in
+   `src/services/experimentSummary.ts`. Recovery counts arms out of
+   `dm_recovery_reminder`; a rollout would compare two delivery paths. One abstraction
+   over three different shapes would be structure we invented rather than structure the
+   data has.
+
 ## Not built yet
 
 Closing experiments — the decisions surface, the diagram drawn from stored steps and

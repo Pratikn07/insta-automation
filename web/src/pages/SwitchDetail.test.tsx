@@ -201,7 +201,7 @@ describe("SwitchDetail", () => {
     apiRead.mockResolvedValue(
       flag({
         key: "GUIDE_DELIVERY_ROLLOUT_PERCENT",
-        name: "Guide delivery rollout",
+        name: "Share on the new path",
         kind: "percent",
         valueBool: null,
         valuePercent: 45,
@@ -211,7 +211,7 @@ describe("SwitchDetail", () => {
     );
     renderDetail("GUIDE_DELIVERY_ROLLOUT_PERCENT");
 
-    const slider = await screen.findByRole("slider", { name: "Guide delivery rollout" });
+    const slider = await screen.findByRole("slider", { name: "Share on the new path" });
     expect(slider).toHaveValue("45");
   });
 

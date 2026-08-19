@@ -5,7 +5,10 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { DmThreadDrawer } from "@/components/conversations/DmThreadDrawer";
 import { Assistant } from "@/pages/Assistant";
 import { Content } from "@/pages/Content";
-import { Flags } from "@/pages/Flags";
+import { Switches } from "@/pages/Switches";
+import { SwitchDetail } from "@/pages/SwitchDetail";
+import { Experiments } from "@/pages/Experiments";
+import { ExperimentDetail } from "@/pages/ExperimentDetail";
 import { Conversations } from "@/pages/Conversations";
 import { DmRecovery } from "@/pages/DmRecovery";
 import { HistoricalRecovery } from "@/pages/HistoricalRecovery";
@@ -650,11 +653,12 @@ const CONTENT_UPCOMING = [
   }),
 ]
 
-// ── Flags ─────────────────────────────────────────────────────────────────
-// One row per group and per capability, so the artifact shows all four controls
-// at once: a switch, a lone Stop now, a slider, and a flag the console may not
-// touch. The safety model is only visible when a stop appears with no matching
-// start beside it.
+// ── Switches ──────────────────────────────────────────────────────────────
+// One row per group and per capability. The list artifact proves the rewrite —
+// five one-line rows where sixteen paragraphs used to be — and the detail
+// artifacts show the four controls: a switch, a lone Stop now, a slider, and a
+// flag the console may not touch. The safety model is only visible when a stop
+// appears with no matching start beside it.
 const FLAG_ROWS = [
   {
     key: "DM_RECOVERY_ENABLED",
@@ -675,10 +679,12 @@ const FLAG_ROWS = [
     driftsFromEnv: false,
     updatedBy: null,
     updatedAt: null,
+    experimentKey: "recovery-reminder-timing",
+    experimentName: "Recovery reminder timing",
   },
   {
     key: "GUIDE_DELIVERY_ROLLOUT_PERCENT",
-    name: "Guide delivery rollout",
+    name: "Share on the new path",
     group: "outbound",
     kind: "percent",
     doesWhat:
@@ -693,6 +699,8 @@ const FLAG_ROWS = [
     driftsFromEnv: true,
     updatedBy: "owner@example.com",
     updatedAt: "2026-08-18T04:00:00.000Z",
+    experimentKey: "guide-delivery-rollout",
+    experimentName: "Guide delivery rollout",
   },
   {
     key: "DM_RECOVERY_WESTERN_ONLY",
@@ -712,6 +720,8 @@ const FLAG_ROWS = [
     driftsFromEnv: false,
     updatedBy: null,
     updatedAt: null,
+    experimentKey: "recovery-reminder-timing",
+    experimentName: "Recovery reminder timing",
   },
   {
     key: "AI_DRAFTS_ENABLED",
@@ -752,6 +762,132 @@ const FLAG_ROWS = [
     updatedAt: null,
   },
 ]
+
+// ── Experiments ───────────────────────────────────────────────────────────
+// One running and two not started, which is the real state. The not-started rows
+// are the reason the artifact is worth taking: they must read as a decision
+// ("never switched on") and never as a row of zeroes.
+const RECOVERY_SUMMARY = {
+  kind: "running" as const,
+  arms: [
+    { key: "treatment", label: "Got a reminder", people: 594 },
+    { key: "control", label: "Got nothing", people: 395 },
+  ],
+  // Counts taken from production so the artifact shows the real spread, including
+  // the buckets an earlier version dropped: waiting, failed, unconfirmed.
+  notCounted: [
+    { reason: "They opened it themselves", people: 531 },
+    { reason: "They replied, so they saw it", people: 441 },
+    { reason: "Outside your audience", people: 269 },
+    { reason: "Reminded too recently", people: 56 },
+    { reason: "Waiting to be posted", people: 54 },
+    { reason: "The reminder could not be posted", people: 12 },
+    { reason: "We could not track it", people: 4 },
+  ],
+  endsAt: "2026-08-21T21:45:00.000Z",
+  whenItEnds:
+    "When the window closes, reminders stop and wait for your decision. Nothing announces it.",
+};
+
+const ROLLOUT_SUMMARY = {
+  kind: "not_started" as const,
+  wouldCompare:
+    "Served by the newer delivery path, which tracks each step separately. versus Served by the older path, which is what everyone gets today.",
+  blocker:
+    "The rollout is at zero, so nobody is on the newer path yet. Raising it starts the comparison.",
+};
+
+const COLD_SUMMARY = {
+  kind: "not_started" as const,
+  wouldCompare:
+    "Gets one ordinary message after the unlock message gave up. versus Gets nothing further, which is what happens today.",
+  blocker: "It has never been switched on, so no message has been tried.",
+};
+
+const EXPERIMENT_ROWS = [
+  {
+    key: "recovery-reminder-timing",
+    name: "Recovery reminder timing",
+    state: "running",
+    armCount: 2,
+    blocker: "",
+    summary: RECOVERY_SUMMARY,
+  },
+  {
+    key: "guide-delivery-rollout",
+    name: "Guide delivery rollout",
+    state: "not_started",
+    armCount: 2,
+    blocker: ROLLOUT_SUMMARY.blocker,
+    summary: ROLLOUT_SUMMARY,
+  },
+  {
+    key: "cold-message-test",
+    name: "Cold message test",
+    state: "not_started",
+    armCount: 2,
+    blocker: COLD_SUMMARY.blocker,
+    summary: COLD_SUMMARY,
+  },
+]
+
+const EXPERIMENT_DETAILS: Record<string, unknown> = {
+  "recovery-reminder-timing": {
+    key: "recovery-reminder-timing",
+    name: "Recovery reminder timing",
+    state: "running",
+    doesWhat:
+      "Tests whether leaving a public comment helps when someone never opens the guide we sent them, by leaving one for most people and deliberately saying nothing to the rest.",
+    affectsWho:
+      "People who commented a keyword and were sent a guide but have not opened it. Around 190 a week.",
+    outcome: "Whether they received the guide within 48 hours of first asking.",
+    arms: [
+      {
+        key: "treatment",
+        percent: 90,
+        doesWhat: "Gets a public comment on the reel telling them to check their requests.",
+        isControl: false,
+      },
+      {
+        key: "control",
+        percent: 10,
+        doesWhat: "Gets nothing, so we can tell whether the reminder is what worked.",
+        isControl: true,
+      },
+    ],
+    blocker: "",
+    summary: RECOVERY_SUMMARY,
+    ownedFlags: FLAG_ROWS.filter(
+      (row) => row.experimentKey === "recovery-reminder-timing",
+    ),
+  },
+  "guide-delivery-rollout": {
+    key: "guide-delivery-rollout",
+    name: "Guide delivery rollout",
+    state: "not_started",
+    doesWhat:
+      "Would compare the newer way of sending a guide against the older one, by serving a share of people through each.",
+    affectsWho: "New guide requests. Deliveries already under way would be untouched.",
+    outcome: "Whether the guide arrived complete, and whether anything needed review.",
+    arms: [
+      {
+        key: "new_path",
+        percent: null,
+        doesWhat: "Served by the newer delivery path, which tracks each step separately.",
+        isControl: false,
+      },
+      {
+        key: "old_path",
+        percent: null,
+        doesWhat: "Served by the older path, which is what everyone gets today.",
+        isControl: true,
+      },
+    ],
+    blocker: ROLLOUT_SUMMARY.blocker,
+    summary: ROLLOUT_SUMMARY,
+    ownedFlags: FLAG_ROWS.filter((row) => row.experimentKey === "guide-delivery-rollout"),
+  },
+}
 
 // pct1 in the funnel layer returns 0-100 (64.9, not 0.649). A fixture using the
 // 0-1 form rendered "0.6488651535380507%" on Home, which looked like a formatting
@@ -1151,6 +1287,24 @@ function installFetchStub(): void {
       return json({ flags: FLAG_ROWS });
     }
 
+    // The detail page fetches its own flag by key rather than filtering the list,
+    // so a bookmarked switch URL works before the list has been opened.
+    if (path.startsWith("/flags/") && method === "GET") {
+      const key = path.slice("/flags/".length);
+      const row = FLAG_ROWS.find((entry) => entry.key === key);
+      return row ? json(row) : json({ error: "not_found" }, 404);
+    }
+
+    if (path === "/experiments" && method === "GET") {
+      return json({ experiments: EXPERIMENT_ROWS });
+    }
+
+    if (path.startsWith("/experiments/") && method === "GET") {
+      const key = path.slice("/experiments/".length);
+      const row = EXPERIMENT_DETAILS[key];
+      return row ? json(row) : json({ error: "not_found" }, 404);
+    }
+
     if (path === "/upcoming-automations" && method === "GET") {
       return json({ automations: CONTENT_UPCOMING, discoveryEnabled: true });
     }
@@ -1503,10 +1657,35 @@ export function Harness() {
       </div>
     );
   }
-  if (scenario === "flags") {
+  if (scenario === "switches") {
     return (
       <div className="p-4">
-        <Flags />
+        <Switches />
+      </div>
+    );
+  }
+  if (scenario === "switch-detail") {
+    return (
+      <div className="p-4">
+        <Routes>
+          <Route path="/switches/:key" element={<SwitchDetail />} />
+        </Routes>
+      </div>
+    );
+  }
+  if (scenario === "experiments") {
+    return (
+      <div className="p-4">
+        <Experiments />
+      </div>
+    );
+  }
+  if (scenario === "experiment-detail") {
+    return (
+      <div className="p-4">
+        <Routes>
+          <Route path="/experiments/:key" element={<ExperimentDetail />} />
+        </Routes>
       </div>
     );
   }
@@ -1526,7 +1705,12 @@ const initialEntry =
     ? "/dm-recovery"
     : harnessScenario === "sequence-editor"
       ? "/sequences/resource-1"
-      : "/";
+      : harnessScenario === "switch-detail"
+        ? // The lone Stop now with no matching start — the safety model made visible.
+          "/switches/DM_RECOVERY_ENABLED"
+        : harnessScenario === "experiment-detail"
+          ? "/experiments/recovery-reminder-timing"
+          : "/";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
