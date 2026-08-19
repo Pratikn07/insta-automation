@@ -234,6 +234,32 @@ export function UpcomingAutomations({ resources }: { resources: Resource[] }) {
   const error = save.error ?? cancel.error ?? retry.error;
   const automations = query.data?.automations ?? [];
 
+  /**
+   * With nothing pending this is one line, not a section.
+   *
+   * It sits above the grid so a needs-attention row is visible without scrolling.
+   * That only works if the empty state costs nothing — a heading plus a paragraph
+   * of explanation would push 197 posts down every single visit to say "there is
+   * nothing here". The explanation belongs with the rows it explains.
+   */
+  const quiet =
+    !query.isLoading && !query.isError && automations.length === 0 && !editor;
+
+  if (quiet) {
+    return (
+      <p className="text-[13px] text-muted-foreground">
+        Scheduled a post that isn&apos;t here yet?{" "}
+        <button
+          type="button"
+          onClick={() => setEditor({ ...EMPTY_EDITOR })}
+          className="text-signal underline underline-offset-2 [@media(pointer:coarse)]:min-h-11"
+        >
+          Set up its keyword in advance
+        </button>
+      </p>
+    );
+  }
+
   return (
     <section className="space-y-3">
       <div className="flex flex-wrap items-baseline justify-between gap-3">
@@ -301,17 +327,10 @@ export function UpcomingAutomations({ resources }: { resources: Resource[] }) {
           </button>
         </p>
       ) : automations.length === 0 ? (
-        // Not an empty state — the door. Content has no header action, so hiding
-        // this line entirely would leave her no way to make her first one.
+        // Reached only with the editor open on a first setup — the quiet one-line
+        // form above handles every other empty case.
         <p className="border-t py-3.5 text-[13px] text-muted-foreground">
-          Scheduled a post that isn&apos;t here yet?{" "}
-          <button
-            type="button"
-            onClick={() => setEditor({ ...EMPTY_EDITOR })}
-            className="text-signal underline underline-offset-2 [@media(pointer:coarse)]:min-h-11"
-          >
-            Set up its keyword in advance
-          </button>
+          Nothing set up yet. Fill in the form above and it will wait here for its post.
         </p>
       ) : (
         <ul className="border-t">

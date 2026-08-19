@@ -133,15 +133,19 @@ test.describe("visual QA artifacts", () => {
     await expect(page.getByText("Waiting", { exact: true })).toBeVisible();
     await expect(page.getByText("Attached", { exact: true })).toBeVisible();
 
-    // The grid comes first. This is a layout decision worth failing on: a handful
-    // of pending setups must not push 147 posts down the page.
+    // Pending setups come FIRST, above the grid. Worth failing on: the earlier
+    // order read fine against four fixture tiles and buried the whole feature
+    // fifty rows down against a real account of 197 posts.
     const grid = page.getByRole("tab", { name: /All/ });
     const upcoming = page.getByRole("heading", { name: "Set up in advance" });
     await expect(grid).toBeVisible();
     await expect(upcoming).toBeVisible();
     const gridBox = await grid.boundingBox();
     const upcomingBox = await upcoming.boundingBox();
-    expect(gridBox!.y).toBeLessThan(upcomingBox!.y);
+    expect(upcomingBox!.y).toBeLessThan(gridBox!.y);
+
+    // And it must be reachable without scrolling, which is the whole point.
+    expect(upcomingBox!.y).toBeLessThan(page.viewportSize()!.height);
 
     await settleAnimations(page);
     await capture(page, testInfo.project.name, "content");
