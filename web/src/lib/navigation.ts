@@ -61,6 +61,12 @@ export const NAV_GROUPS: readonly NavDestinationGroup[] = [
   {
     heading: "System",
     items: [
+      {
+        path: "/flags",
+        label: "Things we're testing",
+        mobileTitle: "Testing",
+        group: "System",
+      },
       { path: "/activity", label: "Activity", mobileTitle: "Activity", group: "System" },
       { path: "/assistant", label: "Assistant", mobileTitle: "Assistant", group: "System" },
     ],

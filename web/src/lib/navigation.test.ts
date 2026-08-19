@@ -22,7 +22,7 @@ describe("navigation metadata", () => {
       ["Insights", "Funnels"],
       ["Content", "Keywords", "Sequences"],
       ["Conversations", "DM recovery", "Historical recovery"],
-      ["Activity", "Assistant"],
+      ["Things we're testing", "Activity", "Assistant"],
     ]);
 
     const paths = NAV_DESTINATIONS.map((destination) => destination.path);
@@ -39,6 +39,9 @@ describe("navigation metadata", () => {
     ["/conversations", "Conversations"],
     ["/dm-recovery", "DM recovery"],
     ["/historical-recovery", "Historical recovery"],
+    // Shorter on mobile than in the rail: the rail has room for the sentence, a
+    // mobile title bar does not.
+    ["/flags", "Testing"],
     ["/activity", "Activity"],
     ["/assistant", "Assistant"],
     ["/sequences/sequence-1", "Sequence editor"],
