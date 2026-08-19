@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -54,9 +55,13 @@ function renderContent() {
   });
   return {
     client,
+    // A Router because the upcoming block navigates to the guide editor after
+    // creating a guide inline.
     ...render(
       <QueryClientProvider client={client}>
-        <Content />
+        <MemoryRouter>
+          <Content />
+        </MemoryRouter>
       </QueryClientProvider>,
     ),
   };

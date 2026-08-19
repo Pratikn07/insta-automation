@@ -71,6 +71,30 @@ async function bindInTransaction(input: {
       return { kind: "not_eligible" };
     }
 
+    // A guide with no steps sends nothing. Attaching the keyword anyway would put
+    // a live trigger on a published post that answers every commenter with
+    // silence, so this refuses and says so instead.
+    //
+    // Checked here rather than when the setup was created, because this is the
+    // moment it matters and the only moment the answer is still true — a guide can
+    // be emptied at any point in between.
+    const guide = await tx.resource.findUnique({
+      where: { id: setup.resourceId },
+      select: { _count: { select: { messages: true } } },
+    });
+    if ((guide?._count.messages ?? 0) === 0) {
+      await tx.upcomingAutomation.update({
+        where: { id: setup.id },
+        data: {
+          status: "needs_attention",
+          matchedMediaId: input.media.id,
+          errorCode: "guide_has_no_steps",
+          lastAttemptAt: new Date(),
+        },
+      });
+      return { kind: "needs_attention", errorCode: "guide_has_no_steps" };
+    }
+
     const instructionError = captionError(setup, input.media);
     if (instructionError) {
       await tx.upcomingAutomation.update({

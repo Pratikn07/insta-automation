@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 import {
   AlertTriangle,
   CalendarClock,
@@ -28,10 +29,17 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
+/** Same two-way choice KeywordForm offers, so it is one control rather than two. */
+type GuideMode = "new" | "existing";
+
 type EditorState = {
   id: string | null;
   keyword: string;
+  guideMode: GuideMode;
+  /** Used when guideMode is "existing". */
   resourceId: string;
+  /** Used when guideMode is "new". */
+  newGuideName: string;
   publicReply: string;
   gateMessage: string;
   active: boolean;
@@ -40,7 +48,11 @@ type EditorState = {
 const EMPTY_EDITOR: EditorState = {
   id: null,
   keyword: "",
+  // New by default. A first-time setup has no guide to pick, and the reel flow
+  // makes the same assumption.
+  guideMode: "new",
   resourceId: "",
+  newGuideName: "",
   publicReply: "",
   gateMessage: "",
   active: true,
@@ -107,6 +119,8 @@ function errorStory(errorCode: string, triggerWord: string): string {
       return "that post already has a different keyword, so this one wasn't added";
     case "multiple_media_matches":
       return "more than one new post matched, so nothing was attached";
+    case "guide_has_no_steps":
+      return "the guide has no steps yet, so nothing was attached — add them and retry";
     default:
       return `needs review: ${errorCode}`;
   }
@@ -148,7 +162,10 @@ function editorFor(row: UpcomingAutomation): EditorState {
   return {
     id: row.id,
     keyword: row.triggerWord,
+    // Editing an existing setup never creates a guide: it already has one.
+    guideMode: "existing",
     resourceId: row.resourceId,
+    newGuideName: "",
     publicReply: row.publicReply,
     gateMessage: row.gateMessage,
     active: row.active,
@@ -163,9 +180,12 @@ export function UpcomingAutomations({ resources }: { resources: Resource[] }) {
   const queryClient = useQueryClient();
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [cancelling, setCancelling] = useState<UpcomingAutomation | null>(null);
+  const navigate = useNavigate();
   // One identity per create attempt. Renewed only after a create succeeds, so a
   // repeat of the same attempt reaches the same row rather than making a new one.
+  // The guide gets its own, because a retry must not create a second guide either.
   const { operationId: newSetupId, renew: renewNewSetupId } = useOperationId();
+  const { operationId: newGuideId, renew: renewNewGuideId } = useOperationId();
 
   const query = useQuery<UpcomingAutomationsResponse>({
     queryKey: ["upcoming-automations"],
@@ -184,32 +204,73 @@ export function UpcomingAutomations({ resources }: { resources: Resource[] }) {
   }, [query.dataUpdatedAt, queryClient]);
 
   const save = useMutation({
-    mutationFn: async (state: EditorState) => {
-      const fields = {
-        keyword: state.keyword.trim().toUpperCase(),
-        resourceId: state.resourceId,
-        publicReply: state.publicReply,
-        gateMessage: state.gateMessage,
-        active: state.active,
-      };
+    mutationFn: async (
+      state: EditorState,
+    ): Promise<{ row: UpcomingAutomation; createdGuideId: string | null }> => {
       if (state.id) {
-        return apiMutation<UpcomingAutomation>(`/upcoming-automations/${state.id}`, {
-          method: "PATCH",
-          body: JSON.stringify(fields),
-        });
+        const row = await apiMutation<UpcomingAutomation>(
+          `/upcoming-automations/${state.id}`,
+          {
+            method: "PATCH",
+            body: JSON.stringify({
+              keyword: state.keyword.trim().toUpperCase(),
+              resourceId: state.resourceId,
+              publicReply: state.publicReply,
+              gateMessage: state.gateMessage,
+              active: state.active,
+            }),
+          },
+        );
+        return { row, createdGuideId: null };
       }
+
+      // A brand-new guide is created first, empty, then the setup points at it.
+      // Two calls rather than one because the setup needs an id to reference, and
+      // the guide's steps are written afterwards in the editor — the same order
+      // KeywordForm uses.
+      let resourceId = state.resourceId;
+      let createdGuideId: string | null = null;
+      if (state.guideMode === "new") {
+        const guide = await apiMutation<Resource>("/resources", {
+          method: "POST",
+          operationId: newGuideId,
+          body: JSON.stringify({
+            id: newGuideId,
+            name: state.newGuideName.trim(),
+            description: null,
+          }),
+        });
+        resourceId = guide.id;
+        createdGuideId = guide.id;
+      }
+
       // The id travels in the body and, via operationId, in Idempotency-Key. The
       // route compares them and refuses if they disagree.
-      return apiMutation<UpcomingAutomation>("/upcoming-automations", {
+      const row = await apiMutation<UpcomingAutomation>("/upcoming-automations", {
         method: "POST",
         operationId: newSetupId,
-        body: JSON.stringify({ id: newSetupId, ...fields }),
+        body: JSON.stringify({
+          id: newSetupId,
+          keyword: state.keyword.trim().toUpperCase(),
+          resourceId,
+          publicReply: state.publicReply,
+          gateMessage: state.gateMessage,
+          active: state.active,
+        }),
       });
+      return { row, createdGuideId };
     },
-    onSuccess: async (_row, state) => {
-      if (!state.id) renewNewSetupId();
+    onSuccess: async ({ createdGuideId }, state) => {
+      if (!state.id) {
+        renewNewSetupId();
+        renewNewGuideId();
+      }
       setEditor(null);
       await queryClient.invalidateQueries({ queryKey: ["upcoming-automations"] });
+      await queryClient.invalidateQueries({ queryKey: ["resources"] });
+      // Straight into the editor to write the steps, because an empty guide is
+      // the one thing that stops this setup from ever attaching.
+      if (createdGuideId) navigate(`/guides/${createdGuideId}`);
     },
   });
 
@@ -472,11 +533,20 @@ function UpcomingEditor({
   onSubmit: () => void;
 }) {
   const tokenValid = /^[A-Za-z0-9]+$/.test(value.keyword.trim());
-  const guide = resources.find((resource) => resource.id === value.resourceId);
-  const guideHasMessages = (guide?._count?.messages ?? 0) > 0;
+  /**
+   * A named new guide is enough; it does not need steps yet.
+   *
+   * The steps are written in the editor immediately afterwards, and the binder
+   * refuses to attach an empty guide when the post publishes — so the check that
+   * used to live here has moved to where it can actually be enforced.
+   */
+  const guideChosen =
+    value.guideMode === "new"
+      ? value.newGuideName.trim().length > 0
+      : value.resourceId.length > 0;
   const canSubmit =
     tokenValid &&
-    guideHasMessages &&
+    guideChosen &&
     value.publicReply.length >= 1 &&
     value.publicReply.length <= 280 &&
     value.gateMessage.length >= 1 &&
@@ -518,23 +588,70 @@ function UpcomingEditor({
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="upcoming-guide">Guide</Label>
-          <Select
-            id="upcoming-guide"
-            value={value.resourceId}
-            onChange={(event) => onChange({ ...value, resourceId: event.target.value })}
-          >
-            <option value="">Select a guide</option>
-            {resources.map((resource) => (
-              <option
-                key={resource.id}
-                value={resource.id}
-                disabled={(resource._count?.messages ?? 0) === 0}
-              >
-                {resource.name}
-                {(resource._count?.messages ?? 0) === 0 ? " (empty)" : ""}
-              </option>
-            ))}
-          </Select>
+          {value.id ? (
+            // Editing: the guide already exists, so there is nothing to create.
+            <Select
+              id="upcoming-guide"
+              value={value.resourceId}
+              onChange={(event) => onChange({ ...value, resourceId: event.target.value })}
+            >
+              <option value="">Select a guide</option>
+              {resources.map((resource) => (
+                <option key={resource.id} value={resource.id}>
+                  {resource.name}
+                  {(resource._count?.messages ?? 0) === 0 ? " (no steps yet)" : ""}
+                </option>
+              ))}
+            </Select>
+          ) : (
+            <>
+              {/* The same pair KeywordForm shows, so this is one control the owner
+                  already knows rather than a second way of choosing a guide. */}
+              <div className="grid grid-cols-2 gap-2">
+                <GuideModeButton
+                  active={value.guideMode === "new"}
+                  onClick={() => onChange({ ...value, guideMode: "new" })}
+                  title="Create new"
+                  subtitle="Build a fresh guide"
+                />
+                <GuideModeButton
+                  active={value.guideMode === "existing"}
+                  onClick={() => onChange({ ...value, guideMode: "existing" })}
+                  title="Use existing"
+                  subtitle={resources.length > 0 ? `${resources.length} available` : "None yet"}
+                  disabled={resources.length === 0}
+                />
+              </div>
+              {value.guideMode === "new" ? (
+                <Input
+                  id="upcoming-guide"
+                  value={value.newGuideName}
+                  maxLength={120}
+                  placeholder="Sleep Reset Guide"
+                  onChange={(event) => onChange({ ...value, newGuideName: event.target.value })}
+                />
+              ) : (
+                <Select
+                  id="upcoming-guide"
+                  value={value.resourceId}
+                  onChange={(event) => onChange({ ...value, resourceId: event.target.value })}
+                >
+                  <option value="">Select a guide</option>
+                  {resources.map((resource) => (
+                    <option key={resource.id} value={resource.id}>
+                      {resource.name}
+                      {(resource._count?.messages ?? 0) === 0 ? " (no steps yet)" : ""}
+                    </option>
+                  ))}
+                </Select>
+              )}
+              <p className="text-xs text-muted-foreground">
+                {value.guideMode === "new"
+                  ? "We'll create the guide and drop you into the editor to add steps."
+                  : "A guide with no steps yet is fine — it just has to have them before the post publishes."}
+              </p>
+            </>
+          )}
         </div>
       </div>
 
@@ -591,5 +708,46 @@ function UpcomingEditor({
         </Button>
       </div>
     </form>
+  );
+}
+
+/**
+ * One half of the create-new / use-existing pair.
+ *
+ * Deliberately the same shape as ModeButton in KeywordForm rather than an import:
+ * that one is a local helper in a large file, and lifting it into a shared module
+ * is a refactor of a working page that this change does not need. If a third
+ * caller appears, that is the moment to extract it.
+ */
+function GuideModeButton({
+  active,
+  onClick,
+  title,
+  subtitle,
+  disabled,
+}: {
+  active: boolean;
+  onClick: () => void;
+  title: string;
+  subtitle: string;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-pressed={active}
+      className={cn(
+        "rounded-md border px-3 py-2 text-left transition-colors",
+        active ? "border-signal bg-signal-soft" : "border-line hover:border-foreground/30",
+        disabled && "cursor-not-allowed opacity-50",
+      )}
+    >
+      <div className="text-[13px] font-medium">{title}</div>
+      <div className={cn("mt-0.5 text-[11.5px]", active ? "text-signal" : "text-muted-foreground")}>
+        {subtitle}
+      </div>
+    </button>
   );
 }
