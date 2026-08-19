@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Flags — layout options</title>
+<style>
+  /* Tokens copied verbatim from web/src/index.css so this is measured against
+     the surfaces the console actually renders on. */
+  :root {
+    --background:#f7f5ef; --foreground:#171812; --card:#fffef9;
+    --secondary:#ebe8df; --muted:#ebe8df; --muted-foreground:#66665f;
+    --signal:#2c4a3b; --signal-soft:#dce9e2;
+    --urgent:#a8412b; --urgent-soft:#f5ddd6;
+    --caution:#7a5a0c; --caution-soft:#f0e6cc;
+    --destructive:#8c3a2b; --border:#ebe8df; --line:#cac7bd;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--background); color:var(--foreground);
+    font:15px/1.5 "Archivo", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .page { max-width:1120px; margin:0 auto; padding:28px 32px 72px; }
+  .label-caps { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted-foreground); font-weight:500; }
+  h1 { font-size:24px; font-weight:500; letter-spacing:-.01em; margin:6px 0 0; }
+  h2 { font-size:17px; font-weight:500; margin:0; }
+  .sub { color:var(--muted-foreground); font-size:14px; margin:4px 0 0; }
+  .rule { height:1px; background:var(--border); margin:22px 0; }
+  .note { font-size:13px; color:var(--muted-foreground); margin-top:12px; max-width:74ch; }
+  .note strong { color:var(--foreground); font-weight:500; }
+  code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; background:var(--secondary); padding:1px 5px; border-radius:3px; }
+
+  /* Chips */
+  .chip { display:inline-flex; align-items:center; gap:5px; padding:2px 8px; border-radius:999px; font-size:11.5px; font-weight:500; white-space:nowrap; }
+  .chip .dot { width:6px; height:6px; border-radius:50%; flex:none; }
+  .live    { background:var(--signal-soft);  color:var(--signal); }
+  .live .dot    { background:var(--signal); }
+  .off     { background:var(--muted);        color:var(--muted-foreground); }
+  .off .dot     { background:var(--muted-foreground); }
+  .running { background:var(--caution-soft); color:var(--caution); }
+  .running .dot { background:var(--caution); }
+  .attn    { background:var(--urgent-soft);  color:var(--urgent); }
+  .attn .dot    { background:var(--urgent); }
+
+  /* Rows */
+  .rows { border-top:1px solid var(--border); }
+  .row { display:grid; grid-template-columns:22px 1fr 150px 110px 96px; gap:14px; align-items:center; padding:11px 4px; border-bottom:1px solid var(--border); }
+  .row.group-head { grid-template-columns:1fr; padding:16px 4px 6px; border-bottom:1px solid var(--line); }
+  .name { font-weight:500; font-size:14px; }
+  .key  { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11.5px; color:var(--muted-foreground); margin-top:1px; }
+  .chev { color:var(--muted-foreground); font-size:11px; justify-self:center; }
+  .src  { font-size:11.5px; color:var(--muted-foreground); }
+  .btn  { font:inherit; font-size:12px; padding:4px 10px; border-radius:6px; border:1px solid var(--line); background:transparent; color:var(--foreground); cursor:pointer; }
+  .btn-quiet { border-color:transparent; color:var(--muted-foreground); }
+  .btn-danger { border-color:var(--destructive); color:var(--destructive); }
+  .lock { font-size:11.5px; color:var(--muted-foreground); }
+
+  /* Toggle + slider, purely visual */
+  .tg { width:34px; height:19px; border-radius:999px; position:relative; display:inline-block; vertical-align:middle; }
+  .tg.on  { background:var(--signal); }
+  .tg.off { background:var(--line); }
+  .tg::after { content:""; position:absolute; top:2px; width:15px; height:15px; border-radius:50%; background:#fff; }
+  .tg.on::after  { right:2px; }
+  .tg.off::after { left:2px; }
+  .sl { display:flex; align-items:center; gap:8px; }
+  .track { flex:1; height:4px; border-radius:2px; background:var(--secondary); position:relative; min-width:64px; }
+  .fill  { position:absolute; left:0; top:0; bottom:0; border-radius:2px; background:var(--signal); }
+  .knob  { position:absolute; top:-5px; width:14px; height:14px; border-radius:50%; background:var(--card); border:2px solid var(--signal); }
+  .pct   { font-size:12.5px; font-variant-numeric:tabular-nums; width:34px; text-align:right; }
+
+  /* Expanded panel */
+  .panel { border:1px solid var(--border); border-radius:8px; background:var(--card); padding:18px 20px; }
+  .kv { display:grid; grid-template-columns:170px 1fr; gap:8px 16px; font-size:13.5px; align-items:baseline; }
+  .kv dt { color:var(--muted-foreground); }
+  .arms { border-top:1px solid var(--border); margin-top:14px; padding-top:12px; }
+  .arm { display:grid; grid-template-columns:130px 56px 1fr 90px; gap:12px; align-items:center; font-size:13px; padding:5px 0; }
+  .bar { height:6px; border-radius:3px; background:var(--secondary); position:relative; }
+  .bar > span { position:absolute; left:0; top:0; bottom:0; border-radius:3px; }
+  .warn { display:flex; gap:8px; align-items:flex-start; background:var(--urgent-soft); color:var(--urgent); padding:10px 12px; border-radius:6px; font-size:13px; margin-top:14px; }
+  .cmp { display:grid; grid-template-columns:1fr 1fr; gap:0; border:1px solid var(--border); border-radius:8px; overflow:hidden; margin-top:16px; }
+  .cmp > div { padding:18px 20px; }
+  .cmp > div + div { border-left:1px solid var(--border); }
+  .head { font-size:12px; font-weight:600; margin-bottom:12px; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<!-- ══════════ OPTION A ══════════ -->
+<div class="label-caps">Option A of 2 · one flat list</div>
+<h1>Flags</h1>
+<p class="sub">Every switch in the system, what it is set to, and where that value comes from.</p>
+
+<div class="rows" style="margin-top:18px">
+  <div class="row" style="border-bottom-color:var(--line)">
+    <span></span>
+    <span class="label-caps">Flag</span>
+    <span class="label-caps">Rule</span>
+    <span class="label-caps">Source</span>
+    <span></span>
+  </div>
+
+  <div class="row">
+    <span class="chev">›</span>
+    <span><div class="name">AI reply drafts</div><div class="key">AI_DRAFTS_ENABLED</div></span>
+    <span><span class="tg on"></span></span>
+    <span class="src">Saved here</span>
+    <span><span class="chip live"><span class="dot"></span>Live</span></span>
+  </div>
+
+  <div class="row">
+    <span class="chev">›</span>
+    <span><div class="name">AI sending</div><div class="key">AI_SEND_ENABLED</div></span>
+    <span class="lock">🔒 Railway only</span>
+    <span class="src">Railway</span>
+    <span><span class="chip off"><span class="dot"></span>Off</span></span>
+  </div>
+
+  <div class="row">
+    <span class="chev">›</span>
+    <span><div class="name">Guide delivery rollout</div><div class="key">GUIDE_DELIVERY_ROLLOUT_PERCENT</div></span>
+    <span><span class="sl"><span class="track"><span class="fill" style="width:45%"></span><span class="knob" style="left:calc(45% - 7px)"></span></span><span class="pct">45%</span></span></span>
+    <span class="src">Saved here</span>
+    <span><span class="chip live"><span class="dot"></span>Live</span></span>
+  </div>
+
+  <div class="row" style="background:var(--card)">
+    <span class="chev">⌄</span>
+    <span><div class="name">Recovery reminder timing</div><div class="key">DM_RECOVERY_EXPERIMENT_VERSION</div></span>
+    <span class="lock">3 arms · read-only</span>
+    <span class="src">Railway</span>
+    <span><span class="chip attn"><span class="dot"></span>Ends in 3d</span></span>
+  </div>
+
+  <div class="row">
+    <span class="chev">›</span>
+    <span><div class="name">Background workers</div><div class="key">WORKERS_ENABLED</div></span>
+    <span class="lock">🔒 Railway only</span>
+    <span class="src">Code default ⚠</span>
+    <span><span class="chip live"><span class="dot"></span>Live</span></span>
+  </div>
+
+  <div class="row">
+    <span class="chev">›</span>
+    <span><div class="name">Recovery holdout</div><div class="key">DM_RECOVERY_HOLDOUT_PERCENT</div></span>
+    <span><span class="sl"><span class="track"><span class="fill" style="width:10%"></span><span class="knob" style="left:calc(10% - 7px)"></span></span><span class="pct">10%</span></span></span>
+    <span class="src">Code default ⚠</span>
+    <span><span class="chip live"><span class="dot"></span>Live</span></span>
+  </div>
+</div>
+
+<p class="note">
+  <strong>One list, sorted by nothing but name.</strong> Optimizely's own shape. Easy to
+  scan for a single flag, and the <code>Source</code> column is where the value comes
+  from — the five reading <em>Code default</em> are the ones nobody could see before.
+</p>
+
+<div class="rule"></div>
+
+<!-- ══════════ OPTION B ══════════ -->
+<div class="label-caps">Option B of 2 · grouped by what it touches</div>
+<h1 style="margin-top:6px">Flags</h1>
+<p class="sub">Every switch in the system, grouped by the part of the product it controls.</p>
+
+<div class="rows" style="margin-top:18px">
+  <div class="row group-head"><span class="label-caps">Outbound — reaches real people</span></div>
+
+  <div class="row">
+    <span class="chev">›</span>
+    <span><div class="name">Recovery reminders</div><div class="key">DM_RECOVERY_ENABLED</div></span>
+    <span><button class="btn btn-danger">Stop now</button></span>
+    <span class="src">Railway</span>
+    <span><span class="chip live"><span class="dot"></span>Live</span></span>
+  </div>
+  <div class="row">
+    <span class="chev">›</span>
+    <span><div class="name">Guide delivery</div><div class="key">GUIDE_DELIVERY_ENABLED · ROLLOUT_PERCENT</div></span>
+    <span><span class="sl"><span class="track"><span class="fill" style="width:45%"></span><span class="knob" style="left:calc(45% - 7px)"></span></span><span class="pct">45%</span></span></span>
+    <span class="src">Saved here</span>
+    <span><span class="chip live"><span class="dot"></span>Live</span></span>
+  </div>
+  <div class="row">
+    <span class="chev">›</span>
+    <span><div class="name">AI sending</div><div class="key">AI_SEND_ENABLED</div></span>
+    <span class="lock">🔒 off · on via Railway</span>
+    <span class="src">Railway</span>
+    <span><span class="chip off"><span class="dot"></span>Off</span></span>
+  </div>
+
+  <div class="row group-head"><span class="label-caps">Experiments — measuring something</span></div>
+
+  <div class="row">
+    <span class="chev">⌄</span>
+    <span><div class="name">Recovery reminder timing</div><div class="key">read-recovery-v1</div></span>
+    <span class="lock">3 arms · read-only</span>
+    <span class="src">Railway</span>
+    <span><span class="chip attn"><span class="dot"></span>Ends in 3d</span></span>
+  </div>
+
+  <div class="row group-head"><span class="label-caps">Assistive — nothing leaves the app</span></div>
+
+  <div class="row">
+    <span class="chev">›</span>
+    <span><div class="name">AI reply drafts</div><div class="key">AI_DRAFTS_ENABLED</div></span>
+    <span><span class="tg on"></span></span>
+    <span class="src">Saved here</span>
+    <span><span class="chip live"><span class="dot"></span>Live</span></span>
+  </div>
+  <div class="row">
+    <span class="chev">›</span>
+    <span><div class="name">Assistant</div><div class="key">AI_ADVISOR_ENABLED</div></span>
+    <span><span class="tg on"></span></span>
+    <span class="src">Saved here</span>
+    <span><span class="chip live"><span class="dot"></span>Live</span></span>
+  </div>
+
+  <div class="row group-head"><span class="label-caps">Infrastructure — not a product choice</span></div>
+
+  <div class="row">
+    <span class="chev">›</span>
+    <span><div class="name">Background workers</div><div class="key">WORKERS_ENABLED</div></span>
+    <span class="lock">🔒 Railway only</span>
+    <span class="src">Code default ⚠</span>
+    <span><span class="chip live"><span class="dot"></span>Live</span></span>
+  </div>
+</div>
+
+<p class="note">
+  <strong>Grouped by blast radius, loudest first.</strong> The top group is the one that
+  can reach a real parent, so it is the group you look at in an incident. It also puts
+  <em>Stop now</em> and a rollout slider next to each other, where the difference
+  between them is obvious.
+</p>
+
+<div class="rule"></div>
+
+<!-- ══════════ EXPANDED ══════════ -->
+<div class="label-caps">What opens when you expand a row</div>
+<h2 style="margin-top:8px">Recovery reminder timing</h2>
+<p class="sub">A read-only experiment in v1 — three arms, a fixed window, and a measured outcome.</p>
+
+<div class="panel" style="margin-top:16px">
+  <dl class="kv">
+    <dt>Hypothesis</dt><dd>A reminder at 2h converts better than one at 6h.</dd>
+    <dt>Measured outcome</dt><dd>Guide received within 48h of the gate DM.</dd>
+    <dt>Version</dt><dd><code>read-recovery-v1</code> · immutable</dd>
+    <dt>Window</dt><dd>7 Aug → 21 Aug · <strong>3 days left</strong></dd>
+    <dt>Assignment</dt><dd>By follower, fixed at first contact</dd>
+  </dl>
+
+  <div class="arms">
+    <div class="label-caps" style="margin-bottom:6px">Arms</div>
+    <div class="arm">
+      <span>Reminder sent</span><span class="pct">585</span>
+      <span class="bar"><span style="width:60%; background:var(--signal)"></span></span>
+      <span class="src">treatment</span>
+    </div>
+    <div class="arm">
+      <span>No reminder</span><span class="pct">394</span>
+      <span class="bar"><span style="width:40%; background:var(--muted-foreground)"></span></span>
+      <span class="src">control</span>
+    </div>
+    <div class="arm">
+      <span>Stayed quiet</span><span class="pct">1275</span>
+      <span class="bar"><span style="width:100%; background:var(--secondary)"></span></span>
+      <span class="src">not counted</span>
+    </div>
+  </div>
+
+  <div class="warn">
+    <span>⚠</span>
+    <span>
+      When this window closes on 21 Aug, every new person is assigned to control and
+      <strong>reminders stop being sent</strong>. Nothing announces it.
+    </span>
+  </div>
+</div>
+
+<p class="note">
+  The countdown and that warning are the reason this page exists at all: today the same
+  fact is only visible by reading two Railway variables against
+  <code>dmRecoveryService.ts</code>.
+</p>
+
+<div class="rule"></div>
+
+<!-- ══════════ STALE ══════════ -->
+<div class="label-caps">Turning an experiment into a feature</div>
+<h2 style="margin-top:8px">The step after 100%</h2>
+
+<div class="cmp">
+  <div>
+    <div class="head" style="color:var(--signal)">At 100%, still a flag</div>
+    <div class="rows" style="border-top:none">
+      <div class="row" style="grid-template-columns:1fr 110px 96px; border-bottom:none; padding-left:0">
+        <span><div class="name">Guide delivery</div><div class="key">100% for 34 days</div></span>
+        <span class="src">Saved here</span>
+        <span><span class="chip running"><span class="dot"></span>Stale</span></span>
+      </div>
+    </div>
+    <p class="note" style="margin-top:10px">
+      Everyone gets it and nothing has changed in a month, so the switch is no longer a
+      choice — it is dead code with a dial on it.
+    </p>
+  </div>
+  <div>
+    <div class="head" style="color:var(--signal)">What the page offers</div>
+    <p style="font-size:13.5px; margin:0 0 10px">
+      One action: <strong>mark it shipped</strong>. That writes a note, drops it out of
+      the active list, and leaves a task to delete the flag from the code.
+    </p>
+    <button class="btn">Mark as shipped →</button>
+    <p class="note" style="margin-top:12px">
+      It does not remove the flag by itself. Deleting a branch from
+      <code>src/</code> is a code change and belongs in a commit, not a click.
+    </p>
+  </div>
+</div>
+
+</div>
+</body>
+</html>
