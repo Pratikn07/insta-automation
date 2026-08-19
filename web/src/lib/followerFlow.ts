@@ -15,6 +15,32 @@ function isMeasured(p: FollowerDailyAddsPoint): boolean {
   return MEASURED_BASES.has(p.basis) && p.total !== null && p.spanDays !== null;
 }
 
+/** One day in a trailing series. `value: null` means Meta never measured it. */
+export interface DailySlot {
+  value: number | null;
+  provisional: boolean;
+}
+
+/**
+ * The trailing window of daily US adds, oldest first, with unmeasured days kept
+ * as null slots so the timeline stays true rather than closing the gap.
+ *
+ * Lives here rather than beside the component that draws it so that
+ * MEASURED_BASES — the rule for what counts as a real measurement — has exactly
+ * one definition in this file. A null slot is NOT zero: a stale, pending or
+ * no-snapshot day is a day nobody counted, and rendering it as zero would state
+ * that nobody followed.
+ */
+export function trailingUsSlots(
+  points: FollowerDailyAddsPoint[],
+  days: number,
+): DailySlot[] {
+  return lastNDays(points, days).map((p) => ({
+    value: MEASURED_BASES.has(p.basis) && p.us !== null ? p.us : null,
+    provisional: p.provisional === true,
+  }));
+}
+
 function round(value: number, precision = 1): number {
   const factor = 10 ** precision;
   return Math.round(value * factor) / factor;
