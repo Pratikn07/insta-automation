@@ -101,6 +101,9 @@ describe("flags API", () => {
       pageMayEnable: false,
       pageMayStop: true,
       experimentKey: "recovery-reminder-timing",
+      // Served, not looked up client-side: the console keeping its own key-to-name
+      // map is how a renamed experiment would keep its old name on this switch.
+      experimentName: "Recovery reminder timing",
     });
     expect(response.body.ifOff.length).toBeGreaterThan(10);
   });
@@ -110,6 +113,7 @@ describe("flags API", () => {
 
     expect(response.body.key).toBe("AI_ADVISOR_ENABLED");
     expect(response.body.experimentKey).toBeUndefined();
+    expect(response.body.experimentName).toBeNull();
   });
 
   it("404s a single flag that does not exist", async () => {

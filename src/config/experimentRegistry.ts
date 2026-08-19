@@ -129,3 +129,15 @@ const BY_KEY = new Map(EXPERIMENT_REGISTRY.map((e) => [e.key, e]));
 export function experimentDefinition(key: string): ExperimentDefinition | undefined {
   return BY_KEY.get(key);
 }
+
+/**
+ * The display name for an experiment key, or null.
+ *
+ * Served alongside every flag so the console never keeps its own key-to-name map.
+ * Two copies of that map in the web pages was the first draft; renaming an
+ * experiment here would have quietly left the old name on the switch that belongs
+ * to it.
+ */
+export function experimentName(key: string | undefined): string | null {
+  return key ? (BY_KEY.get(key)?.name ?? null) : null;
+}
