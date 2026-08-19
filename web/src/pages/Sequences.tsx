@@ -4,7 +4,7 @@ import { CircleAlert, Layers, MessageSquare, Plus, Tag, Trash2 } from "lucide-re
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
-import { apiRead, apiMutation, ApiError } from "@/lib/api";
+import { apiRead, apiMutation, apiErrorCode, ApiError } from "@/lib/api";
 import { useOperationId } from "@/lib/useOperationId";
 import type { Resource } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,37 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { EmptyState, LoadFailed } from "@/components/EmptyState";
+
+/**
+ * Why a delete was refused, in words that name the way out.
+ *
+ * The server answers these with a code, and `ApiError.message` is that code
+ * verbatim — so the old fallback showed either `resource_has_delivery_history` or a
+ * bare "Delete failed", neither of which says what is holding the guide.
+ */
+function deleteRefusal(error: unknown): string {
+  const code = error instanceof ApiError ? apiErrorCode(error) : null;
+  if (code === "resource_has_delivery_history") {
+    return "This guide has already been sent to someone, so it is kept as a record. Remove its keywords instead.";
+  }
+  if (code === "resource_has_upcoming_setup") {
+    const body = error instanceof ApiError ? (error.body as UpcomingSetupRefusal) : null;
+    const words = body?.triggerWords?.filter((word) => typeof word === "string") ?? [];
+    const named = words.length > 0 ? ` (${words.join(", ")})` : "";
+    return body?.clearable === false
+      ? `A past setup${named} still points at this guide, so it can't be deleted.`
+      : `A setup waiting for a post${named} uses this guide. Cancel it on Content first.`;
+  }
+  if (code === "resource_still_referenced") {
+    return "Something still points at this guide, so it can't be deleted yet.";
+  }
+  return "Could not delete this guide. Check your connection and try again.";
+}
+
+interface UpcomingSetupRefusal {
+  triggerWords?: unknown[];
+  clearable?: boolean;
+}
 
 export function Sequences() {
   const qc = useQueryClient();
@@ -35,8 +66,7 @@ export function Sequences() {
       qc.invalidateQueries({ queryKey: ["keywords"] });
       setConfirmDelete(null);
     },
-    onError: (err) =>
-      toast.error(err instanceof ApiError ? err.message : "Delete failed"),
+    onError: (err) => toast.error(deleteRefusal(err)),
   });
 
   return (
@@ -70,7 +100,7 @@ export function Sequences() {
           action={
             <Button variant="brand" onClick={() => setCreating(true)}>
               <Plus className="size-4" />
-              Create sequence
+              Create guide
             </Button>
           }
         />
@@ -110,7 +140,7 @@ export function Sequences() {
         title={`Delete "${confirmDelete?.name}"?`}
         description={
           (confirmDelete?._count?.keywords ?? 0) > 0
-            ? `This sequence is used by ${confirmDelete?._count?.keywords} keyword${confirmDelete?._count?.keywords === 1 ? "" : "s"}. Deleting it will leave them without a target.`
+            ? `This guide is used by ${confirmDelete?._count?.keywords} keyword${confirmDelete?._count?.keywords === 1 ? "" : "s"}. Deleting it will leave them without a target.`
             : "All steps in this guide will be removed."
         }
         destructive
