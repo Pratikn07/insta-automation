@@ -62,10 +62,10 @@ export function KpiTile({
   visual,
   className,
 }: KpiTileProps) {
-  // A figure set at 3.25rem is a 90px-tall hole when it holds an em-dash, and
-  // every tile shows one before the first snapshot lands. A placeholder is not a
-  // figure, so it does not get a figure's size — the `visual` below carries the
-  // cell instead.
+  // At 3.25rem an em-dash is a ~55px-tall hole (52px type on 1.05 leading,
+  // measured), and every tile shows one before the first snapshot lands. A
+  // placeholder is not a figure, so it does not get a figure's size — the
+  // `visual` below carries the cell instead.
   const isPlaceholder = value === "—" || value === "";
   const isLong = value.length > LONG_VALUE;
 

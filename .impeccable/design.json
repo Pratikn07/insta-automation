@@ -136,7 +136,7 @@
       },
       "figure": {
         "displayName": "Figure",
-        "purpose": "Measured values, tabular. Placeholders drop to label scale."
+        "purpose": "Measured values, tabular. A ladder rather than one size, and there are two of them (see The Figure Ladder Rule). Placeholders drop to 1.25rem in muted ink, and a withheld figure keeps its mark."
       },
       "title": {
         "displayName": "Title",

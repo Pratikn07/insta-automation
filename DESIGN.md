@@ -42,10 +42,10 @@ typography:
     fontWeight: 500
   figure:
     fontFamily: "Archivo, ui-sans-serif, sans-serif"
-    fontSize: "1.8rem"
+    fontSize: "3.25rem"
     fontWeight: 500
-    lineHeight: 1.25
-    letterSpacing: "-0.02em"
+    lineHeight: 1.05
+    letterSpacing: "-0.025em"
   body:
     fontFamily: "Archivo, ui-sans-serif, sans-serif"
     fontSize: "0.8125rem"
@@ -279,8 +279,9 @@ type. A font that is not loaded is not a choice.
 - **Display** (500, 1.5rem, `-0.02em`): the page name. One per screen.
 - **Headline** (500, 1.25rem, 1.375): today's read. The most important sentence
   on the surface and the only place a full sentence is set large.
-- **Figure** (500, 1.8rem, tabular): the scored metric. Supporting figures at
-  1.4rem, placeholders at 1.125rem in muted ink.
+- **Figure** (500, 3.25rem, 1.05, `-0.025em`, tabular): the scored metric, one
+  per surface. A figure is a ladder rather than a size — see *The Figure Ladder
+  Rule* — and there are currently two of them.
 - **Title** (500, 0.9375rem): section headings above a rule.
 - **Body** (400, 0.8125rem, 1.625): all running copy, at a 54–74ch measure.
 - **Label** (400, 0.625rem, `0.14em`, uppercase): every field name and section
@@ -292,10 +293,48 @@ type. A font that is not loaded is not a choice.
 component. Numbers here are compared down columns, and a new component must not
 be able to ship proportional figures by omission.
 
+**The Figure Ladder Rule.** A figure is a ladder, not a size, and this system has
+two of them. They are recorded together because they nearly collide and nobody
+has decided whether they should be one.
+
+| Step | Home band (`KpiTile`) | Funnels (`GuardedNumber`) |
+| --- | --- | --- |
+| Lead | 3.25rem, `-0.025em` | 2.6rem → 3rem at `sm`, `-0.03em` |
+| Supporting | 2.25rem, `-0.025em` | 1.5rem, `-0.02em` |
+| Inline | — | 1rem, `-0.01em` |
+| Too long to be a figure | 1.5rem | — |
+| Placeholder | 1.25rem, muted ink | — |
+
+Both ladders run at weight 500 and line-height 1.05 at the top. The overlap to be
+aware of: 3rem against 3.25rem at the lead, and 1.5rem meaning two different
+things. Do not "align" one ladder to the other by eye — either decide they are
+one ladder and change both deliberately, or leave them apart.
+
+This replaced a single recorded `figure` of 1.8rem, which was never accurate:
+`GuardedNumber` has run 2.6rem → 3rem since the commit that introduced this
+system and wrote this document, so the record captured one call site and missed
+the other from the first day.
+
 **The Placeholder Is Not A Figure Rule.** An em-dash standing in for a missing
-number is set at label scale, not figure scale. Rendered at figure size it is a
-60px hole where a value should be, and every tile shows one before the first
-snapshot lands.
+number drops to 1.25rem in muted ink — headline scale, not figure scale. At the
+lead figure's own size it is a ~55px hole where a value should be, and every tile
+shows one before the first snapshot lands. The cell is carried by its mark
+instead: see *The Withheld Figure Still Has A Shape Rule*.
+
+**The Withheld Figure Still Has A Shape Rule.** A cell whose figure is withheld
+keeps its mark. A week that cannot be *compared* still contains days that were
+*measured*, so the score cell draws its trailing series and says how much of the
+window was measured, rather than showing a lone em-dash on bare paper. It never
+sums those days into a stand-in figure — that would be a wrong number rather than
+a withheld one. Descriptive marks may show provisional and catch-up data with
+their qualifications; the restriction is on claims, not on visibility.
+
+**The Mark Obeys The Figure Rule.** A meter is a number rendered as length, so it
+is withheld wherever the figure is. A rate below its minimum sample prints its raw
+counts and draws no meter at all, because a half-filled bar beside "2 of 4" states
+the percentage the text deliberately refuses to print. A day nobody measured
+draws nothing and keeps its slot: a zero-height bar would say nobody followed
+that day, which is the one thing the data does not say.
 
 ## Layout
 
