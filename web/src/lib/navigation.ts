@@ -32,7 +32,7 @@ export const NAV_GROUPS: readonly NavDestinationGroup[] = [
     items: [
       { path: "/content", label: "Content", mobileTitle: "Content", group: "Publish" },
       { path: "/keywords", label: "Keywords", mobileTitle: "Keywords", group: "Publish" },
-      { path: "/sequences", label: "Sequences", mobileTitle: "Sequences", group: "Publish" },
+      { path: "/guides", label: "Guides", mobileTitle: "Guides", group: "Publish" },
     ],
   },
   {
@@ -85,6 +85,6 @@ export const NAV_DESTINATIONS: readonly NavDestination[] = [
 export function titleForPath(pathname: string): string {
   const destination = NAV_DESTINATIONS.find((item) => item.path === pathname);
   if (destination) return destination.mobileTitle;
-  if (pathname.startsWith("/sequences/")) return "Sequence editor";
+  if (pathname.startsWith("/guides/")) return "Guide editor";
   return "Tiny Soho";
 }

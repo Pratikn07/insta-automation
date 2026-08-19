@@ -74,9 +74,27 @@ describe("authenticated destinations", () => {
     expect(screen.getByLabelText("location")).toHaveTextContent(path);
   });
 
-  it("matches sequence editor detail routes", async () => {
-    await renderRoute("/sequences/sequence-1");
-    expect(screen.getByLabelText("location")).toHaveTextContent("/sequences/sequence-1");
+  it("matches guide editor detail routes", async () => {
+    await renderRoute("/guides/sequence-1");
+    expect(screen.getByLabelText("location")).toHaveTextContent("/guides/sequence-1");
+  });
+
+  /**
+   * The rename from /sequences must not break a bookmark.
+   *
+   * The detail redirect carries the id: dropping it would turn a bookmark to one
+   * guide into a bookmark to the whole list, which looks like it worked.
+   */
+  describe("the old /sequences paths", () => {
+    it("redirects the list", async () => {
+      await renderRoute("/sequences");
+      expect(screen.getByLabelText("location")).toHaveTextContent("/guides");
+    });
+
+    it("redirects one guide, keeping its id", async () => {
+      await renderRoute("/sequences/resource-42");
+      expect(screen.getByLabelText("location")).toHaveTextContent("/guides/resource-42");
+    });
   });
 
   // The two-page split only works if a deep link resolves rather than falling

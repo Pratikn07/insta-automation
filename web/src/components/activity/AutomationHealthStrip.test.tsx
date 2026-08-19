@@ -22,7 +22,7 @@ describe("AutomationHealthStrip", () => {
 
     expect(html).toContain("Automation health");
     expect(html).toContain("12");
-    expect(html).toContain("Sequences today");
+    expect(html).toContain("Guides today");
     expect(html).toContain("5");
     expect(html).toContain("Awaiting reply");
     expect(html).toContain("2");

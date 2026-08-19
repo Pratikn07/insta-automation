@@ -38,6 +38,21 @@ export function Content() {
   const [selected, setSelected] = useState<MediaItem | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
 
+  /**
+   * How many tiles are mounted.
+   *
+   * `/media/content` deliberately returns every post in one cached response — a
+   * creator account has a few hundred, so the network cost is paid once. The cost
+   * that is NOT paid once is mounting them: 197 tiles means 197 images and 197
+   * animated nodes on first paint. So the paging is here rather than in the API,
+   * which also keeps the filter counts exact and filtering instant.
+   *
+   * 24 is six rows on desktop and twelve on mobile — more than a screen, so there
+   * is always something below the fold to suggest scrolling.
+   */
+  const PAGE = 24;
+  const [visible, setVisible] = useState(PAGE);
+
   // Group keywords by the post they're attached to, so each card can show a
   // count and the drawer can list them — one source of truth, no extra fetch.
   const keywordsByMedia = useMemo(() => {
@@ -67,6 +82,14 @@ export function Content() {
     () => (filter === "all" ? all : all.filter((m) => m.kind === filter)),
     [all, filter],
   );
+  const shown = useMemo(() => items.slice(0, visible), [items, visible]);
+
+  // Switching filter starts at the top again. Carrying a count across filters
+  // would show 96 reels because you had scrolled through 96 of everything.
+  function changeFilter(next: Filter) {
+    setFilter(next);
+    setVisible(PAGE);
+  }
 
   const isLoading = mediaQ.isLoading || keywordsQ.isLoading || resourcesQ.isLoading;
 
@@ -75,12 +98,22 @@ export function Content() {
       <div>
         <h1 className="text-2xl font-medium tracking-tight">Content</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Pick a post and attach a keyword. Comments on that post trigger its sequence.
+          Pick a post and attach a keyword. Comments on that post trigger its guide.
         </p>
       </div>
 
+      {/*
+        Above the grid, in one fixed position.
+        With nothing pending this is a single line, so the grid barely moves; with
+        a needs-attention row it expands in place and is visible without scrolling
+        past 197 posts. An earlier version sat below the grid, which was judged
+        against a four-tile mockup and left the whole feature fifty rows down.
+        The position never changes, so it only has to be learned once.
+      */}
+      <UpcomingAutomations resources={resourcesQ.data ?? []} />
+
       {!isLoading && !mediaQ.isError && all.length > 0 && (
-        <FilterTabs value={filter} onChange={setFilter} counts={counts} />
+        <FilterTabs value={filter} onChange={changeFilter} counts={counts} />
       )}
 
       {mediaQ.isError ? (
@@ -112,7 +145,7 @@ export function Content() {
         />
       ) : (
         <div key={filter} className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-          {items.map((item, i) => (
+          {shown.map((item, i) => (
             <motion.button
               key={item.id}
               type="button"
@@ -131,19 +164,21 @@ export function Content() {
         </div>
       )}
 
-      {/*
-        Below the grid, not above it, and not behind a tab.
-        A Published/Upcoming tab pair made the grid one of two things this page
-        could be showing, which is a worse description of Content than the truth:
-        the grid IS the page, and these are a handful of setups waiting on posts
-        that don't exist yet. She scans the grid, doesn't find the post she just
-        scheduled, and keeps going — this is where that scan ends.
-        A failure doesn't need to be high on this page either, because Home
-        surfaces an unmatched caption as its Best next move.
-      */}
-      <div className="border-t pt-5">
-        <UpcomingAutomations resources={resourcesQ.data ?? []} />
-      </div>
+      {shown.length < items.length && (
+        // States the whole number as well as the shown one, so the page never
+        // implies the account has 24 posts.
+        <div className="flex flex-col items-center gap-2 pt-1">
+          <p className="text-[13px] text-muted-foreground tabular-nums">
+            Showing {shown.length} of {items.length}
+          </p>
+          <Button
+            variant="outline"
+            onClick={() => setVisible((current) => current + PAGE)}
+          >
+            Show more
+          </Button>
+        </div>
+      )}
 
       <Drawer
         open={selected !== null}
@@ -369,7 +404,7 @@ function MediaDrawer({
                     )}
                   </div>
                   <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                    → {k.resource?.name ?? "Unknown sequence"}
+                    → {k.resource?.name ?? "Unknown guide"}
                   </p>
                 </div>
               </li>

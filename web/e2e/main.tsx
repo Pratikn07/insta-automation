@@ -1631,7 +1631,7 @@ export function Harness() {
     return (
       <div className="p-4">
         <Routes>
-          <Route path="/sequences/:id" element={<SequenceEditor />} />
+          <Route path="/guides/:id" element={<SequenceEditor />} />
         </Routes>
       </div>
     );
@@ -1704,7 +1704,7 @@ const initialEntry =
   harnessScenario?.startsWith("recovery-")
     ? "/dm-recovery"
     : harnessScenario === "sequence-editor"
-      ? "/sequences/resource-1"
+      ? "/guides/resource-1"
       : harnessScenario === "switch-detail"
         ? // The lone Stop now with no matching start — the safety model made visible.
           "/switches/DM_RECOVERY_ENABLED"

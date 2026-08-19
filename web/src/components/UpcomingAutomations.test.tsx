@@ -21,6 +21,9 @@ vi.mock("../lib/useOperationId", () => ({
   useOperationId: () => ({ operationId: OPERATION_ID, renew }),
 }));
 
+const navigate = vi.fn();
+vi.mock("react-router-dom", () => ({ useNavigate: () => navigate }));
+
 const { UpcomingAutomations } = await import("./UpcomingAutomations");
 
 const resources = [
@@ -78,6 +81,7 @@ beforeEach(() => {
   apiRead.mockReset();
   apiMutation.mockReset().mockResolvedValue(waiting);
   renew.mockReset();
+  navigate.mockReset();
   listOf([waiting]);
 });
 
@@ -129,6 +133,8 @@ describe("UpcomingAutomations", () => {
 
     await user.click(await screen.findByRole("button", { name: /Set up another/ }));
     await user.type(screen.getByLabelText("Keyword"), "highchair");
+    // Create new is the default, so picking an existing guide is an explicit choice.
+    await user.click(screen.getByRole("button", { name: /Use existing/ }));
     await user.selectOptions(screen.getByLabelText("Guide"), resources[0]!.id);
     await user.type(screen.getByLabelText("Public reply"), "Sent! Check your DMs.");
     await user.type(screen.getByLabelText("Gate message"), "Follow and reply DONE.");
@@ -148,8 +154,93 @@ describe("UpcomingAutomations", () => {
         }),
       }),
     );
-    // Only after a create lands does the next one get a new identity.
-    await waitFor(() => expect(renew).toHaveBeenCalledTimes(1));
+    // Only after a create lands do the next ones get new identities — one for the
+    // setup and one for the guide, since a retry must not create a second of either.
+    await waitFor(() => expect(renew).toHaveBeenCalledTimes(2));
+    // Nothing was created, so there is nowhere to send her.
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The gap that prompted this: the form could only pick a guide that already
+   * existed, so a first setup was impossible without going elsewhere first.
+   *
+   * Same shape as the reel flow — create the guide, then the thing pointing at it,
+   * then open the editor to write the steps.
+   */
+  it("creates a named guide first, then the setup pointing at it", async () => {
+    apiMutation
+      .mockResolvedValueOnce({ id: "new-guide-1", name: "Sleep Reset Guide" })
+      .mockResolvedValueOnce(waiting);
+    const user = userEvent.setup();
+    renderUpcoming();
+
+    await user.click(await screen.findByRole("button", { name: /Set up another/ }));
+    await user.type(screen.getByLabelText("Keyword"), "sleep");
+    await user.type(screen.getByLabelText("Guide"), "Sleep Reset Guide");
+    await user.type(screen.getByLabelText("Public reply"), "Sent!");
+    await user.type(screen.getByLabelText("Gate message"), "Follow and reply DONE.");
+    await user.click(screen.getByRole("button", { name: "Create setup" }));
+
+    await waitFor(() => expect(apiMutation).toHaveBeenCalledTimes(2));
+
+    expect(apiMutation.mock.calls[0]).toEqual([
+      "/resources",
+      {
+        method: "POST",
+        operationId: OPERATION_ID,
+        body: JSON.stringify({
+          id: OPERATION_ID,
+          name: "Sleep Reset Guide",
+          description: null,
+        }),
+      },
+    ]);
+    // The setup points at the guide that was just created, not at a typed id.
+    expect(apiMutation.mock.calls[1]![1]).toMatchObject({
+      body: expect.stringContaining('"resourceId":"new-guide-1"'),
+    });
+  });
+
+  it("opens the editor so the steps can be written", async () => {
+    apiMutation
+      .mockResolvedValueOnce({ id: "new-guide-1", name: "Sleep Reset Guide" })
+      .mockResolvedValueOnce(waiting);
+    const user = userEvent.setup();
+    renderUpcoming();
+
+    await user.click(await screen.findByRole("button", { name: /Set up another/ }));
+    await user.type(screen.getByLabelText("Keyword"), "sleep");
+    await user.type(screen.getByLabelText("Guide"), "Sleep Reset Guide");
+    await user.type(screen.getByLabelText("Public reply"), "Sent!");
+    await user.type(screen.getByLabelText("Gate message"), "Follow and reply DONE.");
+    await user.click(screen.getByRole("button", { name: "Create setup" }));
+
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith("/guides/new-guide-1"));
+  });
+
+  // An unnamed guide would create a row called "" that nobody could identify.
+  it("will not create a setup with an unnamed new guide", async () => {
+    const user = userEvent.setup();
+    renderUpcoming();
+
+    await user.click(await screen.findByRole("button", { name: /Set up another/ }));
+    await user.type(screen.getByLabelText("Keyword"), "sleep");
+    await user.type(screen.getByLabelText("Public reply"), "Sent!");
+    await user.type(screen.getByLabelText("Gate message"), "Follow and reply DONE.");
+
+    expect(screen.getByRole("button", { name: "Create setup" })).toBeDisabled();
+  });
+
+  // Editing has a guide already, so offering to create one would be nonsense.
+  it("offers no create-new choice when editing", async () => {
+    const user = userEvent.setup();
+    renderUpcoming();
+
+    await user.click(await screen.findByRole("button", { name: "Edit HIGHCHAIR" }));
+
+    expect(screen.queryByRole("button", { name: /Create new/ })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Guide")).toHaveValue(resources[0]!.id);
   });
 
   it("does not renew the create identity after an edit", async () => {

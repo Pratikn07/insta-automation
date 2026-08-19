@@ -20,7 +20,7 @@ describe("navigation metadata", () => {
   it("defines every rail destination once", () => {
     expect(NAV_GROUPS.map((group) => group.items.map((item) => item.label))).toEqual([
       ["Insights", "Funnels"],
-      ["Content", "Keywords", "Sequences"],
+      ["Content", "Keywords", "Guides"],
       ["Conversations", "DM recovery", "Historical recovery"],
       ["Experiments", "Switches", "Activity", "Assistant"],
     ]);
@@ -35,7 +35,7 @@ describe("navigation metadata", () => {
     ["/funnels", "Funnels"],
     ["/content", "Content"],
     ["/keywords", "Keywords"],
-    ["/sequences", "Sequences"],
+    ["/guides", "Guides"],
     ["/conversations", "Conversations"],
     ["/dm-recovery", "DM recovery"],
     ["/historical-recovery", "Historical recovery"],
@@ -43,7 +43,7 @@ describe("navigation metadata", () => {
     ["/switches", "Switches"],
     ["/activity", "Activity"],
     ["/assistant", "Assistant"],
-    ["/sequences/sequence-1", "Sequence editor"],
+    ["/guides/sequence-1", "Guide editor"],
     ["/unknown", "Tiny Soho"],
   ])("maps %s to the mobile title %s", (path, expected) => {
     expect(titleForPath(path)).toBe(expected);

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -54,9 +55,13 @@ function renderContent() {
   });
   return {
     client,
+    // A Router because the upcoming block navigates to the guide editor after
+    // creating a guide inline.
     ...render(
       <QueryClientProvider client={client}>
-        <Content />
+        <MemoryRouter>
+          <Content />
+        </MemoryRouter>
       </QueryClientProvider>,
     ),
   };
@@ -106,14 +111,32 @@ describe("Content", () => {
     expect(screen.getByRole("tab", { name: /All/ })).toBeInTheDocument();
   });
 
-  // The grid is the page's subject. Putting a handful of pending setups above 147
-  // posts would invert that on every visit.
-  it("puts the grid before the upcoming block in the document", async () => {
+  /**
+   * Above the grid, always, so a pending row is visible without scrolling.
+   *
+   * The earlier version put this below the grid, which read fine against a
+   * four-tile fixture and left the whole feature ~50 rows down against a real
+   * account of 197 posts.
+   */
+  it("puts the upcoming block before the grid in the document", async () => {
     renderContent();
 
-    const post = await screen.findByText("Already published");
     const heading = await screen.findByText("Set up in advance");
-    expect(post.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const post = await screen.findByText("Already published");
+    expect(heading.compareDocumentPosition(post) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  // The reason above-the-grid is affordable: with nothing pending it is one line,
+  // not a section with a heading and a paragraph of explanation.
+  it("costs one line when nothing is pending", async () => {
+    upcomingItems = [];
+    renderContent();
+
+    await screen.findByRole("button", { name: "Set up its keyword in advance" });
+    expect(screen.queryByText("Set up in advance")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Instagram doesn't let us see your scheduled queue/),
+    ).not.toBeInTheDocument();
   });
 
   // Content has no header action: the only route to a keyword is tile → drawer →
@@ -129,6 +152,79 @@ describe("Content", () => {
 
     await user.click(door);
     expect(screen.getByLabelText("Keyword")).toBeInTheDocument();
+  });
+
+  /**
+   * `/media/content` returns every post in one cached response, so the cost being
+   * paged here is mounting them — 197 tiles is 197 images and 197 animated nodes
+   * on first paint.
+   */
+  describe("paging the grid", () => {
+    function manyPosts(count: number) {
+      contentItems = Array.from({ length: count }, (_, i) => ({
+        id: `media-${i}`,
+        kind: i % 2 === 0 ? "reel" : "carousel",
+        caption: `Post number ${i}`,
+        thumbnailUrl: null,
+        permalink: null,
+        timestamp: "2026-08-10T17:30:00+0000",
+      }));
+    }
+
+    it("mounts a first page and says how many there are in total", async () => {
+      manyPosts(197);
+      renderContent();
+
+      expect(await screen.findByText("Showing 24 of 197")).toBeInTheDocument();
+      expect(screen.getByText("Post number 0")).toBeInTheDocument();
+      expect(screen.queryByText("Post number 24")).not.toBeInTheDocument();
+    });
+
+    it("shows more without losing what was already there", async () => {
+      manyPosts(197);
+      const user = userEvent.setup();
+      renderContent();
+
+      await user.click(await screen.findByRole("button", { name: "Show more" }));
+
+      expect(await screen.findByText("Showing 48 of 197")).toBeInTheDocument();
+      expect(screen.getByText("Post number 0")).toBeInTheDocument();
+      expect(screen.getByText("Post number 24")).toBeInTheDocument();
+    });
+
+    it("offers no control once everything is mounted", async () => {
+      manyPosts(10);
+      renderContent();
+
+      await screen.findByText("Post number 0");
+      expect(screen.queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
+      expect(screen.queryByText(/Showing/)).not.toBeInTheDocument();
+    });
+
+    // Carrying the count across filters would show 96 reels because you had
+    // scrolled through 96 of everything.
+    it("starts from the top again when the filter changes", async () => {
+      manyPosts(197);
+      const user = userEvent.setup();
+      renderContent();
+
+      await user.click(await screen.findByRole("button", { name: "Show more" }));
+      expect(await screen.findByText("Showing 48 of 197")).toBeInTheDocument();
+
+      await user.click(screen.getByRole("tab", { name: /Reels/ }));
+
+      expect(await screen.findByText("Showing 24 of 99")).toBeInTheDocument();
+    });
+
+    // The counts come from the whole list, never from the mounted slice.
+    it("counts every post in the filters, not just the mounted ones", async () => {
+      manyPosts(197);
+      renderContent();
+
+      expect(await screen.findByRole("tab", { name: /All\s*197/ })).toBeInTheDocument();
+      expect(screen.getByRole("tab", { name: /Reels\s*99/ })).toBeInTheDocument();
+      expect(screen.getByRole("tab", { name: /Carousels\s*98/ })).toBeInTheDocument();
+    });
   });
 
   it("replaces a bound setup with the real published card and attached keyword", async () => {

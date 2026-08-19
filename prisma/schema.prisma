@@ -342,7 +342,14 @@ model ReelPerformanceSnapshot {
   saved              Int?
   totalInteractions  Int?     @map("total_interactions")
   avgWatchTimeMs     Int?     @map("avg_watch_time_ms") // ig_reels_avg_watch_time
-  videoViewTotalTime Int?     @map("video_view_total_time") // ig_reels_video_view_total_time
+  // BIGINT, not INT4. This is CUMULATIVE watch time in milliseconds across a
+  // reel's whole life, so it grows without bound while the reel keeps being
+  // watched — a 140k-reach reel crosses INT4's 2,147,483,647 ceiling in about
+  // seven weeks. Postgres then rejects the INSERT, and because every metric for
+  // that reel shares one row, the reel silently stops being measured at all:
+  // views, reach, likes, the lot. It cost this account its three biggest reels
+  // for 25-47 days before a manual snapshot run surfaced the error.
+  videoViewTotalTime BigInt?  @map("video_view_total_time") // ig_reels_video_view_total_time
   skipRate           Float?   @map("skip_rate") // reels_skip_rate
   raw                Json? // full payload incl. which metrics 400'd
 
