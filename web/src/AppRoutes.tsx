@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useParams } from "react-router-dom";
 import { AppShell } from "@/components/layout/AppShell";
 import { Home } from "@/pages/Home";
 import { Content } from "@/pages/Content";
@@ -14,6 +14,17 @@ import { Insights } from "@/pages/Insights";
 import { Funnels } from "@/pages/Funnels";
 import { HistoricalRecovery } from "@/pages/HistoricalRecovery";
 
+/**
+ * Carries the id across the /sequences/:id → /guides/:id rename.
+ *
+ * A plain `<Navigate to="/guides">` would drop the id and land on the list, which
+ * turns a bookmark to one guide into a bookmark to all of them.
+ */
+function SequenceRedirect() {
+  const { id } = useParams();
+  return <Navigate to={id ? `/guides/${id}` : "/guides"} replace />;
+}
+
 export function AppRoutes() {
   return (
     <Routes>
@@ -24,8 +35,15 @@ export function AppRoutes() {
             bookmarks rather than bouncing them to the dashboard. */}
         <Route path="reels" element={<Navigate to="/content" replace />} />
         <Route path="keywords" element={<Keywords />} />
-        <Route path="sequences" element={<Sequences />} />
-        <Route path="sequences/:id" element={<SequenceEditor />} />
+        <Route path="guides" element={<Sequences />} />
+        <Route path="guides/:id" element={<SequenceEditor />} />
+        {/* Renamed from /sequences. One object was called a sequence in the nav, a
+            guide in the upcoming-setup form, and a resource in the database, so
+            landing on the editor from that form told you nothing connected them.
+            Guide won because it is what the DM itself says. Old links redirect
+            rather than 404, same as /reels and /users above. */}
+        <Route path="sequences" element={<Navigate to="/guides" replace />} />
+        <Route path="sequences/:id" element={<SequenceRedirect />} />
         <Route path="conversations" element={<Conversations />} />
         {/* Deliberately "dm-recovery", not "recovery": historical recovery is a
             separate mechanism with far larger blast radius, and a bare /recovery

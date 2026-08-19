@@ -27,10 +27,10 @@ const { SequenceEditor } = await import("./SequenceEditor");
 function renderEditor() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
-    <MemoryRouter initialEntries={["/sequences/resource-1"]}>
+    <MemoryRouter initialEntries={["/guides/resource-1"]}>
       <QueryClientProvider client={client}>
         <Routes>
-          <Route path="/sequences/:id" element={<SequenceEditor />} />
+          <Route path="/guides/:id" element={<SequenceEditor />} />
         </Routes>
       </QueryClientProvider>
     </MemoryRouter>,
@@ -106,10 +106,10 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("SequenceEditor local drafts", () => {
-  it("does not overwrite an in-progress sequence name when its query refetches", async () => {
+  it("does not overwrite an in-progress guide name when its query refetches", async () => {
     const user = userEvent.setup();
     const client = renderEditor();
-    const name = await screen.findByPlaceholderText("Sequence name");
+    const name = await screen.findByPlaceholderText("Guide name");
 
     await user.clear(name);
     await user.type(name, "Draft sequence");

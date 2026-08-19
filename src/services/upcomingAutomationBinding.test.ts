@@ -9,11 +9,14 @@ const transaction = vi.fn();
 const backfillKeyword = vi.fn();
 const logEvent = vi.fn();
 const invalidateMediaCache = vi.fn();
+const resourceFindUnique = vi.fn();
 
 const tx = {
   $queryRaw: queryRaw,
   upcomingAutomation: { findUnique: upcomingFindUnique, update: upcomingUpdate },
   keyword: { findMany: keywordFindMany, create: keywordCreate },
+  // The binder checks the guide has steps before attaching anything.
+  resource: { findUnique: resourceFindUnique },
 };
 
 vi.mock("../lib/prisma.js", () => ({
@@ -54,6 +57,8 @@ beforeEach(() => {
   transaction.mockImplementation(async (callback) => callback(tx));
   queryRaw.mockResolvedValue([{ id: setup.id }]);
   upcomingFindUnique.mockResolvedValue(setup);
+  // A written guide by default; the empty case is asserted explicitly below.
+  resourceFindUnique.mockResolvedValue({ _count: { messages: 3 } });
   keywordFindMany.mockResolvedValue([]);
   keywordCreate.mockResolvedValue({ id: "keyword-1" });
   upcomingUpdate.mockResolvedValue({});
@@ -160,6 +165,51 @@ describe("bindUpcomingAutomationToMedia", () => {
         lastAttemptAt: expect.any(Date),
       },
     });
+  });
+
+  /**
+   * A guide with no steps sends nothing, so attaching the keyword would put a live
+   * trigger on a published post that answers every commenter with silence.
+   *
+   * The check lives here rather than at creation because this is the moment it
+   * matters and the only moment the answer is still true: the setup may have been
+   * created days earlier, and a guide can be emptied at any point in between.
+   */
+  it("refuses to attach a guide with no steps, and says so", async () => {
+    resourceFindUnique.mockResolvedValue({ _count: { messages: 0 } });
+
+    const result = await bindUpcomingAutomationToMedia({
+      setupId: setup.id,
+      media,
+      source: "worker",
+    });
+
+    expect(result).toEqual({ kind: "needs_attention", errorCode: "guide_has_no_steps" });
+    expect(keywordCreate).not.toHaveBeenCalled();
+    expect(backfillKeyword).not.toHaveBeenCalled();
+    expect(upcomingUpdate).toHaveBeenCalledWith({
+      where: { id: setup.id },
+      data: {
+        status: "needs_attention",
+        matchedMediaId: "media-1",
+        errorCode: "guide_has_no_steps",
+        lastAttemptAt: expect.any(Date),
+      },
+    });
+  });
+
+  // Checked before the caption, because an empty guide cannot be fixed by
+  // correcting the caption and reporting the caption first would mislead.
+  it("reports the empty guide even when the caption is also wrong", async () => {
+    resourceFindUnique.mockResolvedValue({ _count: { messages: 0 } });
+
+    const result = await bindUpcomingAutomationToMedia({
+      setupId: setup.id,
+      media: { ...media, caption: "No instruction at all." },
+      source: "worker",
+    });
+
+    expect(result).toEqual({ kind: "needs_attention", errorCode: "guide_has_no_steps" });
   });
 
   it("is idempotent when another attempt already bound the row", async () => {

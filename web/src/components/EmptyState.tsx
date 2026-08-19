@@ -42,7 +42,7 @@ export function EmptyState({ icon, title, description, action }: EmptyStateProps
  * The request failed. Say so.
  *
  * This exists because the same words were being used for both states across the
- * console: a dead API rendered as "No sequences yet" on an account with 60, and
+ * console: a dead API rendered as "No guides yet" on an account with 60, and
  * as "Awaiting first snapshot" against 48 unbroken days of follower geography.
  * Both cost real debugging time, and both are the product contradicting its own
  * first principle — unknown is not nothing.
@@ -54,7 +54,7 @@ export function LoadFailed({
   what,
   onRetry,
 }: {
-  /** What could not be loaded, lower case: "your posts", "this sequence". */
+  /** What could not be loaded, lower case: "your posts", "this guide". */
   what: string;
   onRetry: () => void;
 }) {

@@ -64,7 +64,7 @@ export function AutomationHealthStrip({ stats, isLoading }: AutomationHealthStri
   const uncertain = stats.gateQueueSendUncertain ?? 0;
 
   const items = [
-    { label: "Sequences today", value: stats.completedToday, Icon: CheckCircle2, tone: "text-signal bg-signal-soft" },
+    { label: "Guides today", value: stats.completedToday, Icon: CheckCircle2, tone: "text-signal bg-signal-soft" },
     { label: "Awaiting reply", value: stats.conversationsAwaiting, Icon: Clock3, tone: "text-caution bg-caution-soft" },
     uncertain > 0
       ? { label: "Needs review", value: uncertain, Icon: AlertTriangle, tone: "text-urgent bg-urgent-soft" }

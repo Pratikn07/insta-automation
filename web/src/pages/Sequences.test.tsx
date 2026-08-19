@@ -62,7 +62,7 @@ describe("Sequences", () => {
     expect(within(attentionCard).getByText("2 messages need attention")).toBeInTheDocument();
     expect(within(attentionCard).getByRole("link")).toHaveAttribute(
       "href",
-      "/sequences/resource-attention",
+      "/guides/resource-attention",
     );
 
     const cleanCard = screen.getByText("Clean guide").closest("li")!;

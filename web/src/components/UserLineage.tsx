@@ -32,7 +32,7 @@ function bubbleText(e: LineageEvent): string {
     case "dm_sent":
       return "(gate message sent)";
     case "sequence_completed":
-      return "(sequence delivered)";
+      return "(guide delivered)";
     case "follow_nudge_sent":
       return "(follow-aware message sent)";
     default:

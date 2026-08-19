@@ -80,13 +80,24 @@ function isOpenStatus(status: string): status is OpenStatus {
   return status === "waiting" || status === "needs_attention";
 }
 
-async function validateResource(resourceId: string): Promise<"ok" | "missing" | "empty"> {
+/**
+ * The guide must exist. It does NOT have to have steps yet.
+ *
+ * It used to have to, and that rule was wrong twice over. It blocked the useful
+ * flow — you cannot write a guide before something exists to write it into, which
+ * is why the reel flow creates the guide first and opens the editor second. And it
+ * did not deliver the safety it implied: the binder never looked again, so a guide
+ * emptied after the setup was created would still attach days later.
+ *
+ * The check now lives in upcomingAutomationBinding, where it can refuse to attach
+ * rather than merely refuse to plan.
+ */
+async function validateResource(resourceId: string): Promise<"ok" | "missing"> {
   const resource = await prisma.resource.findUnique({
     where: { id: resourceId },
-    select: { id: true, _count: { select: { messages: true } } },
+    select: { id: true },
   });
-  if (!resource) return "missing";
-  return resource._count.messages > 0 ? "ok" : "empty";
+  return resource ? "ok" : "missing";
 }
 
 /**
@@ -107,16 +118,9 @@ function owner(req: Request, res: Response): string | null {
   return null;
 }
 
-function respondForResourceValidation(
-  result: "ok" | "missing" | "empty",
-  res: Response,
-): boolean {
+function respondForResourceValidation(result: "ok" | "missing", res: Response): boolean {
   if (result === "missing") {
     res.status(400).json({ error: "invalid_resource" });
-    return true;
-  }
-  if (result === "empty") {
-    res.status(400).json({ error: "empty_resource" });
     return true;
   }
   return false;

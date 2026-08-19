@@ -74,12 +74,12 @@ export function SequenceEditor() {
 
   const isLoading = resourceQ.isLoading || messagesQ.isLoading;
 
-  // A failed fetch used to fall through to "Sequence not found", which reads as
+  // A failed fetch used to fall through to "Guide not found", which reads as
   // "this was deleted" when it means "the API did not answer".
   if (resourceQ.isError || messagesQ.isError) {
     return (
       <LoadFailed
-        what="this sequence"
+        what="this guide"
         onRetry={() => {
           void resourceQ.refetch();
           void messagesQ.refetch();
@@ -100,9 +100,9 @@ export function SequenceEditor() {
   if (!id || !resourceQ.data) {
     return (
       <div className="border-t pt-4">
-        <p className="text-[13px] text-muted-foreground">Sequence not found.</p>
+        <p className="text-[13px] text-muted-foreground">Guide not found.</p>
         <Button variant="ghost" asChild className="mt-2 -ml-3">
-          <Link to="/sequences">
+          <Link to="/guides">
             <ArrowLeft className="size-4" />
             Back to Sequences
           </Link>
@@ -239,7 +239,7 @@ function SequenceEditorForm({
     <div className="space-y-6">
       <div className="flex items-start gap-3">
         <Button variant="ghost" size="icon" asChild>
-          <Link to="/sequences" aria-label="Back">
+          <Link to="/guides" aria-label="Back">
             <ArrowLeft className="size-4" />
           </Link>
         </Button>
@@ -258,7 +258,7 @@ function SequenceEditorForm({
                 }
               }}
               className="h-auto border-transparent bg-transparent px-0 text-2xl font-medium tracking-tight focus-visible:ring-0"
-              placeholder="Sequence name"
+              placeholder="Guide name"
             />
             {id && <SaveStatus sequenceId={id} needsAttention={needsAttention} />}
           </div>
@@ -271,7 +271,7 @@ function SequenceEditorForm({
               }
             }}
             rows={1}
-            placeholder="Internal note — what this sequence is for."
+            placeholder="Internal note — what this guide is for."
             className="resize-none border-transparent bg-transparent px-0 text-[13px] text-muted-foreground focus-visible:ring-0"
           />
         </div>

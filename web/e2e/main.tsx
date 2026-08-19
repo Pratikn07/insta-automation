@@ -1477,7 +1477,7 @@ export function Harness() {
     return (
       <div className="p-4">
         <Routes>
-          <Route path="/sequences/:id" element={<SequenceEditor />} />
+          <Route path="/guides/:id" element={<SequenceEditor />} />
         </Routes>
       </div>
     );
@@ -1525,7 +1525,7 @@ const initialEntry =
   harnessScenario?.startsWith("recovery-")
     ? "/dm-recovery"
     : harnessScenario === "sequence-editor"
-      ? "/sequences/resource-1"
+      ? "/guides/resource-1"
       : "/";
 
 createRoot(document.getElementById("root")!).render(

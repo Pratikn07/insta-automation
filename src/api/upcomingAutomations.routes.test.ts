@@ -224,15 +224,35 @@ describe("upcoming automations API", () => {
     },
   );
 
-  it("rejects a guide with no messages", async () => {
-    resourceFindUnique.mockResolvedValue({ id: validBody.resourceId, _count: { messages: 0 } });
+  /**
+   * A guide with no steps yet is allowed here, and refused at bind time instead.
+   *
+   * You cannot write a guide before something exists to write it into, so this used
+   * to make the create-a-guide-inline flow impossible. It also never delivered the
+   * safety it implied: the binder did not re-check, so a guide emptied after
+   * creation still attached. See upcomingAutomationBinding.test.ts for the refusal
+   * that replaced it.
+   */
+  it("accepts a guide that has no steps yet", async () => {
+    resourceFindUnique.mockResolvedValue({ id: validBody.resourceId });
+
+    await request(makeApp())
+      .post("/api/upcoming-automations")
+      .send(validBody)
+      .expect(201);
+
+    expect(create).toHaveBeenCalled();
+  });
+
+  it("still refuses a guide that does not exist", async () => {
+    resourceFindUnique.mockResolvedValue(null);
 
     const response = await request(makeApp())
       .post("/api/upcoming-automations")
       .send(validBody)
       .expect(400);
 
-    expect(response.body).toEqual({ error: "empty_resource" });
+    expect(response.body).toEqual({ error: "invalid_resource" });
     expect(create).not.toHaveBeenCalled();
   });
 
