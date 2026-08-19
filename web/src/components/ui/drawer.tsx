@@ -75,7 +75,14 @@ export function Drawer({
             exit={{ x: "100%" }}
             transition={{ type: "spring", damping: 28, stiffness: 280 }}
             className={cn(
-              "fixed inset-y-0 right-0 z-50 flex flex-col border-l bg-card shadow-2xl",
+              // `border-l-line`, not bare. The panel's own ground is bg-card
+              // (#FFFEF9) but its left edge is drawn against the scrim and the
+              // page behind it, and --color-border resolves to #EBE8DF — 1.21:1
+              // on card, 1.12:1 on the page ground. The edge that separates a
+              // floating panel from the page it covers is exactly the case
+              // --color-line exists for: "where a border must be seen rather
+              // than felt."
+              "fixed inset-y-0 right-0 z-50 flex flex-col border-l border-l-line bg-card shadow-2xl",
               widthClass,
             )}
             role="dialog"
@@ -84,10 +91,15 @@ export function Drawer({
             aria-describedby={description ? descriptionId : undefined}
             tabIndex={-1}
           >
-            <header className="flex items-start justify-between gap-4 border-b px-6 py-5">
+            {/* Weight 500, not 600. Every drawer BODY on this surface is at 500,
+                so a 600 title was the one thing in the panel reaching past the
+                top of the type scale — and the rule is "never reach past weight
+                500 for emphasis". Ten call sites share this header; a weight
+                reduction into the scale is uniform for all of them. */}
+            <header className="flex items-start justify-between gap-4 border-b border-b-line px-6 py-5">
               <div className="min-w-0">
                 {title && (
-                  <h2 id={titleId} className="text-base font-semibold tracking-tight">
+                  <h2 id={titleId} className="text-base font-medium tracking-tight">
                     {title}
                   </h2>
                 )}
@@ -107,7 +119,11 @@ export function Drawer({
               </button>
             </header>
             <div className="flex-1 overflow-y-auto px-6 py-5">{children}</div>
-            {footer && <footer className="flex items-center justify-end gap-2 border-t px-6 py-4">{footer}</footer>}
+            {footer && (
+              <footer className="flex items-center justify-end gap-2 border-t border-t-line px-6 py-4">
+                {footer}
+              </footer>
+            )}
           </motion.aside>
         </>
       )}

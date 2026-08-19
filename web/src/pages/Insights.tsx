@@ -47,7 +47,7 @@ export function Insights() {
   return (
     <div className="space-y-5">
       <div>
-        <h2 className="text-xl font-semibold tracking-tight">Insights</h2>
+        <h2 className="text-xl font-medium tracking-tight">Insights</h2>
         <p className="mt-1 text-sm text-muted-foreground">
           Which reels resonate with a US audience — and why. US-fit is a content
           proxy from video analysis, not measured per-reel geography.
@@ -64,10 +64,15 @@ export function Insights() {
             onClick={() => t.ready && setTab(t.value)}
             disabled={!t.ready}
             className={cn(
-              "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+              // 2px, not a pill — DESIGN.md assigns pills to the console this
+              // replaced, and a tab is a control. The selected state was
+              // `border-foreground/40 bg-accent/40`, two unmeasured blends; it now
+              // uses the same full-strength ink edge and quiet bed the follower
+              // panel's mode toggle settled on.
+              "rounded-sm border px-3 py-1 text-xs font-medium transition-colors",
               tab === t.value
-                ? "border-foreground/40 bg-accent/40 text-foreground"
-                : "text-muted-foreground hover:bg-accent/20",
+                ? "border-foreground bg-muted text-foreground"
+                : "border-line text-muted-foreground hover:bg-muted",
               !t.ready && "cursor-not-allowed opacity-40 hover:bg-transparent",
             )}
           >
@@ -95,7 +100,7 @@ function GeoHeader() {
   const hasData = stages.some((s) => s.usPct !== null);
 
   return (
-    <div className="rounded-lg border bg-card/40 p-4">
+    <div className="border-t border-t-foreground pt-4">
       <div className="mb-3 flex items-center gap-2">
         <BarChart3 className="size-4 text-muted-foreground" />
         <h3 className="text-sm font-medium">Audience geography (account-wide)</h3>
@@ -107,14 +112,14 @@ function GeoHeader() {
       ) : (
         <div className="grid grid-cols-3 gap-3">
           {stages.map((s) => (
-            <div key={s.stage} className="rounded-md border bg-background/40 p-3">
-              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+            <div key={s.stage} className="border-t border-t-line pt-2.5">
+              <div className="label-caps">
                 {s.stage === "reached" ? "Reached" : s.stage === "engaged" ? "Engaged" : "Followers"}
               </div>
               {s.usPct !== null ? (
                 <>
                   <div className="mt-1 flex items-baseline gap-1">
-                    <span className="text-lg font-semibold">{s.usPct}%</span>
+                    <span className="figure-inline">{s.usPct}%</span>
                     <span className="text-xs text-muted-foreground">US</span>
                   </div>
                   <div className="text-xs text-muted-foreground">India {s.inPct ?? 0}%</div>
@@ -227,7 +232,11 @@ function scoreColor(score: number | null): string {
 
 function ReelCard({ row }: { row: LeaderboardRow }) {
   return (
-    <div className="overflow-hidden rounded-lg border bg-card/40 transition-colors group-hover:border-foreground/30">
+    // Keeps its bounded surface at 3px: a reel tile in a grid is an object you
+    // click, which DESIGN.md names explicitly ("a media thumbnail", "a tile in an
+    // editor"). It loses only the card FILL — the tile's content is the image, so
+    // `--color-card` behind it was doing nothing but breaking the surface rule.
+    <div className="overflow-hidden rounded-lg border border-line transition-colors group-hover:border-foreground">
       <div className="relative aspect-[9/16] bg-accent">
         {row.thumbnailUrl ? (
           <img
@@ -245,7 +254,7 @@ function ReelCard({ row }: { row: LeaderboardRow }) {
         <div className="absolute right-2 top-2 flex items-center gap-1">
           <span
             className={cn(
-              "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold backdrop-blur",
+              "inline-flex items-center gap-1 rounded-sm px-2 py-0.5 text-[10px] font-medium backdrop-blur",
               scoreColor(row.usFitScore),
             )}
             title={
@@ -255,17 +264,31 @@ function ReelCard({ row }: { row: LeaderboardRow }) {
             }
           >
             {row.usFitScore !== null ? `US ${row.usFitScore}` : "—"}
+            {/* Round, because it is a mark rather than chrome. But `bg-current`,
+                not white: this dot sits inside four different badge fills (signal,
+                caution, urgent, muted), and a hardcoded white was invisible on the
+                muted one. Inheriting the badge's own text colour means it is
+                measured against its own ground in every case.
+
+                Confidence is carried by FILLED vs OUTLINE rather than by opacity —
+                "state is carried by shape, not by transparency", and `bg-white/40`
+                was an unmeasured blend over an arbitrary fill. */}
             <span
               className={cn(
                 "size-1.5 rounded-full",
-                row.confidence === "high" ? "bg-white" : "bg-white/40",
+                row.confidence === "high" ? "bg-current" : "border border-current",
               )}
             />
           </span>
         </div>
         {row.videoUnavailable && (
           <div className="absolute bottom-2 left-2">
-            <span className="rounded bg-black/60 px-1.5 py-0.5 text-[9px] text-white/80 backdrop-blur">
+            {/* The dark scrim stays. This label sits over arbitrary photography,
+                not over a system surface, so it is the one place a measured-
+                against-the-ground token cannot do the job — same reasoning as
+                DESIGN.md's Foreign Surface Rule. Radius squared, and the text at
+                full strength rather than 80%. */}
+            <span className="rounded-sm bg-black/60 px-1.5 py-0.5 text-[9px] text-white backdrop-blur">
               video unavailable
             </span>
           </div>
@@ -315,8 +338,11 @@ function ReelDetailDrawer({ mediaId }: { mediaId: string }) {
   return (
     <div className="space-y-5">
       {/* Header */}
-      <div className="flex gap-3 rounded-lg border bg-card/40 p-3">
-        <div className="aspect-[9/16] w-20 shrink-0 overflow-hidden rounded bg-accent">
+      {/* Inside a drawer whose own ground is already --color-card, so the fill was
+          invisible anyway. A rule under it separates the summary from the sections
+          that follow. */}
+      <div className="flex gap-3 border-b border-b-line pb-4">
+        <div className="aspect-[9/16] w-20 shrink-0 overflow-hidden rounded-sm bg-accent">
           {d.thumbnailUrl ? (
             <img src={d.thumbnailUrl} alt="" className="size-full object-cover" />
           ) : (
@@ -329,7 +355,7 @@ function ReelDetailDrawer({ mediaId }: { mediaId: string }) {
           <div className="flex items-center gap-2">
             <span
               className={cn(
-                "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold",
+                "inline-flex items-center rounded-sm px-2 py-0.5 text-xs font-medium",
                 scoreColor(d.usFitScore),
               )}
             >
@@ -433,9 +459,12 @@ function Section({ title, icon, children }: { title: string; icon?: React.ReactN
 
 function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
-    <div className="rounded-md border bg-background/40 p-2">
-      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
-      <div className="text-sm font-semibold">{value}</div>
+    // A figure cell: a rule above, the label in the house caps, the value
+    // carrying the weight. It was `rounded-md border bg-background/40` — a box on
+    // a 40% tint of the page ground, which is very nearly the page ground.
+    <div className="border-t border-t-line pt-2">
+      <div className="label-caps">{label}</div>
+      <div className="text-sm font-medium">{value}</div>
       {sub && <div className="line-clamp-1 text-[10px] text-muted-foreground">{sub}</div>}
     </div>
   );
@@ -443,7 +472,7 @@ function Stat({ label, value, sub }: { label: string; value: string; sub?: strin
 
 function Chip({ children }: { children: React.ReactNode }) {
   return (
-    <span className="rounded-full border bg-background/40 px-2 py-0.5 text-[10px] text-muted-foreground">
+    <span className="rounded-sm border border-line px-2 py-0.5 text-[10px] text-muted-foreground">
       {children}
     </span>
   );
@@ -452,7 +481,7 @@ function Chip({ children }: { children: React.ReactNode }) {
 function Funnel({ n, label, tone }: { n: number; label: string; tone?: string }) {
   return (
     <div className="flex flex-col items-center">
-      <span className={cn("text-base font-semibold tabular-nums", tone)}>{n}</span>
+      <span className={cn("figure-inline", tone)}>{n}</span>
       <span className="text-[9px] text-muted-foreground">{label}</span>
     </div>
   );
@@ -509,7 +538,7 @@ function Recipe() {
       </div>
 
       {/* The style takeaway, up top */}
-      <div className="rounded-lg border bg-card/40 p-4">
+      <div className="border-t border-t-foreground pt-4">
         <h3 className="mb-2 flex items-center gap-1.5 text-sm font-medium">
           <ListChecks className="size-4 text-signal" /> What makes a reel read as US-aimed
         </h3>
@@ -535,8 +564,12 @@ function Recipe() {
         </p>
       </div>
 
-      {/* Side-by-side contrast */}
-      <div className="grid gap-4 md:grid-cols-2">
+      {/* Side-by-side contrast, as ONE band divided by a rule rather than two
+          floating cards. DESIGN.md names this layout for exactly this case: "a
+          single bordered rectangle divided internally by rules, used where two
+          panels must read as one statement" — and top-vs-bottom US-fit is one
+          statement, not two findings. */}
+      <div className="grid border border-line md:grid-cols-2">
         <RecipeColumn group={data.top} tone="us" />
         <RecipeColumn group={data.bottom} tone="india" />
       </div>
@@ -560,7 +593,7 @@ function GateAudiencePanel() {
   const items = (q.data?.items ?? []).filter((r) => r.total > 0);
 
   return (
-    <div className="rounded-lg border bg-card/40 p-4">
+    <div className="border-t border-t-foreground pt-4">
       <h3 className="mb-1 flex items-center gap-1.5 text-sm font-medium">
         <ListChecks className="size-4 text-muted-foreground" /> Gate audience by reel (keyword-commenters)
       </h3>
@@ -577,12 +610,15 @@ function GateAudiencePanel() {
           No keyword-commenters mapped yet — run the origin backfill, then this fills in.
         </p>
       ) : (
-        <div className="space-y-2">
+        <div>
           {items.map((r) => {
             const usPct = r.total ? Math.round((r.usWestern / r.total) * 100) : 0;
             const saPct = r.total ? Math.round((r.southAsian / r.total) * 100) : 0;
             return (
-              <div key={r.mediaId} className="rounded-md border bg-background/40 p-2.5">
+              <div
+                key={r.mediaId}
+                className="py-2.5 [&:not(:first-child)]:border-t [&:not(:first-child)]:border-t-line"
+              >
                 <div className="flex items-center justify-between gap-2">
                   <span className="truncate text-xs">{r.caption ?? r.mediaId}</span>
                   <span className="shrink-0 text-[11px] text-muted-foreground">
@@ -602,7 +638,12 @@ function GateAudiencePanel() {
                     c1 skipped deliberately: its hex is the accent's, so a US
                     segment in c1 would have kept exactly the reading this change
                     removes. */}
-                <div className="mt-1.5 flex h-2 overflow-hidden rounded-full bg-muted">
+                {/* `rounded-sm bg-line`, matching KpiMeter: a pill-shaped track
+                    reads as the old console, and #EBE8DF was 1.12:1 on the ground
+                    so the meter's extent could not be seen — only a floating
+                    fill. The track is a container, not a mark, so line's 1.55:1
+                    is the right bar for it. */}
+                <div className="mt-1.5 flex h-2 overflow-hidden rounded-sm bg-line">
                   <div className="bg-c3" style={{ width: `${usPct}%` }} title={`US/Western ${usPct}%`} />
                   <div className="bg-c2" style={{ width: `${saPct}%` }} title={`South Asian ${saPct}%`} />
                 </div>
@@ -628,12 +669,14 @@ function RecipeColumn({ group, tone }: { group: RecipeGroup; tone: "us" | "india
   const accent = tone === "us" ? "text-foreground" : "text-muted-foreground";
   const refs = tone === "us" ? group.usRefs : group.indiaRefs;
   return (
-    <div className="space-y-3 rounded-lg border bg-card/40 p-4">
+    // A cell of the band above, not a card of its own. The second column takes
+    // the internal divider; on one column it stacks and the rule goes on top.
+    <div className="space-y-3 border-t border-t-line p-4 md:border-t-0 md:[&:nth-child(2)]:border-l md:[&:nth-child(2)]:border-l-line [&:first-child]:border-t-0">
       <div className="flex items-center justify-between">
         <h3 className={cn("text-sm font-medium", accent)}>{group.label}</h3>
         <span
           className={cn(
-            "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold",
+            "inline-flex items-center rounded-sm px-2 py-0.5 text-xs font-medium",
             scoreColor(group.avgUsFit),
           )}
         >
@@ -648,7 +691,7 @@ function RecipeColumn({ group, tone }: { group: RecipeGroup; tone: "us" | "india
       </div>
 
       <div className="space-y-1.5">
-        <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+        <div className="label-caps">
           {tone === "us" ? "US cultural cues" : "India cultural cues"}
         </div>
         {refs.length === 0 ? (
@@ -677,12 +720,12 @@ function RecipeColumn({ group, tone }: { group: RecipeGroup; tone: "us" | "india
               key={r.mediaId}
               src={r.thumbnailUrl}
               alt=""
-              className="aspect-[9/16] w-12 shrink-0 rounded object-cover"
+              className="aspect-[9/16] w-12 shrink-0 rounded-sm object-cover"
             />
           ) : (
             <div
               key={r.mediaId}
-              className="flex aspect-[9/16] w-12 shrink-0 items-center justify-center rounded bg-accent text-muted-foreground"
+              className="flex aspect-[9/16] w-12 shrink-0 items-center justify-center rounded-sm bg-accent text-muted-foreground"
             >
               <Film className="size-4" />
             </div>
@@ -698,7 +741,7 @@ const STATUS_TONE: Record<Experiment["status"], string> = {
   running: "text-funnel-mark bg-mark-soft",
   confirmed: "text-signal bg-signal-soft",
   busted: "text-urgent bg-urgent-soft",
-  inconclusive: "text-muted-foreground bg-muted/40",
+  inconclusive: "text-muted-foreground bg-muted",
 };
 
 // Lead recommendation for the growth lab: the reels that convert the most reach
@@ -707,7 +750,7 @@ const STATUS_TONE: Record<Experiment["status"], string> = {
 function CaptureLeadersCard({ rows, isLoading }: { rows: LeaderboardRow[]; isLoading: boolean }) {
   const leaders = rankCaptureLeaders(rows);
   return (
-    <div className="rounded-lg border bg-card/40 p-4">
+    <div className="border-t border-t-foreground pt-4">
       <h3 className="mb-1 flex items-center gap-1.5 text-sm font-medium">
         <Target className="size-4 text-muted-foreground" /> What converts best
       </h3>
@@ -722,21 +765,21 @@ function CaptureLeadersCard({ rows, isLoading }: { rows: LeaderboardRow[]; isLoa
           Not enough reach yet to rank reels by capture — this fills in as reels accrue reach.
         </p>
       ) : (
-        <ol className="space-y-2">
+        <ol>
           {leaders.map((l) => (
             <li
               key={l.row.mediaId}
-              className="flex items-center gap-3 rounded-md border bg-background/40 p-2.5"
+              className="flex items-center gap-3 py-2.5 [&:not(:first-child)]:border-t [&:not(:first-child)]:border-t-line"
             >
               {l.row.thumbnailUrl ? (
                 <img
                   src={l.row.thumbnailUrl}
                   alt=""
                   loading="lazy"
-                  className="size-12 shrink-0 rounded object-cover"
+                  className="size-12 shrink-0 rounded-sm object-cover"
                 />
               ) : (
-                <div className="flex size-12 shrink-0 items-center justify-center rounded bg-accent text-muted-foreground">
+                <div className="flex size-12 shrink-0 items-center justify-center rounded-sm bg-accent text-muted-foreground">
                   <Film className="size-4" />
                 </div>
               )}
@@ -745,7 +788,7 @@ function CaptureLeadersCard({ rows, isLoading }: { rows: LeaderboardRow[]; isLoa
                 <p className="mt-0.5 text-[11px] text-muted-foreground">{l.reason}</p>
               </div>
               <div className="shrink-0 text-right">
-                <div className="text-sm font-semibold text-funnel-mark">
+                <div className="text-sm font-medium text-funnel-mark">
                   {formatCaptureRate(l.captureRatePct)}
                 </div>
                 <div className="text-[10px] text-muted-foreground">{l.completed} delivered</div>
@@ -763,7 +806,7 @@ function CaptureLeadersCard({ rows, isLoading }: { rows: LeaderboardRow[]; isLoa
 function NextTestCard({ experiments }: { experiments: Experiment[] }) {
   const rec = recommendNextTest(experiments);
   return (
-    <div className="rounded-lg border bg-card/40 p-4">
+    <div className="border-t border-t-foreground pt-4">
       <h3 className="mb-1 flex items-center gap-1.5 text-sm font-medium">
         <Sparkles className="size-4 text-muted-foreground" /> Recommended next test
       </h3>
@@ -788,21 +831,21 @@ function LearnedPatterns({ experiments }: { experiments: Experiment[] }) {
   const patterns = learnedPatterns(experiments);
   if (patterns.length === 0) return null;
   return (
-    <div className="rounded-lg border bg-card/40 p-4">
+    <div className="border-t border-t-foreground pt-4">
       <h3 className="mb-2 flex items-center gap-1.5 text-sm font-medium">
         <ListChecks className="size-4 text-muted-foreground" /> Learned patterns
       </h3>
-      <ul className="space-y-1.5">
+      <ul>
         {patterns.map((p) => {
           const badge = PATTERN_BADGE[p.label];
           const shift = `${p.meanShift >= 0 ? "+" : "−"}${Math.abs(p.meanShift).toFixed(1)}`;
           return (
             <li
               key={`${p.dimension}:${p.feature}`}
-              className="flex items-center justify-between gap-2 rounded-md border bg-background/40 p-2 text-xs"
+              className="flex items-center justify-between gap-2 py-2 text-xs [&:not(:first-child)]:border-t [&:not(:first-child)]:border-t-line"
             >
               <span className="min-w-0 truncate">
-                <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                <span className="label-caps">
                   {p.dimension}
                 </span>{" "}
                 {p.feature}
@@ -811,7 +854,7 @@ function LearnedPatterns({ experiments }: { experiments: Experiment[] }) {
                 <span className="text-[10px] text-muted-foreground">
                   {p.positive}/{p.total} · {shift} pts
                 </span>
-                <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-medium", badge.cls)}>
+                <span className={cn("rounded-sm px-2 py-0.5 text-[10px] font-medium", badge.cls)}>
                   {badge.text}
                 </span>
               </span>
@@ -866,7 +909,7 @@ function Experiments() {
       <RecentAudiencePanel points={windowPoints} />
 
       {/* Reached-US% trend */}
-      <div className="rounded-lg border bg-card/40 p-4">
+      <div className="border-t border-t-foreground pt-4">
         <h3 className="mb-1 flex items-center gap-1.5 text-sm font-medium">
           <BarChart3 className="size-4 text-muted-foreground" /> Reached-US% over time
         </h3>
@@ -892,7 +935,7 @@ function Experiments() {
           description="Log a hypothesis above, post the reel(s) that test it, then watch whether reached-US% moves over the following weeks."
         />
       ) : (
-        <div className="space-y-3">
+        <div>
           {experiments.map((e) => (
             <ExperimentCard key={e.id} exp={e} onChange={invalidate} />
           ))}
@@ -924,10 +967,10 @@ function RecentAudienceMetric({
   const tone =
     delta === null ? "text-muted-foreground" : delta >= 0 ? "text-signal" : "text-urgent";
   return (
-    <div className="rounded-md border bg-background/40 p-3">
-      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</div>
+    <div className="border-t border-t-line pt-2.5">
+      <div className="label-caps">{label}</div>
       <div className="mt-1 flex items-baseline gap-2">
-        <span className="text-2xl font-semibold">{us14 ?? "—"}%</span>
+        <span className="figure-small">{us14 ?? "—"}%</span>
         <span className="text-[11px] text-muted-foreground">US · last 14d</span>
       </div>
       <div className="mt-0.5 text-[11px] text-muted-foreground">
@@ -952,7 +995,7 @@ function RecentAudiencePanel({ points }: { points: GeoWindowPoint[] }) {
   const latest = points.length ? points[points.length - 1] : null;
 
   return (
-    <div className="rounded-lg border bg-card/40 p-4">
+    <div className="border-t border-t-foreground pt-4">
       <h3 className="mb-1 flex items-center gap-1.5 text-sm font-medium">
         <BarChart3 className="size-4 text-muted-foreground" /> Recent reels: who are they pulling?
       </h3>
@@ -998,7 +1041,7 @@ function UsReachChart({ points }: { points: UsReachTrendPoint[] }) {
   if (points.length === 1) {
     return (
       <div className="py-4 text-center">
-        <span className="text-2xl font-semibold">{vals[0]}%</span>
+        <span className="figure-small">{vals[0]}%</span>
         <span className="ml-1 text-xs text-muted-foreground">US (single reading)</span>
       </div>
     );
@@ -1063,7 +1106,10 @@ function NewExperimentForm({ onCreated }: { onCreated: () => void }) {
   }
 
   return (
-    <div className="space-y-3 rounded-lg border bg-card/40 p-4">
+    // Keeps a bounded surface, squared and unfilled. A form being composed is the
+    // closest thing on this page to "a draft awaiting approval", which DESIGN.md
+    // names as a genuine object — and its edge tells you where the form ends.
+    <div className="space-y-3 rounded-lg border border-line p-4">
       <div className="space-y-1.5">
         <Label htmlFor="hyp">Hypothesis</Label>
         <Textarea
@@ -1124,12 +1170,15 @@ function ExperimentCard({ exp, onChange }: { exp: Experiment; onChange: () => vo
   const sharePct = exp.windowReachShare !== null ? Math.round(exp.windowReachShare * 100) : null;
 
   return (
-    <div className="space-y-3 rounded-lg border bg-card/40 p-4">
+    // A row in a list, not a card. The rule goes on top of every experiment but
+    // the first, so the list leaves no trailing edge above the section that
+    // follows it.
+    <div className="space-y-3 py-4 [&:not(:first-child)]:border-t [&:not(:first-child)]:border-t-line">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-1.5">
             {isAuto && (
-              <span className="shrink-0 rounded bg-mark-soft px-1.5 py-0.5 text-[10px] font-medium text-funnel-mark">
+              <span className="shrink-0 rounded-sm bg-mark-soft px-1.5 py-0.5 text-[10px] font-medium text-funnel-mark">
                 AUTO
               </span>
             )}
@@ -1142,7 +1191,7 @@ function ExperimentCard({ exp, onChange }: { exp: Experiment; onChange: () => vo
         </div>
         <span
           className={cn(
-            "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide",
+            "label-caps shrink-0 rounded-sm px-2 py-0.5",
             STATUS_TONE[exp.status],
           )}
         >
