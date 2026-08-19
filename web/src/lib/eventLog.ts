@@ -10,8 +10,8 @@ const KIND_LABELS: Record<string, string> = {
   message_received: "User sent a DM",
   message_unhandled: "DM ignored (not DONE)",
   done_received: "User replied DONE",
-  sequence_completed: "Sequence delivered",
-  sequence_failed: "Sequence failed",
+  sequence_completed: "Guide delivered",
+  sequence_failed: "Guide failed",
   error: "Error",
 };
 

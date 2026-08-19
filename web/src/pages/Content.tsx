@@ -98,7 +98,7 @@ export function Content() {
       <div>
         <h1 className="text-2xl font-medium tracking-tight">Content</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Pick a post and attach a keyword. Comments on that post trigger its sequence.
+          Pick a post and attach a keyword. Comments on that post trigger its guide.
         </p>
       </div>
 
@@ -404,7 +404,7 @@ function MediaDrawer({
                     )}
                   </div>
                   <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                    → {k.resource?.name ?? "Unknown sequence"}
+                    → {k.resource?.name ?? "Unknown guide"}
                   </p>
                 </div>
               </li>

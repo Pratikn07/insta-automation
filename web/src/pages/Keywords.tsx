@@ -92,7 +92,7 @@ export function Keywords() {
         <div>
           <h2 className="text-xl font-semibold tracking-tight">Keywords</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Words people comment on a post to trigger a DM sequence. Each keyword belongs to one
+            Words people comment on a post to trigger a DM guide. Each keyword belongs to one
             post, so the same word can send a different guide per post.
           </p>
         </div>
@@ -114,7 +114,7 @@ export function Keywords() {
         <EmptyState
           icon={<Tag className="size-5" />}
           title="No keywords yet"
-          description="Add the first word your audience will comment to trigger a DM sequence."
+          description="Add the first word your audience will comment to trigger a DM guide."
           action={
             <Button variant="brand" onClick={() => setCreating(true)}>
               <Plus className="size-4" />
@@ -183,7 +183,7 @@ export function Keywords() {
         title={editing ? "Edit keyword" : "New keyword"}
         description={
           editing
-            ? "Tweak how this trigger replies and gates the sequence."
+            ? "Tweak how this trigger replies and gates the guide."
             : "Define the word, the public reply, and the DM that asks for confirmation."
         }
       >
@@ -202,7 +202,7 @@ export function Keywords() {
       <ConfirmDialog
         open={confirmDelete !== null}
         title={`Delete "${confirmDelete?.keyword}"?`}
-        description="This removes the keyword and any tracking against it. The sequence stays intact."
+        description="This removes the keyword and any tracking against it. The guide stays intact."
         destructive
         confirmLabel="Delete"
         busy={deleteMutation.isPending}
@@ -246,7 +246,7 @@ function KeywordRow({
               )}
             </div>
             <p className="mt-0.5 truncate text-xs text-muted-foreground">
-              → {k.resource?.name ?? "Unknown sequence"}
+              → {k.resource?.name ?? "Unknown guide"}
               {k.resource && (
                 <span className="ml-2 inline-flex items-center gap-1">
                   <MessageSquare className="size-3" />

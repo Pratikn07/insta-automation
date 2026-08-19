@@ -30,7 +30,7 @@ export function Sequences() {
   const deleteMutation = useMutation({
     mutationFn: (id: string) => apiMutation(`/resources/${id}`, { method: "DELETE" }),
     onSuccess: () => {
-      toast.success("Sequence deleted");
+      toast.success("Guide deleted");
       qc.invalidateQueries({ queryKey: ["resources"] });
       qc.invalidateQueries({ queryKey: ["keywords"] });
       setConfirmDelete(null);
@@ -43,7 +43,7 @@ export function Sequences() {
     <div className="space-y-5">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-semibold tracking-tight">Sequences</h2>
+          <h2 className="text-xl font-semibold tracking-tight">Guides</h2>
           <p className="mt-1 text-sm text-muted-foreground">
             The DMs that get sent after a follower replies DONE.
           </p>
@@ -55,7 +55,7 @@ export function Sequences() {
       </div>
 
       {resourcesQ.isError ? (
-        <LoadFailed what="your sequences" onRetry={() => void resourcesQ.refetch()} />
+        <LoadFailed what="your guides" onRetry={() => void resourcesQ.refetch()} />
       ) : resourcesQ.isPending ? (
         <div className="grid gap-3 sm:grid-cols-2">
           {[0, 1].map((i) => (
@@ -65,8 +65,8 @@ export function Sequences() {
       ) : (resourcesQ.data?.length ?? 0) === 0 ? (
         <EmptyState
           icon={<Layers className="size-5" />}
-          title="No sequences yet"
-          description="A sequence is a list of DMs (text, image, PDF) sent in order after the user replies DONE."
+          title="No guides yet"
+          description="A guide is a list of DMs (text, image, PDF) sent in order after the user replies DONE."
           action={
             <Button variant="brand" onClick={() => setCreating(true)}>
               <Plus className="size-4" />
@@ -99,7 +99,7 @@ export function Sequences() {
       <Drawer
         open={creating}
         onClose={() => setCreating(false)}
-        title="New sequence"
+        title="New guide"
         description="Give it a name and a short description. You'll add the DMs next."
       >
         {creating && <CreateSequenceForm onClose={() => setCreating(false)} />}
@@ -111,7 +111,7 @@ export function Sequences() {
         description={
           (confirmDelete?._count?.keywords ?? 0) > 0
             ? `This sequence is used by ${confirmDelete?._count?.keywords} keyword${confirmDelete?._count?.keywords === 1 ? "" : "s"}. Deleting it will leave them without a target.`
-            : "All steps in this sequence will be removed."
+            : "All steps in this guide will be removed."
         }
         destructive
         confirmLabel="Delete"
@@ -130,7 +130,7 @@ function SequenceCard({ r, onDelete }: { r: Resource; onDelete: () => void }) {
     <Card className="group transition-all hover:shadow-lg hover:-translate-y-0.5">
       <CardContent className="flex h-full flex-col gap-3 p-5">
         <div className="flex items-start justify-between gap-2">
-          <Link to={`/sequences/${r.id}`} className="min-w-0 flex-1">
+          <Link to={`/guides/${r.id}`} className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <div className="flex size-8 items-center justify-center rounded-md bg-brand-gradient/15 text-foreground">
                 <Layers className="size-4" />
@@ -155,7 +155,7 @@ function SequenceCard({ r, onDelete }: { r: Resource; onDelete: () => void }) {
             variant="ghost"
             onClick={onDelete}
             className="opacity-0 transition-opacity group-hover:opacity-100"
-            aria-label="Delete sequence"
+            aria-label="Delete guide"
           >
             <Trash2 className="size-4" />
           </Button>
@@ -191,7 +191,7 @@ function CreateSequenceForm({ onClose }: { onClose: () => void }) {
         body: JSON.stringify({ id: operationId, name, description: description || null }),
       }),
     onSuccess: () => {
-      toast.success("Sequence created");
+      toast.success("Guide created");
       renew();
       qc.invalidateQueries({ queryKey: ["resources"] });
       onClose();
@@ -227,7 +227,7 @@ function CreateSequenceForm({ onClose }: { onClose: () => void }) {
           <Textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            placeholder="Internal note — what this sequence is for."
+            placeholder="Internal note — what this guide is for."
             rows={3}
             maxLength={500}
           />
@@ -238,7 +238,7 @@ function CreateSequenceForm({ onClose }: { onClose: () => void }) {
           Cancel
         </Button>
         <Button type="submit" variant="brand" disabled={!canSave}>
-          {createMutation.isPending ? "Creating…" : "Create sequence"}
+          {createMutation.isPending ? "Creating…" : "Create guide"}
         </Button>
       </div>
     </form>

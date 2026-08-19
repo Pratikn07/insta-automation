@@ -34,7 +34,7 @@ const KIND_FILTERS: { value: string; label: string }[] = [
   { value: "comment_received", label: "Comments" },
   { value: "message_received", label: "Inbound DMs" },
   { value: "dm_failed", label: "Gate DM failed" },
-  { value: "sequence_failed", label: "Sequence failed" },
+  { value: "sequence_failed", label: "Guide failed" },
   { value: "error", label: "Errors" },
 ];
 

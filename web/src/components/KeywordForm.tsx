@@ -159,7 +159,7 @@ export function KeywordForm({
       qc.invalidateQueries({ queryKey: ["stats"] });
       onClose();
       if (createdSequence) {
-        navigate(`/sequences/${keyword.resourceId}`);
+        navigate(`/guides/${keyword.resourceId}`);
       }
     },
     onError: (err) => {
@@ -225,7 +225,7 @@ export function KeywordForm({
         </Field>
 
         <div className="space-y-2">
-          <Label>Sequence</Label>
+          <Label>Guide</Label>
           {initial ? (
             <Select
               value={form.resourceId}
@@ -233,7 +233,7 @@ export function KeywordForm({
               required
             >
               <option value="" disabled>
-                Pick a sequence
+                Pick a guide
               </option>
               {resources.map((r) => (
                 <option key={r.id} value={r.id}>
@@ -249,7 +249,7 @@ export function KeywordForm({
                   active={form.sequenceMode === "new"}
                   onClick={() => setForm((f) => ({ ...f, sequenceMode: "new" }))}
                   title="Create new"
-                  subtitle="Build a fresh DM flow"
+                  subtitle="Build a fresh guide"
                 />
                 <ModeButton
                   active={form.sequenceMode === "existing"}
@@ -274,7 +274,7 @@ export function KeywordForm({
                   required
                 >
                   <option value="" disabled>
-                    Pick a sequence
+                    Pick a guide
                   </option>
                   {resources.map((r) => (
                     <option key={r.id} value={r.id}>
@@ -288,8 +288,8 @@ export function KeywordForm({
               )}
               <p className="text-xs text-muted-foreground">
                 {form.sequenceMode === "new"
-                  ? "We'll create the sequence and drop you into the editor to add steps."
-                  : "Reuse an existing sequence — useful for spelling variations of the same trigger."}
+                  ? "We'll create the guide and drop you into the editor to add steps."
+                  : "Reuse an existing guide — useful for spelling variations of the same trigger."}
               </p>
             </>
           )}
