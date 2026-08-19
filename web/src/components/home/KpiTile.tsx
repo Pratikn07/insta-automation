@@ -86,25 +86,32 @@ export function KpiTile({
           <div className="flex items-baseline gap-2.5">
           <span
             className={cn(
-              // The line-height rides INSIDE the text shorthand on purpose. As a
-              // separate `leading-[1.05]` class, tailwind-merge treats it as
-              // conflicting with the arbitrary `text-[3.25rem]` below and silently
-              // drops it, which left the figure on default 1.5 leading and made
-              // the shared alignment box useless.
-              "font-medium tracking-tight tabular-nums",
+              // One class per branch, from the figure ladder in index.css. Each
+              // utility carries its own size, leading, tracking, weight and
+              // tabular-nums, so nothing here may add `tracking-*` alongside
+              // them: the ladder tightens tracking as type grows, and a stray
+              // `tracking-tight` would silently fight it depending on stylesheet
+              // order rather than class order.
+              //
               // Emphasis is scale, and only scale. It is deliberately NOT moss:
               // index.css reserves the accent for "the system is working" and
               // states the rule outright on --color-chart-us, that an accent
               // also meaning "United States" stops meaning "the system is
               // working". A comment here once promised an accent the code never
               // applied; the promise was the wrong one.
+              //
+              // The placeholder is off the ladder by design and carries its own
+              // type: it is not a figure. See The Placeholder Is Not A Figure
+              // Rule. Its leading rides inside the text shorthand because as a
+              // separate `leading-` class, tailwind-merge treats it as
+              // conflicting with the arbitrary size and drops it.
               isPlaceholder
-                ? "text-xl/[1.05] text-muted-foreground"
+                ? "text-xl/[1.05] font-medium tracking-tight tabular-nums text-muted-foreground"
                 : isLong
-                  ? "text-2xl/[1.1]"
+                  ? "figure-small"
                   : emphasis
-                    ? "text-[3.25rem]/[1.05]"
-                    : "text-[2.25rem]/[1.05]",
+                    ? "figure-lead"
+                    : "figure-base",
             )}
           >
             {value}

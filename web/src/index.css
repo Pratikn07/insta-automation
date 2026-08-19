@@ -155,6 +155,56 @@
   color: var(--color-muted-foreground);
 }
 
+/* The figure ladder. ONE definition for every measured value in the console, for
+   the same reason label-caps exists: so the scale cannot drift between screens.
+   It had already drifted — Home's band and the Funnels hero grew two independent
+   ladders that nearly collided at 3rem vs 3.25rem, and 1.5rem meant two
+   different things depending on which file you were in.
+
+   Tracking tightens as the type grows, which is optical correction rather than
+   inconsistency: -0.03em at the lead would be far too tight at 1rem. That part of
+   the ladder is deliberately NOT flat.
+
+   A placeholder is not on this ladder. An em-dash standing in for a missing
+   number drops to headline scale in muted ink, because it is not a figure — see
+   The Placeholder Is Not A Figure Rule in DESIGN.md. */
+@utility figure-lead {
+  font-size: 2.6rem;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  /* The one responsive step on the ladder. 3.25rem is right on a desktop column
+     and overbearing on a 375px screen, where it crowds the mark beneath it. */
+  @media (width >= 40rem) {
+    font-size: 3.25rem;
+  }
+}
+
+@utility figure-base {
+  font-size: 2.25rem;
+  line-height: 1.05;
+  letter-spacing: -0.025em;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+@utility figure-small {
+  font-size: 1.5rem;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+@utility figure-inline {
+  font-size: 1rem;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Kept under its original name because call sites in pages this pass does not
    touch still reference it, and Tailwind drops unknown classes silently — which
    is how an earlier build shipped an invisible sign-in button. */
