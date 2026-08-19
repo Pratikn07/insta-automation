@@ -26,6 +26,14 @@ function app() {
   return a;
 }
 
+/** Mounted without the requireAdmin stub, so `adminEmail` is absent. */
+function appWithoutIdentity() {
+  const a = express();
+  a.use(express.json());
+  a.use("/api/flags", flagsRouter);
+  return a;
+}
+
 function row(key: string, over: Record<string, unknown> = {}) {
   return {
     key,
@@ -190,5 +198,39 @@ describe("flags API", () => {
 
   it("404s an unknown key", async () => {
     await request(app()).patch("/api/flags/NOPE").send({ valueBool: true }).expect(404);
+  });
+
+  /**
+   * `requireAdmin` already makes this unreachable in the running app — it gates the
+   * whole apiRouter. These two exist because `updatedBy` is an audit field on a row
+   * that changes what the entire system does, so an invented identity must be
+   * impossible rather than merely unlikely.
+   */
+  describe("without a verified identity", () => {
+    it("refuses before doing any work", async () => {
+      const response = await request(appWithoutIdentity())
+        .patch("/api/flags/AI_DRAFTS_ENABLED")
+        .send({ valueBool: false })
+        .expect(401);
+
+      expect(response.body).toEqual({ error: "owner_auth_required" });
+    });
+
+    it("writes nothing and records nothing", async () => {
+      await request(appWithoutIdentity())
+        .patch("/api/flags/AI_DRAFTS_ENABLED")
+        .send({ valueBool: false })
+        .expect(401);
+
+      expect(upsert).not.toHaveBeenCalled();
+      expect(logEvent).not.toHaveBeenCalled();
+      expect(refresh).not.toHaveBeenCalled();
+    });
+
+    // Reading is a different question from writing, and the router-level guard is
+    // what protects it. This asserts the change did not silently break the read.
+    it("still allows the list to be read", async () => {
+      await request(appWithoutIdentity()).get("/api/flags").expect(200);
+    });
   });
 });

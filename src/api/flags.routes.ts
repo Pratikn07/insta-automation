@@ -39,6 +39,22 @@ flagsRouter.get("/", (_req, res) => {
 });
 
 flagsRouter.patch("/:key", async (req, res) => {
+  /**
+   * Belt and braces on identity, before any work.
+   *
+   * `requireAdmin` already guarantees this — it runs on the whole apiRouter and
+   * rejects a missing token, an invalid one, and a non-allowlisted email — so this
+   * is unreachable today. It is here because `updatedBy` is an audit field on a
+   * row that changes what the entire system does, and a fabricated
+   * `"unknown"` would be indistinguishable from a real name afterwards. If the
+   * identity is ever absent, the right answer is to refuse, not to invent one.
+   *
+   * Same reasoning as duplicating the enable fence in flagResolver: guarding only
+   * the door means trusting every row already inside. Matches the two routes that
+   * send to real people, ai.routes.ts approve and retry-send.
+   */
+  if (!req.adminEmail) return res.status(401).json({ error: "owner_auth_required" });
+
   const definition = flagDefinition(req.params.key);
   if (!definition) return res.status(404).json({ error: "not_found" });
 
@@ -73,7 +89,9 @@ flagsRouter.patch("/:key", async (req, res) => {
     return res.status(403).json({ error: "flag_not_controllable" });
   }
 
-  const updatedBy = req.adminEmail ?? "unknown";
+  // No fallback: the guard above means this is always a verified, allowlisted
+  // address, so the audit record cannot carry an invented name.
+  const updatedBy = req.adminEmail;
   const data = {
     valueBool: valueBool ?? null,
     valuePercent: valuePercent ?? null,
