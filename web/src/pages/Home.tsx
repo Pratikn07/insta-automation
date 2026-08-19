@@ -269,6 +269,18 @@ export function Home() {
         isFunnelLoading={funnelQ.isLoading}
       />
 
+      <FollowerFlowPanel
+        points={flowPoints}
+        stock={flowStock}
+        summary={flowSummary}
+        isLoading={flowQ.isLoading}
+        isError={flowQ.isError}
+        onRetry={() => void flowQ.refetch()}
+        selectedDay={attributionDay}
+        onDaySelect={setAttributionDay}
+        now={new Date().toISOString()}
+      />
+
       <div className="grid gap-8 lg:grid-cols-[1.55fr_1fr]">
         <section>
           <div className="flex items-baseline justify-between gap-3 border-b border-foreground pb-1.5">
@@ -380,18 +392,6 @@ export function Home() {
           />
         </section>
       </div>
-
-      <FollowerFlowPanel
-        points={flowPoints}
-        stock={flowStock}
-        summary={flowSummary}
-        isLoading={flowQ.isLoading}
-        isError={flowQ.isError}
-        onRetry={() => void flowQ.refetch()}
-        selectedDay={attributionDay}
-        onDaySelect={setAttributionDay}
-        now={new Date().toISOString()}
-      />
 
       <FeedFollowAttributionDrawer
         day={attributionDay}
