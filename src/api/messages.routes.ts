@@ -1,4 +1,4 @@
-import { Router, type Response } from "express";
+import { type Response } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import {
@@ -11,8 +11,9 @@ import {
   idempotencyKeyMismatch,
   isPrimaryKeyViolation,
 } from "./createReplay.js";
+import { asyncRouter } from "./asyncRouter.js";
 
-export const messagesRouter = Router();
+export const messagesRouter = asyncRouter();
 
 const messageTypeSchema = z.enum(["text", "image", "pdf"]);
 

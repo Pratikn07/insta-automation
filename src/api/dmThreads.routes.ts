@@ -1,8 +1,8 @@
-import { Router } from "express";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { CURRENT_DM_PROMPT_VERSION } from "../services/replyDraftPolicy.js";
+import { asyncRouter } from "./asyncRouter.js";
 
 /**
  * Read models for the Conversations DM views.
@@ -10,7 +10,7 @@ import { CURRENT_DM_PROMPT_VERSION } from "../services/replyDraftPolicy.js";
  * Mounted under apiRouter, so requireAdmin has already run. These are reads only —
  * every mutation lives on the AI router, where the send feature flag is enforced.
  */
-export const dmThreadsRouter = Router();
+export const dmThreadsRouter = asyncRouter();
 
 const MESSAGE_LIMIT = 200;
 const DELIVERY_REVIEW_LIMIT = 20;

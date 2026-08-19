@@ -1,10 +1,10 @@
-import { Router } from "express";
 import { z } from "zod";
 import { supabase, publicMediaUrl } from "../lib/supabase.js";
 import { env } from "../config/env.js";
 import { idempotencyKeyMismatch } from "./createReplay.js";
+import { asyncRouter } from "./asyncRouter.js";
 
-export const uploadRouter = Router();
+export const uploadRouter = asyncRouter();
 
 const allowedKinds = ["image", "pdf"] as const;
 

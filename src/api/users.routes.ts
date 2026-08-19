@@ -1,9 +1,9 @@
-import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { getIgUsers } from "../services/igUserService.js";
+import { asyncRouter } from "./asyncRouter.js";
 
-export const usersRouter = Router();
+export const usersRouter = asyncRouter();
 
 // ---- Directory: distinct users we've interacted with ------------------------
 //

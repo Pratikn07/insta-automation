@@ -1,4 +1,3 @@
-import { Router } from "express";
 import { z } from "zod";
 import { env } from "../config/env.js";
 import { logger } from "../lib/logger.js";
@@ -8,6 +7,7 @@ import {
   getKeywordGuideCatalog,
 } from "../services/advisorReadService.js";
 import { requireInternalRuntime } from "./internalAuth.js";
+import { asyncRouter } from "./asyncRouter.js";
 
 /**
  * The runtime→API data surface for the advisor.
@@ -20,7 +20,7 @@ import { requireInternalRuntime } from "./internalAuth.js";
  * /api router, so it never inherits browser CORS or Supabase `requireAdmin` — the
  * two auth directions stay separate.
  */
-export const internalAiRouter = Router();
+export const internalAiRouter = asyncRouter();
 
 internalAiRouter.use(requireInternalRuntime(env.TINY_SOHO_INTERNAL_TOKEN));
 

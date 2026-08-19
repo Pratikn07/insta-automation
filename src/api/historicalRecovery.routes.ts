@@ -1,4 +1,3 @@
-import { Router } from "express";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
@@ -21,6 +20,7 @@ import { historicalCandidateDetail } from "../services/historicalRecoveryCandida
 import {
   markHistoricalCandidateReviewed,
 } from "../services/historicalRecoveryReview.js";
+import { asyncRouter } from "./asyncRouter.js";
 
 export { HISTORICAL_REVIEWABLE_OUTCOMES } from "../services/historicalRecoveryReview.js";
 
@@ -35,7 +35,7 @@ export { HISTORICAL_REVIEWABLE_OUTCOMES } from "../services/historicalRecoveryRe
  *
  * Mounted under apiRouter, so requireAdmin has already run.
  */
-export const historicalRecoveryRouter = Router();
+export const historicalRecoveryRouter = asyncRouter();
 
 export const CANDIDATE_VIEWS = [
   "all",

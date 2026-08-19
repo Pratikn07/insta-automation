@@ -1,4 +1,4 @@
-import { Router, type NextFunction, type Request, type Response } from "express";
+import { type NextFunction, type Request, type Response } from "express";
 import { z } from "zod";
 import {
   cancelGuideDelivery,
@@ -7,8 +7,9 @@ import {
   type GuideDeliveryReviewErrorCode,
   type GuideDeliveryReviewResult,
 } from "../services/guideDeliveryReviewService.js";
+import { asyncRouter } from "./asyncRouter.js";
 
-export const guideDeliveriesRouter = Router();
+export const guideDeliveriesRouter = asyncRouter();
 
 const unitParamsSchema = z.object({
   deliveryId: z.string().uuid(),
