@@ -11,6 +11,22 @@ import {
 export const resourcesRouter = Router();
 
 /**
+ * Prisma's foreign-key constraint failure.
+ *
+ * Local rather than alongside the classifiers in `createReplay.ts`, which is about
+ * whether a repeated create is the same create — a delete blocked by a reference is
+ * a different question that happens to read the same field.
+ */
+function isForeignKeyViolation(error: unknown): boolean {
+  return (
+    !!error &&
+    typeof error === "object" &&
+    "code" in error &&
+    (error as { code: unknown }).code === "P2003"
+  );
+}
+
+/**
  * `id` is required, and supplied by the browser. A create whose response was
  * lost can then be repeated safely: the same UUID either creates the row or
  * proves the row is already there.
@@ -93,7 +109,7 @@ resourcesRouter.patch("/:id", async (req, res) => {
   res.json(updated);
 });
 
-resourcesRouter.delete("/:id", async (req, res) => {
+resourcesRouter.delete("/:id", async (req, res, next) => {
   const id = req.params.id;
   const deliveryHistoryCount = await prisma.guideDelivery.count({
     where: { resourceId: id },
@@ -101,13 +117,62 @@ resourcesRouter.delete("/:id", async (req, res) => {
   if (deliveryHistoryCount > 0) {
     return res.status(409).json({ error: "resource_has_delivery_history" });
   }
+
+  /**
+   * An upcoming setup holding this guide blocks the delete.
+   *
+   * `upcoming_automations.resource_id` is an ON DELETE RESTRICT foreign key, so
+   * Postgres refuses regardless. Without this guard the constraint violation left
+   * the async handler rejecting with nothing to catch it (see `next` below), so the
+   * request was never answered at all: the browser waited out its 20s deadline and
+   * reported a bare "Delete failed" that named neither the cause nor a way out.
+   *
+   * It refuses rather than cascading: cancelling someone's scheduled setup as a
+   * side effect of deleting a guide is a bigger decision than the click implies.
+   * The trigger words are returned so the answer is actionable.
+   *
+   * Every status, not only the open ones — the constraint does not care whether a
+   * setup is waiting, attached or cancelled, so neither can this check.
+   */
+  const blockingSetups = await prisma.upcomingAutomation.findMany({
+    where: { resourceId: id },
+    select: { triggerWord: true, status: true },
+    orderBy: { createdAt: "asc" },
+  });
+  if (blockingSetups.length > 0) {
+    return res.status(409).json({
+      error: "resource_has_upcoming_setup",
+      triggerWords: blockingSetups.map((setup) => setup.triggerWord),
+      // True when cancelling a setup would unblock the delete. False means the
+      // only rows holding it are already resolved, which the owner cannot clear
+      // from the interface — worth distinguishing rather than telling them to
+      // cancel something that is already cancelled.
+      clearable: blockingSetups.some(
+        (setup) => setup.status === "waiting" || setup.status === "needs_attention",
+      ),
+    });
+  }
   const keywordIds = (
     await prisma.keyword.findMany({ where: { resourceId: id }, select: { id: true } })
   ).map((k) => k.id);
-  await prisma.$transaction([
-    prisma.conversation.deleteMany({ where: { keywordId: { in: keywordIds } } }),
-    prisma.keyword.deleteMany({ where: { resourceId: id } }),
-    prisma.resource.delete({ where: { id } }),
-  ]);
+  try {
+    await prisma.$transaction([
+      prisma.conversation.deleteMany({ where: { keywordId: { in: keywordIds } } }),
+      prisma.keyword.deleteMany({ where: { resourceId: id } }),
+      prisma.resource.delete({ where: { id } }),
+    ]);
+  } catch (error) {
+    // Backstop for a restricting reference this route does not yet know about, so
+    // the next one is a refusal that says "something still points at this" rather
+    // than another silent hang.
+    if (isForeignKeyViolation(error)) {
+      return res.status(409).json({ error: "resource_still_referenced" });
+    }
+    // `next`, not `throw`. Express 4 does not forward a rejected promise from an
+    // async handler, so throwing here answers nothing at all and the request hangs
+    // until the browser gives up. Handing it over reaches the error middleware in
+    // router.ts and becomes an honest 500. Same reason as guideDeliveries.routes.ts.
+    return next(error);
+  }
   res.status(204).end();
 });

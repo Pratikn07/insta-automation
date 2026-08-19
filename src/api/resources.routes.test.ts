@@ -6,6 +6,7 @@ const findMany = vi.fn();
 const findUnique = vi.fn();
 const create = vi.fn();
 const countDeliveries = vi.fn();
+const findUpcoming = vi.fn();
 const findKeywords = vi.fn();
 const deleteConversations = vi.fn();
 const deleteKeywords = vi.fn();
@@ -15,6 +16,7 @@ const transaction = vi.fn();
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
     guideDelivery: { count: countDeliveries },
+    upcomingAutomation: { findMany: findUpcoming },
     keyword: { findMany: findKeywords, deleteMany: deleteKeywords },
     conversation: { deleteMany: deleteConversations },
     resource: { findMany, findUnique, create, delete: deleteResource },
@@ -77,6 +79,7 @@ beforeEach(() => {
     description: null,
   });
   countDeliveries.mockReset().mockResolvedValue(0);
+  findUpcoming.mockReset().mockResolvedValue([]);
   findKeywords.mockReset().mockResolvedValue([]);
   deleteConversations.mockReset().mockReturnValue({ operation: "delete-conversations" });
   deleteKeywords.mockReset().mockReturnValue({ operation: "delete-keywords" });
@@ -164,6 +167,80 @@ describe("resource deletion", () => {
     expect(countDeliveries).toHaveBeenCalledWith({ where: { resourceId: RESOURCE_ID } });
     expect(findKeywords).not.toHaveBeenCalled();
     expect(transaction).not.toHaveBeenCalled();
+  });
+
+  /**
+   * `upcoming_automations.resource_id` is ON DELETE RESTRICT, so before this guard
+   * the delete reached Postgres, failed the constraint, threw uncaught, and arrived
+   * in the console as "Delete failed" — no cause, no way out. The create-a-guide
+   * inline flow made it easy to reach, since every setup made that way owns a guide.
+   */
+  it("names the setup holding the guide instead of letting the constraint throw", async () => {
+    findUpcoming.mockResolvedValue([{ triggerWord: "TEST", status: "waiting" }]);
+
+    const response = await request(makeApp()).delete(`/api/resources/${RESOURCE_ID}`).expect(409);
+
+    expect(response.body).toEqual({
+      error: "resource_has_upcoming_setup",
+      triggerWords: ["TEST"],
+      clearable: true,
+    });
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  // Cancelling is the way out, so whether one is available decides the wording.
+  // "Cancel it first" is useless advice about a setup that is already cancelled.
+  it("reports a resolved setup as not clearable", async () => {
+    findUpcoming.mockResolvedValue([
+      { triggerWord: "OLDWORD", status: "cancelled" },
+      { triggerWord: "DONEWORD", status: "bound" },
+    ]);
+
+    const response = await request(makeApp()).delete(`/api/resources/${RESOURCE_ID}`).expect(409);
+
+    expect(response.body).toMatchObject({
+      triggerWords: ["OLDWORD", "DONEWORD"],
+      clearable: false,
+    });
+  });
+
+  // Every status, because the constraint counts every row. Checking only the open
+  // ones would have left the same unhandled 500 for an attached or cancelled setup.
+  it("asks about setups of any status", async () => {
+    await request(makeApp()).delete(`/api/resources/${RESOURCE_ID}`).expect(204);
+
+    expect(findUpcoming).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { resourceId: RESOURCE_ID } }),
+    );
+  });
+
+  it("deletes the guide with its keywords and conversations when nothing holds it", async () => {
+    findKeywords.mockResolvedValue([{ id: "keyword-1" }]);
+
+    await request(makeApp()).delete(`/api/resources/${RESOURCE_ID}`).expect(204);
+
+    expect(transaction).toHaveBeenCalledOnce();
+    expect(deleteResource).toHaveBeenCalledWith({ where: { id: RESOURCE_ID } });
+  });
+
+  // A restricting reference this route does not yet know about must still not reach
+  // the owner as a 500, which reads as "the server broke" rather than "this is held".
+  it("answers a constraint failure it did not anticipate with a refusal, not a crash", async () => {
+    transaction.mockRejectedValue(
+      Object.assign(new Error("Foreign key constraint failed"), { code: "P2003" }),
+    );
+
+    const response = await request(makeApp()).delete(`/api/resources/${RESOURCE_ID}`).expect(409);
+
+    expect(response.body).toEqual({ error: "resource_still_referenced" });
+  });
+
+  // Only foreign keys are translated. Swallowing everything would turn a genuine
+  // outage into a tidy 409 and hide it.
+  it("lets an unrelated failure surface", async () => {
+    transaction.mockRejectedValue(new Error("connection terminated"));
+
+    await request(makeApp()).delete(`/api/resources/${RESOURCE_ID}`).expect(500);
   });
 });
 
