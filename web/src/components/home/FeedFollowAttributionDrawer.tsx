@@ -59,12 +59,25 @@ function SummaryValue({
   detail: string;
 }) {
   return (
-    <div className="rounded-xl border bg-muted/20 p-4">
-      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
-      <p className="mt-2 text-2xl font-semibold tabular-nums">
-        {value === null ? "Unavailable" : formatSignedCount(value)}
-      </p>
-      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{detail}</p>
+    // A figure cell, not a card — a rule above and the figure carrying the
+    // weight, the shape KpiTile settled on. This was `rounded-xl border
+    // bg-muted/20`: a 12px box (--radius-lg is 3px) on an unmeasured 20% tint of
+    // the quiet fill. `line` rather than the bare default because this cell's
+    // ground is the drawer's --color-card (#FFFEF9), where #EBE8DF is 1.21:1.
+    <div className="border-t border-t-line pt-2.5">
+      {/* Was a hand-rolled `text-xs uppercase tracking-wide` — the same drift
+          label-caps exists to prevent, at 0.75rem/0.025em against its
+          0.625rem/0.14em. */}
+      <p className="label-caps">{label}</p>
+      {value === null ? (
+        // The Placeholder Is Not A Figure Rule: a stand-in for a missing number
+        // is set at label scale, not figure scale. "Unavailable" at 1.5rem is a
+        // hole where a value should be.
+        <p className="mt-1.5 text-base font-medium text-muted-foreground">Unavailable</p>
+      ) : (
+        <p className="figure-small mt-1.5">{formatSignedCount(value)}</p>
+      )}
+      <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{detail}</p>
     </div>
   );
 }
@@ -73,10 +86,14 @@ function CollectionStatus({ copy }: { copy: FeedCollectionCopy }) {
   return (
     <div
       className={cn(
-        "rounded-xl border px-4 py-3",
+        // Keeps its bounded surface: this is a status band, and DESIGN.md allows
+        // 3px "on a band". The tints are the recorded status pairs, now at full
+        // strength — `bg-muted/30` was an unmeasured blend, and "measure the
+        // blend, not the token" is the rule it broke.
+        "rounded-sm border px-3 py-2.5",
         copy.tone === "good" && "border-signal bg-signal-soft",
         copy.tone === "caution" && "border-caution bg-caution-soft",
-        copy.tone === "muted" && "bg-muted/30",
+        copy.tone === "muted" && "border-line bg-muted",
       )}
     >
       <p className="text-sm font-medium">{copy.label}</p>
@@ -113,7 +130,11 @@ function PostRow({ post }: { post: FeedFollowAttributedPost }) {
   const publishedAt = formatPublishedAt(post.postedAt);
   const permalink = safeInstagramPermalink(post.permalink);
   return (
-    <article className="rounded-xl border p-4">
+    // A row in a ranked list ("Largest attributed increase first"), not an
+    // object — nothing here is picked up or moved, so it separates on a rule the
+    // way Home's attention rows and the panel's spike days do. The rule sits on
+    // top of every row but the first, so the list leaves no trailing edge.
+    <article className="py-4 [&:not(:first-child)]:border-t [&:not(:first-child)]:border-t-line">
       <div className="flex gap-4">
         <PostThumbnail post={post} />
         <div className="min-w-0 flex-1">
@@ -128,7 +149,7 @@ function PostRow({ post }: { post: FeedFollowAttributedPost }) {
               </p>
             </div>
             <div className="shrink-0 text-right">
-              <p className="text-lg font-semibold tabular-nums">{formatSignedCount(post.delta)}</p>
+              <p className="figure-inline">{formatSignedCount(post.delta)}</p>
               <p className="text-[11px] text-muted-foreground">
                 {post.spanDays > 1
                   ? `attributed across ${post.spanDays} days`
@@ -164,12 +185,17 @@ function PostRow({ post }: { post: FeedFollowAttributedPost }) {
   );
 }
 
+// Sentences, not dashed cards. DESIGN.md settles this outright — "the empty
+// state and the not-found state LOST their containers" because both were
+// "drawn to make a paragraph look considered" — and DailyAddsChart's waiting
+// state was rewritten the same way. The heading above already names the section,
+// so the rule and the heading do the separating.
 function EmptyContributors({ day }: { day: FeedFollowAttributionDay }) {
   if (day.collectionStatus === "complete" && day.attributedFeedFollows === 0) {
     return (
-      <div className="rounded-xl border border-dashed p-6 text-center">
+      <div>
         <p className="text-sm font-medium">Meta attributed no feed-post follows on this day.</p>
-        <p className="mt-1 text-sm text-muted-foreground">
+        <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
           All eligible feed posts were checked successfully.
         </p>
       </div>
@@ -177,9 +203,9 @@ function EmptyContributors({ day }: { day: FeedFollowAttributionDay }) {
   }
 
   return (
-    <div className="rounded-xl border border-dashed p-6 text-center">
+    <div>
       <p className="text-sm font-medium">No contributing feed posts can be confirmed.</p>
-      <p className="mt-1 text-sm text-muted-foreground">
+      <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
         The collection status above explains why this is unavailable rather than zero.
       </p>
     </div>
@@ -203,9 +229,24 @@ function LoadingState() {
 
 function ErrorState({ onRetry }: { onRetry: () => void }) {
   return (
-    <div className="rounded-xl border border-destructive/25 bg-destructive/5 p-5">
-      <p className="text-sm font-medium">Could not load feed attribution</p>
-      <p className="mt-1 text-sm text-muted-foreground">
+    // Keeps a bounded surface — a failed read is the one thing in here a reader
+    // must act on — and takes the treatment Home already gives its "could not
+    // check" block: neutral ground, `line` edge, the attention tone carried by
+    // the heading alone.
+    //
+    // It was `border-destructive/25 bg-destructive/5`, two unmeasured blends, and
+    // DESIGN.md reserves destructive for "deletion and irreversible actions
+    // only" — a request that failed is neither.
+    //
+    // NOT urgent-soft, which was the obvious swap. index.css scopes the -soft
+    // values to STATUS BADGES, each measured against its own foreground: they
+    // hold a short word in text-urgent, not a paragraph. Muted body copy on
+    // urgent-soft measures 4.46:1, under the 4.5 floor — the No-Quieter-Tier
+    // Rule's warning that muted has "nothing to spare". On quiet it is 4.72:1
+    // and the urgent heading is 4.96:1, both measured, both clear.
+    <div className="rounded-sm border border-line bg-muted p-4">
+      <p className="text-sm font-medium text-urgent">Could not load feed attribution</p>
+      <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
         The chart data is still available. Try this one-day diagnostic again.
       </p>
       <Button className="mt-4" size="sm" variant="outline" type="button" onClick={onRetry}>
@@ -217,7 +258,11 @@ function ErrorState({ onRetry }: { onRetry: () => void }) {
 
 function ScopeNote() {
   return (
-    <aside className="rounded-xl bg-muted/35 p-4 text-xs leading-relaxed text-muted-foreground">
+    // Prose under a rule. `rounded-xl bg-muted/35` made a routine scope note the
+    // only filled surface left in the drawer, which is the same inversion the
+    // follower panel's footnote had — and 35% of the quiet fill was an
+    // unmeasured tint besides.
+    <aside className="border-t border-t-line pt-3 text-xs leading-relaxed text-muted-foreground">
       <p>
         Feed-post follows are gross follows credited by Meta; account change is net follows minus
         unfollows. The remainder is a directional diagnostic, not an exact source count.
@@ -256,7 +301,7 @@ function AttributionContent({ day }: { day: FeedFollowAttributionDay }) {
       <section aria-labelledby="feed-contributors-heading">
         <div className="mb-3 flex items-end justify-between gap-3">
           <div>
-            <h3 id="feed-contributors-heading" className="text-sm font-semibold">
+            <h3 id="feed-contributors-heading" className="text-sm font-medium">
               Contributing feed posts
             </h3>
             <p className="mt-1 text-xs text-muted-foreground">Largest attributed increase first</p>
@@ -266,7 +311,7 @@ function AttributionContent({ day }: { day: FeedFollowAttributionDay }) {
           </span>
         </div>
         {day.posts.length > 0 ? (
-          <div className="space-y-3">
+          <div>
             {day.posts.map((post) => (
               <PostRow key={post.mediaId} post={post} />
             ))}
@@ -308,9 +353,9 @@ export function FeedFollowAttributionDrawer({
         ) : selected ? (
           <AttributionContent day={selected} />
         ) : (
-          <div className="rounded-xl border border-dashed p-6 text-center">
+          <div>
             <p className="text-sm font-medium">Attribution is unavailable for this date.</p>
-            <p className="mt-1 text-sm text-muted-foreground">
+            <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
               No day record was returned, so this cannot be treated as zero.
             </p>
           </div>

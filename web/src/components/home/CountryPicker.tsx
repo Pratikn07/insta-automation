@@ -68,7 +68,7 @@ export function CountryPicker({
           "inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition",
           isExplicit
             ? "border-funnel-mark bg-mark-soft text-funnel-mark"
-            : "border-border text-muted-foreground hover:bg-muted hover:text-foreground",
+            : "border-line text-muted-foreground hover:bg-muted hover:text-foreground",
         )}
       >
         {isExplicit
@@ -81,10 +81,10 @@ export function CountryPicker({
         <div
           role="dialog"
           aria-label="All reported countries"
-          className="absolute right-0 top-full z-30 mt-1.5 w-72 rounded-xl border border-border bg-popover shadow-xl"
+          className="absolute right-0 top-full z-30 mt-1.5 w-72 rounded-xl border border-line bg-popover shadow-xl"
         >
           <Command className="max-h-80 overflow-hidden">
-            <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+            <div className="flex items-center gap-2 border-b border-b-line px-3 py-2">
               <Search className="size-3.5 shrink-0 text-muted-foreground" />
               <Command.Input
                 placeholder="Search countries…"
@@ -124,7 +124,7 @@ export function CountryPicker({
                       style={{ backgroundColor: color ?? "rgb(148 163 184)" }}
                     />
                     <span className="flex-1 truncate">{countryLabel(entry.code)}</span>
-                    <span className="shrink-0 font-semibold tabular-nums text-muted-foreground">
+                    <span className="shrink-0 font-medium tabular-nums text-muted-foreground">
                       {formatSignedCount(entry.net)}
                     </span>
                     {/* Only a real selection gets a tick. In the automatic view
@@ -145,7 +145,7 @@ export function CountryPicker({
               })}
             </Command.List>
           </Command>
-          <div className="border-t border-border px-3 py-2">
+          <div className="border-t border-t-line px-3 py-2">
             {isExplicit ? (
               <button
                 type="button"
