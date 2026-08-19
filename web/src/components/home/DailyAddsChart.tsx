@@ -99,18 +99,28 @@ export function DailyAddsChart({
 
   const measured = points.filter((p) => p.total !== null);
 
+  // A sentence, not a box. This was a `rounded-xl border border-dashed` panel
+  // 224px tall with the line centred in it — three separate contradictions of
+  // the surface it renders on. 12px is the radius of the console this replaced
+  // (--radius-lg is 3px, "never enough to read as a card"); the bare `border`
+  // resolved through the base layer to #EBE8DF, 1.12:1 on the ground, so the
+  // edge it drew could not be seen anyway; and DESIGN.md settles the shape
+  // outright — the empty state and the not-found state LOST their containers
+  // because both were "drawn to make a paragraph look considered".
+  //
+  // Nothing is lost by dropping it. FollowerFlowPanel already opens this slot
+  // with `border-t border-line` and names it "Daily net adds by region", so the
+  // rule and the heading do the separating. Reserving the chart's full height
+  // for one line would render the state as the gap DESIGN.md says to avoid.
+  //
+  // No `role="img"` either. It substituted "not enough history yet" for the
+  // sentence on screen, so assistive tech heard a different string than sighted
+  // readers read; one sentence now serves both.
   if (measured.length < 2) {
     return (
-      <div
-        role="img"
-        aria-label="Daily follower adds: not enough history yet"
-        className={cn(
-          "flex h-56 items-center justify-center rounded-xl border border-dashed text-xs text-muted-foreground",
-          className,
-        )}
-      >
-        Daily adds appear after two measured days
-      </div>
+      <p className={cn("text-xs leading-relaxed text-muted-foreground", className)}>
+        Daily adds appear after two measured days.
+      </p>
     );
   }
 
