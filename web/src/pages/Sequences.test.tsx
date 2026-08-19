@@ -80,7 +80,7 @@ describe("Sequences create identity", () => {
     // Let the resources read settle first: a refetch mid-typing re-renders the
     // drawer and detaches the input.
     await waitFor(() => expect(api).toHaveBeenCalled());
-    await user.click(screen.getAllByRole("button", { name: /New sequence/ })[0]);
+    await user.click(screen.getAllByRole("button", { name: /New guide/ })[0]);
     // One atomic change rather than per-keystroke typing, for the same reason.
     fireEvent.change(screen.getByPlaceholderText("Toddler Activity Guide"), {
       target: { value: "Sleep guide" },

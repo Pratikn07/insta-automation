@@ -50,7 +50,7 @@ export function Sequences() {
         </div>
         <Button variant="brand" onClick={() => setCreating(true)}>
           <Plus className="size-4" />
-          New sequence
+          New guide
         </Button>
       </div>
 
