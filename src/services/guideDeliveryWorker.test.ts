@@ -28,7 +28,7 @@ function harness(options: { enabled?: boolean; completionPending?: ClaimedGuideD
     processClaimedGuideDelivery,
     logger,
     worker: createGuideDeliveryWorker({
-      enabled: options.enabled ?? true,
+      isEnabled: () => options.enabled ?? true,
       batchSize: 10,
       leaseMs: 300_000,
       repository,
@@ -47,6 +47,46 @@ describe("guide delivery worker", () => {
     expect(test.repository.reconcileExpiredClaims).not.toHaveBeenCalled();
     expect(test.repository.claimDueBatch).not.toHaveBeenCalled();
     expect(test.processClaimedGuideDelivery).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The flag is read per tick, not captured when the worker is built.
+   *
+   * A captured boolean means switching guide delivery off stops new deliveries at
+   * the message handler while this worker keeps draining everything already
+   * queued — a stop button that appears to have worked and did not. Nothing
+   * reconstructs this worker at runtime, so the read has to happen inside the tick.
+   */
+  it("stops between ticks when the flag is switched off, with no reconstruction", async () => {
+    let enabled = true;
+    const repository = {
+      reconcileExpiredClaims: vi.fn().mockResolvedValue({
+        needsReviewDeliveryIds: [],
+        releasedDeliveryIds: [],
+        terminalDeliveryIds: [],
+        completionPending: [],
+      }),
+      claimDueBatch: vi.fn().mockResolvedValue([]),
+    };
+    const worker = createGuideDeliveryWorker({
+      isEnabled: () => enabled,
+      batchSize: 10,
+      leaseMs: 300_000,
+      repository,
+      finalize: vi.fn(),
+      processClaimedGuideDelivery: vi.fn(),
+      now: () => NOW,
+      logger: { error: vi.fn(), warn: vi.fn() },
+    });
+
+    await worker();
+    expect(repository.claimDueBatch).toHaveBeenCalledTimes(1);
+
+    enabled = false;
+    await worker();
+
+    expect(repository.claimDueBatch).toHaveBeenCalledTimes(1);
+    expect(repository.reconcileExpiredClaims).toHaveBeenCalledTimes(1);
   });
 
   it("reconciles before finalizing all-sent work, then claims due work", async () => {
