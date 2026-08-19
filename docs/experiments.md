@@ -130,6 +130,50 @@ Rules that follow from this, all enforced by tests rather than review:
    over three different shapes would be structure we invented rather than structure the
    data has.
 
+## Decisions taken
+
+Until rule 6's closing surface exists, a decision about a live experiment is recorded
+here. One entry per decision, and it must say what the evidence actually supported —
+a kept behaviour is not the same claim as a proven one.
+
+### recovery-reminder-timing — kept on, unproven (19 August 2026)
+
+`DM_RECOVERY_POST_EXPERIMENT_ENABLED` was set to `true` two days before the window
+closed on 21 August 2026, so reminders continue instead of pausing for review.
+
+**This is not a measured win.** Matched per-protocol comparison — people who had not
+engaged by the moment a reminder came due, treatment being those who actually received
+one:
+
+| | Got a reminder | Got nothing |
+| --- | --- | --- |
+| People | 638 | 200 |
+| Engaged afterwards | 91 | 23 |
+| Got the guide | 61 | 16 |
+
+Reminders lead on both, by roughly three people per hundred on engagement and one and a
+half per hundred on getting the guide. Neither difference survives its own sample:
+p≈0.30 and p≈0.49. Per rule 3 these counts do not support a headline rate, and what is
+missing is large — detecting a difference this size on this base needs on the order of
+**5,000 more people per arm**. At 638 treatment rows per fortnight the window would have
+to stay open for years, so the experiment as designed can never conclude.
+
+The decision was therefore made on the direction of travel and the cost of being wrong:
+one reminder DM to somebody who asked for a guide and did not come back. It was made
+deliberately and with the numbers above in view.
+
+**What would overturn it.** A reminder that measurably annoys people — unfollows or
+blocks rising among reminded users — or `feat/dm-recovery-timing-v2` changing when
+reminders fire, which changes the intervention and so restarts the question.
+
+The three arms the earlier confounded readings produced are worth naming, because two of
+them are wrong and both looked authoritative: comparing all treatment rows to all control
+rows says control wins 56% to 27%, because treatment's denominator carries 1,339
+suppressed people who were never sent anything. Comparing sent-treatment to all control
+says control wins 11.5% to 14.3% the other way, because a reminder was suppressed for
+anyone who had already engaged — so the people who got one are, by construction, the
+non-responders. Only the matched comparison above answers the question that was asked.
+
 ## Not built yet
 
 Closing experiments — the decisions surface, the diagram drawn from stored steps and
