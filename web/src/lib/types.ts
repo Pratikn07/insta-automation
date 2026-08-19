@@ -470,6 +470,32 @@ export interface FollowerDailyAddsPoint {
   stale: boolean;
   provisional: boolean; // within Meta's ~48h demographics lag, may still shift
   basis: DailyAddsBasis;
+  // --- exact-total anchoring (followerAllocationCore) --------------------------
+  // Optional for the same reason as byCountry: a browser may be talking to a
+  // server deployed before followers_count was being captured, and a day before
+  // that capture began has no exact figure at all.
+  //
+  // The day's TRUE net adds, from the followers_count profile field. Unlike
+  // `total` this has no top-45 country cutoff and no ~48h lag — it is the number
+  // Instagram itself shows. When present, `total` has been anchored to it.
+  exactTotal?: number | null;
+  // What follower_demographics alone reported, before apportioning. Null on days
+  // Meta never reported. Kept so the gap between measurement and estimate stays
+  // inspectable rather than hidden.
+  measuredTotal?: number | null;
+  // The country/region split on this day was apportioned from a multi-day
+  // demographic diff and/or rescaled onto the exact total, rather than being a
+  // clean single-day Meta measurement. Meta publishes no per-country-per-day
+  // follower data, so this is set on essentially every recent day — it marks
+  // inference, not error.
+  estimated?: boolean;
+  // --- churn (follows_and_unfollows) -----------------------------------------
+  // Meta's own daily ledger, present only for the days it answers. `total` is
+  // NET, so a day that gained 400 and lost 380 is indistinguishable from one
+  // that gained 20 without these. Null means Meta gave no figure — never zero,
+  // which would read as "nobody unfollowed".
+  follows?: number | null;
+  unfollows?: number | null;
   // Present only on days that cleared the spike thresholds; absent is normal.
   spike?: SpikeInfo;
 }
