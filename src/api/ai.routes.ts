@@ -1,4 +1,3 @@
-import { Router } from "express";
 import type { Request, Response } from "express";
 import { z } from "zod";
 import { env } from "../config/env.js";
@@ -22,6 +21,8 @@ import {
   regenerateReplyDraft,
 } from "../services/replyDraftService.js";
 import type { DraftActionCode } from "../services/replyDraftService.js";
+import type { IRouter } from "express";
+import { asyncRouter } from "./asyncRouter.js";
 
 /**
  * Owner-facing AI routes. Mounted under the apiRouter, so `requireAdmin` has
@@ -65,8 +66,8 @@ function sendRuntimeError(res: Response, error: unknown): void {
   res.status(502).json({ error: "ai_runtime_error" });
 }
 
-export function createAiRouter(deps: AiRouterDependencies): Router {
-  const router = Router();
+export function createAiRouter(deps: AiRouterDependencies): IRouter {
+  const router = asyncRouter();
 
   // Capabilities are deployment policy, not runtime health. Keep this response
   // available when the runtime is down so the browser does not confuse an

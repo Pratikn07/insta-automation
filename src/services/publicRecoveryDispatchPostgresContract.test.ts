@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { PrismaClient, type Prisma } from "@prisma/client";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { CURRENT_ORIGIN_METHOD } from "./historicalRecoveryOriginPolicy.js";
 import {
   setHistoricalReservationAfterLocksTestHook,
@@ -229,6 +229,10 @@ beforeAll(async () => {
   const parsed = new URL(databaseUrl);
   expect(["127.0.0.1", "localhost", "::1"]).toContain(parsed.hostname);
   expect(process.env.DATABASE_URL).toBe(databaseUrl);
+  // Asserted because `beforeEach` empties a whole table rather than deleting by
+  // prefix, so this file must be certain the database is a throwaway. Same guard as
+  // guideDeliveryRepositoryContract.test.ts.
+  expect(process.env.MIGRATION_TEST_DATABASE_DISPOSABLE).toBe("true");
   db = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
   historical = await import("./historicalRecoveryRepository.js");
   prospective = await import("./dmRecoveryRepository.js");
@@ -246,6 +250,26 @@ beforeAll(async () => {
       gateMessage: "contract",
     })),
   });
+});
+
+/**
+ * Empty the dispatch table outright before each test, not by prefix.
+ *
+ * The global-cap assertions here count every row in `public_recovery_dispatch`,
+ * because that is what the production cap query does — it has no per-user filter.
+ * The prefixed cleanup in `afterEach` cannot make that precondition true: `prefix`
+ * carries a fresh UUID per run, so a run that dies before its `afterEach` orphans
+ * its rows permanently, and seven other contract files write the same table.
+ *
+ * The symptom was "allows only one cross-system reservation for the final
+ * rolling-day slot" failing with `expected 1, received 0` — the leftovers had
+ * already consumed the cap, so neither claimant could reserve. It failed
+ * *consistently*, which reads like a defect rather than pollution, and cost a real
+ * diagnostic detour before the rows were found.
+ */
+beforeEach(async () => {
+  if (!db) return;
+  await db.publicRecoveryDispatch.deleteMany({});
 });
 
 afterEach(async () => {

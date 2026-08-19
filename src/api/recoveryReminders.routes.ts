@@ -1,4 +1,3 @@
-import { Router } from "express";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
@@ -12,13 +11,14 @@ import {
   activateSettingsBlockedVerification,
   retireSettingsBlockedVerification,
 } from "../services/settingsBlockedVerificationAdminService.js";
+import { asyncRouter } from "./asyncRouter.js";
 
 /**
  * Read models and owner actions for the DM recovery lens.
  *
  * Mounted under apiRouter, so requireAdmin has already run.
  */
-export const recoveryRemindersRouter = Router();
+export const recoveryRemindersRouter = asyncRouter();
 
 export const RECOVERY_VIEWS = [
   "all",

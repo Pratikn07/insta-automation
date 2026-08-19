@@ -1,4 +1,3 @@
-import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { normalizeKeyword } from "../services/keywordService.js";
@@ -10,8 +9,9 @@ import {
   isPrimaryKeyViolation,
   isUniqueViolation,
 } from "./createReplay.js";
+import { asyncRouter } from "./asyncRouter.js";
 
-export const keywordsRouter = Router();
+export const keywordsRouter = asyncRouter();
 
 const createSchema = z.object({
   id: z.string().uuid(),

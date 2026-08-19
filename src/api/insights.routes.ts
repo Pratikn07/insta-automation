@@ -1,4 +1,3 @@
-import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import {
@@ -22,8 +21,9 @@ import { getFeedFollowAttribution } from "../services/feedFollowAttributionServi
 import { computeUsFit } from "../services/usFitScore.js";
 import type { ContentProfile } from "../services/geminiAnalysisService.js";
 import { mediaTimestamp } from "./mediaTimestamp.js";
+import { asyncRouter } from "./asyncRouter.js";
 
-export const insightsRouter = Router();
+export const insightsRouter = asyncRouter();
 
 // GET /api/insights/leaderboard — every reel, US-fit scored reels first.
 insightsRouter.get("/leaderboard", async (_req, res) => {

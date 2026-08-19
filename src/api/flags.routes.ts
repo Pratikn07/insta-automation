@@ -1,12 +1,12 @@
-import { Router } from "express";
 import { z } from "zod";
 import { FLAG_REGISTRY, flagDefinition } from "../config/flagRegistry.js";
 import { experimentName } from "../config/experimentRegistry.js";
 import { prisma } from "../lib/prisma.js";
 import { flags } from "../services/flagService.js";
 import { logEvent } from "../services/eventLogger.js";
+import { asyncRouter } from "./asyncRouter.js";
 
-export const flagsRouter = Router();
+export const flagsRouter = asyncRouter();
 
 /**
  * Exactly one value, matching the flag's kind.

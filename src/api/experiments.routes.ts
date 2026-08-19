@@ -1,10 +1,10 @@
-import { Router } from "express";
 import { EXPERIMENT_REGISTRY, experimentDefinition } from "../config/experimentRegistry.js";
 import { flagDefinition } from "../config/flagRegistry.js";
 import { flags } from "../services/flagService.js";
 import { summarizeExperiment } from "../services/experimentSummary.js";
+import { asyncRouter } from "./asyncRouter.js";
 
-export const experimentsRouter = Router();
+export const experimentsRouter = asyncRouter();
 
 /**
  * The list: name, state, and the one number that matters. Nothing else.

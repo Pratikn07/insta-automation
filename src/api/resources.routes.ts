@@ -1,4 +1,3 @@
-import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { isInstagramGuideTextTooLong } from "../../shared/guideMessagePolicy.js";
@@ -7,8 +6,9 @@ import {
   idempotencyKeyMismatch,
   isPrimaryKeyViolation,
 } from "./createReplay.js";
+import { asyncRouter } from "./asyncRouter.js";
 
-export const resourcesRouter = Router();
+export const resourcesRouter = asyncRouter();
 
 /**
  * Prisma's foreign-key constraint failure.

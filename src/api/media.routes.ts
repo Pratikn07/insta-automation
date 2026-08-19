@@ -1,9 +1,9 @@
-import { Router } from "express";
 import { fetchAllMedia, fetchAllReels } from "../meta/fetchMedia.js";
 import { logger } from "../lib/logger.js";
 import { describeGraphError } from "../services/eventLogger.js";
+import { asyncRouter } from "./asyncRouter.js";
 
-export const mediaRouter = Router();
+export const mediaRouter = asyncRouter();
 
 // GET /api/media/content
 // Every post a keyword can be attached to — reels AND feed carousels. The

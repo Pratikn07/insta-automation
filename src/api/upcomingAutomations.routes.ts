@@ -1,4 +1,4 @@
-import { Router, type Request, type Response } from "express";
+import { type Request, type Response } from "express";
 import { z } from "zod";
 import { env } from "../config/env.js";
 import { flags } from "../services/flagService.js";
@@ -11,8 +11,9 @@ import {
   isPrimaryKeyViolation,
   isUniqueViolation,
 } from "./createReplay.js";
+import { asyncRouter } from "./asyncRouter.js";
 
-export const upcomingAutomationsRouter = Router();
+export const upcomingAutomationsRouter = asyncRouter();
 
 /**
  * How long a resolved setup keeps its place in the list.
