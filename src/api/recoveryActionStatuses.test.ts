@@ -20,6 +20,11 @@ vi.mock("../services/igUserService.js", () => ({ getIgUsers: vi.fn() }));
 vi.mock("../services/eventLogger.js", () => ({ logEvent: vi.fn() }));
 vi.mock("../services/dmRecoveryHealth.js", () => ({ getRecoveryHealthSnapshot: vi.fn() }));
 vi.mock("../config/env.js", () => ({ env: {} }));
+// This suite is about status mapping and reads no flag. Stubbed so the partial env
+// above does not have to satisfy the flag service's own dependencies.
+vi.mock("../services/flagService.js", () => ({
+  flags: { bool: () => false, percent: () => 0 },
+}));
 
 const { CANCELLABLE, REVIEWABLE } = await import("./recoveryReminders.routes.js");
 

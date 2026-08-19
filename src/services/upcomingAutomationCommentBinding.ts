@@ -1,4 +1,5 @@
 import { env } from "../config/env.js";
+import { flags } from "./flagService.js";
 import { prisma } from "../lib/prisma.js";
 import { fetchMediaById } from "../meta/fetchMedia.js";
 import { describeGraphError, logEvent } from "./eventLogger.js";
@@ -65,7 +66,7 @@ export async function bindUpcomingAutomationFromComment(input: {
   // The flag pauses both polling and webhook binding. Reservations still guard
   // against the legacy global fallback while paused, so a prepared post can
   // never accidentally send an older guide with the same word.
-  if (!env.UPCOMING_AUTOMATIONS_ENABLED) {
+  if (!flags.bool("UPCOMING_AUTOMATIONS_ENABLED")) {
     await logEvent("upcoming_automation_binding_paused", {
       commentId: input.commentId,
       mediaId: input.mediaId ?? null,

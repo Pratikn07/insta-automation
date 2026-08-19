@@ -2,6 +2,7 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import { z } from "zod";
 import { env } from "../config/env.js";
+import { flags } from "../services/flagService.js";
 import { logger } from "../lib/logger.js";
 import { prisma } from "../lib/prisma.js";
 import { CodexRuntimeError, createCodexRuntimeClient } from "../services/codexRuntimeClient.js";
@@ -72,9 +73,9 @@ export function createAiRouter(deps: AiRouterDependencies): Router {
   // unavailable ChatGPT connection with permission to send.
   router.get("/capabilities", (_req, res) => {
     res.json({
-      draftsEnabled: env.AI_DRAFTS_ENABLED,
-      followUpsEnabled: env.AI_FOLLOW_UPS_ENABLED,
-      sendEnabled: env.AI_SEND_ENABLED,
+      draftsEnabled: flags.bool("AI_DRAFTS_ENABLED"),
+      followUpsEnabled: flags.bool("AI_FOLLOW_UPS_ENABLED"),
+      sendEnabled: flags.bool("AI_SEND_ENABLED"),
     });
   });
 
@@ -118,7 +119,7 @@ export function createAiRouter(deps: AiRouterDependencies): Router {
   // page, and there is no route here that sends, writes or changes a setting.
 
   const advisorGate = (_req: Request, res: Response, next: () => void) => {
-    if (!env.AI_ADVISOR_ENABLED) {
+    if (!flags.bool("AI_ADVISOR_ENABLED")) {
       res.status(403).json({ error: "ai_advisor_disabled" });
       return;
     }
@@ -238,7 +239,7 @@ export function createAiRouter(deps: AiRouterDependencies): Router {
    * matches how AI_SEND_ENABLED is already checked on approve and retry-send.
    */
   function draftsDisabled(res: Response): boolean {
-    if (env.AI_DRAFTS_ENABLED) return false;
+    if (flags.bool("AI_DRAFTS_ENABLED")) return false;
     res.status(403).json({ error: "ai_drafts_disabled" });
     return true;
   }
@@ -315,7 +316,7 @@ export function createAiRouter(deps: AiRouterDependencies): Router {
    * claim, exactly one caller owns the draft, so `sendTrackedText` runs once.
    */
   router.post("/dm-threads/:threadId/drafts/:draftId/approve", async (req, res) => {
-    if (!env.AI_SEND_ENABLED) return res.status(403).json({ error: "ai_send_disabled" });
+    if (!flags.bool("AI_SEND_ENABLED")) return res.status(403).json({ error: "ai_send_disabled" });
     if (!req.adminEmail) return res.status(401).json({ error: "owner_auth_required" });
 
     const parsed = textSchema.safeParse(req.body);
@@ -351,7 +352,7 @@ export function createAiRouter(deps: AiRouterDependencies): Router {
    * already be in someone's inbox, and only the owner can check.
    */
   router.post("/dm-threads/:threadId/drafts/:draftId/retry-send", async (req, res) => {
-    if (!env.AI_SEND_ENABLED) return res.status(403).json({ error: "ai_send_disabled" });
+    if (!flags.bool("AI_SEND_ENABLED")) return res.status(403).json({ error: "ai_send_disabled" });
     if (!req.adminEmail) return res.status(401).json({ error: "owner_auth_required" });
 
     const schema = z.object({ confirmedNotDelivered: z.literal(true) });

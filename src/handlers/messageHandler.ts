@@ -1,5 +1,6 @@
 import type { DmMessageType, ResourceMessage } from "@prisma/client";
 import type { MessagingEntry } from "../types/meta.js";
+import { flags } from "../services/flagService.js";
 import {
   findActiveAwaitingDone,
   findLatestIncompleteConversation,
@@ -65,7 +66,7 @@ async function scheduleFollowUpAfterDelivery(input: {
   inboundAt: Date;
   deliveredAt: Date | null;
 }): Promise<void> {
-  if (!env.AI_FOLLOW_UPS_ENABLED) return;
+  if (!flags.bool("AI_FOLLOW_UPS_ENABLED")) return;
 
   if (!input.deliveredAt) {
     logger.error(
@@ -138,8 +139,8 @@ async function deliverOwnedGuide(input: {
   sendClosingNudge: boolean;
 }): Promise<void> {
   const owner = guideDeliveryOwner({
-    enabled: env.GUIDE_DELIVERY_ENABLED,
-    rolloutPercent: env.GUIDE_DELIVERY_ROLLOUT_PERCENT,
+    enabled: flags.bool("GUIDE_DELIVERY_ENABLED"),
+    rolloutPercent: flags.percent("GUIDE_DELIVERY_ROLLOUT_PERCENT"),
     cohortIgUserIds: guideDeliveryCohortIgUserIds(
       env.GUIDE_DELIVERY_COHORT_IG_USER_IDS,
     ),
@@ -674,7 +675,7 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     hadOpenConversation: false,
   });
 
-  if (!env.AI_DRAFTS_ENABLED) return;
+  if (!flags.bool("AI_DRAFTS_ENABLED")) return;
   try {
     await queueReplyDraft({
       threadId: inbound.threadId,

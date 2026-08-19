@@ -1,6 +1,7 @@
 import { Router, type Response } from "express";
 import { z } from "zod";
 import { env } from "../config/env.js";
+import { flags } from "../services/flagService.js";
 import { prisma } from "../lib/prisma.js";
 import { logEvent } from "../services/eventLogger.js";
 import { normalizeKeyword } from "../services/keywordService.js";
@@ -120,7 +121,7 @@ upcomingAutomationsRouter.get("/", async (_req, res) => {
     orderBy: { createdAt: "desc" },
   });
 
-  res.json({ automations, discoveryEnabled: env.UPCOMING_AUTOMATIONS_ENABLED });
+  res.json({ automations, discoveryEnabled: flags.bool("UPCOMING_AUTOMATIONS_ENABLED") });
 });
 
 upcomingAutomationsRouter.post("/", async (req, res) => {

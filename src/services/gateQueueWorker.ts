@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma.js";
+import { flags } from "./flagService.js";
 import { logger } from "../lib/logger.js";
 import { env } from "../config/env.js";
 import { sendTrackedPrivateReply, sendTrackedText } from "./dmDeliveryService.js";
@@ -411,7 +412,7 @@ export async function runGateQueueTick(): Promise<void> {
  * cost, whether it's ever accepted. Never runs on fresh/pending users.
  */
 async function maybeRunExperiment(): Promise<void> {
-  if (!env.GATE_DM_EXPERIMENT) return;
+  if (!flags.bool("GATE_DM_EXPERIMENT")) return;
   try {
     const sample = await prisma.gateQueue.findMany({
       where: { status: "exhausted", lastError: { not: "experiment_done" } },

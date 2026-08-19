@@ -18,7 +18,13 @@ vi.mock("../lib/prisma.js", () => ({
 }));
 
 vi.mock("../services/eventLogger.js", () => ({ logEvent }));
-vi.mock("../config/env.js", () => ({ env: { UPCOMING_AUTOMATIONS_ENABLED: false } }));
+vi.mock("../config/env.js", () => ({ env: {} }));
+// The route reads this flag through the service now, so the stub is where the
+// value comes from. False keeps every existing expectation: the list reports
+// discoveryEnabled false.
+vi.mock("../services/flagService.js", () => ({
+  flags: { bool: () => false, percent: () => 0 },
+}));
 
 const { upcomingAutomationsRouter } = await import("./upcomingAutomations.routes.js");
 
