@@ -39,6 +39,14 @@ function makeApp() {
   return app;
 }
 
+/** Mounted without the requireAdmin stub, so `adminEmail` is absent. */
+function appWithoutIdentity() {
+  const app = express();
+  app.use(express.json());
+  app.use("/api/upcoming-automations", upcomingAutomationsRouter);
+  return app;
+}
+
 // The browser owns this. A create whose response is lost is indistinguishable
 // from one that never ran, so the id has to come from the caller.
 const SETUP_ID = "22222222-2222-4222-8222-222222222222";
@@ -317,6 +325,47 @@ describe("upcoming automations API", () => {
         matchedMediaId: null,
         retriedAt: expect.any(Date),
       },
+    });
+  });
+
+  /**
+   * These four writes persist the actor into `created_by`, `updated_by`,
+   * `cancelled_by` and `retried_by`. `requireAdmin` gates the whole apiRouter, so
+   * an unidentified request cannot reach here in the running app — but the columns
+   * are an audit trail, and the previous `?? "unknown"` would have written a name
+   * indistinguishable afterwards from a real one.
+   */
+  describe("without a verified identity", () => {
+    it.each([
+      ["create", "post", "/api/upcoming-automations"],
+      ["edit", "patch", "/api/upcoming-automations/upcoming-1"],
+      ["cancel", "post", "/api/upcoming-automations/upcoming-1/cancel"],
+      ["retry", "post", "/api/upcoming-automations/upcoming-1/retry"],
+    ] as const)("refuses to %s", async (_label, method, path) => {
+      const response = await request(appWithoutIdentity())[method](path)
+        .send(validBody)
+        .expect(401);
+
+      expect(response.body).toEqual({ error: "owner_auth_required" });
+    });
+
+    it("writes nothing and records nothing", async () => {
+      await request(appWithoutIdentity())
+        .post("/api/upcoming-automations")
+        .send(validBody)
+        .expect(401);
+
+      expect(create).not.toHaveBeenCalled();
+      expect(updateMany).not.toHaveBeenCalled();
+      expect(logEvent).not.toHaveBeenCalled();
+    });
+
+    // Reading is protected by the router-level guard, not by this helper. Asserted
+    // so hardening the writes cannot quietly break the list.
+    it("still allows the list to be read", async () => {
+      findMany.mockResolvedValue([]);
+
+      await request(appWithoutIdentity()).get("/api/upcoming-automations").expect(200);
     });
   });
 });

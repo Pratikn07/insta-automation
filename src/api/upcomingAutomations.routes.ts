@@ -1,4 +1,4 @@
-import { Router, type Response } from "express";
+import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { env } from "../config/env.js";
 import { flags } from "../services/flagService.js";
@@ -89,6 +89,24 @@ async function validateResource(resourceId: string): Promise<"ok" | "missing" | 
   return resource._count.messages > 0 ? "ok" : "empty";
 }
 
+/**
+ * The verified owner, or 401 and null.
+ *
+ * `requireAdmin` already guarantees an allowlisted address on every request, so
+ * this cannot fire today. It exists because the four writes below persist this
+ * value into `created_by`, `updated_by`, `cancelled_by` and `retried_by` — audit
+ * columns, where a fabricated `"unknown"` would be indistinguishable afterwards
+ * from a real name. If the identity is ever missing, refuse rather than invent it.
+ *
+ * Same shape as `owner()` in guideDeliveries.routes.ts, which is the house pattern
+ * for a route that must know who is acting.
+ */
+function owner(req: Request, res: Response): string | null {
+  if (req.adminEmail) return req.adminEmail;
+  res.status(401).json({ error: "owner_auth_required" });
+  return null;
+}
+
 function respondForResourceValidation(
   result: "ok" | "missing" | "empty",
   res: Response,
@@ -125,6 +143,9 @@ upcomingAutomationsRouter.get("/", async (_req, res) => {
 });
 
 upcomingAutomationsRouter.post("/", async (req, res) => {
+  const createdBy = owner(req, res);
+  if (!createdBy) return;
+
   const parsed = createSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
 
@@ -149,13 +170,13 @@ upcomingAutomationsRouter.post("/", async (req, res) => {
       data: {
         ...intended,
         status: "waiting",
-        createdBy: req.adminEmail ?? "unknown",
+        createdBy,
       },
     });
     await logEvent("upcoming_automation_created", {
       upcomingAutomationId: created.id,
       triggerWord: intended.triggerWord,
-      createdBy: req.adminEmail ?? "unknown",
+      createdBy,
     });
     res.status(201).json(created);
   } catch (error) {
@@ -183,6 +204,9 @@ upcomingAutomationsRouter.post("/", async (req, res) => {
 });
 
 upcomingAutomationsRouter.patch("/:id", async (req, res) => {
+  const updatedBy = owner(req, res);
+  if (!updatedBy) return;
+
   const parsed = editableFields.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
 
@@ -220,7 +244,7 @@ upcomingAutomationsRouter.patch("/:id", async (req, res) => {
     await logEvent("upcoming_automation_updated", {
       upcomingAutomationId: current.id,
       triggerWord: updated.triggerWord,
-      updatedBy: req.adminEmail ?? "unknown",
+      updatedBy,
     });
     res.json(updated);
   } catch (error) {
@@ -232,6 +256,9 @@ upcomingAutomationsRouter.patch("/:id", async (req, res) => {
 });
 
 upcomingAutomationsRouter.post("/:id/cancel", async (req, res) => {
+  const cancelledBy = owner(req, res);
+  if (!cancelledBy) return;
+
   const current = await prisma.upcomingAutomation.findUnique({ where: { id: req.params.id } });
   if (!current) return res.status(404).json({ error: "not_found" });
   if (!isOpenStatus(current.status)) {
@@ -250,12 +277,15 @@ upcomingAutomationsRouter.post("/:id/cancel", async (req, res) => {
   await logEvent("upcoming_automation_cancelled", {
     upcomingAutomationId: current.id,
     triggerWord: current.triggerWord,
-    cancelledBy: req.adminEmail ?? "unknown",
+    cancelledBy,
   });
   res.json(cancelled);
 });
 
 upcomingAutomationsRouter.post("/:id/retry", async (req, res) => {
+  const retriedBy = owner(req, res);
+  if (!retriedBy) return;
+
   const current = await prisma.upcomingAutomation.findUnique({ where: { id: req.params.id } });
   if (!current) return res.status(404).json({ error: "not_found" });
   if (current.status !== "needs_attention") {
@@ -283,7 +313,7 @@ upcomingAutomationsRouter.post("/:id/retry", async (req, res) => {
   await logEvent("upcoming_automation_retried", {
     upcomingAutomationId: current.id,
     triggerWord: current.triggerWord,
-    retriedBy: req.adminEmail ?? "unknown",
+    retriedBy,
   });
   res.json(retried);
 });
