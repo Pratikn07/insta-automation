@@ -316,6 +316,10 @@ vercel --prod
 
 Save the production URL Vercel prints (e.g. `https://tiny-soho-admin.vercel.app`).
 
+> **First-time setup only.** The existing `tinysoho-admin` project has since been
+> connected to GitHub, so day-to-day frontend deploys happen by merging to `main`.
+> See *Updating later* — do not run this against the live project.
+
 ---
 
 ## 4. Wire up the cross-service URLs
@@ -512,8 +516,18 @@ Both are recoverable only by re-doing work the owner already did.
 git push                        # if you set up GitHub auto-deploy, otherwise:
 railway up
 
-# Frontend changes
-cd web && vercel --prod
+# Frontend changes — nothing to run. Merging to `main` deploys the console.
 ```
+
+**The console is git-connected; do not deploy it by hand.** Vercel clones
+`github.com/Pratikn07/insta-automation` on every push, so merging to `main` ships
+the frontend on its own — a docs-only merge rebuilds it too. Running
+`cd web && vercel --prod` uploads your **local working tree**, which can push
+uncommitted or half-finished work straight to production and leave the deployed
+console ahead of `main`. Use it only for the first-time setup above.
+
+A branch push shows up as a **Canceled** preview within a couple of seconds. That
+is the Ignored Build Step doing its job — `if [ "$VERCEL_ENV" = "production" ];
+then exit 1; else exit 0; fi` — not a broken build.
 
 Both CLIs preserve env vars across deploys. You only set them once.

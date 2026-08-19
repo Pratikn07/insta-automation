@@ -166,8 +166,16 @@ adding a keyword, not analysis.
 - API + workers: Railway. Console: Vercel. Data, storage, and auth: Supabase.
 - A second private Railway service (`codex-runtime`) holds the ChatGPT OAuth
   session on its own volume for AI features.
-- The Vercel project is **not** git-connected. Pushing to `main` does not deploy
-  the frontend; it ships via `vercel --prod` from `web/`.
+- The Vercel project **is** git-connected to `github.com/Pratikn07/insta-automation`
+  (root directory `web`), so **merging to `main` deploys the console** — no
+  `vercel --prod` required, and even a docs-only merge rebuilds it.
+- **A "Canceled" preview in Vercel is the setting working, not a failed build.**
+  The Ignored Build Step is `if [ "$VERCEL_ENV" = "production" ]; then exit 1;
+  else exit 0; fi`, so every branch push clones, skips, and reports Canceled in a
+  couple of seconds. Verified from a build log: *"The Deployment has been canceled
+  as a result of running the command defined in the Ignored Build Step setting."*
+- The **API is still a manual `railway up`**. Only the console is automated, so a
+  backend change is not deployed by merging.
 - Local dev tunnels to Meta's webhook via ngrok.
 - Analytics days are Pacific, not UTC.
 
