@@ -56,24 +56,25 @@ interface FollowerFlowPanelProps {
 // header date, so a silent freeze here is worse than on the reached/engaged card.
 const FOLLOWER_STALE_AFTER_DAYS = 2;
 
+// No `glow` here. Each state used to carry a gradient wash behind the header,
+// and this world is flat and rule-based: DESIGN.md records no gradient anywhere,
+// and "in-flow content has no shadows" is the same instinct. The state reads
+// from the chip's own tint, which is what the -soft tokens exist for.
 const trendStyles = {
   accelerating: {
     label: "Accelerating",
     Icon: ArrowUpRight,
     badge: "border-signal bg-signal-soft text-signal",
-    glow: "from-signal-soft via-signal-soft to-transparent",
   },
   steady: {
     label: "Holding steady",
     Icon: ArrowRight,
     badge: "border-caution bg-caution-soft text-caution",
-    glow: "from-caution-soft via-caution-soft to-transparent",
   },
   slowing: {
     label: "Slowing",
     Icon: ArrowDownRight,
     badge: "border-urgent bg-urgent-soft text-urgent",
-    glow: "from-urgent-soft via-urgent-soft to-transparent",
   },
 } as const;
 
@@ -116,7 +117,7 @@ export function FollowerFlowPanel({
   }
 
   if (isLoading) {
-    return <Skeleton className="h-96 rounded-2xl" />;
+    return <Skeleton className="h-96" />;
   }
 
   if (isError) {
@@ -259,27 +260,30 @@ export function FollowerFlowPanel({
       : null;
 
   return (
-    <PanelShell className="relative overflow-hidden">
-      <div className={cn("pointer-events-none absolute inset-x-0 top-0 h-44 bg-gradient-to-b", style.glow)} />
-      <div className="relative space-y-5">
+    <PanelShell>
+      <div className="space-y-5">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-[0.16em] text-funnel-mark">
-              <TrendingUp className="size-4" /> Follower flow
-            </div>
-            <h2 className="text-xl font-semibold tracking-tight">Where are your followers coming from?</h2>
+            {/* The house marker, not a hand-rolled one. This was an inline
+                `text-xs uppercase tracking-[0.16em]` — 0.75rem/0.16em against
+                label-caps' 0.625rem/0.14em, which is the drift the utility
+                exists to prevent. Its icon is gone too: markers on this surface
+                are typographic ("Today's read", "Evidence", "Best next move"),
+                and the words alone name the section. */}
+            <div className="label-caps">Follower flow</div>
+            <h2 className="mt-2 text-xl font-medium tracking-tight">Where are your followers coming from?</h2>
           </div>
           <div className="flex shrink-0 flex-col items-end gap-1.5">
             {/* Hidden, not greyed, when there is no equal-length predecessor to
                 compare against: a badge reading "Holding steady" from a partial
                 baseline is a claim we cannot support. */}
             {rangeSummary.trendComparable && (
-              <span className={cn("inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold", style.badge)}>
+              <span className={cn("inline-flex items-center gap-1.5 rounded-sm border px-2 py-0.5 text-xs font-medium", style.badge)}>
                 <TrendIcon className="size-3.5" /> {style.label}
               </span>
             )}
             {freshness?.isStale && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-caution bg-caution-soft px-2.5 py-1 text-[11px] font-medium text-caution">
+              <span className="inline-flex items-center gap-1 rounded-sm border border-caution bg-caution-soft px-2 py-0.5 text-[11px] font-medium text-caution">
                 <Clock className="size-3" /> Snapshots {freshness.label}
               </span>
             )}
@@ -288,14 +292,20 @@ export function FollowerFlowPanel({
 
         {filterBar && <div className="flex justify-end">{filterBar}</div>}
 
-        <div className="rounded-xl border border-border bg-card/40 px-4 py-3">
+        {/* Opened by a rule, not wrapped in a card. `--color-card` is "the only
+            surface above the ground — controls and floating chrome, never a
+            wrapper around ordinary page content", and a legend with its caveats
+            is ordinary page content. The rule is `--color-line`, the token for
+            "where a border must be seen rather than felt"; bare `border-*`
+            resolves to #EBE8DF, which is 1.12:1 on this ground. */}
+        <div className="border-t border-line pt-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="text-xs text-muted-foreground">
               Where your new followers come from ({windowLabel})
             </div>
             {hasCountryData && (
               <div className="flex items-center gap-1">
-                <div className="flex rounded-md border border-border p-0.5">
+                <div className="flex rounded-md border border-line p-0.5">
                   {(["regions", "countries"] as const).map((m) => (
                     <button
                       key={m}
@@ -303,7 +313,7 @@ export function FollowerFlowPanel({
                       aria-pressed={mode === m}
                       onClick={() => setMode(m)}
                       className={cn(
-                        "rounded px-2 py-0.5 text-[11px] font-medium capitalize transition",
+                        "rounded-sm px-2 py-0.5 text-[11px] font-medium capitalize transition",
                         mode === m
                           ? "bg-muted text-foreground"
                           : "text-muted-foreground hover:text-foreground",
@@ -354,7 +364,7 @@ export function FollowerFlowPanel({
                         className="size-2.5 rounded-full"
                         style={{ backgroundColor: countryColors.get(code) }}
                       />
-                      <span className="font-semibold tabular-nums">
+                      <span className="font-medium tabular-nums">
                         {formatSignedCount(entry?.net ?? 0)}
                       </span>
                       <span className="text-muted-foreground">{countryLabel(code)}</span>
@@ -364,7 +374,7 @@ export function FollowerFlowPanel({
               : regionLegend.map(({ key, sum }) => (
                   <span key={key} className="inline-flex items-center gap-1.5 text-xs text-foreground">
                     <span className="size-2.5 rounded-full" style={{ backgroundColor: REGION_COLORS[key] }} />
-                    <span className="font-semibold tabular-nums">{formatSignedCount(sum)}</span>
+                    <span className="font-medium tabular-nums">{formatSignedCount(sum)}</span>
                     <span className="text-muted-foreground">{REGION_LABELS[key]}</span>
                   </span>
                 ))}
@@ -372,7 +382,7 @@ export function FollowerFlowPanel({
             {inCountryMode && countryStack.hasOther && (
               <span className="inline-flex items-center gap-1.5 text-xs text-foreground">
                 <span className="size-2.5 rounded-full" style={{ backgroundColor: OTHER_COLOR }} />
-                <span className="font-semibold tabular-nums">
+                <span className="font-medium tabular-nums">
                   {formatSignedCount(countryStack.otherNet)}
                 </span>
                 <span className="text-muted-foreground">
@@ -382,7 +392,7 @@ export function FollowerFlowPanel({
             )}
           </div>
           {(showUnattributed || estimatedDays > 0 || churn) && (
-            <div className="mt-2 space-y-1.5 border-t border-border pt-2 text-[11px] leading-relaxed text-muted-foreground">
+            <div className="mt-2 space-y-1.5 border-t border-line pt-2 text-[11px] leading-relaxed text-muted-foreground">
               {showUnattributed && (
                 <p>
                   {formatSignedCount(unattributed)} more Meta counted but couldn't place —
@@ -407,7 +417,7 @@ export function FollowerFlowPanel({
           )}
         </div>
 
-        <div className="rounded-2xl border border-border bg-card/40 p-4">
+        <div className="border-t border-line pt-3">
           <div className="mb-2 flex items-center justify-between text-xs">
             <span className="font-medium text-foreground">
               Daily net adds by {inCountryMode ? "country" : "region"}
@@ -437,8 +447,15 @@ export function FollowerFlowPanel({
             and hiding a spike because of a date filter buries the lead. */}
         <SpikeCandidates points={points} />
 
-        <div className="flex gap-3 rounded-xl border border-funnel-mark bg-mark-soft p-3.5 text-xs leading-relaxed text-muted-foreground">
-          <Info className="mt-0.5 size-4 shrink-0 text-funnel-mark" />
+        {/* Prose under a rule, not a box. Two reasons it lost its container:
+            `border-funnel-mark bg-mark-soft` borrowed the funnel's DATA hue for
+            interface chrome, and DESIGN.md keeps those vocabularies apart; and
+            the legend above already renders this same kind of caveat as plain
+            muted prose, so a filled band here made routine methodology the
+            loudest surface in the panel. "Do separate with a 1px rule and more
+            space before reaching for a container." */}
+        <div className="flex gap-3 border-t border-line pt-3 text-xs leading-relaxed text-muted-foreground">
+          <Info className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
           <p>
             Net adds (follows minus unfollows) diffed from Meta's follower geography, bucketed by Pacific day.
             Meta reports only its top countries and lags about two days — the dashed newest bars can still shift,
