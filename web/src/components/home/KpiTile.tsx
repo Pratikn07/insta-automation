@@ -6,11 +6,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 // formatted, so the tile has no opinion about follower math and stays trivially
 // testable. Domain formatting lives in FollowerKpiRow.
 //
-// Maison renders it with no container at all. The old tile was a filled card
-// with a tonal glow and an icon chip; here a hairline above the label does the
-// separating, and the figure carries the weight. `tone` and `Icon` survive in
-// the API because callers and tests still pass them, but this world has no icon
-// system and no tonal fills — the accent is reserved for the emphasised figure.
+// It draws no rules and owns no outer spacing. FollowerKpiRow composes the cells
+// into ONE bordered band and passes each cell's padding and dividers in through
+// `className`. The version before this anchored itself with a bare `border-t`,
+// which resolves to --color-border (#EBE8DF) — 1.12:1 against the ground, where
+// every other separator on Home is border-line (1.55:1) or border-foreground
+// (16.38:1). That single invisible hairline is why the row read as the gap
+// between the two panels around it rather than as content.
 export type KpiTone = "emerald" | "sky" | "violet";
 
 export interface KpiTileProps {
@@ -24,6 +26,8 @@ export interface KpiTileProps {
   trendIcon?: LucideIcon | null;
   /** The one figure that is the score. Set on a single tile per row. */
   emphasis?: boolean;
+  /** The band's cell geometry: padding and dividers. Owned by FollowerKpiRow. */
+  className?: string;
 }
 
 export function KpiTile({
@@ -34,6 +38,7 @@ export function KpiTile({
   isLoading = false,
   trendIcon: TrendIcon = null,
   emphasis = false,
+  className,
 }: KpiTileProps) {
   // An em-dash set at figure scale is a 60px-tall hole where a number should be,
   // and every tile shows one before the first snapshot lands. A placeholder is
@@ -41,34 +46,56 @@ export function KpiTile({
   const isPlaceholder = value === "—" || value === "";
 
   return (
-    <div className="border-t pt-3">
+    <div className={className}>
       <div className="label-caps">{label}</div>
 
       {isLoading ? (
-        <Skeleton className={cn("mt-2.5 w-28", emphasis ? "h-9" : "h-7")} />
+        <Skeleton className={cn("mt-3 w-28", emphasis ? "h-9" : "h-7")} />
       ) : (
-        <div className="mt-2 flex items-baseline gap-2">
+        <div className="mt-2.5 flex items-baseline gap-2">
           <span
             className={cn(
               "font-medium leading-tight tracking-tight tabular-nums",
+              // Emphasis is scale, and only scale. The two supporting figures sit
+              // on the `headline` step (1.25rem) and the score on `figure`
+              // (1.8rem), so the step is a real one from the recorded type scale
+              // rather than the arbitrary 0.4rem nudge this replaced — at 1.8 vs
+              // 1.4 the score read as a slightly bigger peer.
+              //
+              // It is deliberately NOT moss. index.css reserves the accent for
+              // "the system is working" and states the rule outright for
+              // --color-chart-us: an accent that also means "United States" stops
+              // meaning "the system is working". A comment here used to promise an
+              // accent the code never applied; the promise was the wrong one.
               isPlaceholder
                 ? "text-lg text-muted-foreground"
                 : emphasis
                   ? "text-[1.8rem]"
-                  : "text-[1.4rem]",
+                  : "text-xl",
             )}
           >
             {value}
           </span>
-          {TrendIcon && <TrendIcon className="size-4 shrink-0 text-signal" aria-hidden />}
+          {/* A direction mark, not a verdict — so muted ink, never moss. All three
+              arrows share one colour because the down arrow is the reason: moss
+              means "the system is working", and an accelerating week and a slowing
+              one cannot both be delivered on a success colour. This is the same
+              call Home's read panel already records, where the moss tint was
+              dropped because "growth is 40% slower" would otherwise arrive on it.
+              Urgent is not the alternative either: index.css scopes it to "the
+              thing to do next, not a failure", and a slow week is not a task.
+              The verdict belongs to Today's read, which can use words. */}
+          {TrendIcon && <TrendIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />}
         </div>
       )}
 
       {!isLoading && context && (
-        <p className="mt-2 text-[12.5px] leading-snug text-foreground/75">{context}</p>
+        <p className="mt-2.5 max-w-[34ch] text-[12.5px] leading-snug text-foreground/75">
+          {context}
+        </p>
       )}
       {!isLoading && note && (
-        <p className="mt-1 text-[11px] leading-snug text-muted-foreground">{note}</p>
+        <p className="mt-1.5 max-w-[34ch] text-[11px] leading-snug text-muted-foreground">{note}</p>
       )}
     </div>
   );
