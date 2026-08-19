@@ -677,7 +677,14 @@ function ConversationDetail({
       </div>
 
       {/* Technical details — collapsed by default, for support */}
-      <div className="border-t pt-3">
+      {/* `line`, not ink. This is the quietest block in the drawer — a collapsed
+          support affordance on muted ink — and the section-opening weight
+          (16.38:1) would make the thing nobody needs the loudest rule in the
+          panel. Its ground is the Drawer's --color-card (#FFFEF9), where `line`
+          measures 1.68:1. Named because the base layer sets `border-color` on
+          `*`: bare, it was #EBE8DF / 1.21:1 on card, so the disclosure read as
+          part of the journey above it instead of as a closing drawer. */}
+      <div className="border-t border-t-line pt-3">
         <button
           type="button"
           onClick={() => setShowTech((v) => !v)}

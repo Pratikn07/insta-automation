@@ -238,7 +238,13 @@ export function DmRecoveryDrawer({
       ) : null}
 
       {state.canCancel || state.canMarkReviewed || onOpenUser ? (
-        <footer className="flex flex-wrap gap-2 border-t pt-3">
+        // Drawer footer, so `line` — the ordinary separator weight, not ink. Its
+        // ground is the Drawer's --color-card (#FFFEF9) rather than the page,
+        // where `line` measures 1.68:1. The colour is named because the base
+        // layer sets `border-color` on `*`: bare, this rule shipped at
+        // --color-border (#EBE8DF), 1.21:1 on card, so the row holding Cancel
+        // reminder floated free of the evidence it acts on.
+        <footer className="flex flex-wrap gap-2 border-t border-t-line pt-3">
           {state.canCancel ? (
             <button
               type="button"
