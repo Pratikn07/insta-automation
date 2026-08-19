@@ -38,6 +38,20 @@ flagsRouter.get("/", (_req, res) => {
   });
 });
 
+/**
+ * One flag, for its detail page. Same shape as a row of the list.
+ *
+ * The list no longer carries descriptions, so the detail page has to fetch its own
+ * rather than filter a cached list — which also means a bookmarked switch URL works
+ * without the list ever having been opened.
+ */
+flagsRouter.get("/:key", (req, res) => {
+  const definition = flagDefinition(req.params.key);
+  if (!definition) return res.status(404).json({ error: "not_found" });
+  const row = flags.snapshot().find((entry) => entry.key === definition.key);
+  res.json({ ...definition, ...row });
+});
+
 flagsRouter.patch("/:key", async (req, res) => {
   /**
    * Belt and braces on identity, before any work.

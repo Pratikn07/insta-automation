@@ -18,6 +18,7 @@ import { funnelsRouter } from "./funnels.routes.js";
 import { guideDeliveriesRouter } from "./guideDeliveries.routes.js";
 import { upcomingAutomationsRouter } from "./upcomingAutomations.routes.js";
 import { flagsRouter } from "./flags.routes.js";
+import { experimentsRouter } from "./experiments.routes.js";
 import { logger } from "../lib/logger.js";
 
 export const apiRouter = Router();
@@ -53,6 +54,10 @@ apiRouter.use("/upcoming-automations", upcomingAutomationsRouter);
 // Every switch in the system, and the only path that may change one. The enable
 // fence lives in the route rather than the client.
 apiRouter.use("/flags", flagsRouter);
+// Separate mount from /flags, mirroring the two destinations in the console: a
+// switch has a state, an experiment has a result. Read-only — an experiment is
+// changed by changing the flags it owns, which is what /flags is for.
+apiRouter.use("/experiments", experimentsRouter);
 
 apiRouter.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   const code = err && typeof err === "object" && "code" in err ? (err as { code: string }).code : undefined;
