@@ -42,7 +42,7 @@ typography:
     fontWeight: 500
   figure:
     fontFamily: "Archivo, ui-sans-serif, sans-serif"
-    fontSize: "3.25rem"
+    fontSize: "3.25rem" # figure-lead at sm and up; 2.6rem below
     fontWeight: 500
     lineHeight: 1.05
     letterSpacing: "-0.025em"
@@ -293,27 +293,36 @@ type. A font that is not loaded is not a choice.
 component. Numbers here are compared down columns, and a new component must not
 be able to ship proportional figures by omission.
 
-**The Figure Ladder Rule.** A figure is a ladder, not a size, and this system has
-two of them. They are recorded together because they nearly collide and nobody
-has decided whether they should be one.
+**The Figure Ladder Rule.** A figure is a ladder, not a size, and there is exactly
+one ladder. It is defined once in `index.css` as four utilities, in the same way
+and for the same reason as `label-caps`: so the scale cannot drift between
+screens.
 
-| Step | Home band (`KpiTile`) | Funnels (`GuardedNumber`) |
-| --- | --- | --- |
-| Lead | 3.25rem, `-0.025em` | 2.6rem → 3rem at `sm`, `-0.03em` |
-| Supporting | 2.25rem, `-0.025em` | 1.5rem, `-0.02em` |
-| Inline | — | 1rem, `-0.01em` |
-| Too long to be a figure | 1.5rem | — |
-| Placeholder | 1.25rem, muted ink | — |
+| Utility | Size | Tracking | Leading | Used for |
+| --- | --- | --- | --- | --- |
+| `figure-lead` | 2.6rem → **3.25rem** at `sm` | `-0.03em` | 1.05 | The one scored figure on a surface |
+| `figure-base` | 2.25rem | `-0.025em` | 1.05 | Supporting figures beside a lead |
+| `figure-small` | 1.5rem | `-0.02em` | 1.1 | A compact figure, or a value too long to lead |
+| `figure-inline` | 1rem | `-0.01em` | 1.4 | A figure inside a sentence or a table row |
 
-Both ladders run at weight 500 and line-height 1.05 at the top. The overlap to be
-aware of: 3rem against 3.25rem at the lead, and 1.5rem meaning two different
-things. Do not "align" one ladder to the other by eye — either decide they are
-one ladder and change both deliberately, or leave them apart.
+All four carry weight 500 and `tabular-nums`, so a call site never repeats them —
+and must never add `tracking-*` beside one. **Tracking tightens as the type
+grows, and that is optical correction rather than inconsistency:** `-0.03em` at
+the lead would be far too tight at 1rem. That part of the ladder is deliberately
+not flat. A stray `tracking-tight` would fight the utility by stylesheet order
+rather than class order, which is the kind of bug that looks like nothing.
 
-This replaced a single recorded `figure` of 1.8rem, which was never accurate:
-`GuardedNumber` has run 2.6rem → 3rem since the commit that introduced this
-system and wrote this document, so the record captured one call site and missed
-the other from the first day.
+`figure-lead` carries the ladder's only responsive step. 3.25rem is right in a
+desktop column and overbearing at 375px, where it crowds the mark beneath it.
+
+**How it got here, because the history is the argument for one definition.** This
+document originally recorded a single `figure` of 1.8rem. That was never accurate:
+`GuardedNumber` ran 2.6rem → 3rem from the commit that introduced this system and
+wrote this document, so the record described one call site and missed the other
+from the first day. Home's band and the Funnels hero then grew independently
+until the two leads sat at 3.25rem and 3rem, and 1.5rem meant "kpi" in one file
+and "too long to be a figure" in the other. Unifying them moved Home's lead down
+to 2.6rem on a phone and the Funnels hero up to 3.25rem on a desktop.
 
 **The Placeholder Is Not A Figure Rule.** An em-dash standing in for a missing
 number drops to 1.25rem in muted ink — headline scale, not figure scale. At the
