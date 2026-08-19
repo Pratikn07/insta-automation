@@ -1,0 +1,194 @@
+import express from "express";
+import request from "supertest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const upsert = vi.fn();
+const refresh = vi.fn();
+const snapshot = vi.fn();
+const logEvent = vi.fn();
+
+vi.mock("../lib/prisma.js", () => ({ prisma: { flagOverride: { upsert } } }));
+vi.mock("../services/flagService.js", () => ({
+  flags: { snapshot: () => snapshot(), refresh: () => refresh() },
+}));
+vi.mock("../services/eventLogger.js", () => ({ logEvent }));
+
+const { flagsRouter } = await import("./flags.routes.js");
+
+function app() {
+  const a = express();
+  a.use(express.json());
+  a.use((req, _res, next) => {
+    req.adminEmail = "owner@example.com";
+    next();
+  });
+  a.use("/api/flags", flagsRouter);
+  return a;
+}
+
+function row(key: string, over: Record<string, unknown> = {}) {
+  return {
+    key,
+    valueBool: true,
+    valuePercent: null,
+    source: "environment",
+    driftsFromEnv: false,
+    updatedBy: null,
+    updatedAt: null,
+    ...over,
+  };
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  snapshot.mockReturnValue([
+    row("AI_DRAFTS_ENABLED"),
+    row("AI_SEND_ENABLED", { valueBool: false }),
+    row("WORKERS_ENABLED"),
+    row("GUIDE_DELIVERY_ROLLOUT_PERCENT", { valueBool: null, valuePercent: 45 }),
+    row("DM_RECOVERY_FAILURE_RATE_PERCENT", { valueBool: null, valuePercent: 50 }),
+  ]);
+  upsert.mockResolvedValue({});
+});
+
+describe("flags API", () => {
+  it("returns every flag with its description and its value", async () => {
+    const response = await request(app()).get("/api/flags").expect(200);
+
+    const drafts = response.body.flags.find(
+      (f: { key: string }) => f.key === "AI_DRAFTS_ENABLED",
+    );
+    expect(drafts).toMatchObject({
+      name: "Reply drafts",
+      group: "assistive",
+      kind: "boolean",
+      valueBool: true,
+      pageMayEnable: true,
+      pageMayStop: true,
+    });
+    expect(drafts.doesWhat.length).toBeGreaterThan(20);
+    expect(drafts.affectsWho.length).toBeGreaterThan(10);
+    expect(drafts.ifOff.length).toBeGreaterThan(10);
+  });
+
+  it("returns all sixteen, even those with no stored row", async () => {
+    snapshot.mockReturnValue([]);
+
+    const response = await request(app()).get("/api/flags").expect(200);
+
+    expect(response.body.flags).toHaveLength(16);
+  });
+
+  it("saves a permitted change and refreshes the cache", async () => {
+    await request(app())
+      .patch("/api/flags/AI_DRAFTS_ENABLED")
+      .send({ valueBool: false })
+      .expect(200);
+
+    expect(upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { key: "AI_DRAFTS_ENABLED" } }),
+    );
+    // Without this the console would show the old value until the timer fired.
+    expect(refresh).toHaveBeenCalled();
+  });
+
+  it("records the change without recording anyone's data", async () => {
+    await request(app())
+      .patch("/api/flags/AI_DRAFTS_ENABLED")
+      .send({ valueBool: false })
+      .expect(200);
+
+    expect(logEvent).toHaveBeenCalledWith("flag_changed", {
+      key: "AI_DRAFTS_ENABLED",
+      valueBool: false,
+      valuePercent: null,
+      updatedBy: "owner@example.com",
+    });
+  });
+
+  // The fence, server-side. The page hides the control; this is what makes it true.
+  it("refuses to enable a flag the console may not enable", async () => {
+    const response = await request(app())
+      .patch("/api/flags/AI_SEND_ENABLED")
+      .send({ valueBool: true })
+      .expect(403);
+
+    expect(response.body).toEqual({ error: "flag_enable_not_permitted" });
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it("allows that same flag to be switched off", async () => {
+    await request(app())
+      .patch("/api/flags/AI_SEND_ENABLED")
+      .send({ valueBool: false })
+      .expect(200);
+
+    expect(upsert).toHaveBeenCalled();
+  });
+
+  it("refuses any change to a flag that offers no control", async () => {
+    const response = await request(app())
+      .patch("/api/flags/WORKERS_ENABLED")
+      .send({ valueBool: false })
+      .expect(403);
+
+    expect(response.body).toEqual({ error: "flag_not_controllable" });
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  // Raising this would make the system tolerate more failures, which is the one
+  // direction the console may not move anything.
+  it("refuses to change the stop-sending threshold", async () => {
+    const response = await request(app())
+      .patch("/api/flags/DM_RECOVERY_FAILURE_RATE_PERCENT")
+      .send({ valuePercent: 90 })
+      .expect(403);
+
+    expect(response.body).toEqual({ error: "flag_not_controllable" });
+  });
+
+  it("accepts a percentage for a percentage flag", async () => {
+    await request(app())
+      .patch("/api/flags/GUIDE_DELIVERY_ROLLOUT_PERCENT")
+      .send({ valuePercent: 100 })
+      .expect(200);
+
+    expect(upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ valuePercent: 100, valueBool: null }),
+      }),
+    );
+  });
+
+  it("rejects the wrong kind of value for the flag", async () => {
+    await request(app())
+      .patch("/api/flags/AI_DRAFTS_ENABLED")
+      .send({ valuePercent: 50 })
+      .expect(400);
+    await request(app())
+      .patch("/api/flags/GUIDE_DELIVERY_ROLLOUT_PERCENT")
+      .send({ valueBool: true })
+      .expect(400);
+
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it("rejects a body carrying both values, or neither", async () => {
+    await request(app())
+      .patch("/api/flags/AI_DRAFTS_ENABLED")
+      .send({ valueBool: true, valuePercent: 5 })
+      .expect(400);
+    await request(app()).patch("/api/flags/AI_DRAFTS_ENABLED").send({}).expect(400);
+  });
+
+  it("rejects a percentage outside 0-100", async () => {
+    await request(app())
+      .patch("/api/flags/GUIDE_DELIVERY_ROLLOUT_PERCENT")
+      .send({ valuePercent: 150 })
+      .expect(400);
+  });
+
+  it("404s an unknown key", async () => {
+    await request(app()).patch("/api/flags/NOPE").send({ valueBool: true }).expect(404);
+  });
+});
