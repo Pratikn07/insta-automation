@@ -136,7 +136,13 @@ function PostRow({ post }: { post: FeedFollowAttributedPost }) {
               </p>
             </div>
           </div>
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t pt-3">
+          {/* A card footer inside a card, so `line` — never ink. Its ground is
+              the drawer's --color-card (#FFFEF9), not the page, and `line`
+              measures 1.68:1 there. Named because the base layer sets
+              `border-color` on `*`: bare, this was #EBE8DF at 1.21:1 on card and
+              the follows count read as a loose line under the caption rather
+              than as the post's footer. */}
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-t-line pt-3">
             <span className="text-xs font-medium text-foreground">
               {post.follows} lifetime follows
             </span>

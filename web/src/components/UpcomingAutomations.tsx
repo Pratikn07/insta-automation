@@ -370,13 +370,28 @@ export function UpcomingAutomations({ resources }: { resources: Resource[] }) {
         </p>
       )}
 
+      {/*
+        One slot, four branches, one rule — and it is `line`, not ink. The rule
+        opens the LIST, not the section: "Set up in advance" above already opens
+        that, and the rows below carry `border-b-line`, so this is the head of
+        that ruled list and has to weigh the same as its own rows. Ink here would
+        make the list's first hairline heavier than the heading that names it.
+
+        Every branch names its colour. The base layer sets `border-color` on `*`,
+        so a bare `border-t` ships at --color-border (#EBE8DF) — 1.12:1 on the
+        page ground, which separates nothing. That was the bug here; see
+        home/KpiTile.tsx for the same defect and the same fix. Do not drop the
+        `-line` suffix, and do not let one branch keep a bare `border-t` while
+        its siblings are named: a list that rules itself only while loading is
+        worse than one that never does.
+      */}
       {query.isLoading ? (
-        <div className="space-y-2 border-t pt-3">
+        <div className="space-y-2 border-t border-t-line pt-3">
           <Skeleton className="h-8 rounded-md" />
           <Skeleton className="h-8 rounded-md" />
         </div>
       ) : query.isError ? (
-        <p className="border-t py-4 text-[13px] text-muted-foreground">
+        <p className="border-t border-t-line py-4 text-[13px] text-muted-foreground">
           Couldn&apos;t load these — the API did not answer. This is a connection problem, not
           an empty list.{" "}
           <button
@@ -390,11 +405,11 @@ export function UpcomingAutomations({ resources }: { resources: Resource[] }) {
       ) : automations.length === 0 ? (
         // Reached only with the editor open on a first setup — the quiet one-line
         // form above handles every other empty case.
-        <p className="border-t py-3.5 text-[13px] text-muted-foreground">
+        <p className="border-t border-t-line py-3.5 text-[13px] text-muted-foreground">
           Nothing set up yet. Fill in the form above and it will wait here for its post.
         </p>
       ) : (
-        <ul className="border-t">
+        <ul className="border-t border-t-line">
           {automations.map((row) => (
             <UpcomingRow
               key={row.id}
@@ -456,7 +471,11 @@ function UpcomingRow({
     // Wide: one row, which is what a list of four short columns wants to be.
     <li
       className={cn(
-        "grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-1.5 border-b py-3",
+        // Named, and named `line`: these rows are the body of the ruled list the
+        // `border-t-line` above opens, so the head and the rows must be one
+        // weight. Bare, they shipped at #EBE8DF / 1.12:1 and the list read as
+        // unseparated paragraphs.
+        "grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-1.5 border-b border-b-line py-3",
         "sm:flex sm:gap-x-4 sm:gap-y-0",
       )}
     >
