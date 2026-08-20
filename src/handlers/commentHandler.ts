@@ -9,7 +9,8 @@ import { replyToComment } from "../meta/replyToComment.js";
 import { sendTrackedPrivateReply, type TrackedPrivateReplyReceipt } from "../services/dmDeliveryService.js";
 import { logger } from "../lib/logger.js";
 import { logEvent, describeGraphError } from "../services/eventLogger.js";
-import { rememberUsername } from "../services/igUserService.js";
+import { getFollowState, rememberUsername } from "../services/igUserService.js";
+import { selectCommentGate } from "../services/commentGateCopy.js";
 import { enqueueGate } from "../services/gateQueueService.js";
 import { claimComment } from "../services/commentClaimService.js";
 import { env } from "../config/env.js";
@@ -254,12 +255,29 @@ export async function handleComment(comment: CommentValue): Promise<void> {
     return;
   }
 
+  let gate = selectCommentGate({
+    isFollower: null,
+    defaultMessage: keyword.gateMessage,
+  });
+  try {
+    const followState = await getFollowState(senderId);
+    gate = selectCommentGate({
+      isFollower: followState.isFollower,
+      defaultMessage: keyword.gateMessage,
+    });
+  } catch {
+    log.warn(
+      { igUserId: senderId, followerState: "unavailable" },
+      "Cached follower state unavailable; using default gate",
+    );
+  }
+
   let receipt: TrackedPrivateReplyReceipt;
   try {
     receipt = await sendTrackedPrivateReply({
       recipientIgUserId: senderId,
       commentId: comment.id,
-      text: keyword.gateMessage,
+      text: gate.text,
       source: "keyword_automation",
     });
   } catch (error) {
@@ -318,7 +336,7 @@ export async function handleComment(comment: CommentValue): Promise<void> {
       igUserId: senderId,
       commentId: comment.id,
       mediaId: comment.media?.id ?? null,
-      gateMessage: keyword.gateMessage,
+      gateMessage: gate.text,
       lastError: metadata.category,
       initialErrorCategory: classification,
     });
@@ -347,7 +365,7 @@ export async function handleComment(comment: CommentValue): Promise<void> {
     return;
   }
 
-  await logEvent("dm_sent", { conversationId: convo.id, kind: "gate" });
+  await logEvent("dm_sent", { conversationId: convo.id, kind: "gate", gateVariant: gate.variant });
 
   const [gateStateResult, recoveryResult] = await Promise.allSettled([
     markGated(convo.id),
