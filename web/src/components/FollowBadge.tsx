@@ -30,7 +30,7 @@ export function FollowBadge({
     if (!showPending) return null;
     return (
       <div
-        className={`flex items-center gap-1 text-xs text-muted-foreground/70 ${className ?? ""}`}
+        className={`flex items-center gap-1 text-xs text-muted-foreground ${className ?? ""}`}
         title="Follow status (follows you / follower count) is only available once a user sends you a DM. This person commented but hasn't messaged yet."
       >
         <Inbox className="size-3" />
@@ -46,7 +46,7 @@ export function FollowBadge({
       className={`flex flex-wrap items-center gap-x-2 gap-y-1 text-xs ${className ?? ""}`}
     >
       {isFollower === true ? (
-        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-1.5 py-0.5 font-medium text-emerald-600 dark:text-emerald-400">
+        <span className="inline-flex items-center gap-1 rounded-full bg-signal-soft px-1.5 py-0.5 font-medium text-signal">
           <UserCheck className="size-3" />
           follows you
         </span>
@@ -62,7 +62,7 @@ export function FollowBadge({
       )}
 
       {isVerified && (
-        <span className="inline-flex items-center gap-1 text-sky-500">
+        <span className="inline-flex items-center gap-1 text-funnel-mark">
           <BadgeCheck className="size-3" />
           verified
         </span>

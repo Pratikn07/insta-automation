@@ -97,9 +97,9 @@ function Pill({
   return (
     <span
       className={cn(
-        "inline-block whitespace-nowrap rounded-full border px-2.5 py-0.5 text-[11px] font-semibold",
+        "inline-block whitespace-nowrap rounded-sm border px-2.5 py-0.5 text-[11px] font-medium",
         tone === "unknown"
-          ? "border-amber-500/40 bg-amber-500/5 text-amber-200/90"
+          ? "border-urgent/40 bg-urgent/5 text-caution"
           : "text-muted-foreground",
       )}
     >

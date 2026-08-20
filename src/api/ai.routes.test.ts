@@ -255,6 +255,25 @@ describe("advisor routes", () => {
     expect(client.askAdvisor).not.toHaveBeenCalled();
   });
 
+  // The browser distinguishes "still confirming" from "failed"; a 503 would erase
+  // that distinction and its retry would ask the model a second time.
+  it.each(["advisor_outcome_pending", "idempotency_conflict"] as const)(
+    "passes %s through as 409",
+    async (code) => {
+      const failing = {
+        ...client,
+        askAdvisor: vi.fn(async () => {
+          throw new CodexRuntimeError(code, 409);
+        }),
+      };
+
+      await request(makeApp(failing))
+        .post("/api/ai/advisor/messages")
+        .send(ASK)
+        .expect(409, { error: code, retryAt: null });
+    },
+  );
+
   it("rejects an empty or oversized question", async () => {
     const app = makeApp(client);
     await request(app).post("/api/ai/advisor/messages").send({ ...ASK, message: "" }).expect(400);

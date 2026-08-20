@@ -32,6 +32,9 @@ vi.mock("../../lib/api", () => {
   };
 });
 
+const { MutationOutcomeUnknownError } = await import("../../lib/mutationOutcome");
+const { STILL_CONFIRMING_MESSAGE } = await import("../../lib/unknownOutcome");
+
 const { ApiError } = (await import("../../lib/api")) as unknown as {
   ApiError: new (status: number, message: string) => Error & { status: number };
 };
@@ -127,6 +130,18 @@ describe("DmRecoveryDrawer", () => {
 
     expect(await screen.findByText("No read confirmation received")).toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/\bUnread\b/);
+  });
+
+  it("shows Due separately from the missing-read evidence", async () => {
+    renderDrawer({ eligibleAt: "2020-01-01T00:00:00.000Z" });
+
+    expect(await screen.findByText("Due")).toBeInTheDocument();
+    expect(screen.getByText("No confirmed read")).toBeInTheDocument();
+  });
+
+  it("shows Scheduled before eligibility", async () => {
+    renderDrawer({ eligibleAt: "2099-01-01T00:00:00.000Z" });
+    expect(await screen.findByText("Scheduled")).toBeInTheDocument();
   });
 
   it("shows read evidence when it exists", async () => {
@@ -239,8 +254,8 @@ describe("DmRecoveryDrawer", () => {
       await user.click(await screen.findByRole("button", { name: "Cancel reminder" }));
 
       const dialog = await screen.findByRole("alertdialog");
-      expect(dialog).toHaveTextContent(/prevent/i);
-      expect(dialog).toHaveTextContent(/cannot remove a comment that has already been posted/i);
+      expect(dialog).toHaveTextContent(/prevents a future public-comment attempt/i);
+      expect(dialog).toHaveTextContent(/cannot remove a comment that Instagram already accepted/i);
       expect(cancel).not.toHaveBeenCalled();
     });
 
@@ -255,6 +270,42 @@ describe("DmRecoveryDrawer", () => {
       expect(queryClient.invalidateQueries).toHaveBeenCalledWith(
         expect.objectContaining({ queryKey: ["recovery-reminders"] }),
       );
+    });
+
+    // Cancel publishes nothing, but it races the worker that does. If the request
+    // was dispatched and its result lost, the reminder may already be cancelled —
+    // or the worker may already have commented. Either way, repeating is not the
+    // console's decision to make.
+    it("reports an unknown outcome honestly and offers no retry", async () => {
+      const user = userEvent.setup();
+      cancel.mockRejectedValue(
+        new MutationOutcomeUnknownError("/recovery-reminders/recovery-1/cancel", undefined),
+      );
+      renderDrawer();
+
+      await user.click(await screen.findByRole("button", { name: "Cancel reminder" }));
+      await user.click(await screen.findByRole("button", { name: "Yes, cancel it" }));
+
+      expect(await screen.findByText(STILL_CONFIRMING_MESSAGE)).toBeInTheDocument();
+      // One dispatch, and the canonical read is the recovery tree.
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(queryClient.invalidateQueries).toHaveBeenCalledWith(
+        expect.objectContaining({ queryKey: ["recovery-reminders"] }),
+      );
+      // "Try again" here would be an invitation to duplicate a public comment.
+      expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
+    });
+
+    it("still offers a retry after a definite failure", async () => {
+      const user = userEvent.setup();
+      cancel.mockRejectedValue(new ApiError(500, "boom"));
+      renderDrawer();
+
+      await user.click(await screen.findByRole("button", { name: "Cancel reminder" }));
+      await user.click(await screen.findByRole("button", { name: "Yes, cancel it" }));
+
+      // A definite failure did nothing, so repeating it is safe.
+      expect(await screen.findByRole("button", { name: "Try again" })).toBeInTheDocument();
     });
 
     it("keeps the reminder when the dialog is dismissed", async () => {

@@ -3,62 +3,121 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Signal. A decision surface: the page opens with what to do, not with what
+   happened, and every figure carries the qualification that makes it safe to
+   act on.
+
+   Colour is measured against the ground (#F7F5EF), never chosen by eye. Text
+   clears 4.5:1, chart marks clear 3:1, and where a value sits near its floor the
+   ratio is written beside it so the next person knows how little room there is.
+   This palette replaced an ivory-and-didone world whose values were measured
+   against a different ground; none of them survived the move, which is the rule
+   working rather than failing. */
 @theme {
-  --font-sans:
-    "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
+  --font-sans: "Archivo", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 
-  --radius-lg: 0.75rem;
-  --radius-md: 0.5rem;
-  --radius-sm: 0.375rem;
+  /* Nearly square. Structure comes from rules and rows, so a radius only has to
+     take the mechanical edge off a corner — never enough to read as a card. */
+  --radius-lg: 3px;
+  --radius-md: 2px;
+  --radius-sm: 2px;
 
-  --color-background: oklch(0.145 0 0);
-  --color-foreground: oklch(0.985 0 0);
+  --color-background: #f7f5ef;
+  --color-foreground: #171812; /* 16.38:1 */
 
-  --color-card: oklch(0.18 0 0);
-  --color-card-foreground: oklch(0.985 0 0);
+  /* The only surface above the ground. Controls and floating chrome, never a
+     wrapper around ordinary page content. */
+  --color-card: #fffef9;
+  --color-card-foreground: #171812;
+  --color-popover: #fffef9;
+  --color-popover-foreground: #171812;
 
-  --color-popover: oklch(0.18 0 0);
-  --color-popover-foreground: oklch(0.985 0 0);
+  --color-primary: #171812;
+  --color-primary-foreground: #f7f5ef;
 
-  --color-primary: oklch(0.985 0 0);
-  --color-primary-foreground: oklch(0.18 0 0);
+  --color-secondary: #ebe8df;
+  --color-secondary-foreground: #171812;
 
-  --color-secondary: oklch(0.235 0 0);
-  --color-secondary-foreground: oklch(0.985 0 0);
+  --color-muted: #ebe8df;
+  --color-muted-foreground: #66665f; /* 5.31:1 */
 
-  --color-muted: oklch(0.235 0 0);
-  --color-muted-foreground: oklch(0.708 0 0);
+  --color-accent: #ebe8df;
+  --color-accent-foreground: #171812;
 
-  --color-accent: oklch(0.235 0 0);
-  --color-accent-foreground: oklch(0.985 0 0);
+  /* Moss. One accent, and it means "the system is working" — active nav, healthy
+     status, the tint behind today's read. It is never a data series colour. */
+  --color-signal: #2c4a3b; /* 8.96:1 */
+  --color-signal-soft: #dce9e2; /* moss reads 7.81:1 on it */
 
-  --color-destructive: oklch(0.577 0.245 27.325);
-  --color-destructive-foreground: oklch(0.985 0 0);
+  /* Attention, not alarm. The brand voice forbids shaming a parent, and this
+     colour inherits that: it marks the thing to do next, not a failure.
+     #E74A25 was the obvious pick and measures 3.56:1 — below the floor, on the
+     highest-priority label on the page. */
+  --color-urgent: #a8412b; /* 5.57:1 */
 
-  --color-border: oklch(1 0 0 / 0.1);
-  --color-input: oklch(1 0 0 / 0.15);
-  --color-ring: oklch(0.708 0 0);
+  /* Caveat prose. A caution that cannot be read is not a caution: the amber this
+     replaced (#FDE68A) measured 1.14:1 on paper, and it carried the two
+     sentences that stop a reader misreading the funnel. */
+  --color-caution: #7a5a0c; /* 5.85:1 */
 
-  --color-brand-from: oklch(0.7 0.22 12);
-  --color-brand-via: oklch(0.62 0.27 320);
-  --color-brand-to: oklch(0.55 0.27 280);
+  /* Status-badge tints, one per state colour. Tailwind's own -400 shades are
+     built for a dark ground and collapse on paper: the DM recovery badge shipped
+     as text-amber-400, which measures 1.58:1 here — a status nobody can read is
+     not a status. Each pairs with its foreground above at AA or better, and all
+     four sit in the same 1.14–1.19 band against paper so a row of mixed badges
+     reads as one family rather than as one loud chip and three quiet ones. */
+  --color-urgent-soft: #f5ddd6; /* urgent reads 4.69:1 on it */
+  --color-caution-soft: #f0e6cc; /* caution reads 5.13:1 on it */
+  --color-mark-soft: #dce4ee; /* funnel-mark reads 7.15:1 on it */
+
+  /* Chart marks. Named here so the palette is inspectable in one place, but the
+     values are owned by src/lib/chartPalette.ts, which is where the 3:1 floor is
+     enforced by test. The series this replaced were Tailwind *-400 tints plus two
+     semi-transparent WHITE strokes for the mean and the provisional outline —
+     built for a dark ground, and on paper the white measured about 1.05:1.
+
+     `--color-chart-us` is NOT moss. Moss is the accent, reserved for focus and
+     affirmative state; an accent that also means "United States" stops meaning
+     "the system is working". */
+  --color-chart-us: #1f5d3f; /* 7.15:1 on canvas */
+  --color-chart-south-asian: #8c5a1f; /* 5.13:1 */
+  --color-chart-anglosphere: #2a4a6b; /* 8.20:1 */
+  --color-chart-other: #66665f; /* 4.42:1 */
+  /* Near-ink, so the rolling average reads as the statement of fact it is. */
+  --color-chart-mean: #171812;
+  /* Paired with a dash. The colour alone never carries "incomplete window". */
+  --color-chart-provisional: #66665f;
+
+  --color-destructive: #8c3a2b; /* 6.99:1 */
+  --color-destructive-foreground: #f7f5ef;
+
+  --color-border: #ebe8df;
+  --color-line: #cac7bd;
+  --color-input: #cac7bd;
+  --color-ring: #2c4a3b;
 
   /* Funnels. ONE hue for every stage bar — never a colour per stage. Position
-     and length already encode order and magnitude; a ramp on top of that
-     encodes rank as hue, which is the classic funnel-chart mistake.
-     Validated as an ordinal pair against this app's resolved background
-     (#0a0a0a, from --color-background): monotone lightness, adjacent gaps
-     >= 0.06, and 4.48:1 contrast at the dark end. */
-  --color-funnel-mark: #2a78d6;
-  --color-funnel-soft: #86b6ef;
-  /* The full cohort behind each bar, so a stage's LOSS is visible, not just
-     its size. Matches --color-muted so it reads as ground, not data. */
-  --color-funnel-track: oklch(0.235 0 0);
-  /* Absence of evidence. Deliberately NOT a hue: 1,107 conversations with no
-     read tracking are unknown, not unseen, and a coloured segment would state
-     a finding the data does not support. */
-  --color-funnel-unknown: #3a3d47;
+     and length already encode order and magnitude; a ramp on top of that encodes
+     rank as hue, which is the classic funnel-chart mistake. */
+  --color-funnel-mark: #2a4a6b; /* 8.41:1 */
+  --color-funnel-soft: #6b8aa5; /* 3.30:1 */
+  --color-funnel-track: #ebe8df;
+  /* Absence of evidence. Deliberately NOT a hue: 1,107 conversations with no read
+     tracking are unknown, not unseen, and a coloured segment would state a
+     finding the data does not support. */
+  --color-funnel-unknown: #8f8a80;
+
+  /* Country marks. Categorical, so separated by hue rather than lightness. Every
+     one clears 4.5:1, not merely the 3:1 a mark needs, so any of them can also
+     carry its own label. */
+  --color-c1: #2c4a3b;
+  --color-c2: #8c5a1f;
+  --color-c3: #2a4a6b;
+  --color-c4: #8c3a2b;
+  --color-c5: #5a4e7c;
+  --color-c6: #3f6b22;
+  --color-c7: #1e5f66;
+  --color-c8: #8c3b63;
 }
 
 @layer base {
@@ -78,24 +137,27 @@
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }
+  /* Figures are compared down columns everywhere in this app. Tabular at the base
+     layer rather than per component, so a new number cannot ship proportional by
+     omission. */
+  table,
+  [data-figures] {
+    font-variant-numeric: tabular-nums;
+  }
 }
 
+/* The house label: the small tracked capital used for every field name and
+   section marker. One definition, so tracking cannot drift between screens. */
+@utility label-caps {
+  font-size: 0.625rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-muted-foreground);
+}
+
+/* Kept under its original name because call sites in pages this pass does not
+   touch still reference it, and Tailwind drops unknown classes silently — which
+   is how an earlier build shipped an invisible sign-in button. */
 @utility bg-brand-gradient {
-  background-image: linear-gradient(
-    135deg,
-    var(--color-brand-from),
-    var(--color-brand-via) 50%,
-    var(--color-brand-to)
-  );
-}
-
-@utility text-brand-gradient {
-  background-image: linear-gradient(
-    135deg,
-    var(--color-brand-from),
-    var(--color-brand-via) 50%,
-    var(--color-brand-to)
-  );
-  background-clip: text;
-  color: transparent;
+  background-color: var(--color-signal);
 }

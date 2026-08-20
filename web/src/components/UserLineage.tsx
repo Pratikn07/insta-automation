@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Info } from "lucide-react";
-import { api } from "@/lib/api";
+import { apiRead } from "@/lib/api";
 import type { LineageEvent, UserLineageResponse } from "@/lib/types";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EventRow } from "@/pages/Conversations";
@@ -32,7 +32,7 @@ function bubbleText(e: LineageEvent): string {
     case "dm_sent":
       return "(gate message sent)";
     case "sequence_completed":
-      return "(sequence delivered)";
+      return "(guide delivered)";
     case "follow_nudge_sent":
       return "(follow-aware message sent)";
     default:
@@ -43,7 +43,7 @@ function bubbleText(e: LineageEvent): string {
 export function UserLineage({ igUserId }: { igUserId: string }) {
   const q = useQuery<UserLineageResponse>({
     queryKey: ["user-lineage", igUserId],
-    queryFn: () => api<UserLineageResponse>(`/users/${igUserId}/lineage`),
+    queryFn: ({ signal }) => apiRead<UserLineageResponse>(`/users/${igUserId}/lineage`, { signal }),
   });
 
   if (q.isLoading) {
@@ -85,7 +85,7 @@ export function UserLineage({ igUserId }: { igUserId: string }) {
         {threadEvents.length === 0 ? (
           <p className="text-sm text-muted-foreground">No messages recorded.</p>
         ) : (
-          <div className="flex flex-col gap-2 rounded-lg bg-neutral-950 p-3">
+          <div className="flex flex-col gap-2 rounded-lg bg-muted p-3">
             {threadEvents.map((e) =>
               USER_KINDS.has(e.kind) ? (
                 <OutgoingBubble key={e.id} text={bubbleText(e)} />

@@ -1,4 +1,5 @@
 import { env } from "../config/env.js";
+import { flags } from "./flagService.js";
 import { logger } from "../lib/logger.js";
 import { logEvent, describeGraphError } from "./eventLogger.js";
 import {
@@ -51,7 +52,7 @@ function emptyResult(skipped: DmRecoveryTickResult["skipped"]): DmRecoveryTickRe
 }
 
 export async function runDmRecoveryTick(): Promise<DmRecoveryTickResult> {
-  if (!env.DM_RECOVERY_ENABLED) return emptyResult("disabled");
+  if (!flags.bool("DM_RECOVERY_ENABLED")) return emptyResult("disabled");
   if (running) return emptyResult("already_running");
   running = true;
   try {

@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, Check, ExternalLink, Loader2, Sparkles } from "lucide-react";
-import { api } from "@/lib/api";
+import { apiRead, apiMutation } from "@/lib/api";
+import { STILL_CONFIRMING_LOCAL_MESSAGE, isUnknownOutcome } from "@/lib/unknownOutcome";
 import type { AiConnectionStatus, AiLoginStart } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -38,10 +39,13 @@ export function AiConnectionCard() {
   const queryClient = useQueryClient();
   const [login, setLogin] = useState<AiLoginStart | null>(null);
   const [confirmingDisconnect, setConfirmingDisconnect] = useState(false);
+  // A login attempt whose outcome is unknown. Connect stays disabled until the
+  // refetched connection status settles the question.
+  const [loginUnresolved, setLoginUnresolved] = useState(false);
 
   const statusQ = useQuery<AiConnectionStatus>({
     queryKey: ["ai", "connection"],
-    queryFn: () => api<AiConnectionStatus>("/ai/connection"),
+    queryFn: ({ signal }) => apiRead<AiConnectionStatus>("/ai/connection", { signal }),
     // Poll ONLY while a device code is outstanding: sign-in completes in the
     // browser at OpenAI, so this is the only way to notice. Idle otherwise.
     refetchInterval: (query) =>
@@ -56,12 +60,21 @@ export function AiConnectionCard() {
   });
 
   const startLogin = useMutation({
-    mutationFn: () => api<AiLoginStart>("/ai/connection", { method: "POST" }),
+    mutationFn: () => apiMutation<AiLoginStart>("/ai/connection", { method: "POST" }),
     onSuccess: (data) => setLogin(data),
+    // A second login would issue a second device code and invalidate the one the
+    // owner may already be typing into ChatGPT. So an unresolved first attempt
+    // refetches the connection status and stops there.
+    onError: (error) => {
+      if (isUnknownOutcome(error)) {
+        setLoginUnresolved(true);
+        void queryClient.invalidateQueries({ queryKey: ["ai", "connection"] });
+      }
+    },
   });
 
   const disconnect = useMutation({
-    mutationFn: () => api<void>("/ai/disconnect", { method: "POST" }),
+    mutationFn: () => apiMutation<void>("/ai/disconnect", { method: "POST" }),
     onSuccess: async () => {
       setLogin(null);
       setConfirmingDisconnect(false);
@@ -95,10 +108,16 @@ export function AiConnectionCard() {
         {view.kind === "disconnected" && (
           <div className="space-y-3">
             <p className="text-sm text-muted-foreground">Not connected yet.</p>
+            {loginUnresolved && (
+              <p role="alert" className="text-xs text-caution">
+                {STILL_CONFIRMING_LOCAL_MESSAGE} A device code may already have been
+                issued — check ChatGPT before starting another.
+              </p>
+            )}
             <Button
               variant="brand"
               onClick={() => startLogin.mutate()}
-              disabled={startLogin.isPending}
+              disabled={startLogin.isPending || loginUnresolved}
             >
               {startLogin.isPending && <Loader2 className="mr-2 size-4 animate-spin" />}
               Connect ChatGPT
@@ -135,7 +154,7 @@ export function AiConnectionCard() {
         {view.kind === "connected" && (
           <div className="space-y-3">
             <p className="flex items-center gap-2 text-sm font-medium">
-              <Check className="size-4 text-emerald-600" />
+              <Check className="size-4 text-signal" />
               ChatGPT connected
               {view.status.account?.planType ? ` — ${view.status.account.planType}` : ""}
             </p>
@@ -151,7 +170,7 @@ export function AiConnectionCard() {
               <Button
                 variant="outline"
                 onClick={() => startLogin.mutate()}
-                disabled={startLogin.isPending}
+                disabled={startLogin.isPending || loginUnresolved}
               >
                 {startLogin.isPending && <Loader2 className="mr-2 size-4 animate-spin" />}
                 Reconnect ChatGPT

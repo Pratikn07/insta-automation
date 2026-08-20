@@ -1,4 +1,5 @@
 import { env } from "../config/env.js";
+import { flags } from "./flagService.js";
 import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
 import { logEvent, describeGraphError } from "./eventLogger.js";
@@ -97,8 +98,8 @@ async function runTickBody(): Promise<HistoricalTickResult> {
   // the prospective feature; DM_RECOVERY_HISTORICAL_ENABLED is specific to these
   // sends, which contact people about requests weeks old. Either being off means
   // nothing is posted.
-  if (!env.DM_RECOVERY_ENABLED) return empty("disabled");
-  if (!env.DM_RECOVERY_HISTORICAL_ENABLED) return empty("historical_disabled");
+  if (!flags.bool("DM_RECOVERY_ENABLED")) return empty("disabled");
+  if (!flags.bool("DM_RECOVERY_HISTORICAL_ENABLED")) return empty("historical_disabled");
 
   const tick = await acquireHistoricalTick(
     now,
@@ -307,7 +308,7 @@ async function runLeasedTickBody(
       frozenCampaignAudienceSegment: facts.frozenCampaignAudienceSegment,
       // Retained as part of the immutable campaign manifest, but cannot relax the
       // mandatory current-Gemini historical public-comment gate.
-      westernOnly: facts.approvedWesternOnly === true || env.DM_RECOVERY_WESTERN_ONLY,
+      westernOnly: facts.approvedWesternOnly === true || flags.bool("DM_RECOVERY_WESTERN_ONLY"),
       campaignRunning: facts.campaignState === "running",
       sentThisHour: facts.sentThisHour,
       hourlyCap: facts.hourlyCap,
@@ -453,7 +454,7 @@ async function runLeasedTickBody(
       dispatchId: reservation.dispatchId,
       reservationToken: reservation.reservationToken,
       commentId: facts.sourceCommentId!,
-      currentWesternOnly: env.DM_RECOVERY_WESTERN_ONLY,
+      currentWesternOnly: flags.bool("DM_RECOVERY_WESTERN_ONLY"),
       now: new Date(),
     });
     if (dispatchStart.kind === "suppressed") {

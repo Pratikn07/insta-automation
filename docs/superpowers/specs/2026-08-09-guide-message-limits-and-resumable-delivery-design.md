@@ -71,9 +71,10 @@ introduced.
 For the `body` field on Text, Image, and PDF steps:
 
 - Show a live `current / 1,000` character count below the textarea.
-- Use the same conservative JavaScript UTF-16 code-unit count in the web app and
-  API so an emoji or other surrogate pair cannot make the UI accept text the
-  server rejects.
+- Count Unicode code points, as `[...value].length`, in the web app and API alike,
+  so one shared definition decides the limit and the UI can never accept text the
+  server rejects. An emoji or other astral character counts once, not twice — a
+  UTF-16 code-unit count would have charged it double.
 - Use the normal counter below 900 characters, a warning treatment from 900 to
   1,000, and an error treatment above 1,000.
 - Above 1,000, show: **“Instagram allows 1,000 characters per message. Shorten
@@ -86,7 +87,7 @@ For the `body` field on Text, Image, and PDF steps:
 - Keep the phone preview faithful to authored steps. It must not display an
   automatic split that will not exist at delivery time.
 
-Exactly 1,000 code units is valid. Empty-body and media requirements retain
+Exactly 1,000 code points is valid. Empty-body and media requirements retain
 their existing behavior.
 
 ## API Validation
@@ -116,7 +117,7 @@ the actual ordered Meta send units:
 - PDF step: one file unit and, when present, one caption text unit.
 
 Validate the complete compiled plan before the first Graph call. Every text unit
-must be non-empty where required and no longer than 1,000 code units; every
+must be non-empty where required and no longer than 1,000 code points; every
 media unit must have a usable URL. If any unit is invalid:
 
 - Send nothing from that delivery.

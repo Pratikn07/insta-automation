@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Creating a guide from an upcoming setup</title>
+<style>
+  /* Tokens copied verbatim from web/src/index.css. */
+  :root {
+    --background:#f7f5ef; --foreground:#171812; --card:#fffef9;
+    --secondary:#ebe8df; --muted:#ebe8df; --muted-foreground:#66665f;
+    --signal:#2c4a3b; --signal-soft:#dce9e2;
+    --urgent:#a8412b; --urgent-soft:#f5ddd6;
+    --caution:#7a5a0c; --caution-soft:#f0e6cc;
+    --border:#ebe8df; --line:#cac7bd; --input:#cac7bd;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--background); color:var(--foreground);
+    font:15px/1.5 "Archivo", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing:antialiased; }
+  .page { max-width:940px; margin:0 auto; padding:28px 32px 72px; }
+  .label-caps { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted-foreground); font-weight:500; }
+  h1 { font-size:22px; font-weight:500; letter-spacing:-.01em; margin:6px 0 0; }
+  h3 { font-size:14px; font-weight:500; margin:0; }
+  .sub { color:var(--muted-foreground); font-size:13.5px; margin:4px 0 0; }
+  .rule { height:1px; background:var(--border); margin:28px 0; }
+  .note { font-size:13px; color:var(--muted-foreground); margin-top:12px; max-width:74ch; }
+  .note strong { color:var(--foreground); font-weight:500; }
+  code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; background:var(--secondary); padding:1px 5px; border-radius:3px; }
+
+  .form { border:1px solid var(--border); border-radius:8px; background:var(--card); padding:18px 20px; margin-top:14px; }
+  .field { margin-bottom:15px; }
+  .field > label { display:block; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--muted-foreground); font-weight:500; margin-bottom:5px; }
+  .row2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .input, .sel, .ta { width:100%; font:inherit; font-size:13.5px; padding:8px 10px;
+    border:1px solid var(--input); border-radius:6px; background:var(--card); color:var(--foreground); }
+  .ta { min-height:56px; }
+  .hint { font-size:12px; color:var(--muted-foreground); margin-top:5px; }
+
+  /* The real ModeButton pair from KeywordForm. */
+  .modes { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:8px; }
+  .mode { text-align:left; border:1px solid var(--line); border-radius:6px; padding:9px 11px; background:transparent; cursor:pointer; }
+  .mode.on { border-color:var(--signal); background:var(--signal-soft); }
+  .mode .t { font-size:13px; font-weight:500; }
+  .mode .s { font-size:11.5px; color:var(--muted-foreground); margin-top:1px; }
+  .mode.on .s { color:var(--signal); }
+
+  .toggleRow { display:flex; align-items:center; justify-content:space-between; border:1px solid var(--border); border-radius:6px; padding:10px 12px; margin-bottom:15px; }
+  .tg { width:34px; height:19px; border-radius:999px; background:var(--signal); position:relative; }
+  .tg::after { content:""; position:absolute; top:2px; right:2px; width:15px; height:15px; border-radius:50%; background:#fff; }
+  .actions { display:flex; justify-content:flex-end; gap:8px; }
+  .btn { font:inherit; font-size:12.5px; padding:6px 13px; border-radius:6px; border:1px solid var(--line); background:transparent; color:var(--foreground); cursor:pointer; }
+  .btn-solid { background:var(--foreground); color:var(--background); border-color:var(--foreground); }
+
+  .arrow { text-align:center; color:var(--muted-foreground); font-size:13px; margin:14px 0; }
+  .chip { display:inline-flex; align-items:center; gap:5px; padding:2px 8px; border-radius:999px; font-size:11.5px; font-weight:500; }
+  .attn { background:var(--urgent-soft); color:var(--urgent); }
+  .wait { background:var(--caution-soft); color:var(--caution); }
+
+  .rows { border-top:1px solid var(--border); }
+  .row { display:grid; grid-template-columns:120px 1fr auto auto; gap:14px; align-items:center; padding:12px 4px; border-bottom:1px solid var(--border); }
+  .word { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:13.5px; font-weight:500; }
+  .why { font-size:13px; color:var(--muted-foreground); }
+  .editor { border:1px solid var(--border); border-radius:8px; background:var(--card); padding:16px 18px; margin-top:14px; }
+  .step { display:flex; gap:10px; align-items:flex-start; border:1px solid var(--border); border-radius:6px; padding:10px 12px; margin-bottom:8px; }
+  .step .n { font-size:11.5px; color:var(--muted-foreground); font-variant-numeric:tabular-nums; padding-top:2px; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<!-- ═══════ 1 ═══════ -->
+<div class="label-caps">1 of 3 · the form, with the guide control the keyword form already uses</div>
+<h1>New upcoming setup</h1>
+<p class="sub">One form. The only change is the Guide field.</p>
+
+<div class="form">
+  <h3>New upcoming setup</h3>
+  <p class="sub" style="margin-bottom:16px">
+    The caption you publish must contain <code>Comment SLEEP</code> — that is how the post
+    is recognised, so a different word attaches nothing.
+  </p>
+
+  <div class="row2">
+    <div class="field">
+      <label>Keyword</label>
+      <input class="input" value="SLEEP" readonly />
+    </div>
+    <div class="field">
+      <label>Guide</label>
+      <div class="modes">
+        <button class="mode on">
+          <div class="t">Create new</div>
+          <div class="s">Build a fresh guide</div>
+        </button>
+        <button class="mode">
+          <div class="t">Use existing</div>
+          <div class="s">6 available</div>
+        </button>
+      </div>
+      <input class="input" value="Sleep Reset Guide" readonly />
+      <p class="hint">We&apos;ll create the guide and drop you into the editor to add steps.</p>
+    </div>
+  </div>
+
+  <div class="field">
+    <label>Public reply <span style="float:right; text-transform:none; letter-spacing:0">21/280</span></label>
+    <textarea class="ta" readonly>Sent! Check your DMs 💛</textarea>
+  </div>
+
+  <div class="field">
+    <label>Gate message <span style="float:right; text-transform:none; letter-spacing:0">38/1000</span></label>
+    <textarea class="ta" readonly>Follow me and reply DONE and it's yours.</textarea>
+  </div>
+
+  <div class="toggleRow">
+    <div>
+      <div style="font-size:13.5px">Active once attached</div>
+      <div class="hint" style="margin:0">Turn off to attach the keyword in a paused state.</div>
+    </div>
+    <span class="tg"></span>
+  </div>
+
+  <div class="actions">
+    <button class="btn">Close</button>
+    <button class="btn btn-solid">Create setup</button>
+  </div>
+</div>
+
+<p class="note">
+  <strong>Two buttons instead of a dropdown</strong> — the same <em>Create new / Use
+  existing</em> pair the reel flow shows, so this is one control you already know rather
+  than a second way of doing the same thing. Picking an existing guide is still one click.
+</p>
+
+<div class="arrow">↓ &nbsp;Create setup, having named a new guide</div>
+
+<!-- ═══════ 2 ═══════ -->
+<div class="label-caps">2 of 3 · straight into the editor, exactly as reels do</div>
+<h1 style="margin-top:6px">Sleep Reset Guide</h1>
+<p class="sub">No steps yet. This is where you write what gets sent.</p>
+
+<div class="editor">
+  <div class="step">
+    <span class="n">1</span>
+    <span style="flex:1; font-size:13px; color:var(--muted-foreground)">
+      Write the first message…
+    </span>
+  </div>
+  <button class="btn">+ Add step</button>
+</div>
+
+<p class="note">
+  <strong>This is the existing behaviour, not new behaviour.</strong>
+  <code>KeywordForm</code> already does exactly this: it creates the guide, then
+  <code>navigate('/sequences/:id')</code>. The upcoming form simply gains the same
+  ending.
+</p>
+
+<div class="rule"></div>
+
+<!-- ═══════ 3 ═══════ -->
+<div class="label-caps">3 of 3 · and if you never write the steps</div>
+<h1 style="margin-top:6px">The guide is checked when the post publishes</h1>
+<p class="sub">Not when you create the setup — which is where the rule sits today.</p>
+
+<div class="rows" style="margin-top:16px">
+  <div class="row">
+    <span class="word">SLEEP</span>
+    <span class="why">Sleep Reset Guide · the guide has no steps yet, so nothing was attached</span>
+    <span class="chip attn">⚠ Needs attention</span>
+    <span><button class="btn">Retry</button></span>
+  </div>
+  <div class="row">
+    <span class="word">PLAY</span>
+    <span class="why">Toddler Activity Guide · waiting for the post to publish</span>
+    <span class="chip wait">◷ Waiting</span>
+    <span><button class="btn">Edit</button></span>
+  </div>
+</div>
+
+<p class="note">
+  <strong>No keyword is created, so nobody comments into silence.</strong> Add the steps,
+  press Retry, and it goes back to waiting.
+</p>
+
+<p class="note">
+  <strong>Why the check moves rather than gets added.</strong> Today
+  <code>POST /upcoming-automations</code> refuses an empty guide, and the binder never
+  looks again — so a guide emptied after creation still binds. The rule blocks the useful
+  flow and does not deliver the safety it implies. Checking at bind time is both looser
+  where it does not matter and stricter where it does.
+</p>
+
+</div>
+</body>
+</html>

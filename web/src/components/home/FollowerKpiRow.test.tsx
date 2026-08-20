@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { FollowerStock, GuideFollowResult, Stats } from "@/lib/types";
-import type { UsWeekOverWeek } from "@/lib/followerFlow";
+import type { ComparableWeekResult } from "@/lib/followerFlow";
 import { FollowerKpiRow } from "./FollowerKpiRow";
 
 // Only the third tile reads this, and only its headline. Everything else is
@@ -64,20 +64,54 @@ const stats: Stats = {
   },
 };
 
-const wow: UsWeekOverWeek = {
-  thisWeek: 182,
-  lastWeek: 140,
-  deltaCount: 42,
+const comparison: ComparableWeekResult = {
+  status: "ready",
+  current: {
+    from: "2026-08-08",
+    to: "2026-08-14",
+    days: [
+      "2026-08-08",
+      "2026-08-09",
+      "2026-08-10",
+      "2026-08-11",
+      "2026-08-12",
+      "2026-08-13",
+      "2026-08-14",
+    ],
+    us: 182,
+    coveredDays: 7,
+  },
+  prior: {
+    from: "2026-08-01",
+    to: "2026-08-07",
+    days: [
+      "2026-08-01",
+      "2026-08-02",
+      "2026-08-03",
+      "2026-08-04",
+      "2026-08-05",
+      "2026-08-06",
+      "2026-08-07",
+    ],
+    us: 140,
+    coveredDays: 7,
+  },
+  changePct: 30,
   trend: "accelerating",
-  coveredDays: 7,
-  provisionalDays: 0,
+};
+
+const insufficient: ComparableWeekResult = {
+  status: "insufficient",
+  reason: "provisional_day",
+  currentCoveredDays: 5,
+  priorCoveredDays: 7,
 };
 
 describe("FollowerKpiRow", () => {
   it("answers US growth in real counts, not percentage points", () => {
     const html = renderToStaticMarkup(
       <FollowerKpiRow
-        weekOverWeek={wow}
+        weekComparison={comparison}
         stock={stock}
         avgPerDay7={108}
         stats={stats}
@@ -90,14 +124,14 @@ describe("FollowerKpiRow", () => {
 
     expect(html).toContain("US followers this week");
     expect(html).toContain("+182");
-    expect(html).toContain("vs +140 last week");
+    expect(html).toContain("vs +140 in the prior settled week");
     expect(html).not.toContain("percentage points");
   });
 
-  it("discloses still-settling days rather than hiding them", () => {
+  it("withholds an interpretive count while the newest measurements are settling", () => {
     const html = renderToStaticMarkup(
       <FollowerKpiRow
-        weekOverWeek={{ ...wow, provisionalDays: 2 }}
+        weekComparison={insufficient}
         stock={stock}
         avgPerDay7={108}
         stats={stats}
@@ -107,13 +141,19 @@ describe("FollowerKpiRow", () => {
         isFunnelLoading={false}
       />,
     );
-    expect(html).toContain("newest 2 still settling");
+    expect(html).toContain("Newest measurements are still settling");
+    expect(html).not.toContain("+182");
   });
 
   it("withholds the comparison when there is not enough history", () => {
     const html = renderToStaticMarkup(
       <FollowerKpiRow
-        weekOverWeek={{ ...wow, lastWeek: null, deltaCount: null, trend: "steady" }}
+        weekComparison={{
+          ...insufficient,
+          reason: "not_enough_history",
+          currentCoveredDays: 7,
+          priorCoveredDays: 4,
+        }}
         stock={stock}
         avgPerDay7={108}
         stats={stats}
@@ -123,14 +163,14 @@ describe("FollowerKpiRow", () => {
         isFunnelLoading={false}
       />,
     );
-    expect(html).toContain("Not enough history yet for a week-over-week read");
+    expect(html).toContain("Waiting for two complete settled weeks");
     expect(html).not.toContain("vs +140 last week");
   });
 
   it("shows the total-follower milestone and its pace", () => {
     const html = renderToStaticMarkup(
       <FollowerKpiRow
-        weekOverWeek={wow}
+        weekComparison={comparison}
         stock={stock}
         avgPerDay7={108}
         stats={stats}
@@ -148,7 +188,7 @@ describe("FollowerKpiRow", () => {
   it("keeps the all-regions daily rate that the trimmed chart panel gave up", () => {
     const html = renderToStaticMarkup(
       <FollowerKpiRow
-        weekOverWeek={wow}
+        weekComparison={comparison}
         stock={stock}
         avgPerDay7={108}
         stats={stats}
@@ -166,7 +206,7 @@ describe("FollowerKpiRow", () => {
   it("shows Instagram's real follower count, disclosing the reported subtotal", () => {
     const html = renderToStaticMarkup(
       <FollowerKpiRow
-        weekOverWeek={wow}
+        weekComparison={comparison}
         stock={stock}
         avgPerDay7={91}
         stats={stats}
@@ -184,7 +224,7 @@ describe("FollowerKpiRow", () => {
   it("falls back to the reported subtotal when the profile fetch failed", () => {
     const html = renderToStaticMarkup(
       <FollowerKpiRow
-        weekOverWeek={wow}
+        weekComparison={comparison}
         stock={{ ...stock, followersTotal: null }}
         avgPerDay7={91}
         stats={stats}
@@ -201,7 +241,7 @@ describe("FollowerKpiRow", () => {
   it("leads the third tile with the reply rate and its counts", () => {
     const html = renderToStaticMarkup(
       <FollowerKpiRow
-        weekOverWeek={wow}
+        weekComparison={comparison}
         stock={stock}
         avgPerDay7={108}
         stats={stats}
@@ -223,7 +263,7 @@ describe("FollowerKpiRow", () => {
     // would put a number on Home that the data can no longer support.
     const html = renderToStaticMarkup(
       <FollowerKpiRow
-        weekOverWeek={wow}
+        weekComparison={comparison}
         stock={stock}
         avgPerDay7={108}
         stats={stats}
@@ -240,7 +280,12 @@ describe("FollowerKpiRow", () => {
   it("degrades each tile independently when its feed is missing", () => {
     const html = renderToStaticMarkup(
       <FollowerKpiRow
-        weekOverWeek={null}
+        weekComparison={{
+          status: "insufficient",
+          reason: "not_enough_history",
+          currentCoveredDays: 0,
+          priorCoveredDays: 0,
+        }}
         stock={null}
         avgPerDay7={null}
         stats={undefined}
@@ -250,7 +295,7 @@ describe("FollowerKpiRow", () => {
         isFunnelLoading={false}
       />,
     );
-    expect(html).toContain("Needs two days of follower geography");
+    expect(html).toContain("Waiting for two complete settled weeks");
     expect(html).toContain("Reply rate is temporarily unavailable");
     expect(html).toContain("—");
   });
@@ -271,7 +316,7 @@ describe("FollowerKpiRow reply-rate tile", () => {
 
     const html = renderToStaticMarkup(
       <FollowerKpiRow
-        weekOverWeek={wow}
+        weekComparison={comparison}
         stock={stock}
         avgPerDay7={108}
         stats={stats}

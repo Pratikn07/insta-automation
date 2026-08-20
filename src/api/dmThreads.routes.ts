@@ -1,8 +1,8 @@
-import { Router } from "express";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { CURRENT_DM_PROMPT_VERSION } from "../services/replyDraftPolicy.js";
+import { asyncRouter } from "./asyncRouter.js";
 
 /**
  * Read models for the Conversations DM views.
@@ -10,9 +10,32 @@ import { CURRENT_DM_PROMPT_VERSION } from "../services/replyDraftPolicy.js";
  * Mounted under apiRouter, so requireAdmin has already run. These are reads only —
  * every mutation lives on the AI router, where the send feature flag is enforced.
  */
-export const dmThreadsRouter = Router();
+export const dmThreadsRouter = asyncRouter();
 
 const MESSAGE_LIMIT = 200;
+const DELIVERY_REVIEW_LIMIT = 20;
+
+const DELIVERY_REVIEW_WHERE = {
+  OR: [
+    { status: "needs_review" },
+    {
+      status: "failed",
+      failureCode: "messaging_window_closed",
+      units: { some: { status: { notIn: ["sent", "cancelled"] } } },
+    },
+  ],
+} satisfies Prisma.GuideDeliveryWhereInput;
+
+const DELIVERY_REVIEW_SELECT = {
+  id: true,
+  status: true,
+  sendWindowExpiresAt: true,
+  failureCode: true,
+  units: {
+    orderBy: { position: "asc" },
+    select: { id: true, position: true, kind: true, status: true },
+  },
+} as const;
 
 const listQuerySchema = z.object({
   scope: z.enum(["needs_reply", "all"]).default("all"),
@@ -57,6 +80,9 @@ const DRAFT_SELECT = {
 } as const;
 
 type SelectedDraft = Prisma.ReplyDraftGetPayload<{ select: typeof DRAFT_SELECT }>;
+type SelectedDeliveryReview = Prisma.GuideDeliveryGetPayload<{
+  select: typeof DELIVERY_REVIEW_SELECT;
+}>;
 
 const GUIDE_NAME_LIMIT = 200;
 const GUIDE_DESCRIPTION_LIMIT = 500;
@@ -79,6 +105,24 @@ function serializeDraft(draft: SelectedDraft | undefined): object | null {
             keyword: sourceConversation.keyword.keyword.slice(0, GUIDE_KEYWORD_LIMIT),
           }
         : null,
+  };
+}
+
+function serializeDeliveryReview(delivery: SelectedDeliveryReview) {
+  return {
+    id: delivery.id,
+    status: delivery.status,
+    confirmedUnits: delivery.units.filter((unit) => unit.status === "sent").length,
+    totalUnits: delivery.units.length,
+    sendWindowExpiresAt: delivery.sendWindowExpiresAt,
+    sendWindowOpen: delivery.sendWindowExpiresAt > new Date(),
+    failureCode: delivery.failureCode,
+    units: delivery.units.map((unit) => ({
+      id: unit.id,
+      position: unit.position,
+      kind: unit.kind,
+      status: unit.status,
+    })),
   };
 }
 
@@ -111,6 +155,9 @@ dmThreadsRouter.get("/", async (req, res) => {
       },
       // Newest draft first; the client shows it only if it is active or failed.
       drafts: { orderBy: { revision: "desc" }, take: 1, select: DRAFT_SELECT },
+      _count: {
+        select: { guideDeliveries: { where: DELIVERY_REVIEW_WHERE } },
+      },
     },
   });
 
@@ -118,10 +165,11 @@ dmThreadsRouter.get("/", async (req, res) => {
   const items = hasMore ? rows.slice(0, limit) : rows;
 
   res.json({
-    items: items.map(({ messages, drafts, ...thread }) => ({
+    items: items.map(({ messages, drafts, _count, ...thread }) => ({
       ...thread,
       latestMessage: messages[0] ?? null,
       draft: serializeDraft(drafts[0]),
+      deliveryReviewCount: _count.guideDeliveries,
     })),
     nextCursor: hasMore ? items[items.length - 1]!.id : null,
   });
@@ -153,10 +201,21 @@ dmThreadsRouter.get("/:threadId", async (req, res) => {
         },
       },
       drafts: { orderBy: { revision: "desc" }, take: 1, select: DRAFT_SELECT },
+      guideDeliveries: {
+        where: DELIVERY_REVIEW_WHERE,
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: DELIVERY_REVIEW_LIMIT,
+        select: DELIVERY_REVIEW_SELECT,
+      },
     },
   });
   if (!thread) return res.status(404).json({ error: "not_found" });
 
-  const { drafts, messages, ...rest } = thread;
-  res.json({ ...rest, messages: messages.reverse(), draft: serializeDraft(drafts[0]) });
+  const { drafts, messages, guideDeliveries, ...rest } = thread;
+  res.json({
+    ...rest,
+    messages: messages.reverse(),
+    draft: serializeDraft(drafts[0]),
+    deliveryReviews: guideDeliveries.map(serializeDeliveryReview),
+  });
 });

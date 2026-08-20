@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { formatAbsolute } from "../../lib/utils";
 import { useEffect, useState } from "react";
 import { ApiError, recoveryApi } from "../../lib/api";
+import { STILL_CONFIRMING_MESSAGE, isUnknownOutcome } from "../../lib/unknownOutcome";
 import type { RecoveryReminderDetail } from "../../lib/types";
 import { recoveryStatusView } from "./dmRecoveryViewModel";
 
@@ -59,7 +60,7 @@ export function DmRecoveryDrawer({
 
   const detailQ = useQuery<RecoveryReminderDetail>({
     queryKey: ["recovery-reminders", "detail", id],
-    queryFn: () => recoveryApi.detail(id),
+    queryFn: ({ signal }) => recoveryApi.detail(id, { signal }),
   });
 
   // Both actions can lose a race with the worker, so the whole recovery tree is
@@ -88,13 +89,17 @@ export function DmRecoveryDrawer({
     onSettled: refresh,
   });
 
-  const retryableError = [cancelM, reviewM].find(
-    (m) => m.error instanceof ApiError && m.error.status !== 409,
-  );
+  // An unknown outcome is not a failure and must not offer a retry: this action
+  // publishes a public comment, and the request may already have done so. The whole
+  // recovery tree is refetched on settle, so the server's state is what appears.
+  const unresolved = [cancelM, reviewM].some((m) => isUnknownOutcome(m.error));
+  const retryableError = unresolved
+    ? undefined
+    : [cancelM, reviewM].find((m) => m.error instanceof ApiError && m.error.status !== 409);
 
   if (detailQ.isPending) return <div className="p-4 text-sm text-muted-foreground">Loading…</div>;
   if (detailQ.isError || !detailQ.data) {
-    return <div className="p-4 text-sm text-rose-200">Couldn’t load this reminder.</div>;
+    return <div className="p-4 text-sm text-urgent">Couldn’t load this reminder.</div>;
   }
 
   const row = detailQ.data;
@@ -118,6 +123,9 @@ export function DmRecoveryDrawer({
             <span>Original post unavailable</span>
           )}
         </p>
+        {state.actionState ? (
+          <p className="label-caps text-foreground">{state.actionState}</p>
+        ) : null}
         <p className="font-medium">{state.label}</p>
         <p className="text-xs text-muted-foreground">{state.description}</p>
       </header>
@@ -186,7 +194,7 @@ export function DmRecoveryDrawer({
         <section className="space-y-2 rounded-md border px-3 py-2 text-xs">
           <h3 className="font-semibold">Verified settings evidence</h3>
           {row.settingsEvidence.status === "missing" ? (
-            <p className="text-rose-200">
+            <p className="text-urgent">
               Verification evidence missing. This legacy reminder cannot establish which controlled
               Graph signature justified the settings-specific copy.
             </p>
@@ -194,7 +202,7 @@ export function DmRecoveryDrawer({
             <>
               <p>
                 <span className="text-muted-foreground">Status · </span>
-                <span className={row.settingsEvidence.status === "current" ? "text-emerald-300" : "text-rose-200"}>
+                <span className={row.settingsEvidence.status === "current" ? "text-signal" : "text-urgent"}>
                   {row.settingsEvidence.status}
                 </span>
               </p>
@@ -220,7 +228,7 @@ export function DmRecoveryDrawer({
                 SHA-256 · {row.settingsEvidence.evidenceSha256}
               </p>
               {row.settingsEvidence.status !== "current" ? (
-                <p className="text-rose-200">
+                <p className="text-urgent">
                   This evidence is {row.settingsEvidence.status}; new settings-specific reminders are blocked.
                 </p>
               ) : null}
@@ -230,12 +238,19 @@ export function DmRecoveryDrawer({
       ) : null}
 
       {conflicted ? (
-        <p role="status" className="rounded-md border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs text-amber-100">
+        <p role="status" className="rounded-md border border-caution bg-caution-soft px-3 py-2 text-xs text-caution">
           {RECOVERY_CONFLICT_MESSAGE}
         </p>
+      ) : unresolved ? (
+        <div role="alert" className="rounded-md border border-caution bg-caution-soft px-3 py-2 text-xs">
+          <p className="text-caution">{STILL_CONFIRMING_MESSAGE}</p>
+          <p className="mt-1 text-muted-foreground">
+            Nothing was retried. This reminder will show its real state once confirmed.
+          </p>
+        </div>
       ) : retryableError ? (
-        <div role="alert" className="rounded-md border border-rose-400/30 bg-rose-400/10 px-3 py-2 text-xs">
-          <p className="text-rose-100">Couldn’t complete that action.</p>
+        <div role="alert" className="rounded-md border border-urgent bg-urgent-soft px-3 py-2 text-xs">
+          <p className="text-urgent">Couldn’t complete that action.</p>
           <button
             type="button"
             onClick={() => retryableError.mutate()}
@@ -298,8 +313,8 @@ export function DmRecoveryDrawer({
         >
           <p className="text-sm font-medium">Cancel this reminder?</p>
           <p className="mt-1 text-xs text-muted-foreground">
-            This will prevent a future public comment on their post. It cannot remove a comment that
-            has already been posted.
+            This prevents a future public-comment attempt. It cannot remove a comment that Instagram
+            already accepted.
           </p>
           <div className="mt-3 flex gap-2">
             <button

@@ -22,7 +22,20 @@ prisma/migrations/dev.db*
 
 # Local isolated development worktrees
 .worktrees/
+
+# Claude Code's local session state: launch.json, settings.local.json, and a
+# second worktree home under .claude/worktrees that reached 1.6 GB. None of it
+# is shared, and nothing here has ever been tracked.
+.claude/
+
+# Impeccable decision-page session state. DESIGN.md and .impeccable/design.json
+# are design authority and are tracked; these are per-run scratch.
+.impeccable/questions/
 .vercel
 .expanded-recovery-rollout.state.json
 .expanded-recovery-rollout.state.json.cleanup-required
 .expanded-recovery-rollout.state.json.lock/
+# Timestamped copies of the rollout state above, which the three patterns here
+# do not cover. Each snapshot carries Railway project/service/environment IDs
+# and a release SHA, so these are operational records, not source.
+.rollout-audit-backups/

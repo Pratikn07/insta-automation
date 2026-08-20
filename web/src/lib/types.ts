@@ -9,6 +9,7 @@ export interface Resource {
   description: string | null;
   createdAt: string;
   _count?: { messages: number; keywords: number };
+  invalidMessageCount?: number;
 }
 
 export interface ResourceMessage {
@@ -43,6 +44,133 @@ export interface Keyword {
   updatedAt: string;
   resource?: { id: string; name: string; _count: { messages: number } };
   _count?: { conversations: number };
+}
+
+export type FlagGroup = "outbound" | "experiment" | "assistive" | "infrastructure";
+
+/**
+ * One switch, with everything needed to decide whether to touch it.
+ *
+ * The three sentences are required server-side — `src/config/flagRegistry.ts` is
+ * the source and a build fails without them — so they are non-optional here.
+ */
+export interface FlagView {
+  key: string;
+  name: string;
+  group: FlagGroup;
+  kind: "boolean" | "percent";
+  doesWhat: string;
+  affectsWho: string;
+  ifOff: string;
+  /** False where switching it on begins contacting people, or raising it is unsafe. */
+  pageMayEnable: boolean;
+  /** True only where the flag is read per operation, so a stop actually stops. */
+  pageMayStop: boolean;
+  valueBool: boolean | null;
+  valuePercent: number | null;
+  source: "override" | "environment";
+  /** A restart would change the value in force back to the deployed one. */
+  driftsFromEnv: boolean;
+  updatedBy: string | null;
+  updatedAt: string | null;
+  /** The experiment this switch belongs to, if any. */
+  experimentKey?: string;
+  /**
+   * That experiment's display name, served with the flag.
+   *
+   * The console deliberately keeps no key-to-name map of its own — renaming an
+   * experiment would otherwise leave the old name on every switch it owns.
+   */
+  experimentName?: string | null;
+}
+
+export interface FlagsResponse {
+  flags: FlagView[];
+}
+
+export type ExperimentState = "running" | "not_started" | "ended";
+
+export interface ExperimentArmView {
+  key: string;
+  /** Share of eligible people, 0-100. Null when the split is not fixed in code. */
+  percent: number | null;
+  doesWhat: string;
+  isControl: boolean;
+}
+
+/**
+ * What an experiment measured, or — if it never ran — what it would.
+ *
+ * A discriminated union rather than one shape with nullable counts, because zeroes
+ * read as "we tried and nothing happened" and that is a different claim from "never
+ * switched on".
+ */
+export type ExperimentSummaryView =
+  | { kind: "not_started"; wouldCompare: string; blocker: string }
+  | {
+      kind: "running";
+      arms: { key: string; label: string; people: number }[];
+      notCounted: { reason: string; people: number }[];
+      endsAt: string | null;
+      whenItEnds: string;
+    };
+
+export interface ExperimentListItem {
+  key: string;
+  name: string;
+  state: ExperimentState;
+  armCount: number;
+  blocker: string;
+  summary: ExperimentSummaryView;
+}
+
+export interface ExperimentsResponse {
+  experiments: ExperimentListItem[];
+}
+
+export interface ExperimentDetailView {
+  key: string;
+  name: string;
+  state: ExperimentState;
+  doesWhat: string;
+  affectsWho: string;
+  outcome: string;
+  arms: ExperimentArmView[];
+  blocker: string;
+  summary: ExperimentSummaryView;
+  ownedFlags: FlagView[];
+}
+
+export type UpcomingAutomationStatus =
+  | "waiting"
+  | "bound"
+  | "needs_attention"
+  | "cancelled";
+
+export interface UpcomingAutomation {
+  id: string;
+  triggerWord: string;
+  resourceId: string;
+  publicReply: string;
+  gateMessage: string;
+  active: boolean;
+  status: UpcomingAutomationStatus;
+  matchedMediaId: string | null;
+  keywordId: string | null;
+  errorCode: string | null;
+  createdBy: string;
+  lastAttemptAt: string | null;
+  retriedAt: string | null;
+  boundAt: string | null;
+  cancelledAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  resource: { id: string; name: string; _count: { messages: number } };
+}
+
+export interface UpcomingAutomationsResponse {
+  automations: UpcomingAutomation[];
+  discoveryEnabled: boolean;
 }
 
 // Mirrors src/meta/fetchMedia.ts. Only these two kinds exist on the account
@@ -149,6 +277,15 @@ export interface Stats {
    * their gate. Optional because an older API build omits it.
    */
   gateQueueSendUncertain?: number;
+  /**
+   * Upcoming setups whose post published but whose caption didn't match, so
+   * nothing is attached. An ongoing outage rather than a historical one — the post
+   * is live and every commenter gets nothing until it is fixed.
+   *
+   * Optional for the same reason as the field above: an older API build omits it,
+   * and a missing count must read as "not measured", never as zero.
+   */
+  upcomingNeedsAttention?: number;
   followConversion?: FollowConversion;
   tokenHealth?: TokenHealth | null;
 }
@@ -430,6 +567,32 @@ export interface FollowerDailyAddsPoint {
   stale: boolean;
   provisional: boolean; // within Meta's ~48h demographics lag, may still shift
   basis: DailyAddsBasis;
+  // --- exact-total anchoring (followerAllocationCore) --------------------------
+  // Optional for the same reason as byCountry: a browser may be talking to a
+  // server deployed before followers_count was being captured, and a day before
+  // that capture began has no exact figure at all.
+  //
+  // The day's TRUE net adds, from the followers_count profile field. Unlike
+  // `total` this has no top-45 country cutoff and no ~48h lag — it is the number
+  // Instagram itself shows. When present, `total` has been anchored to it.
+  exactTotal?: number | null;
+  // What follower_demographics alone reported, before apportioning. Null on days
+  // Meta never reported. Kept so the gap between measurement and estimate stays
+  // inspectable rather than hidden.
+  measuredTotal?: number | null;
+  // The country/region split on this day was apportioned from a multi-day
+  // demographic diff and/or rescaled onto the exact total, rather than being a
+  // clean single-day Meta measurement. Meta publishes no per-country-per-day
+  // follower data, so this is set on essentially every recent day — it marks
+  // inference, not error.
+  estimated?: boolean;
+  // --- churn (follows_and_unfollows) -----------------------------------------
+  // Meta's own daily ledger, present only for the days it answers. `total` is
+  // NET, so a day that gained 400 and lost 380 is indistinguishable from one
+  // that gained 20 without these. Null means Meta gave no figure — never zero,
+  // which would read as "nobody unfollowed".
+  follows?: number | null;
+  unfollows?: number | null;
   // Present only on days that cleared the spike thresholds; absent is normal.
   spike?: SpikeInfo;
 }
@@ -543,6 +706,42 @@ export interface ReplyDraft {
   createdAt: string;
 }
 
+// --- guide delivery owner review ---------------------------------------------
+// A delivery the automation could not finish on its own. The server deliberately
+// serialises identity and progress only: no text snapshot, media URL, provider
+// body, or trace ID crosses this boundary, because the owner decides from
+// position and status alone.
+export type GuideDeliveryReviewUnitKind = "text" | "image" | "file";
+
+export type GuideDeliveryReviewUnitStatus =
+  | "pending"
+  | "sending"
+  | "sent"
+  | "retryable"
+  | "failed"
+  | "uncertain"
+  | "cancelled";
+
+export interface GuideDeliveryReviewUnit {
+  id: string;
+  /** Zero-based on the wire; rendered one-based so the owner counts messages. */
+  position: number;
+  kind: GuideDeliveryReviewUnitKind;
+  status: GuideDeliveryReviewUnitStatus;
+}
+
+export interface GuideDeliveryReview {
+  id: string;
+  status: "needs_review" | "failed";
+  confirmedUnits: number;
+  totalUnits: number;
+  sendWindowExpiresAt: string;
+  /** Server-computed against its own clock, never re-derived in the browser. */
+  sendWindowOpen: boolean;
+  failureCode: string | null;
+  units: GuideDeliveryReviewUnit[];
+}
+
 export interface DmThreadRow {
   id: string;
   igUserId: string;
@@ -555,6 +754,8 @@ export interface DmThreadRow {
   lastOutboundAt: string | null;
   latestMessage: Omit<DmMessage, "id" | "mediaUrl"> | null;
   draft: ReplyDraft | null;
+  /** Deliveries awaiting an owner decision. Independent of draft status. */
+  deliveryReviewCount: number;
 }
 
 export interface DmThreadDetail {
@@ -567,6 +768,7 @@ export interface DmThreadDetail {
   lastMessageAt: string;
   messages: DmMessage[];
   draft: ReplyDraft | null;
+  deliveryReviews: GuideDeliveryReview[];
 }
 
 // --- AI advisor ---------------------------------------------------------------

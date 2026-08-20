@@ -2,10 +2,12 @@ import { useState } from "react";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { AlertTriangle, Pause, Play, Check, X, Gauge } from "lucide-react";
-import { api } from "@/lib/api";
+import { apiRead, apiMutation } from "@/lib/api";
+import { STILL_CONFIRMING_MESSAGE, isUnknownOutcome } from "@/lib/unknownOutcome";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { LoadFailed } from "@/components/EmptyState";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   candidateView,
@@ -55,15 +57,28 @@ type CandidatesResponse = {
 type CandidatePageParam = { cursor: string; asOf: string };
 
 const TONE_CLASS: Record<string, string> = {
-  positive: "text-emerald-400",
-  pending: "text-sky-400",
-  warning: "text-amber-400",
-  danger: "text-red-400",
+  positive: "text-signal",
+  pending: "text-funnel-mark",
+  warning: "text-caution",
+  danger: "text-urgent",
   neutral: "text-muted-foreground",
 };
 
 function ageInDays(iso: string): number {
   return Math.round((Date.now() - Date.parse(iso)) / 86_400_000);
+}
+
+/**
+ * A campaign action can dispatch hundreds of public comments. If its outcome is
+ * unknown the operator must not be told it failed — that reads as an invitation to
+ * press start again.
+ */
+function campaignActionError(error: unknown): string {
+  return isUnknownOutcome(error)
+    ? `${STILL_CONFIRMING_MESSAGE} — nothing was retried. Check the campaign state below.`
+    : error instanceof Error
+      ? error.message
+      : "That action did not complete.";
 }
 
 export function HistoricalRecovery() {
@@ -80,7 +95,7 @@ export function HistoricalRecovery() {
 
   const campaigns = useQuery({
     queryKey: ["historical-campaigns"],
-    queryFn: () => api<CampaignsResponse>("/historical-recovery/campaigns"),
+    queryFn: ({ signal }) => apiRead<CampaignsResponse>("/historical-recovery/campaigns", { signal }),
   });
 
   const campaignRows = campaigns.data?.campaigns ?? [];
@@ -90,14 +105,15 @@ export function HistoricalRecovery() {
   const candidates = useInfiniteQuery({
     queryKey: ["historical-candidates", active?.id, tab],
     initialPageParam: null as CandidatePageParam | null,
-    queryFn: ({ pageParam }) => {
+    queryFn: ({ pageParam, signal }) => {
       const params = new URLSearchParams({ view: tab, campaignId: active!.id });
       if (pageParam !== null) {
         params.set("cursor", pageParam.cursor);
         params.set("asOf", pageParam.asOf);
       }
-      return api<CandidatesResponse>(
+      return apiRead<CandidatesResponse>(
         `/historical-recovery/candidates?${params.toString()}`,
+        { signal },
       );
     },
     getNextPageParam: (last): CandidatePageParam | undefined =>
@@ -123,7 +139,7 @@ export function HistoricalRecovery() {
         action === "pause" || action === "cancel"
             ? { reason: "Stopped from the dashboard" }
             : {};
-      return api<{ state: string }>(`/historical-recovery/campaigns/${campaignId}/${action}`, {
+      return apiMutation<{ state: string }>(`/historical-recovery/campaigns/${campaignId}/${action}`, {
         method: "POST",
         body: JSON.stringify(body),
       });
@@ -133,12 +149,18 @@ export function HistoricalRecovery() {
       void queryClient.invalidateQueries({ queryKey: ["historical-campaigns"] });
       void queryClient.invalidateQueries({ queryKey: ["historical-candidates"] });
     },
-    onError: (err: Error) => toast.error(err.message),
+    onError: (err: Error) => toast.error(campaignActionError(err)),
+    // A start or approve may have dispatched before the response was lost. Refetch
+    // regardless of outcome so the sealed state on screen is the server's.
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["historical-campaigns"] });
+      void queryClient.invalidateQueries({ queryKey: ["historical-candidates"] });
+    },
   });
 
   const stage = useMutation({
     mutationFn: ({ campaignId, caps }: { campaignId: string; caps: HistoricalStageCaps }) =>
-      api<{ state: string }>(`/historical-recovery/campaigns/${campaignId}/stage`, {
+      apiMutation<{ state: string }>(`/historical-recovery/campaigns/${campaignId}/stage`, {
         method: "POST",
         body: JSON.stringify(caps),
       }),
@@ -147,12 +169,13 @@ export function HistoricalRecovery() {
       toast.success("Campaign stage advanced");
       void queryClient.invalidateQueries({ queryKey: ["historical-campaigns"] });
     },
-    onError: (err: Error) => toast.error(err.message),
+    onError: (err: Error) => toast.error(campaignActionError(err)),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["historical-campaigns"] }),
   });
 
   const pauseGroup = useMutation({
     mutationFn: (rolloutGroupId: string) =>
-      api<{ rolloutGroupId: string }>(`/historical-recovery/rollout-groups/${rolloutGroupId}/pause`, {
+      apiMutation<{ rolloutGroupId: string }>(`/historical-recovery/rollout-groups/${rolloutGroupId}/pause`, {
         method: "POST",
         body: JSON.stringify({ reason: "Stopped from the dashboard" }),
       }),
@@ -161,8 +184,23 @@ export function HistoricalRecovery() {
       void queryClient.invalidateQueries({ queryKey: ["historical-campaigns"] });
       void queryClient.invalidateQueries({ queryKey: ["historical-candidates"] });
     },
-    onError: (err: Error) => toast.error(err.message),
+    onError: (err: Error) => toast.error(campaignActionError(err)),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["historical-campaigns"] });
+      void queryClient.invalidateQueries({ queryKey: ["historical-candidates"] });
+    },
   });
+
+  // Without this a failed fetch falls through to "no active campaign", which on
+  // this page reads as "there is nothing to approve" — the most misleading thing
+  // it could say, given what approving here does.
+  if (campaigns.isError) {
+    return (
+      <div className="p-6">
+        <LoadFailed what="recovery campaigns" onRetry={() => void campaigns.refetch()} />
+      </div>
+    );
+  }
 
   if (campaigns.isLoading) {
     return (
@@ -235,9 +273,9 @@ export function HistoricalRecovery() {
           send may already be live on Instagram, and burying it under an Approve
           button would be exactly the wrong order. */}
       {attention > 0 && (
-        <Card className="border-amber-500/40 bg-amber-500/5 p-4">
+        <Card className="border-caution bg-caution-soft p-4">
           <div className="flex items-start gap-3">
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-caution" />
             <div>
               <p className="text-sm font-medium">
                 {attention} {attention === 1 ? "reminder needs" : "reminders need"} your review
@@ -247,7 +285,7 @@ export function HistoricalRecovery() {
                 because a retry could post a second public comment.
               </p>
               <button
-                className="mt-2 text-sm text-amber-400 underline-offset-4 hover:underline"
+                className="mt-2 text-sm text-caution underline-offset-4 hover:underline"
                 onClick={() => setTab("attention")}
               >
                 Review them

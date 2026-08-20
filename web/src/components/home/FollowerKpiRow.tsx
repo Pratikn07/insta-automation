@@ -3,8 +3,8 @@ import type { FollowerStock, GuideFollowResult, Stats } from "@/lib/types";
 import {
   describeStockVsFlow,
   formatSignedCount,
+  type ComparableWeekResult,
   type FlowTrend,
-  type UsWeekOverWeek,
 } from "@/lib/followerFlow";
 import { KpiTile } from "./KpiTile";
 
@@ -38,7 +38,7 @@ function buildTotalsNote(stock: FollowerStock, avgPerDay7: number | null): strin
 }
 
 interface FollowerKpiRowProps {
-  weekOverWeek: UsWeekOverWeek | null;
+  weekComparison: ComparableWeekResult;
   stock: FollowerStock | null;
   avgPerDay7: number | null;
   stats: Stats | undefined;
@@ -50,7 +50,7 @@ interface FollowerKpiRowProps {
 }
 
 export function FollowerKpiRow({
-  weekOverWeek,
+  weekComparison,
   stock,
   avgPerDay7,
   funnel,
@@ -59,35 +59,56 @@ export function FollowerKpiRow({
   isFunnelLoading,
 }: FollowerKpiRowProps) {
   const milestone = stock ? describeStockVsFlow(stock, avgPerDay7) : null;
+  const comparable = weekComparison.status === "ready" ? weekComparison : null;
+  const comparisonContext =
+    weekComparison.status === "ready"
+      ? `vs ${formatSignedCount(weekComparison.prior.us)} in the prior settled week`
+      : {
+          not_enough_history: "Waiting for two complete settled weeks",
+          missing_day: "A daily measurement is missing",
+          provisional_day: "Newest measurements are still settling",
+          multi_day_span: "A catch-up span prevents a week-to-week comparison",
+          duplicate_day: "Duplicate daily measurements need attention",
+        }[weekComparison.reason];
 
   return (
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    // ONE band, not three tiles standing on the ground. Home's neighbours both
+    // carry a surface — a bordered band with a filled half above, a tinted panel
+    // below — so a row with no marks of its own read as the space between them.
+    // The fix is the page's own vocabulary, not a card: index.css says structure
+    // comes from rules and rows, and --color-card is "never a wrapper around
+    // ordinary page content".
+    //
+    // Ink opens the band and line closes it, the same pair Home uses for "What
+    // needs attention" and "Evidence". EVERY rule below names its colour, because
+    // the base layer sets `border-color` on `*`: a bare `border-l` ships at
+    // #EBE8DF / 1.12:1 and does no separating at all. That is the exact bug this
+    // replaced — do not drop the `-line` and `-foreground` suffixes.
+    //
+    // Not three equal columns either. The US figure is the stated success metric,
+    // so it takes the wider column and the figure scale; the other two are
+    // supporting facts. An equal 3-up row would say all three matter the same,
+    // which PRODUCT.md explicitly says they do not.
+    <div className="grid border-t border-t-foreground border-b border-b-line sm:grid-cols-2 lg:grid-cols-[1.35fr_1fr_1fr]">
       <KpiTile
+        emphasis
+        // Full width at sm: the score gets its own row above the two supporting
+        // facts rather than being squeezed into half a tablet.
+        className="py-5 sm:col-span-2 sm:py-6 lg:col-span-1 lg:pr-8"
         label="US followers this week"
-        value={weekOverWeek === null ? "—" : formatSignedCount(weekOverWeek.thisWeek)}
-        context={
-          weekOverWeek === null
-            ? "Needs two days of follower geography"
-            : weekOverWeek.lastWeek === null
-              ? "Not enough history yet for a week-over-week read"
-              : `vs ${formatSignedCount(weekOverWeek.lastWeek)} last week`
-        }
-        note={
-          weekOverWeek && weekOverWeek.provisionalDays > 0
-            ? `newest ${weekOverWeek.provisionalDays} still settling`
-            : null
-        }
+        value={comparable ? formatSignedCount(comparable.current.us) : "—"}
+        context={comparisonContext}
+        note={null}
         Icon={Users}
         tone="emerald"
         isLoading={isFlowLoading}
-        trendIcon={
-          weekOverWeek && weekOverWeek.lastWeek !== null
-            ? TREND_ICON[weekOverWeek.trend]
-            : null
-        }
+        trendIcon={comparable ? TREND_ICON[comparable.trend] : null}
       />
 
       <KpiTile
+        // Stacked: a rule above. At lg the rule turns vertical and becomes the
+        // first divider.
+        className="border-t border-t-line py-5 sm:py-6 sm:pr-6 lg:border-t-0 lg:border-l lg:border-l-line lg:px-8"
         label="Total followers"
         // milestone.stockLabel is Instagram's real count when available, so this
         // matches the profile instead of the 45-country subtotal.
@@ -120,6 +141,9 @@ export function FollowerKpiRow({
         lives one click away.
       */}
       <KpiTile
+        // Carries a divider from sm up, since it sits beside Total followers on a
+        // tablet as well as on a desktop.
+        className="border-t border-t-line py-5 sm:border-l sm:border-l-line sm:py-6 sm:pl-6 lg:border-t-0 lg:pl-8"
         label={funnel?.headline.label ?? "Reply rate"}
         value={
           funnel && funnel.headline.rate.pct !== null

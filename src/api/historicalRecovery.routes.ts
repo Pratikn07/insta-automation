@@ -1,7 +1,7 @@
-import { Router } from "express";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
+import { flags } from "../services/flagService.js";
 import { getIgUsers } from "../services/igUserService.js";
 import { env } from "../config/env.js";
 import {
@@ -20,6 +20,7 @@ import { historicalCandidateDetail } from "../services/historicalRecoveryCandida
 import {
   markHistoricalCandidateReviewed,
 } from "../services/historicalRecoveryReview.js";
+import { asyncRouter } from "./asyncRouter.js";
 
 export { HISTORICAL_REVIEWABLE_OUTCOMES } from "../services/historicalRecoveryReview.js";
 
@@ -34,7 +35,7 @@ export { HISTORICAL_REVIEWABLE_OUTCOMES } from "../services/historicalRecoveryRe
  *
  * Mounted under apiRouter, so requireAdmin has already run.
  */
-export const historicalRecoveryRouter = Router();
+export const historicalRecoveryRouter = asyncRouter();
 
 export const CANDIDATE_VIEWS = [
   "all",
@@ -236,7 +237,7 @@ historicalRecoveryRouter.get("/campaigns", async (_req, res) => {
   res.json({
     // Surfaced so the dashboard can say "sending is off" rather than showing an
     // approved campaign that silently never sends.
-    sendingEnabled: env.DM_RECOVERY_ENABLED && env.DM_RECOVERY_HISTORICAL_ENABLED,
+    sendingEnabled: flags.bool("DM_RECOVERY_ENABLED") && flags.bool("DM_RECOVERY_HISTORICAL_ENABLED"),
     campaigns: campaigns.map((c) => ({
       id: c.id,
       phase: c.phase,

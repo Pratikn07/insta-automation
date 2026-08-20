@@ -27,6 +27,6 @@ export async function sendMedia({
       },
     },
   });
-  logger.debug({ recipientIgUserId, type, url }, "Sent media DM");
+  logger.debug({ recipientIgUserId, type }, "Sent media DM");
   return { messageId: data.message_id ?? null };
 }

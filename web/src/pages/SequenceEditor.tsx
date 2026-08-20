@@ -29,7 +29,8 @@ import {
 import { useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { toast } from "sonner";
-import { api, ApiError } from "@/lib/api";
+import { apiRead, apiMutation, apiErrorCode, ApiError } from "@/lib/api";
+import { useOperationId } from "@/lib/useOperationId";
 import type { MessageType, Resource, ResourceMessage } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -38,10 +39,18 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { LoadFailed } from "@/components/EmptyState";
 import { MediaUpload } from "@/components/MediaUpload";
 import { PhoneMockup } from "@/components/PhoneMockup";
 import { SaveStatus } from "@/components/SaveStatus";
 import { cn } from "@/lib/utils";
+import {
+  countInstagramCodePoints,
+  GUIDE_MESSAGE_LIMIT_GUIDANCE,
+  INSTAGRAM_GUIDE_TEXT_LIMIT,
+  INSTAGRAM_GUIDE_WARNING_AT,
+  MESSAGE_BODY_TOO_LONG_ERROR,
+} from "@shared/guideMessagePolicy";
 
 const STEP_TYPES: { value: MessageType; label: string; icon: typeof TypeIcon }[] = [
   { value: "text", label: "Text", icon: TypeIcon },
@@ -53,17 +62,31 @@ export function SequenceEditor() {
   const { id } = useParams<{ id: string }>();
   const resourceQ = useQuery<Resource>({
     queryKey: ["resource", id],
-    queryFn: () => api<Resource>(`/resources/${id}`),
+    queryFn: ({ signal }) => apiRead<Resource>(`/resources/${id}`, { signal }),
     enabled: !!id,
   });
 
   const messagesQ = useQuery<ResourceMessage[]>({
     queryKey: ["resource-messages", id],
-    queryFn: () => api<ResourceMessage[]>(`/messages/by-resource/${id}`),
+    queryFn: ({ signal }) => apiRead<ResourceMessage[]>(`/messages/by-resource/${id}`, { signal }),
     enabled: !!id,
   });
 
   const isLoading = resourceQ.isLoading || messagesQ.isLoading;
+
+  // A failed fetch used to fall through to "Guide not found", which reads as
+  // "this was deleted" when it means "the API did not answer".
+  if (resourceQ.isError || messagesQ.isError) {
+    return (
+      <LoadFailed
+        what="this guide"
+        onRetry={() => {
+          void resourceQ.refetch();
+          void messagesQ.refetch();
+        }}
+      />
+    );
+  }
 
   if (isLoading) {
     return (
@@ -76,17 +99,15 @@ export function SequenceEditor() {
 
   if (!id || !resourceQ.data) {
     return (
-      <Card>
-        <CardContent className="p-8">
-          <p className="text-sm text-muted-foreground">Sequence not found.</p>
-          <Button variant="ghost" asChild className="mt-3">
-            <Link to="/sequences">
-              <ArrowLeft className="size-4" />
-              Back to Sequences
-            </Link>
-          </Button>
-        </CardContent>
-      </Card>
+      <div className="border-t pt-4">
+        <p className="text-[13px] text-muted-foreground">Guide not found.</p>
+        <Button variant="ghost" asChild className="mt-2 -ml-3">
+          <Link to="/guides">
+            <ArrowLeft className="size-4" />
+            Back to Sequences
+          </Link>
+        </Button>
+      </div>
     );
   }
 
@@ -116,6 +137,10 @@ function SequenceEditorForm({
   const [items, setItems] = useState<ResourceMessage[]>(initialMessages);
 
   const [confirmDelete, setConfirmDelete] = useState<ResourceMessage | null>(null);
+  const needsAttention = items.some(
+    (message) =>
+      countInstagramCodePoints(message.body ?? "") > INSTAGRAM_GUIDE_TEXT_LIMIT,
+  );
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -129,7 +154,7 @@ function SequenceEditorForm({
   const renameMutation = useMutation({
     mutationKey: saveKey,
     mutationFn: () =>
-      api<Resource>(`/resources/${id}`, {
+      apiMutation<Resource>(`/resources/${id}`, {
         method: "PATCH",
         body: JSON.stringify({ name, description: description || null }),
       }),
@@ -144,7 +169,7 @@ function SequenceEditorForm({
   const reorderMutation = useMutation({
     mutationKey: saveKey,
     mutationFn: ({ orderedIds }: { orderedIds: string[]; previous: ResourceMessage[] }) =>
-      api<ResourceMessage[]>(`/messages/reorder/${id}`, {
+      apiMutation<ResourceMessage[]>(`/messages/reorder/${id}`, {
         method: "POST",
         body: JSON.stringify({ messageIds: orderedIds }),
       }),
@@ -155,20 +180,27 @@ function SequenceEditorForm({
     onSettled: () => qc.invalidateQueries({ queryKey: ["resource-messages", id] }),
   });
 
+  // One UUID per pending "add step" attempt. Repeating an unknown add carries it
+  // again, so the server recognises the same step rather than appending a second.
+  const { operationId: addOperationId, renew: renewAddOperationId } = useOperationId();
+
   const addMutation = useMutation({
     mutationKey: saveKey,
     mutationFn: (type: MessageType) =>
-      api<ResourceMessage>("/messages", {
+      apiMutation<ResourceMessage>("/messages", {
         method: "POST",
+        operationId: addOperationId,
         body: JSON.stringify({
+          id: addOperationId,
           resourceId: id,
           type,
           ...(type === "text" ? { body: "New step — edit me." } : {}),
-          ...(type === "image" ? { mediaUrl: "https://placehold.co/600x400/0a0a0a/666?text=Upload+image" } : {}),
-          ...(type === "pdf" ? { mediaUrl: "https://placehold.co/600x400/0a0a0a/666?text=Upload+PDF" } : {}),
+          ...(type === "image" ? { mediaUrl: "https://placehold.co/600x400/EBE8DF/66665F?text=Upload+image" } : {}),
+          ...(type === "pdf" ? { mediaUrl: "https://placehold.co/600x400/EBE8DF/66665F?text=Upload+PDF" } : {}),
         }),
       }),
     onSuccess: (next) => {
+      renewAddOperationId();
       setItems((current) => [...current, next].sort((a, b) => a.order - b.order));
       qc.invalidateQueries({ queryKey: ["resource-messages", id] });
       qc.invalidateQueries({ queryKey: ["resources"] });
@@ -180,7 +212,7 @@ function SequenceEditorForm({
 
   const deleteMutation = useMutation({
     mutationKey: saveKey,
-    mutationFn: (mid: string) => api(`/messages/${mid}`, { method: "DELETE" }),
+    mutationFn: (mid: string) => apiMutation(`/messages/${mid}`, { method: "DELETE" }),
     onSuccess: (_result, mid) => {
       setItems((current) => current.filter((message) => message.id !== mid));
       qc.invalidateQueries({ queryKey: ["resource-messages", id] });
@@ -207,7 +239,7 @@ function SequenceEditorForm({
     <div className="space-y-6">
       <div className="flex items-start gap-3">
         <Button variant="ghost" size="icon" asChild>
-          <Link to="/sequences" aria-label="Back">
+          <Link to="/guides" aria-label="Back">
             <ArrowLeft className="size-4" />
           </Link>
         </Button>
@@ -225,10 +257,10 @@ function SequenceEditorForm({
                   renameMutation.mutate();
                 }
               }}
-              className="border-transparent bg-transparent px-0 text-xl font-semibold tracking-tight shadow-none focus-visible:ring-0"
-              placeholder="Sequence name"
+              className="h-auto border-transparent bg-transparent px-0 text-2xl font-medium tracking-tight focus-visible:ring-0"
+              placeholder="Guide name"
             />
-            {id && <SaveStatus sequenceId={id} />}
+            {id && <SaveStatus sequenceId={id} needsAttention={needsAttention} />}
           </div>
           <Textarea
             value={description}
@@ -239,8 +271,8 @@ function SequenceEditorForm({
               }
             }}
             rows={1}
-            placeholder="Internal note — what this sequence is for."
-            className="border-transparent bg-transparent px-0 text-sm text-muted-foreground shadow-none focus-visible:ring-0 resize-none"
+            placeholder="Internal note — what this guide is for."
+            className="resize-none border-transparent bg-transparent px-0 text-[13px] text-muted-foreground focus-visible:ring-0"
           />
         </div>
       </div>
@@ -248,9 +280,7 @@ function SequenceEditorForm({
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
         <div className="space-y-3">
           <div className="flex items-center justify-between">
-            <h3 className="text-sm font-medium uppercase tracking-wide text-muted-foreground">
-              Steps
-            </h3>
+            <h3 className="label-caps">Steps</h3>
             <div className="flex gap-1">
               {STEP_TYPES.map(({ value, label, icon: Icon }) => (
                 <Button
@@ -268,17 +298,13 @@ function SequenceEditorForm({
           </div>
 
           {items.length === 0 ? (
-            <Card>
-              <CardContent className="flex flex-col items-center gap-3 px-6 py-10 text-center">
-                <Plus className="size-5 text-muted-foreground" />
-                <div>
-                  <p className="text-sm font-medium">No steps yet</p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    Add a Text, Image, or PDF step to start building this sequence.
-                  </p>
-                </div>
-              </CardContent>
-            </Card>
+            <div className="border-t py-10 text-center">
+              <Plus className="mx-auto size-5 text-muted-foreground" aria-hidden />
+              <p className="mt-3 text-[13px] font-medium">No steps yet</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Add a Text, Image, or PDF step to start building this sequence.
+              </p>
+            </div>
           ) : (
             <DndContext
               sensors={sensors}
@@ -306,10 +332,8 @@ function SequenceEditorForm({
 
         <aside className="lg:sticky lg:top-4 self-start">
           <div className="mb-3 flex items-center justify-between">
-            <h3 className="text-sm font-medium uppercase tracking-wide text-muted-foreground">
-              Preview
-            </h3>
-            <span className="text-xs text-muted-foreground">After DONE reply</span>
+            <h3 className="label-caps">Preview</h3>
+            <span className="label-caps">After DONE reply</span>
           </div>
           <PhoneMockup steps={items} />
         </aside>
@@ -349,11 +373,12 @@ function SortableStep({
   };
   const qc = useQueryClient();
   const savedBody = useRef(step.body);
+  const [serverErrorCode, setServerErrorCode] = useState<string | null>(null);
 
   const patchMutation = useMutation({
     mutationKey: ["sequence-save", step.resourceId],
     mutationFn: (data: Partial<Pick<ResourceMessage, "body" | "mediaUrl">>) =>
-      api<ResourceMessage>(`/messages/${step.id}`, {
+      apiMutation<ResourceMessage>(`/messages/${step.id}`, {
         method: "PATCH",
         body: JSON.stringify(data),
       }),
@@ -361,12 +386,23 @@ function SortableStep({
       if (data.body !== undefined) savedBody.current = data.body ?? null;
       qc.invalidateQueries({ queryKey: ["resource-messages", step.resourceId] });
     },
-    onError: (err) =>
-      toast.error(err instanceof ApiError ? err.message : "Update failed"),
+    onError: (err) => {
+      if (apiErrorCode(err) === MESSAGE_BODY_TOO_LONG_ERROR) {
+        setServerErrorCode(MESSAGE_BODY_TOO_LONG_ERROR);
+        return;
+      }
+      toast.error(err instanceof ApiError ? err.message : "Update failed");
+    },
   });
 
   const Icon =
     step.type === "text" ? TypeIcon : step.type === "image" ? ImageIcon : FileText;
+
+  const body = step.body ?? "";
+  const codePoints = countInstagramCodePoints(body);
+  const overLimit = codePoints > INSTAGRAM_GUIDE_TEXT_LIMIT;
+  const warning = codePoints >= INSTAGRAM_GUIDE_WARNING_AT && !overLimit;
+  const hasLengthError = overLimit || serverErrorCode === MESSAGE_BODY_TOO_LONG_ERROR;
 
   return (
     <li ref={setNodeRef} style={style}>
@@ -382,14 +418,12 @@ function SortableStep({
             >
               <GripVertical className="size-4" />
             </button>
-            <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-brand-gradient/15 text-foreground">
+            <div className="flex size-7 shrink-0 items-center justify-center rounded-sm bg-signal-soft text-signal">
               <Icon className="size-4" />
             </div>
             <div className="min-w-0 flex-1 space-y-3">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-xs uppercase tracking-wide text-muted-foreground">
-                  Step {index + 1} · {step.type}
-                </span>
+                <span className="label-caps">Step {index + 1} · {step.type}</span>
                 <Button
                   size="icon"
                   variant="ghost"
@@ -416,15 +450,32 @@ function SortableStep({
               )}
 
               <div className="space-y-1.5">
-                <Label>
-                  {step.type === "text" ? "Message" : "Caption (optional)"}
-                </Label>
+                <div className="flex items-baseline justify-between gap-3">
+                  <Label>
+                    {step.type === "text" ? "Message" : "Caption (optional)"}
+                  </Label>
+                  <span
+                    className={cn(
+                      "label-caps tabular-nums",
+                      warning && "text-caution",
+                      overLimit && "text-urgent",
+                    )}
+                    aria-live="polite"
+                  >
+                    {codePoints.toLocaleString()} / {INSTAGRAM_GUIDE_TEXT_LIMIT.toLocaleString()} characters
+                  </span>
+                </div>
                 <Textarea
-                  value={step.body ?? ""}
-                  onChange={(e) => onChange({ ...step, body: e.target.value })}
+                  value={body}
+                  onChange={(e) => {
+                    if (serverErrorCode === MESSAGE_BODY_TOO_LONG_ERROR) {
+                      setServerErrorCode(null);
+                    }
+                    onChange({ ...step, body: e.target.value });
+                  }}
                   onBlur={() => {
-                    const value = step.body ?? "";
-                    const next = value.trim() ? value : null;
+                    if (overLimit) return;
+                    const next = body.trim() ? body : null;
                     if (next !== savedBody.current) patchMutation.mutate({ body: next });
                   }}
                   rows={step.type === "text" ? 3 : 2}
@@ -433,7 +484,17 @@ function SortableStep({
                       ? "What you want them to read."
                       : "Optional caption sent with the file."
                   }
+                  aria-invalid={hasLengthError || undefined}
+                  className={cn(
+                    warning && "border-caution",
+                    overLimit && "border-urgent",
+                  )}
                 />
+                {hasLengthError && (
+                  <p className="text-xs leading-relaxed text-urgent">
+                    {GUIDE_MESSAGE_LIMIT_GUIDANCE}
+                  </p>
+                )}
               </div>
             </div>
           </CardContent>

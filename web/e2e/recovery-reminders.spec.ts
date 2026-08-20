@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 /**
- * Browser coverage for the DM recovery lens.
+ * Browser coverage for the DM recovery destination.
  *
  * Only the HTTP boundary is mocked (see e2e/main.tsx) — the real page, the real
  * React Query cache, and the real components run, so a broken query key or a
@@ -9,8 +9,9 @@ import { expect, test } from "@playwright/test";
  */
 
 async function openRecovery(page: import("@playwright/test").Page, scenario: string) {
+  await page.clock.install({ time: new Date("2026-08-07T06:00:00.000Z") });
   await page.goto(`/e2e/index.html?scenario=${scenario}`);
-  await page.getByRole("button", { name: "DM recovery" }).click();
+  await expect(page.getByRole("heading", { name: "DM recovery" })).toBeVisible();
 }
 
 test.describe("timing experiment dashboard", () => {
@@ -105,18 +106,48 @@ test.describe("timing experiment dashboard", () => {
 });
 
 test.describe("evidence language", () => {
-  test("a ready reminder reports no confirmed read, never Unread", async ({ page }) => {
+  test("explains that recovery can automatically publish a public comment", async ({ page }) => {
     await openRecovery(page, "recovery-ready");
-    await page.getByRole("button", { name: /Ready/ }).click();
+    await expect(
+      page.getByText(/Tiny Soho may automatically post one public reminder/i),
+    ).toContainText("original Instagram comment");
+  });
+
+  test("a due reminder reports no confirmed read, never Unread", async ({ page }) => {
+    await openRecovery(page, "recovery-ready");
+    await page.getByRole("button", { name: /^Due:/ }).click();
 
     await expect(page.getByText("No confirmed read").first()).toBeVisible();
     // The claim the whole feature is built to avoid.
     await expect(page.getByText(/^Unread$/)).toHaveCount(0);
   });
 
+  test("a future reminder is visibly Scheduled", async ({ page }) => {
+    await openRecovery(page, "recovery-scheduled");
+    await page.getByRole("button", { name: /^Scheduled/ }).click();
+
+    await expect(page.getByRole("button", { name: /@sarah/ })).toContainText("Scheduled");
+  });
+
+  test("a claimed public-comment attempt is visibly Sending", async ({ page }) => {
+    await openRecovery(page, "recovery-sending");
+    await page.getByRole("button", { name: /^All/ }).click();
+
+    await expect(page.getByRole("button", { name: /@sarah/ })).toContainText("Sending");
+  });
+
+  test("a definitive rejection is visibly Failed", async ({ page }) => {
+    await openRecovery(page, "recovery-failed");
+    await page.getByRole("button", { name: /^Attention/ }).click();
+
+    await expect(page.getByRole("button", { name: /@sarah/ })).toContainText(
+      "Failed—public reminder not posted",
+    );
+  });
+
   test("the drawer explains why a receipt may be missing", async ({ page }) => {
     await openRecovery(page, "recovery-ready");
-    await page.getByRole("button", { name: /Ready/ }).click();
+    await page.getByRole("button", { name: /^Due:/ }).click();
     await page.getByRole("button", { name: /@sarah/ }).click();
 
     await expect(
@@ -140,7 +171,7 @@ test.describe("evidence language", () => {
   test("a reminder posted long after eligibility is marked late", async ({ page }) => {
     await openRecovery(page, "recovery-sent-late");
     await page.getByRole("button", { name: /^Sent/ }).click();
-    await expect(page.getByText("Reminder sent late after worker delay")).toBeVisible();
+    await expect(page.getByText("Sent publicly—late after worker delay")).toBeVisible();
   });
 
   test("a withheld control row says so explicitly", async ({ page }) => {
@@ -153,7 +184,7 @@ test.describe("evidence language", () => {
 
   test("a settings rejection takes trigger-specific copy", async ({ page }) => {
     await openRecovery(page, "recovery-settings");
-    await page.getByRole("button", { name: /Ready/ }).click();
+    await page.getByRole("button", { name: /^Due:/ }).click();
     await expect(page.getByText("Settings blocked")).toBeVisible();
   });
 
@@ -192,7 +223,7 @@ test.describe("the drawer", () => {
 
   test("links to the original post in a new tab", async ({ page }) => {
     await openRecovery(page, "recovery-ready");
-    await page.getByRole("button", { name: /Ready/ }).click();
+    await page.getByRole("button", { name: /^Due:/ }).click();
     await page.getByRole("button", { name: /@sarah/ }).click();
 
     const link = page.getByRole("dialog").getByRole("link", { name: "View post" });
@@ -202,7 +233,7 @@ test.describe("the drawer", () => {
 
   test("offers no way to force a send", async ({ page }) => {
     await openRecovery(page, "recovery-ready");
-    await page.getByRole("button", { name: /Ready/ }).click();
+    await page.getByRole("button", { name: /^Due:/ }).click();
     await page.getByRole("button", { name: /@sarah/ }).click();
 
     await expect(page.getByRole("button", { name: /send now/i })).toHaveCount(0);
@@ -212,12 +243,12 @@ test.describe("the drawer", () => {
 test.describe("owner actions", () => {
   test("cancelling posts, confirms, and refreshes the row", async ({ page }) => {
     await openRecovery(page, "recovery-ready");
-    await page.getByRole("button", { name: /Ready/ }).click();
+    await page.getByRole("button", { name: /^Due:/ }).click();
     await page.getByRole("button", { name: /@sarah/ }).click();
 
     await page.getByRole("button", { name: "Cancel reminder" }).click();
     await expect(
-      page.getByText(/cannot remove a comment that has already been posted/i),
+      page.getByText(/cannot remove a comment that Instagram already accepted/i),
     ).toBeVisible();
 
     await page.getByRole("button", { name: "Yes, cancel it" }).click();
@@ -232,7 +263,7 @@ test.describe("owner actions", () => {
 
   test("dismissing the dialog leaves the reminder alone", async ({ page }) => {
     await openRecovery(page, "recovery-ready");
-    await page.getByRole("button", { name: /Ready/ }).click();
+    await page.getByRole("button", { name: /^Due:/ }).click();
     await page.getByRole("button", { name: /@sarah/ }).click();
 
     await page.getByRole("button", { name: "Cancel reminder" }).click();
@@ -250,7 +281,7 @@ test.describe("owner actions", () => {
     await page.getByRole("button", { name: /Attention/ }).click();
     await page.getByRole("button", { name: /@sarah/ }).click();
 
-    await expect(page.getByText("Send outcome uncertain—check Instagram").first()).toBeVisible();
+    await expect(page.getByText("Outcome uncertain—check Instagram").first()).toBeVisible();
 
     await page.getByRole("button", { name: "Mark reviewed" }).click();
 
@@ -270,25 +301,8 @@ test.describe("health and the rest of the page", () => {
       ),
     ).toBeVisible();
     await expect(page.getByText(/auth_or_permission/)).toBeVisible();
-    await page.getByRole("button", { name: /Ready/ }).click();
+    await page.getByRole("button", { name: /^Due:/ }).click();
     await expect(page.getByRole("button", { name: /@sarah/ })).toBeVisible();
   });
 
-  test("the legacy lenses still work after visiting recovery", async ({ page }) => {
-    await page.goto("/e2e/index.html?scenario=recovery-ready");
-    await page.getByRole("button", { name: "DM recovery" }).click();
-    await page.getByRole("button", { name: /Ready/ }).click();
-
-    await page.getByRole("button", { name: "Needs reply" }).click();
-    await expect(page.getByRole("button", { name: "DM recovery" })).toBeVisible();
-
-    await page.getByRole("button", { name: "DMs" }).click();
-    await expect(page.getByRole("button", { name: "Needs reply" })).toBeVisible();
-  });
-
-  test("an expired journey no longer claims the person never replied", async ({ page }) => {
-    await page.goto("/e2e/index.html?scenario=recovery-ready");
-    await expect(page.getByRole("button", { name: /No confirmed reply/ })).toBeVisible();
-    await expect(page.getByRole("button", { name: /^No reply/ })).toHaveCount(0);
-  });
 });

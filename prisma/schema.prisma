@@ -33,6 +33,7 @@ model Keyword {
   journeyIntents      JourneyIntent[]
   recoveryCandidates  RecoveryCandidate[]
   selectionExclusions RecoverySelectionExclusion[]
+  upcomingAutomations UpcomingAutomation[]
 
   @@unique([keyword, mediaId])
   // The cold-DM fallback ranks post-scoped candidates for one word by post date.
@@ -69,11 +70,50 @@ model Resource {
   ageMaxMonths Int?     @map("age_max_months")
   createdAt    DateTime @default(now()) @map("created_at")
 
-  messages ResourceMessage[]
-  keywords Keyword[]
+  messages            ResourceMessage[]
+  keywords            Keyword[]
+  guideDeliveries     GuideDelivery[]
+  upcomingAutomations UpcomingAutomation[]
 
   @@index([theme, ageMinMonths, ageMaxMonths])
   @@map("resources")
+}
+
+enum UpcomingAutomationStatus {
+  waiting
+  bound
+  needs_attention
+  cancelled
+
+  @@map("upcoming_automation_status")
+}
+
+model UpcomingAutomation {
+  id             String                   @id @default(uuid()) @db.Uuid
+  triggerWord    String                   @map("trigger_word")
+  resourceId     String                   @map("resource_id") @db.Uuid
+  publicReply    String                   @map("public_reply")
+  gateMessage    String                   @map("gate_message")
+  active         Boolean                  @default(true)
+  status         UpcomingAutomationStatus @default(waiting)
+  matchedMediaId String?                  @map("matched_media_id")
+  keywordId      String?                  @map("keyword_id") @db.Uuid
+  errorCode      String?                  @map("error_code")
+  createdBy      String                   @map("created_by")
+  lastAttemptAt  DateTime?                @map("last_attempt_at") @db.Timestamptz(3)
+  retriedAt      DateTime?                @map("retried_at") @db.Timestamptz(3)
+  boundAt        DateTime?                @map("bound_at") @db.Timestamptz(3)
+  cancelledAt    DateTime?                @map("cancelled_at") @db.Timestamptz(3)
+  createdAt      DateTime                 @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  resource Resource @relation(fields: [resourceId], references: [id], onDelete: Restrict)
+  keyword  Keyword? @relation(fields: [keywordId], references: [id], onDelete: SetNull)
+
+  @@index([resourceId])
+  @@index([keywordId])
+  @@index([status, createdAt])
+  @@map("upcoming_automations")
 }
 
 enum ResourceMessageType {
@@ -100,7 +140,8 @@ model ResourceMessage {
   // transcribed, which is the backlog query.
   altText    String?             @map("alt_text")
 
-  resource Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  resource      Resource            @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  deliveryUnits GuideDeliveryUnit[]
 
   @@unique([resourceId, order])
   @@map("resource_messages")
@@ -147,6 +188,7 @@ model Conversation {
   ownedIntents       JourneyIntent[]      @relation("IntentCanonicalConversation")
   journeyTriggers    JourneyTrigger[]
   recoveryCandidates RecoveryCandidate[]
+  guideDeliveries    GuideDelivery[]
 
   @@index([igUserId, state])
   @@index([state, createdAt])
@@ -182,11 +224,11 @@ model IgUser {
   // not measured geography — Meta gives no per-user country. Confidence is low
   // for Latin-script South Asian names a token match can miss; method records
   // how it was derived so a later bio pass can upgrade name-only guesses.
-  inferredOrigin   String?   @map("inferred_origin") // us_western | south_asian | other | unknown
-  originConfidence String?   @map("origin_confidence") // high | low
-  originMethod     String?   @map("origin_method") // classifier/prompt version, e.g. llm_v2
-  originEvidence   String?   @map("origin_evidence") // the token/script/bio that drove it
-  originCheckedAt  DateTime? @map("origin_checked_at")
+  inferredOrigin   String?                    @map("inferred_origin") // us_western | south_asian | other | unknown
+  originConfidence String?                    @map("origin_confidence") // high | low
+  originMethod     String?                    @map("origin_method") // classifier/prompt version, e.g. llm_v2
+  originEvidence   String?                    @map("origin_evidence") // the token/script/bio that drove it
+  originCheckedAt  DateTime?                  @map("origin_checked_at")
   audienceSegment  HistoricalAudienceSegment? @map("audience_segment")
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -300,7 +342,14 @@ model ReelPerformanceSnapshot {
   saved              Int?
   totalInteractions  Int?     @map("total_interactions")
   avgWatchTimeMs     Int?     @map("avg_watch_time_ms") // ig_reels_avg_watch_time
-  videoViewTotalTime Int?     @map("video_view_total_time") // ig_reels_video_view_total_time
+  // BIGINT, not INT4. This is CUMULATIVE watch time in milliseconds across a
+  // reel's whole life, so it grows without bound while the reel keeps being
+  // watched — a 140k-reach reel crosses INT4's 2,147,483,647 ceiling in about
+  // seven weeks. Postgres then rejects the INSERT, and because every metric for
+  // that reel shares one row, the reel silently stops being measured at all:
+  // views, reach, likes, the lot. It cost this account its three biggest reels
+  // for 25-47 days before a manual snapshot run surfaced the error.
+  videoViewTotalTime BigInt?  @map("video_view_total_time") // ig_reels_video_view_total_time
   skipRate           Float?   @map("skip_rate") // reels_skip_rate
   raw                Json? // full payload incl. which metrics 400'd
 
@@ -385,6 +434,51 @@ model GeoDemographicSnapshot {
 
   @@index([stage, capturedAt])
   @@map("geo_demographic_snapshot")
+}
+
+// The account's TRUE follower total, captured on every snapshot tick.
+//
+// GeoDemographicSnapshot cannot carry this job. follower_demographics counts only
+// the followers Meta HAS demographic data for, inside its top ~45 countries, and
+// Meta refreshes it on its own irregular schedule — so diffing it both
+// undercounts real growth and collapses several calendar days into one bar when
+// a refresh is skipped. followers_count has neither problem: it is the live
+// number Instagram shows on the profile, with no top-N cutoff and no ~48h
+// demographics lag, so consecutive daily rows give an EXACT net-add series.
+//
+// Deliberately its own table rather than a column on GeoDemographicSnapshot:
+// that table writes one row PER STAGE per run, and this figure is account-wide.
+model FollowerTotalSnapshot {
+  id             String   @id @default(uuid()) @db.Uuid
+  capturedAt     DateTime @default(now()) @map("captured_at") @db.Timestamptz(3)
+  followersTotal Int      @map("followers_total")
+
+  @@index([capturedAt])
+  @@map("follower_total_snapshot")
+}
+
+// Meta's daily follows/unfollows ledger (`follows_and_unfollows`), one row per
+// Pacific analytics day.
+//
+// followers_count answers "how many net" exactly; only this answers "out of how
+// many gained and how many lost". A day that gained 400 and lost 380 is
+// indistinguishable from one that gained 20 in the net figure, and they are very
+// different days.
+//
+// Unlike followers_count this IS backfillable — the metric answers historical
+// since/until windows — so the worker fills gaps behind itself instead of only
+// capturing forward. `status` follows FeedFollowDailySnapshot's pattern: a day
+// Meta declines to answer is RECORDED as unavailable rather than left missing,
+// so the backfill does not re-request it on every tick forever.
+model FollowerChurnDaySnapshot {
+  day        DateTime @id @db.Date
+  follows    Int?
+  unfollows  Int?
+  status     String // ok | unavailable
+  capturedAt DateTime @default(now()) @map("captured_at") @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("follower_churn_day_snapshot")
 }
 
 // Gemini analysis queue. Queue state kept separate from the result (same reason
@@ -520,8 +614,9 @@ model DmThread {
   createdAt              DateTime  @default(now()) @map("created_at")
   updatedAt              DateTime  @updatedAt @map("updated_at")
 
-  messages DmMessage[]
-  drafts   ReplyDraft[]
+  messages        DmMessage[]
+  drafts          ReplyDraft[]
+  guideDeliveries GuideDelivery[]
 
   @@unique([igAccountId, igUserId])
   @@index([needsReply, lastInboundAt])
@@ -561,6 +656,134 @@ model DmMessage {
   @@index([direction, instagramTimestamp])
   @@index([direction, campaignHealthCapturedAt, campaignHealthNextAttemptAt])
   @@map("dm_message")
+}
+
+// ── Durable Guide Delivery ─────────────────────────────────────────────────
+
+enum GuideDeliveryTriggerKind {
+  inbound_reply
+  explicit_redelivery
+  follow_recovery
+
+  @@map("guide_delivery_trigger_kind")
+}
+
+enum GuideDeliveryStatus {
+  planned
+  sending
+  failed
+  needs_review
+  completed
+  cancelled
+
+  @@map("guide_delivery_status")
+}
+
+enum GuideDeliveryUnitOrigin {
+  resource_step
+  redelivery_intro
+
+  @@map("guide_delivery_unit_origin")
+}
+
+enum GuideDeliveryUnitKind {
+  text
+  image
+  file
+
+  @@map("guide_delivery_unit_kind")
+}
+
+enum GuideDeliveryUnitStatus {
+  pending
+  sending
+  sent
+  retryable
+  failed
+  uncertain
+  cancelled
+
+  @@map("guide_delivery_unit_status")
+}
+
+enum GuideDeliveryFailureDisposition {
+  transient
+  permanent
+
+  @@map("guide_delivery_failure_disposition")
+}
+
+model GuideDelivery {
+  id                  String                   @id @default(uuid()) @db.Uuid
+  conversationId      String                   @map("conversation_id") @db.Uuid
+  resourceId          String                   @map("resource_id") @db.Uuid
+  threadId            String?                  @map("thread_id") @db.Uuid
+  triggerKind         GuideDeliveryTriggerKind @map("trigger_kind")
+  triggerId           String                   @map("trigger_id") @db.Uuid
+  triggeredAt         DateTime                 @map("triggered_at") @db.Timestamptz(3)
+  sendWindowExpiresAt DateTime                 @map("send_window_expires_at") @db.Timestamptz(3)
+  followerAtTrigger   Boolean?                 @map("follower_at_trigger")
+  status              GuideDeliveryStatus      @default(planned)
+  // Whole-plan preflight failures use the approved stable code `invalid_plan`.
+  failureCode         String?                  @map("failure_code")
+  nextAttemptAt       DateTime?                @map("next_attempt_at") @db.Timestamptz(3)
+  claimToken          String?                  @unique(map: "guide_delivery_claim_token_key") @map("claim_token") @db.Uuid
+  claimedAt           DateTime?                @map("claimed_at") @db.Timestamptz(3)
+  claimExpiresAt      DateTime?                @map("claim_expires_at") @db.Timestamptz(3)
+  startedAt           DateTime?                @map("started_at") @db.Timestamptz(3)
+  completedAt         DateTime?                @map("completed_at") @db.Timestamptz(3)
+  cancelledAt         DateTime?                @map("cancelled_at") @db.Timestamptz(3)
+  createdAt           DateTime                 @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt           DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  conversation Conversation        @relation(fields: [conversationId], references: [id], onDelete: Restrict)
+  resource     Resource            @relation(fields: [resourceId], references: [id], onDelete: Restrict)
+  thread       DmThread?           @relation(fields: [threadId], references: [id], onDelete: SetNull)
+  units        GuideDeliveryUnit[]
+
+  @@unique([triggerKind, triggerId])
+  @@index([conversationId])
+  @@index([resourceId])
+  @@index([threadId])
+  // Queue/review indexes are partial and live only in the hand-authored SQL migration.
+  @@map("guide_delivery")
+}
+
+model GuideDeliveryUnit {
+  id                     String                           @id @default(uuid()) @db.Uuid
+  deliveryId             String                           @map("delivery_id") @db.Uuid
+  resourceMessageId      String?                          @map("resource_message_id") @db.Uuid
+  position               Int
+  origin                 GuideDeliveryUnitOrigin
+  kind                   GuideDeliveryUnitKind
+  textSnapshot           String?                          @map("text_snapshot")
+  mediaUrlSnapshot       String?                          @map("media_url_snapshot")
+  contentFingerprint     String                           @map("content_fingerprint") @db.Char(64)
+  status                 GuideDeliveryUnitStatus          @default(pending)
+  failureDisposition     GuideDeliveryFailureDisposition? @map("failure_disposition")
+  providerMessageId      String?                          @map("provider_message_id")
+  attempts               Int                              @default(0)
+  sendingAt              DateTime?                        @map("sending_at") @db.Timestamptz(3)
+  sentAt                 DateTime?                        @map("sent_at") @db.Timestamptz(3)
+  ownerConfirmedAt       DateTime?                        @map("owner_confirmed_at") @db.Timestamptz(3)
+  ownerRetryAuthorizedAt DateTime?                        @map("owner_retry_authorized_at") @db.Timestamptz(3)
+  ownerRetryConsumedAt   DateTime?                        @map("owner_retry_consumed_at") @db.Timestamptz(3)
+  errorCategory          String?                          @map("error_category")
+  errorHttpStatus        Int?                             @map("error_http_status")
+  errorGraphCode         Int?                             @map("error_graph_code")
+  errorGraphSubcode      Int?                             @map("error_graph_subcode")
+  errorTraceId           String?                          @map("error_trace_id")
+  errorTransportCode     String?                          @map("error_transport_code")
+  createdAt              DateTime                         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt              DateTime                         @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  delivery        GuideDelivery    @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  resourceMessage ResourceMessage? @relation(fields: [resourceMessageId], references: [id], onDelete: SetNull)
+
+  @@unique([deliveryId, position])
+  @@index([resourceMessageId])
+  @@index([deliveryId, status, position])
+  @@map("guide_delivery_unit")
 }
 
 // One versioned AI suggestion for one inbound message.
@@ -677,72 +900,72 @@ enum DmRecoveryTimingArm {
 }
 
 model DmRecoveryReminder {
-  id                       String                @id @default(uuid()) @db.Uuid
-  conversationId           String                @map("conversation_id") @db.Uuid
-  igUserId                 String                @map("ig_user_id")
-  keywordId                String                @map("keyword_id") @db.Uuid
-  keywordSnapshot          String                @map("keyword_snapshot")
-  templateVersion          String                @map("template_version")
-  publicReplyText          String                @map("public_reply_text")
-  commentId                String                @unique @map("comment_id")
-  mediaId                  String?               @map("media_id")
-  gateDmMessageId          String?               @map("gate_dm_message_id") @db.Uuid
-  instagramGateMessageId   String?               @unique @map("instagram_gate_message_id")
-  triggerKind              DmRecoveryTriggerKind @map("trigger_kind")
-  status                   DmRecoveryStatus
-  cohort                   DmRecoveryCohort
-  experimentVersionSnapshot String?              @map("experiment_version_snapshot")
-  timingArm                DmRecoveryTimingArm?   @map("timing_arm")
-  acceptedAt               DateTime?             @map("accepted_at") @db.Timestamptz(3)
-  eligibleAt               DateTime              @map("eligible_at") @db.Timestamptz(3)
-  seenAt                   DateTime?             @map("seen_at") @db.Timestamptz(3)
-  seenReceivedAt           DateTime?             @map("seen_received_at") @db.Timestamptz(3)
-  engagedAt                DateTime?             @map("engaged_at") @db.Timestamptz(3)
-  engagedReceivedAt        DateTime?             @map("engaged_received_at") @db.Timestamptz(3)
-  firstEngagementKind      String?               @map("first_engagement_kind")
-  repliedAt                DateTime?             @map("replied_at") @db.Timestamptz(3)
-  repliedReceivedAt        DateTime?             @map("replied_received_at") @db.Timestamptz(3)
-  reactedAt                DateTime?             @map("reacted_at") @db.Timestamptz(3)
-  postbackAt               DateTime?             @map("postback_at") @db.Timestamptz(3)
-  suppressedAt             DateTime?             @map("suppressed_at") @db.Timestamptz(3)
-  suppressionReason        String?               @map("suppression_reason")
-  claimedAt                DateTime?             @map("claimed_at") @db.Timestamptz(3)
-  claimExpiresAt           DateTime?             @map("claim_expires_at") @db.Timestamptz(3)
+  id                          String                @id @default(uuid()) @db.Uuid
+  conversationId              String                @map("conversation_id") @db.Uuid
+  igUserId                    String                @map("ig_user_id")
+  keywordId                   String                @map("keyword_id") @db.Uuid
+  keywordSnapshot             String                @map("keyword_snapshot")
+  templateVersion             String                @map("template_version")
+  publicReplyText             String                @map("public_reply_text")
+  commentId                   String                @unique @map("comment_id")
+  mediaId                     String?               @map("media_id")
+  gateDmMessageId             String?               @map("gate_dm_message_id") @db.Uuid
+  instagramGateMessageId      String?               @unique @map("instagram_gate_message_id")
+  triggerKind                 DmRecoveryTriggerKind @map("trigger_kind")
+  status                      DmRecoveryStatus
+  cohort                      DmRecoveryCohort
+  experimentVersionSnapshot   String?               @map("experiment_version_snapshot")
+  timingArm                   DmRecoveryTimingArm?  @map("timing_arm")
+  acceptedAt                  DateTime?             @map("accepted_at") @db.Timestamptz(3)
+  eligibleAt                  DateTime              @map("eligible_at") @db.Timestamptz(3)
+  seenAt                      DateTime?             @map("seen_at") @db.Timestamptz(3)
+  seenReceivedAt              DateTime?             @map("seen_received_at") @db.Timestamptz(3)
+  engagedAt                   DateTime?             @map("engaged_at") @db.Timestamptz(3)
+  engagedReceivedAt           DateTime?             @map("engaged_received_at") @db.Timestamptz(3)
+  firstEngagementKind         String?               @map("first_engagement_kind")
+  repliedAt                   DateTime?             @map("replied_at") @db.Timestamptz(3)
+  repliedReceivedAt           DateTime?             @map("replied_received_at") @db.Timestamptz(3)
+  reactedAt                   DateTime?             @map("reacted_at") @db.Timestamptz(3)
+  postbackAt                  DateTime?             @map("postback_at") @db.Timestamptz(3)
+  suppressedAt                DateTime?             @map("suppressed_at") @db.Timestamptz(3)
+  suppressionReason           String?               @map("suppression_reason")
+  claimedAt                   DateTime?             @map("claimed_at") @db.Timestamptz(3)
+  claimExpiresAt              DateTime?             @map("claim_expires_at") @db.Timestamptz(3)
   /// Fences every authorization and finalizer. An expired worker cannot act on a
   /// reminder after lease reconciliation hands ownership to somebody else.
-  claimToken               String?               @unique(map: "dm_recovery_reminder_claim_token_key") @map("claim_token") @db.Uuid
-  nextAttemptAt            DateTime?             @map("next_attempt_at") @db.Timestamptz(3)
-  attempts                 Int                   @default(0)
-  lastAttemptAt            DateTime?             @map("last_attempt_at") @db.Timestamptz(3)
-  publicReplyId            String?               @map("public_reply_id")
-  sentAt                   DateTime?             @map("sent_at") @db.Timestamptz(3)
-  lastErrorCategory        String?               @map("last_error_category")
+  claimToken                  String?               @unique(map: "dm_recovery_reminder_claim_token_key") @map("claim_token") @db.Uuid
+  nextAttemptAt               DateTime?             @map("next_attempt_at") @db.Timestamptz(3)
+  attempts                    Int                   @default(0)
+  lastAttemptAt               DateTime?             @map("last_attempt_at") @db.Timestamptz(3)
+  publicReplyId               String?               @map("public_reply_id")
+  sentAt                      DateTime?             @map("sent_at") @db.Timestamptz(3)
+  lastErrorCategory           String?               @map("last_error_category")
   /// QA-17 evidence is frozen when a settings-blocked reminder is created.
   /// Rows that pre-date the registry are explicitly marked legacy; new rows
   /// cannot use that escape hatch.
-  settingsEvidenceLegacy       Boolean                      @default(false) @map("settings_evidence_legacy")
-  settingsVerificationId       String?                      @map("settings_verification_id") @db.Uuid
-  settingsVerificationVersion  String?                      @map("settings_verification_version")
-  settingsGraphCode            Int?                         @map("settings_graph_code")
-  settingsGraphSubcode         Int?                         @map("settings_graph_subcode")
-  settingsClassifiedAt         DateTime?                    @map("settings_classified_at") @db.Timestamptz(3)
-  settingsEvidenceReference    String?                      @map("settings_evidence_reference")
-  settingsEvidenceSha256       String?                      @map("settings_evidence_sha256") @db.Char(64)
+  settingsEvidenceLegacy      Boolean               @default(false) @map("settings_evidence_legacy")
+  settingsVerificationId      String?               @map("settings_verification_id") @db.Uuid
+  settingsVerificationVersion String?               @map("settings_verification_version")
+  settingsGraphCode           Int?                  @map("settings_graph_code")
+  settingsGraphSubcode        Int?                  @map("settings_graph_subcode")
+  settingsClassifiedAt        DateTime?             @map("settings_classified_at") @db.Timestamptz(3)
+  settingsEvidenceReference   String?               @map("settings_evidence_reference")
+  settingsEvidenceSha256      String?               @map("settings_evidence_sha256") @db.Char(64)
   // Frozen at creation. `ig_users.inferred_origin` is mutable — retired when the
   // name changes, rewritten by the enrichment worker — so the live value cannot
   // reconstruct which population a row belonged to. Control rows especially:
   // they are terminal at creation and never run the origin check at all.
-  audienceOrigin           String?               @map("audience_origin")
-  audienceOriginConfidence String?               @map("audience_origin_confidence")
-  reviewedAt               DateTime?             @map("reviewed_at") @db.Timestamptz(3)
-  cancelledAt              DateTime?             @map("cancelled_at") @db.Timestamptz(3)
-  createdAt                DateTime              @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt                DateTime              @updatedAt @map("updated_at") @db.Timestamptz(3)
+  audienceOrigin              String?               @map("audience_origin")
+  audienceOriginConfidence    String?               @map("audience_origin_confidence")
+  reviewedAt                  DateTime?             @map("reviewed_at") @db.Timestamptz(3)
+  cancelledAt                 DateTime?             @map("cancelled_at") @db.Timestamptz(3)
+  createdAt                   DateTime              @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                   DateTime              @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  conversation  Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  igUser        IgUser       @relation(fields: [igUserId], references: [id], onDelete: Cascade)
-  keyword       Keyword      @relation(fields: [keywordId], references: [id], onDelete: Restrict)
-  gateDmMessage DmMessage?   @relation(fields: [gateDmMessageId], references: [id], onDelete: SetNull)
+  conversation         Conversation                 @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  igUser               IgUser                       @relation(fields: [igUserId], references: [id], onDelete: Cascade)
+  keyword              Keyword                      @relation(fields: [keywordId], references: [id], onDelete: Restrict)
+  gateDmMessage        DmMessage?                   @relation(fields: [gateDmMessageId], references: [id], onDelete: SetNull)
   settingsVerification SettingsBlockedVerification? @relation(fields: [settingsVerificationId, settingsVerificationVersion, settingsGraphCode, settingsGraphSubcode], references: [id, version, graphCode, graphSubcode], onDelete: Restrict, map: "dm_recovery_reminder_settings_verification_identity_fkey")
 
   @@index([status, eligibleAt, nextAttemptAt])
@@ -955,28 +1178,28 @@ model JourneySourceEvent {
 /// One source-event-to-intent association. Retained for audit even when it drove
 /// no automation, so aliases and distinct keyword matches are never lost.
 model JourneyTrigger {
-  id             String   @id @default(uuid()) @db.Uuid
-  sourceEventId  String   @map("source_event_id") @db.Uuid
+  id                           String                            @id @default(uuid()) @db.Uuid
+  sourceEventId                String                            @map("source_event_id") @db.Uuid
   /// The best-effort legacy event-log observation used to reconstruct this
   /// association. Null for live rows when event logging was unavailable.
-  sourceEventLogId String? @map("source_event_log_id") @db.Uuid
-  intentId       String   @map("intent_id") @db.Uuid
-  keywordId      String   @map("keyword_id") @db.Uuid
+  sourceEventLogId             String?                           @map("source_event_log_id") @db.Uuid
+  intentId                     String                            @map("intent_id") @db.Uuid
+  keywordId                    String                            @map("keyword_id") @db.Uuid
   /// Nullable: a replayed comment attaches to an intent without opening a conversation.
-  conversationId String?                   @map("conversation_id") @db.Uuid
-  receivedAt     DateTime                  @map("received_at") @db.Timestamptz(3)
-  triggerKind    String                    @map("trigger_kind")
-  disposition    JourneyTriggerDisposition
-  publicAcknowledgementState JourneyPublicAcknowledgementState @default(pending) @map("public_acknowledgement_state")
-  acknowledgementReplyId String? @map("acknowledgement_reply_id")
-  acknowledgementErrorCategory String? @map("acknowledgement_error_category")
-  createdAt      DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt      DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  conversationId               String?                           @map("conversation_id") @db.Uuid
+  receivedAt                   DateTime                          @map("received_at") @db.Timestamptz(3)
+  triggerKind                  String                            @map("trigger_kind")
+  disposition                  JourneyTriggerDisposition
+  publicAcknowledgementState   JourneyPublicAcknowledgementState @default(pending) @map("public_acknowledgement_state")
+  acknowledgementReplyId       String?                           @map("acknowledgement_reply_id")
+  acknowledgementErrorCategory String?                           @map("acknowledgement_error_category")
+  createdAt                    DateTime                          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                    DateTime                          @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  sourceEvent  JourneySourceEvent @relation(fields: [sourceEventId], references: [id], onDelete: Restrict)
-  sourceEventLog EventLog? @relation("JourneyTriggerSourceLog", fields: [sourceEventLogId], references: [id], onDelete: SetNull)
-  intent       JourneyIntent @relation(fields: [intentId, keywordId], references: [id, keywordId], onDelete: Cascade)
-  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  sourceEvent    JourneySourceEvent @relation(fields: [sourceEventId], references: [id], onDelete: Restrict)
+  sourceEventLog EventLog?          @relation("JourneyTriggerSourceLog", fields: [sourceEventLogId], references: [id], onDelete: SetNull)
+  intent         JourneyIntent      @relation(fields: [intentId, keywordId], references: [id, keywordId], onDelete: Cascade)
+  conversation   Conversation?      @relation(fields: [conversationId], references: [id], onDelete: SetNull)
 
   @@unique([sourceEventId, intentId], map: "journey_trigger_source_intent_key")
   @@unique([sourceEventId, keywordId], map: "journey_trigger_source_keyword_key")
@@ -985,22 +1208,22 @@ model JourneyTrigger {
 }
 
 model JourneyReconciliationRun {
-  id                    String   @id @default(uuid()) @db.Uuid
-  sourceCutoff          DateTime @map("source_cutoff") @db.Timestamptz(3)
-  queryVersion          String   @map("query_version")
+  id                    String    @id @default(uuid()) @db.Uuid
+  sourceCutoff          DateTime  @map("source_cutoff") @db.Timestamptz(3)
+  queryVersion          String    @map("query_version")
   mode                  String
   status                String
-  approvedManifestRunId String?  @map("approved_manifest_run_id") @db.Uuid
-  resumePosition        Int      @default(0) @map("resume_position")
-  resumeCursor          String?  @map("resume_cursor")
-  startedAt             DateTime @default(now()) @map("started_at") @db.Timestamptz(3)
+  approvedManifestRunId String?   @map("approved_manifest_run_id") @db.Uuid
+  resumePosition        Int       @default(0) @map("resume_position")
+  resumeCursor          String?   @map("resume_cursor")
+  startedAt             DateTime  @default(now()) @map("started_at") @db.Timestamptz(3)
   completedAt           DateTime? @map("completed_at") @db.Timestamptz(3)
-  lastError             String?  @map("last_error")
-  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt             DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  lastError             String?   @map("last_error")
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt             DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  approvedManifest JourneyReconciliationRun?  @relation("ApprovedJourneyManifest", fields: [approvedManifestRunId], references: [id], onDelete: Restrict)
-  writeRuns        JourneyReconciliationRun[]  @relation("ApprovedJourneyManifest")
+  approvedManifest JourneyReconciliationRun?     @relation("ApprovedJourneyManifest", fields: [approvedManifestRunId], references: [id], onDelete: Restrict)
+  writeRuns        JourneyReconciliationRun[]    @relation("ApprovedJourneyManifest")
   windows          JourneyReconciliationWindow[]
 
   @@index([mode, status, createdAt])
@@ -1108,47 +1331,47 @@ enum HistoricalAudienceSegment {
 /// complete), so a campaign that re-selected mid-send could contact somebody the
 /// owner never approved.
 model RecoveryCampaign {
-  id                       String                @id @default(uuid()) @db.Uuid
+  id                       String                     @id @default(uuid()) @db.Uuid
   phase                    RecoveryCampaignPhase
-  state                    RecoveryCampaignState @default(draft)
+  state                    RecoveryCampaignState      @default(draft)
   /// Which selector produced this list. Editing filters creates a new version
   /// rather than mutating an approved snapshot.
-  selectionVersion         String                @map("selection_version")
+  selectionVersion         String                     @map("selection_version")
   /// No candidate may be drawn from data after this instant, so re-running the
   /// same version reproduces the same list.
-  sourceDataCutoff         DateTime              @map("source_data_cutoff") @db.Timestamptz(3)
-  commentFrom              DateTime?             @map("comment_from") @db.Timestamptz(3)
-  commentTo                DateTime?             @map("comment_to") @db.Timestamptz(3)
-  selectionLimit           Int?                  @map("selection_limit")
-  holdoutPercent           Int                   @default(50) @map("holdout_percent")
-  copyVersion              String                @map("copy_version")
-  batchSize                Int                   @default(1) @map("batch_size")
-  hourlyCap                Int                   @default(3) @map("hourly_cap")
-  dailyCap                 Int                   @default(10) @map("daily_cap")
-  candidateCount           Int                   @default(0) @map("candidate_count")
-  excludedCount            Int                   @default(0) @map("excluded_count")
+  sourceDataCutoff         DateTime                   @map("source_data_cutoff") @db.Timestamptz(3)
+  commentFrom              DateTime?                  @map("comment_from") @db.Timestamptz(3)
+  commentTo                DateTime?                  @map("comment_to") @db.Timestamptz(3)
+  selectionLimit           Int?                       @map("selection_limit")
+  holdoutPercent           Int                        @default(50) @map("holdout_percent")
+  copyVersion              String                     @map("copy_version")
+  batchSize                Int                        @default(1) @map("batch_size")
+  hourlyCap                Int                        @default(3) @map("hourly_cap")
+  dailyCap                 Int                        @default(10) @map("daily_cap")
+  candidateCount           Int                        @default(0) @map("candidate_count")
+  excludedCount            Int                        @default(0) @map("excluded_count")
   /// Hash of the normalized selector configuration. Null only on legacy campaigns;
   /// new approval requires it and the database rejects a duplicate selection identity.
-  selectionFingerprint     String?               @unique(map: "recovery_campaign_selection_fingerprint_key") @map("selection_fingerprint")
-  eligibilityPolicyVersion String?               @map("eligibility_policy_version")
-  westernOnly              Boolean?              @map("western_only")
-  inboundWindowHours       Int                   @default(24) @map("inbound_window_hours")
-  completionWindowHours    Int                   @default(48) @map("completion_window_hours")
+  selectionFingerprint     String?                    @unique(map: "recovery_campaign_selection_fingerprint_key") @map("selection_fingerprint")
+  eligibilityPolicyVersion String?                    @map("eligibility_policy_version")
+  westernOnly              Boolean?                   @map("western_only")
+  inboundWindowHours       Int                        @default(24) @map("inbound_window_hours")
+  completionWindowHours    Int                        @default(48) @map("completion_window_hours")
   /// Canonical hash of every decision this selection made (QA-14). Two selections over
   /// the same cutoff and filters must agree; a different hash means the data moved.
   /// Null on campaigns created before the decision set was recorded.
-  decisionHash             String?               @map("decision_hash")
+  decisionHash             String?                    @map("decision_hash")
   audienceSegment          HistoricalAudienceSegment? @map("audience_segment")
-  rolloutGroupId           String?               @map("rollout_group_id") @db.Uuid
-  rolloutGroupHourlyCap    Int?                  @map("rollout_group_hourly_cap")
-  approvedBy               String?               @map("approved_by")
-  approvedAt               DateTime?             @map("approved_at") @db.Timestamptz(3)
-  startedAt                DateTime?             @map("started_at") @db.Timestamptz(3)
-  pausedAt                 DateTime?             @map("paused_at") @db.Timestamptz(3)
-  pauseReason              String?               @map("pause_reason")
-  endedAt                  DateTime?             @map("ended_at") @db.Timestamptz(3)
-  createdAt                DateTime              @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt                DateTime              @updatedAt @map("updated_at") @db.Timestamptz(3)
+  rolloutGroupId           String?                    @map("rollout_group_id") @db.Uuid
+  rolloutGroupHourlyCap    Int?                       @map("rollout_group_hourly_cap")
+  approvedBy               String?                    @map("approved_by")
+  approvedAt               DateTime?                  @map("approved_at") @db.Timestamptz(3)
+  startedAt                DateTime?                  @map("started_at") @db.Timestamptz(3)
+  pausedAt                 DateTime?                  @map("paused_at") @db.Timestamptz(3)
+  pauseReason              String?                    @map("pause_reason")
+  endedAt                  DateTime?                  @map("ended_at") @db.Timestamptz(3)
+  createdAt                DateTime                   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   candidates               RecoveryCandidate[]
   exclusions               RecoverySelectionExclusion[]
@@ -1227,60 +1450,60 @@ model RecoverySelectionExclusion {
 
 /// One person a campaign may contact, frozen at selection time.
 model RecoveryCandidate {
-  id                       String                   @id @default(uuid()) @db.Uuid
-  campaignId               String                   @map("campaign_id") @db.Uuid
+  id                       String                     @id @default(uuid()) @db.Uuid
+  campaignId               String                     @map("campaign_id") @db.Uuid
   /// Denormalised from the campaign so a CHECK can enforce that evidence matches the
   /// phase. A trigger keeps it equal to the campaign's own phase.
-  campaignPhase            RecoveryCampaignPhase    @map("campaign_phase")
+  campaignPhase            RecoveryCampaignPhase      @map("campaign_phase")
   /// Feature 3 guarantees one intent per person-keyword window, which is what
   /// stops the same person being contacted twice for one request.
-  intentId                 String                   @map("intent_id") @db.Uuid
-  igUserId                 String                   @map("ig_user_id")
-  conversationId           String?                  @map("conversation_id") @db.Uuid
-  keywordId                String                   @map("keyword_id") @db.Uuid
+  intentId                 String                     @map("intent_id") @db.Uuid
+  igUserId                 String                     @map("ig_user_id")
+  conversationId           String?                    @map("conversation_id") @db.Uuid
+  keywordId                String                     @map("keyword_id") @db.Uuid
   /// Rechecked immediately before send: a deleted comment must suppress rather
   /// than redirect the reply somewhere else.
-  commentId                String                   @map("comment_id")
-  mediaId                  String?                  @map("media_id")
-  commentAt                DateTime                 @map("comment_at") @db.Timestamptz(3)
-  keywordSnapshot          String                   @map("keyword_snapshot")
-  publicReplyText          String                   @map("public_reply_text")
+  commentId                String                     @map("comment_id")
+  mediaId                  String?                    @map("media_id")
+  commentAt                DateTime                   @map("comment_at") @db.Timestamptz(3)
+  keywordSnapshot          String                     @map("keyword_snapshot")
+  publicReplyText          String                     @map("public_reply_text")
   evidence                 String
-  selectionPosition        Int?                     @map("selection_position")
-  sourceChoiceReason       String?                  @map("source_choice_reason")
+  selectionPosition        Int?                       @map("selection_position")
+  sourceChoiceReason       String?                    @map("source_choice_reason")
   /// Exact member of the approved ordered source set authorized at dispatch start.
-  dispatchCommentId        String?                  @map("dispatch_comment_id")
+  dispatchCommentId        String?                    @map("dispatch_comment_id")
   /// What the origin filter believed at selection. ig_users is mutable, so the
   /// live value cannot reconstruct this later.
-  audienceOrigin           String?                  @map("audience_origin")
-  audienceOriginMethod     String?                  @map("audience_origin_method")
-  audienceOriginConfidence String?                  @map("audience_origin_confidence")
+  audienceOrigin           String?                    @map("audience_origin")
+  audienceOriginMethod     String?                    @map("audience_origin_method")
+  audienceOriginConfidence String?                    @map("audience_origin_confidence")
   audienceSegment          HistoricalAudienceSegment? @map("audience_segment")
   arm                      RecoveryCandidateArm
-  outcome                  RecoveryCandidateOutcome @default(pending)
-  eligibleAt               DateTime                 @map("eligible_at") @db.Timestamptz(3)
-  claimedAt                DateTime?                @map("claimed_at") @db.Timestamptz(3)
-  claimExpiresAt           DateTime?                @map("claim_expires_at") @db.Timestamptz(3)
+  outcome                  RecoveryCandidateOutcome   @default(pending)
+  eligibleAt               DateTime                   @map("eligible_at") @db.Timestamptz(3)
+  claimedAt                DateTime?                  @map("claimed_at") @db.Timestamptz(3)
+  claimExpiresAt           DateTime?                  @map("claim_expires_at") @db.Timestamptz(3)
   /// Present only while a worker holds this row. Every release and finalise must
   /// present it, so a stale claimant cannot overwrite the winner's outcome.
-  claimToken               String?                  @map("claim_token") @db.Uuid
+  claimToken               String?                    @map("claim_token") @db.Uuid
   /// Durable attempt bookkeeping: without it a retryable failure retried every tick
   /// forever, because releasing the claim left no record that anything had happened.
-  attempts                 Int                      @default(0)
-  lastAttemptAt            DateTime?                @map("last_attempt_at") @db.Timestamptz(3)
+  attempts                 Int                        @default(0)
+  lastAttemptAt            DateTime?                  @map("last_attempt_at") @db.Timestamptz(3)
   /// Set immediately before the Graph call, inside the capacity reservation. A claimed
   /// row with this still null is provably pre-network: safe to release rather than park
   /// as send_uncertain, and it has NOT consumed a send slot.
-  dispatchStartedAt        DateTime?                @map("dispatch_started_at") @db.Timestamptz(3)
-  nextAttemptAt            DateTime?                @map("next_attempt_at") @db.Timestamptz(3)
-  sentAt                   DateTime?                @map("sent_at") @db.Timestamptz(3)
-  publicReplyId            String?                  @map("public_reply_id")
-  suppressionReason        String?                  @map("suppression_reason")
-  reviewedAt               DateTime?                @map("reviewed_at") @db.Timestamptz(3)
-  laterInboundAt           DateTime?                @map("later_inbound_at") @db.Timestamptz(3)
-  laterCompletedAt         DateTime?                @map("later_completed_at") @db.Timestamptz(3)
-  createdAt                DateTime                 @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt                DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(3)
+  dispatchStartedAt        DateTime?                  @map("dispatch_started_at") @db.Timestamptz(3)
+  nextAttemptAt            DateTime?                  @map("next_attempt_at") @db.Timestamptz(3)
+  sentAt                   DateTime?                  @map("sent_at") @db.Timestamptz(3)
+  publicReplyId            String?                    @map("public_reply_id")
+  suppressionReason        String?                    @map("suppression_reason")
+  reviewedAt               DateTime?                  @map("reviewed_at") @db.Timestamptz(3)
+  laterInboundAt           DateTime?                  @map("later_inbound_at") @db.Timestamptz(3)
+  laterCompletedAt         DateTime?                  @map("later_completed_at") @db.Timestamptz(3)
+  createdAt                DateTime                   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   campaign     RecoveryCampaign          @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   intent       JourneyIntent             @relation(fields: [intentId], references: [id], onDelete: Restrict)
@@ -1316,4 +1539,21 @@ model RecoveryCandidateSource {
   @@unique([candidateId, commentId], map: "recovery_candidate_source_candidate_id_comment_id_key")
   @@index([commentId])
   @@map("recovery_candidate_source")
+}
+
+/// A console-set value for one flag. VALUES ONLY.
+///
+/// What the flag does, who it affects, and whether the console may change it live
+/// in src/config/flagRegistry.ts — facts about the code, reviewed with the code.
+///
+/// An absent row means "no override": the resolver uses the deployed environment
+/// value, so an empty table behaves exactly like production does today.
+model FlagOverride {
+  key          String   @id
+  valueBool    Boolean? @map("value_bool")
+  valuePercent Int?     @map("value_percent")
+  updatedBy    String   @map("updated_by")
+  updatedAt    DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  @@map("flag_override")
 }

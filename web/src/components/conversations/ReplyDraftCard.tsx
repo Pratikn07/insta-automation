@@ -136,28 +136,28 @@ export function ReplyDraftCard(props: ReplyDraftCardProps) {
         )}
 
         {policyOutdated && (
-          <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
+          <div className="flex items-start gap-2 rounded-md border border-caution bg-caution-soft px-3 py-2 text-xs text-caution">
             <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
             <span>This draft uses an older prompt policy and can no longer be used.</span>
           </div>
         )}
 
         {expired && (
-          <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
+          <div className="flex items-start gap-2 rounded-md border border-caution bg-caution-soft px-3 py-2 text-xs text-caution">
             <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
             <span>The Instagram reply window has closed.</span>
           </div>
         )}
 
         {stale && (
-          <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
+          <div className="flex items-start gap-2 rounded-md border border-caution bg-caution-soft px-3 py-2 text-xs text-caution">
             <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
             <span>New message received — generate a new draft.</span>
           </div>
         )}
 
         {uncertain && (
-          <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
+          <div className="flex items-start gap-2 rounded-md border border-caution bg-caution-soft px-3 py-2 text-xs text-caution">
             <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
             <span>
               We couldn’t confirm whether this was delivered. <strong>Check Instagram first</strong> —
@@ -206,7 +206,7 @@ export function ReplyDraftCard(props: ReplyDraftCardProps) {
         ) : null}
 
         {Array.isArray(draft.warnings) && draft.warnings.length > 0 && (
-          <ul className="space-y-1 text-xs text-amber-300">
+          <ul className="space-y-1 text-xs text-caution">
             {(draft.warnings as string[]).map((w) => (
               <li key={w} className="flex items-start gap-1.5">
                 <AlertCircle className="mt-0.5 size-3 shrink-0" />
@@ -272,7 +272,7 @@ export function ReplyDraftCard(props: ReplyDraftCardProps) {
               </Button>
             )}
             {draft.status === "sent" && (
-              <span className="inline-flex items-center gap-1.5 text-xs text-emerald-500">
+              <span className="inline-flex items-center gap-1.5 text-xs text-signal">
                 <Check className="size-3.5" />
                 Replied
               </span>

@@ -40,32 +40,47 @@ export function SpikeCandidates({ points }: { points: FollowerDailyAddsPoint[] }
   if (spikeDays.length === 0) return null;
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-black/15 p-4">
+    // Rule-opened, like every other group in the panel that holds it. This was a
+    // rounded card on `--color-card`, which index.css reserves for controls and
+    // floating chrome — "never a wrapper around ordinary page content".
+    <div className="border-t border-line pt-3">
       <div className="mb-1 flex items-center gap-2 text-xs font-medium text-foreground">
-        <Zap className="size-3.5 text-amber-300" /> Candidates behind your biggest days
+        <Zap className="size-3.5 text-caution" /> Candidates behind your biggest days
       </div>
       <p className="mb-3 text-[11px] leading-relaxed text-muted-foreground">
         Reels that gained the most reach while each spike happened. Meta gives no
         per-reel follower data, so treat these as candidates to compare — not proof.
       </p>
 
-      <div className="space-y-3">
+      <div>
         {spikeDays.map((point) => (
-          <div key={point.day} className="rounded-xl border border-white/10 bg-black/20 p-3">
+          // A spike day is a row, not an object: nothing here is picked up or
+          // moved, so it separates on a rule the way Home's attention rows do.
+          // The rule goes on top of every row BUT the first, so the group's own
+          // opening rule divides the first row and the list leaves no trailing
+          // edge — a trailing rule 20px above the footnote's rule reads as a
+          // ladder rather than as structure.
+          <div
+            key={point.day}
+            className="py-3 [&:not(:first-child)]:border-t [&:not(:first-child)]:border-line"
+          >
             <div className="mb-2 flex items-baseline justify-between gap-3">
-              <span className="text-xs font-semibold text-white">
+              {/* Was `text-white` — white on a near-white card over #F7F5EF
+                  paper, i.e. the day label was invisible. Ink, at the 500 the
+                  type scale tops out at. */}
+              <span className="text-xs font-medium text-foreground">
                 {dayLabel(point.day)}{" "}
                 <span className="font-normal text-muted-foreground">
                   {formatSignedCount(point.spike.net)} followers
                 </span>
               </span>
-              <span className="shrink-0 rounded-full border border-amber-300/25 bg-amber-300/10 px-2 py-0.5 text-[10px] font-semibold text-amber-200">
+              <span className="shrink-0 rounded-sm border border-caution bg-caution-soft px-2 py-0.5 text-[10px] font-medium text-caution">
                 {point.spike.multiple}× usual
               </span>
             </div>
 
             {point.spike.confidence === "low" && (
-              <p className="mb-2 text-[10px] leading-snug text-amber-200/80">
+              <p className="mb-2 text-[10px] leading-snug text-caution">
                 Several reels overlapped — no single one stands out.
               </p>
             )}
@@ -75,7 +90,10 @@ export function SpikeCandidates({ points }: { points: FollowerDailyAddsPoint[] }
                 .filter((c) => c.sharePct >= MIN_SHARE_PCT)
                 .map((c) => (
                 <li key={c.mediaId} className="flex items-center gap-2.5">
-                  <div className="relative aspect-[9/16] w-8 shrink-0 overflow-hidden rounded bg-accent">
+                  {/* The thumbnail keeps its bounded surface — DESIGN.md names a
+                      media thumbnail as an object that genuinely has edges — at
+                      the 2px the shape scale allows. */}
+                  <div className="relative aspect-[9/16] w-8 shrink-0 overflow-hidden rounded-sm bg-accent">
                     {c.thumbnailUrl ? (
                       <img
                         src={c.thumbnailUrl}
@@ -99,7 +117,7 @@ export function SpikeCandidates({ points }: { points: FollowerDailyAddsPoint[] }
                     </p>
                   </div>
 
-                  <span className="shrink-0 text-[11px] font-semibold tabular-nums text-sky-300">
+                  <span className="shrink-0 text-[11px] font-medium tabular-nums text-funnel-mark">
                     {c.sharePct}%
                   </span>
 
@@ -109,7 +127,7 @@ export function SpikeCandidates({ points }: { points: FollowerDailyAddsPoint[] }
                       target="_blank"
                       rel="noreferrer"
                       aria-label="Open reel on Instagram"
-                      className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
+                      className="shrink-0 rounded-sm p-0.5 text-muted-foreground transition-colors hover:text-foreground"
                     >
                       <ArrowUpRight className="size-3" />
                     </a>

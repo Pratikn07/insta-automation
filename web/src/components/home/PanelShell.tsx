@@ -1,10 +1,13 @@
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Card, CardContent } from "@/components/ui/card";
 
-// Shared shell + empty state for the Home panels. The accent color and icon
+// Shared shell + empty state for the Home panels. The accent colour and icon
 // come in as props, so several panels once shared it verbatim; FollowerFlowPanel
 // is the only remaining consumer since the Home declutter.
+//
+// Maison removed the card. What was a filled, rounded, shadowed panel is now a
+// hairline and space: the chart sits directly on the page ground, which is what
+// lets the ivory read as paper rather than as a container full of widgets.
 
 export function PanelShell({
   children,
@@ -15,18 +18,24 @@ export function PanelShell({
   className?: string;
   // Empty/error states still want a generous box; the populated chart panel is
   // much shorter than the old all-in-one panel and a 600px floor left a gap.
+  //
+  // 360px, not 520: a floor that tall pushed the country table off the first
+  // screen whenever the chart was empty, which is exactly when a reader most
+  // wants the rest of the page.
   tall?: boolean;
 }) {
   return (
-    <Card
-      className={cn(
-        "rounded-2xl border-white/10 bg-card/85 shadow-xl shadow-black/10",
-        tall && "min-h-[600px]",
-        className,
-      )}
+    // The rule is named, not bare. `border-t` alone takes `--color-border`
+    // (#EBE8DF), which measures 1.12:1 on the #F7F5EF ground — a section opening
+    // on a rule nobody can see. DESIGN.md: "Section headings sit above a
+    // full-strength ink rule; rows separate on the quiet border." This is a
+    // section with a heading, and it now matches the ink rules Home already
+    // draws above "Evidence", "What needs attention", and "System pulse".
+    <section
+      className={cn("border-t border-foreground pt-5", tall && "min-h-[360px]", className)}
     >
-      <CardContent className="p-5 sm:p-6">{children}</CardContent>
-    </Card>
+      {children}
+    </section>
   );
 }
 
@@ -35,22 +44,20 @@ export function EmptyPanel({
   body,
   action,
   Icon,
-  accentClassName,
 }: {
   title: string;
   body: string;
   action?: React.ReactNode;
   Icon: LucideIcon;
-  accentClassName: string; // e.g. "bg-emerald-400/10 text-emerald-300"
+  /** Retained for callers; Maison tints the mark with the house accent instead. */
+  accentClassName?: string;
 }) {
   return (
-    <div className="flex min-h-[540px] flex-col items-center justify-center px-6 text-center">
-      <div className={cn("mb-4 flex size-12 items-center justify-center rounded-2xl", accentClassName)}>
-        <Icon className="size-6" />
-      </div>
-      <h2 className="text-lg font-semibold">{title}</h2>
-      <p className="mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">{body}</p>
-      {action && <div className="mt-5">{action}</div>}
+    <div className="flex min-h-[280px] flex-col items-center justify-center px-6 text-center">
+      <Icon className="size-5 text-signal" aria-hidden />
+      <h2 className="mt-3 text-lg font-medium tracking-tight">{title}</h2>
+      <p className="mt-2 max-w-sm text-[13px] leading-relaxed text-muted-foreground">{body}</p>
+      {action && <div className="mt-4">{action}</div>}
     </div>
   );
 }

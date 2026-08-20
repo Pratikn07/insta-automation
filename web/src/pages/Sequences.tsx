@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
-import { Layers, MessageSquare, Plus, Tag, Trash2 } from "lucide-react";
+import { CircleAlert, Layers, MessageSquare, Plus, Tag, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
-import { api, ApiError } from "@/lib/api";
+import { apiRead, apiMutation, apiErrorCode, ApiError } from "@/lib/api";
+import { useOperationId } from "@/lib/useOperationId";
 import type { Resource } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -14,46 +15,78 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
-import { EmptyState } from "@/components/EmptyState";
+import { EmptyState, LoadFailed } from "@/components/EmptyState";
+
+/**
+ * Why a delete was refused, in words that name the way out.
+ *
+ * The server answers these with a code, and `ApiError.message` is that code
+ * verbatim — so the old fallback showed either `resource_has_delivery_history` or a
+ * bare "Delete failed", neither of which says what is holding the guide.
+ */
+function deleteRefusal(error: unknown): string {
+  const code = error instanceof ApiError ? apiErrorCode(error) : null;
+  if (code === "resource_has_delivery_history") {
+    return "This guide has already been sent to someone, so it is kept as a record. Remove its keywords instead.";
+  }
+  if (code === "resource_has_upcoming_setup") {
+    const body = error instanceof ApiError ? (error.body as UpcomingSetupRefusal) : null;
+    const words = body?.triggerWords?.filter((word) => typeof word === "string") ?? [];
+    const named = words.length > 0 ? ` (${words.join(", ")})` : "";
+    return body?.clearable === false
+      ? `A past setup${named} still points at this guide, so it can't be deleted.`
+      : `A setup waiting for a post${named} uses this guide. Cancel it on Content first.`;
+  }
+  if (code === "resource_still_referenced") {
+    return "Something still points at this guide, so it can't be deleted yet.";
+  }
+  return "Could not delete this guide. Check your connection and try again.";
+}
+
+interface UpcomingSetupRefusal {
+  triggerWords?: unknown[];
+  clearable?: boolean;
+}
 
 export function Sequences() {
   const qc = useQueryClient();
   const resourcesQ = useQuery<Resource[]>({
     queryKey: ["resources"],
-    queryFn: () => api<Resource[]>("/resources"),
+    queryFn: ({ signal }) => apiRead<Resource[]>("/resources", { signal }),
   });
 
   const [creating, setCreating] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<Resource | null>(null);
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => api(`/resources/${id}`, { method: "DELETE" }),
+    mutationFn: (id: string) => apiMutation(`/resources/${id}`, { method: "DELETE" }),
     onSuccess: () => {
-      toast.success("Sequence deleted");
+      toast.success("Guide deleted");
       qc.invalidateQueries({ queryKey: ["resources"] });
       qc.invalidateQueries({ queryKey: ["keywords"] });
       setConfirmDelete(null);
     },
-    onError: (err) =>
-      toast.error(err instanceof ApiError ? err.message : "Delete failed"),
+    onError: (err) => toast.error(deleteRefusal(err)),
   });
 
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-semibold tracking-tight">Sequences</h2>
+          <h2 className="text-xl font-semibold tracking-tight">Guides</h2>
           <p className="mt-1 text-sm text-muted-foreground">
             The DMs that get sent after a follower replies DONE.
           </p>
         </div>
         <Button variant="brand" onClick={() => setCreating(true)}>
           <Plus className="size-4" />
-          New sequence
+          New guide
         </Button>
       </div>
 
-      {resourcesQ.isLoading ? (
+      {resourcesQ.isError ? (
+        <LoadFailed what="your guides" onRetry={() => void resourcesQ.refetch()} />
+      ) : resourcesQ.isPending ? (
         <div className="grid gap-3 sm:grid-cols-2">
           {[0, 1].map((i) => (
             <Skeleton key={i} className="h-28" />
@@ -62,12 +95,12 @@ export function Sequences() {
       ) : (resourcesQ.data?.length ?? 0) === 0 ? (
         <EmptyState
           icon={<Layers className="size-5" />}
-          title="No sequences yet"
-          description="A sequence is a list of DMs (text, image, PDF) sent in order after the user replies DONE."
+          title="No guides yet"
+          description="A guide is a list of DMs (text, image, PDF) sent in order after the user replies DONE."
           action={
             <Button variant="brand" onClick={() => setCreating(true)}>
               <Plus className="size-4" />
-              Create sequence
+              Create guide
             </Button>
           }
         />
@@ -96,7 +129,7 @@ export function Sequences() {
       <Drawer
         open={creating}
         onClose={() => setCreating(false)}
-        title="New sequence"
+        title="New guide"
         description="Give it a name and a short description. You'll add the DMs next."
       >
         {creating && <CreateSequenceForm onClose={() => setCreating(false)} />}
@@ -107,8 +140,8 @@ export function Sequences() {
         title={`Delete "${confirmDelete?.name}"?`}
         description={
           (confirmDelete?._count?.keywords ?? 0) > 0
-            ? `This sequence is used by ${confirmDelete?._count?.keywords} keyword${confirmDelete?._count?.keywords === 1 ? "" : "s"}. Deleting it will leave them without a target.`
-            : "All steps in this sequence will be removed."
+            ? `This guide is used by ${confirmDelete?._count?.keywords} keyword${confirmDelete?._count?.keywords === 1 ? "" : "s"}. Deleting it will leave them without a target.`
+            : "All steps in this guide will be removed."
         }
         destructive
         confirmLabel="Delete"
@@ -127,7 +160,7 @@ function SequenceCard({ r, onDelete }: { r: Resource; onDelete: () => void }) {
     <Card className="group transition-all hover:shadow-lg hover:-translate-y-0.5">
       <CardContent className="flex h-full flex-col gap-3 p-5">
         <div className="flex items-start justify-between gap-2">
-          <Link to={`/sequences/${r.id}`} className="min-w-0 flex-1">
+          <Link to={`/guides/${r.id}`} className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <div className="flex size-8 items-center justify-center rounded-md bg-brand-gradient/15 text-foreground">
                 <Layers className="size-4" />
@@ -137,13 +170,22 @@ function SequenceCard({ r, onDelete }: { r: Resource; onDelete: () => void }) {
             {r.description && (
               <p className="mt-2 line-clamp-2 text-sm text-muted-foreground">{r.description}</p>
             )}
+            {/* The caution tokens, like every other badge. This one still wore
+                bg-amber-100/text-amber-900 plus dark: variants — a leftover from the
+                dark shell, in a console that has no dark mode. */}
+            {(r.invalidMessageCount ?? 0) > 0 && (
+              <span className="mt-2 inline-flex items-center gap-1 rounded-full bg-caution-soft px-2 py-1 text-xs font-medium text-caution">
+                <CircleAlert className="size-3.5" />
+                {r.invalidMessageCount} {r.invalidMessageCount === 1 ? "message needs" : "messages need"} attention
+              </span>
+            )}
           </Link>
           <Button
             size="icon"
             variant="ghost"
             onClick={onDelete}
             className="opacity-0 transition-opacity group-hover:opacity-100"
-            aria-label="Delete sequence"
+            aria-label="Delete guide"
           >
             <Trash2 className="size-4" />
           </Button>
@@ -167,15 +209,20 @@ function CreateSequenceForm({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  // The new row's UUID, owned by this attempt. A repeat carries the same one, so
+  // the server answers with the existing sequence instead of making a second.
+  const { operationId, renew } = useOperationId();
 
   const createMutation = useMutation({
     mutationFn: () =>
-      api<Resource>("/resources", {
+      apiMutation<Resource>("/resources", {
         method: "POST",
-        body: JSON.stringify({ name, description: description || null }),
+        operationId,
+        body: JSON.stringify({ id: operationId, name, description: description || null }),
       }),
     onSuccess: () => {
-      toast.success("Sequence created");
+      toast.success("Guide created");
+      renew();
       qc.invalidateQueries({ queryKey: ["resources"] });
       onClose();
     },
@@ -210,7 +257,7 @@ function CreateSequenceForm({ onClose }: { onClose: () => void }) {
           <Textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            placeholder="Internal note — what this sequence is for."
+            placeholder="Internal note — what this guide is for."
             rows={3}
             maxLength={500}
           />
@@ -221,7 +268,7 @@ function CreateSequenceForm({ onClose }: { onClose: () => void }) {
           Cancel
         </Button>
         <Button type="submit" variant="brand" disabled={!canSave}>
-          {createMutation.isPending ? "Creating…" : "Create sequence"}
+          {createMutation.isPending ? "Creating…" : "Create guide"}
         </Button>
       </div>
     </form>

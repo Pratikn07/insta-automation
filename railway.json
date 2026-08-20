@@ -1,0 +1,15 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "watchPatterns": [
+      "src/**",
+      "prisma/**",
+      "shared/**",
+      "scripts/**",
+      "package.json",
+      "package-lock.json",
+      "tsconfig.json",
+      "railway.json"
+    ]
+  }
+}

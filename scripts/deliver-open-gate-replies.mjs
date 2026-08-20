@@ -1,5 +1,4 @@
 import { PrismaClient } from "@prisma/client";
-import { sendSequence } from "../dist/src/services/sequenceSender.js";
 
 const prisma = new PrismaClient();
 
@@ -20,11 +19,18 @@ const prisma = new PrismaClient();
 // Also bounded to Instagram's 24h messaging window measured from the user's reply;
 // older replies can't be messaged and are surfaced, not sent.
 //
-// Dry-run by default; --apply to send.
+// Historical report only. Its direct apply path predates durable delivery
+// ownership and is retired; current delivery must enter through the live handler.
 const IG_REPLY_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 async function main() {
-  const apply = process.argv.includes("--apply");
+  if (process.argv.includes("--apply")) {
+    console.error(
+      "guide_delivery_apply_retired: use the live inbound handler and durable ownership path",
+    );
+    process.exitCode = 1;
+    return;
+  }
 
   const open = await prisma.conversation.findMany({
     where: { state: "awaiting_done" },
@@ -91,36 +97,11 @@ async function main() {
   console.log(`  → never replied after gate (skip):              ${noReply}`);
   console.log(`  → already completed this keyword (skip):        ${alreadyDone}`);
 
-  if (!apply) {
-    console.log("\nDRY RUN. Re-run with --apply to deliver.");
-    if (deliverable.length) {
-      console.log("\nSample of who would receive (text they sent AFTER the gate):");
-      for (const d of deliverable.slice(0, 10)) console.log(`  ${d.convo.igUserId}  "${d.text}"`);
-    }
-    return;
+  console.log("\nREAD ONLY. Apply delivery is retired; no messages or rows were changed.");
+  if (deliverable.length) {
+    console.log("\nSample of who would require current-path review:");
+    for (const d of deliverable.slice(0, 10)) console.log(`  ${d.convo.igUserId}`);
   }
-
-  let delivered = 0;
-  for (const { convo } of deliverable) {
-    try {
-      await sendSequence(convo.igUserId, convo.keyword.resource.messages);
-      await prisma.conversation.update({
-        where: { id: convo.id },
-        data: { state: "completed", completedAt: new Date() },
-      });
-      await prisma.eventLog.create({
-        data: { kind: "done_received", payload: { conversationId: convo.id, source: "flexreply_backfill" } },
-      });
-      await prisma.eventLog.create({
-        data: { kind: "sequence_completed", payload: { conversationId: convo.id, source: "flexreply_backfill" } },
-      });
-      delivered++;
-      console.log(`  delivered → ${convo.igUserId}`);
-    } catch (err) {
-      console.log(`  FAILED → ${convo.igUserId}: ${err.message}`);
-    }
-  }
-  console.log(`\nDelivered to ${delivered} users.`);
 }
 
 main()

@@ -15,6 +15,8 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "seed": "tsx scripts/seed-keywords.ts",
+    "audit:guide-message-lengths": "tsx scripts/audit-guide-message-lengths.ts",
+    "check:guide-delivery-bypasses": "node scripts/check-guide-delivery-bypasses.mjs",
     "funnel": "tsx scripts/funnel-report.ts",
     "recovery:select-expanded": "tsx scripts/select-expanded-historical-recovery.ts",
     "test": "vitest run"

@@ -56,10 +56,11 @@ describe("recoveryStatusView", () => {
       row({ status: "suppressed", suppressionReason: "person_cooldown" }),
       "Another reminder was recently sent",
     ],
-    [row({ status: "sent", sentAt: afterEligible(30_000) }), "Reminder sent"],
+    [row({ status: "sending" }), "Sending"],
+    [row({ status: "sent", sentAt: afterEligible(30_000) }), "Sent publicly"],
     [
       row({ status: "sent", sentAt: afterEligible(19 * 3600_000) }),
-      "Reminder sent late after worker delay",
+      "Sent publicly—late after worker delay",
     ],
     [row({ triggerKind: "settings_blocked", status: "waiting" }), "Settings blocked"],
     [row({ status: "control" }), "Control group—reminder intentionally withheld"],
@@ -69,8 +70,8 @@ describe("recoveryStatusView", () => {
     ],
     [row({ status: "tracking_unavailable" }), "Tracking unavailable"],
     [row({ status: "cancelled" }), "Cancelled by owner"],
-    [row({ status: "send_failed" }), "Couldn’t post public reminder"],
-    [row({ status: "send_uncertain" }), "Send outcome uncertain—check Instagram"],
+    [row({ status: "send_failed" }), "Failed—public reminder not posted"],
+    [row({ status: "send_uncertain" }), "Outcome uncertain—check Instagram"],
   ])("maps recovery evidence to %#", (input, expected) => {
     expect(recoveryStatusView(input, NOW).label).toBe(expected);
   });
@@ -117,7 +118,7 @@ describe("recoveryStatusView", () => {
     ["two minutes after", afterEligible(120_000), true],
   ])("treats a send %s as late=%s", (_label, sentAt, expectedLate) => {
     const view = recoveryStatusView(row({ status: "sent", sentAt }), NOW);
-    expect(view.label === "Reminder sent late after worker delay").toBe(expectedLate);
+    expect(view.label === "Sent publicly—late after worker delay").toBe(expectedLate);
   });
 
   describe("owner actions", () => {
@@ -202,6 +203,12 @@ describe("recoveryStatusView", () => {
   it("labels a due treatment row's action state separately from its evidence", () => {
     const view = recoveryStatusView(row({ eligibleAt: hoursAgo(1) }), NOW);
     expect(view.label).toBe("No confirmed read");
-    expect(view.actionState).toBe("Reminder ready");
+    expect(view.actionState).toBe("Due");
+  });
+
+  it("uses Scheduled as the action state before eligibility", () => {
+    expect(recoveryStatusView(row({ eligibleAt: hoursFromNow(1) }), NOW).actionState).toBe(
+      "Scheduled",
+    );
   });
 });

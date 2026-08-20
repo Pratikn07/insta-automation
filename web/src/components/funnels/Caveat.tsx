@@ -25,12 +25,12 @@ export function Caveat({
   return (
     <div
       className={cn(
-        "flex gap-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-3",
+        "flex gap-3 rounded-sm border border-urgent/30 bg-urgent/5 p-3",
         className,
       )}
     >
-      <span aria-hidden className="mt-[3px] h-auto w-[3px] shrink-0 rounded-full bg-amber-400/70" />
-      <p className="text-[12.5px] leading-relaxed text-amber-200/90">{children}</p>
+      <span aria-hidden className="mt-[3px] h-auto w-[3px] shrink-0 bg-urgent" />
+      <p className="text-[12.5px] leading-relaxed text-caution">{children}</p>
     </div>
   );
 }

@@ -1,4 +1,3 @@
-import { Router } from "express";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
@@ -8,6 +7,7 @@ import {
   conversationHistoryRole,
   operationalConversationWhere,
 } from "../services/canonicalConversation.js";
+import { asyncRouter } from "./asyncRouter.js";
 
 /**
  * Enough recovery state for a badge, and no more: the copy we would post and
@@ -66,7 +66,7 @@ function summariseRecovery(recovery: RecoverySummaryRow | null): Record<string, 
   };
 }
 
-export const conversationsRouter = Router();
+export const conversationsRouter = asyncRouter();
 
 const listQuerySchema = z.object({
   state: z.enum(["awaiting_done", "completed", "expired"]).optional(),

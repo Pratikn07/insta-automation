@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma.js";
+import { classifyCreateReplay, isPrimaryKeyViolation } from "../api/createReplay.js";
 
 // Experiments (Insights Tab 3): log a hypothesis + the reel(s) posted to test it,
 // and track whether account-level reached-US% moves over time.
@@ -152,26 +153,64 @@ export async function listExperiments(): Promise<ExperimentDto[]> {
   return rows.map((e) => toDto(e, current, e.mediaId ? profileByMedia.get(e.mediaId) : null));
 }
 
+/** What the caller owns, and therefore what a replay must match. */
+const EXPERIMENT_REPLAY_KEYS = ["hypothesis", "variable", "reelMediaIds", "postedAt"] as const;
+
+export type CreateExperimentResult =
+  | { status: "created" | "replayed"; experiment: ExperimentDto }
+  | { status: "conflict"; experiment?: undefined };
+
+/**
+ * Create one manual experiment, keyed by a UUID the browser owns.
+ *
+ * The baseline is the number this experiment will be judged against, so a replay
+ * must never re-measure it — days may have passed, and moving the baseline would
+ * silently move the goalposts of an experiment already running. An existing row is
+ * therefore looked up *before* any measurement, and its own stored baseline is
+ * what comes back.
+ */
 export async function createExperiment(input: {
+  id: string;
   hypothesis: string;
   variable: string;
   reelMediaIds: string[];
   postedAt?: string | null;
-}): Promise<ExperimentDto> {
+}): Promise<CreateExperimentResult> {
+  const intended = {
+    hypothesis: input.hypothesis,
+    variable: input.variable,
+    reelMediaIds: input.reelMediaIds,
+    postedAt: input.postedAt ? new Date(input.postedAt) : null,
+  };
+
+  const settle = (existing: NonNullable<ExperimentRow>): CreateExperimentResult =>
+    classifyCreateReplay({ existing, intended, keys: EXPERIMENT_REPLAY_KEYS }) === "conflict"
+      ? { status: "conflict" }
+      : { status: "replayed", experiment: toDto(existing, existing.baselineUsPct) };
+
+  const known = await prisma.experiment.findUnique({ where: { id: input.id } });
+  if (known) return settle(known);
+
   const baseline = await latestReachedUsPct();
-  const created = await prisma.experiment.create({
-    data: {
-      hypothesis: input.hypothesis,
-      variable: input.variable,
-      reelMediaIds: input.reelMediaIds,
-      baselineUsPct: baseline,
-      postedAt: input.postedAt ? new Date(input.postedAt) : null,
-      status: "running",
-      origin: "manual",
-      culturalCues: [], // never NULL — the DTO types this field non-null
-    },
-  });
-  return toDto(created, baseline);
+  try {
+    const created = await prisma.experiment.create({
+      data: {
+        id: input.id,
+        ...intended,
+        baselineUsPct: baseline,
+        status: "running",
+        origin: "manual",
+        culturalCues: [], // never NULL — the DTO types this field non-null
+      },
+    });
+    return { status: "created", experiment: toDto(created, baseline) };
+  } catch (error) {
+    // Lost a race with a concurrent replay of the same UUID.
+    if (!isPrimaryKeyViolation(error)) throw error;
+    const existing = await prisma.experiment.findUnique({ where: { id: input.id } });
+    if (!existing) throw error;
+    return settle(existing);
+  }
 }
 
 /**

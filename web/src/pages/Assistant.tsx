@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, Loader2, MessageSquare, Send } from "lucide-react";
-import { api } from "@/lib/api";
+import { apiRead, apiMutation } from "@/lib/api";
 import type { AdvisorHistoryItem, AdvisorResponse, AiConnectionStatus } from "@/lib/types";
 import { AiConnectionCard } from "@/components/ai/AiConnectionCard";
 import { AdvisorMessage } from "@/components/assistant/AdvisorMessage";
@@ -60,12 +60,12 @@ export function Assistant() {
 
   const statusQ = useQuery<AiConnectionStatus>({
     queryKey: ["ai", "connection"],
-    queryFn: () => api<AiConnectionStatus>("/ai/connection"),
+    queryFn: ({ signal }) => apiRead<AiConnectionStatus>("/ai/connection", { signal }),
   });
 
   const historyQ = useQuery<{ items: AdvisorHistoryItem[] }>({
     queryKey: ["ai", "advisor", "history"],
-    queryFn: () => api<{ items: AdvisorHistoryItem[] }>("/ai/advisor/history"),
+    queryFn: ({ signal }) => apiRead<{ items: AdvisorHistoryItem[] }>("/ai/advisor/history", { signal }),
     enabled: statusQ.data?.connected === true,
     retry: false,
   });
@@ -80,13 +80,18 @@ export function Assistant() {
     advisorEnabled,
   });
 
+  // Survives a failed attempt so a resubmit carries the same key. Cleared only
+  // when the question has actually been answered.
+  const attemptRef = useRef<PendingTurn | null>(null);
+
   const ask = useMutation<AdvisorResponse, unknown, PendingTurn>({
     mutationFn: (turn) =>
-      api<AdvisorResponse>("/ai/advisor/messages", {
+      apiMutation<AdvisorResponse>("/ai/advisor/messages", {
         method: "POST",
         body: JSON.stringify({ message: turn.question, clientMessageId: turn.clientMessageId }),
       }),
     onSuccess: async (response, turn) => {
+      attemptRef.current = null;
       setAnswered((previous) => [...previous, { ...turn, response }]);
       setPending(null);
       setText("");
@@ -117,7 +122,18 @@ export function Assistant() {
   function submit(): void {
     if (!composer.canSubmit) return;
     setAskError(null);
-    const turn = { clientMessageId: crypto.randomUUID(), question: text.trim() };
+    const question = text.trim();
+    // The key belongs to the QUESTION, not to the click. A resubmit of text still
+    // sitting in the composer is the same question — reusing its key lets the
+    // runtime recognise a replay instead of spending a second model turn and
+    // showing the owner their own question twice. A fresh key is minted only once
+    // the question changes, or once one has been answered.
+    const clientMessageId =
+      attemptRef.current?.question === question
+        ? attemptRef.current.clientMessageId
+        : crypto.randomUUID();
+    const turn = { clientMessageId, question };
+    attemptRef.current = turn;
     setPending(turn);
     ask.mutate(turn);
   }
@@ -220,7 +236,7 @@ export function Assistant() {
           <div ref={endRef} />
 
           {askError && (
-            <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700">
+            <div className="flex items-start gap-2 rounded-md border border-caution bg-caution-soft p-3 text-sm text-caution">
               <AlertCircle className="mt-0.5 size-4 shrink-0" />
               <span>{askError}</span>
             </div>

@@ -38,6 +38,15 @@ export interface DashboardStats {
   gateQueueExhausted: number;
   /** Parked for human review; never auto-retried because the DM may have landed. */
   gateQueueSendUncertain: number;
+  /**
+   * Upcoming setups whose post published but whose caption did not match, so
+   * nothing is attached.
+   *
+   * This is an ongoing outage rather than a historical one: the post is live and
+   * every person commenting on it receives nothing until the owner fixes it. Home
+   * reads this to surface the failure instead of waiting to be found.
+   */
+  upcomingNeedsAttention: number;
   followConversion: FollowConversion;
   // Instagram token countdown. The refresh worker should keep this permanently
   // healthy; a warning here means the worker itself has stopped, which is the
@@ -140,6 +149,7 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     gateQueuePending,
     gateQueueExhausted,
     gateQueueSendUncertain,
+    upcomingNeedsAttention,
     followConversion,
     tokenHealth,
   ] = await Promise.all([
@@ -164,6 +174,9 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     // without this count a row whose recovery mirror failed to schedule is
     // invisible: the person never receives the gate and nothing says so.
     prisma.gateQueue.count({ where: { status: "send_uncertain" } }),
+    // A published post with an unmatched caption. Indexed by
+    // (status, created_at), so this is a cheap count even as the table grows.
+    prisma.upcomingAutomation.count({ where: { status: "needs_attention" } }),
     getFollowConversion(),
     // Non-fatal: a stats page must still render if this lookup fails.
     readTokenHealth().catch(() => null),
@@ -179,6 +192,7 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     gateQueuePending,
     gateQueueExhausted,
     gateQueueSendUncertain,
+    upcomingNeedsAttention,
     followConversion,
     tokenHealth,
   };

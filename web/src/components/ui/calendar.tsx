@@ -113,8 +113,8 @@ export function RangeCalendar({ min, max, value, onChange }: RangeCalendarProps)
                 "h-7 rounded-md text-[11px] tabular-nums transition",
                 disabled && "pointer-events-none opacity-25",
                 !inRange && !disabled && "text-foreground hover:bg-white/10",
-                inRange && !isEndpoint && "bg-sky-400/15 text-sky-100",
-                isEndpoint && "bg-sky-400 font-semibold text-slate-900",
+                inRange && !isEndpoint && "bg-mark-soft text-funnel-mark",
+                isEndpoint && "bg-funnel-mark font-semibold text-primary-foreground",
               )}
             >
               {cell.dayOfMonth}

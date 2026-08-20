@@ -1,27 +1,70 @@
-import { Router } from "express";
+import { type Response } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
+import {
+  INSTAGRAM_GUIDE_TEXT_LIMIT,
+  MESSAGE_BODY_TOO_LONG_ERROR,
+  countInstagramCodePoints,
+} from "../../shared/guideMessagePolicy.js";
+import {
+  classifyCreateReplay,
+  idempotencyKeyMismatch,
+  isPrimaryKeyViolation,
+} from "./createReplay.js";
+import { asyncRouter } from "./asyncRouter.js";
 
-export const messagesRouter = Router();
+export const messagesRouter = asyncRouter();
 
 const messageTypeSchema = z.enum(["text", "image", "pdf"]);
 
+/**
+ * The route enforces the shared code-point policy. It rejects rather than
+ * truncating because silently shortening a parent's guide would lose content.
+ */
+// Zod counts string `.max()` values in UTF-16 units. Transforming to code
+// points first keeps its defense-in-depth limit aligned with the API boundary.
+const messageBody = z
+  .string()
+  .transform((value) => [...value])
+  .pipe(z.array(z.string()).max(INSTAGRAM_GUIDE_TEXT_LIMIT))
+  .transform((codePoints) => codePoints.join(""));
+
 const createSchema = z.object({
+  id: z.string().uuid(),
   resourceId: z.string().uuid(),
   type: messageTypeSchema,
-  body: z.string().max(2000).optional(),
+  body: messageBody.optional(),
   mediaUrl: z.string().url().optional(),
 });
 
+/**
+ * What the request owns. `order` is deliberately absent: the server assigns it
+ * from the current tail, so by the time a lost create is repeated the tail has
+ * usually moved, and comparing it would call an honest replay a conflict.
+ */
+const MESSAGE_REPLAY_KEYS = ["resourceId", "type", "body", "mediaUrl"] as const;
+
 const updateSchema = z.object({
   type: messageTypeSchema.optional(),
-  body: z.string().max(2000).nullable().optional(),
+  body: messageBody.nullable().optional(),
   mediaUrl: z.string().url().nullable().optional(),
 });
 
 const reorderSchema = z.object({
   messageIds: z.array(z.string().uuid()).min(1),
 });
+
+function rejectLongBody(body: unknown, res: Response): boolean {
+  if (typeof body !== "string") return false;
+  const actual = countInstagramCodePoints(body);
+  if (actual <= INSTAGRAM_GUIDE_TEXT_LIMIT) return false;
+  res.status(400).json({
+    error: MESSAGE_BODY_TOO_LONG_ERROR,
+    limit: INSTAGRAM_GUIDE_TEXT_LIMIT,
+    actual,
+  });
+  return true;
+}
 
 messagesRouter.get("/by-resource/:resourceId", async (req, res) => {
   const rows = await prisma.resourceMessage.findMany({
@@ -32,6 +75,7 @@ messagesRouter.get("/by-resource/:resourceId", async (req, res) => {
 });
 
 messagesRouter.post("/", async (req, res) => {
+  if (rejectLongBody(req.body?.body, res)) return;
   const parsed = createSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   const { resourceId, type, body, mediaUrl } = parsed.data;
@@ -43,6 +87,10 @@ messagesRouter.post("/", async (req, res) => {
     return res.status(400).json({ error: "media_step_requires_url" });
   }
 
+  if (idempotencyKeyMismatch(req.headers["idempotency-key"], parsed.data.id)) {
+    return res.status(400).json({ error: "idempotency_key_mismatch" });
+  }
+
   const last = await prisma.resourceMessage.findFirst({
     where: { resourceId },
     orderBy: { order: "desc" },
@@ -50,13 +98,33 @@ messagesRouter.post("/", async (req, res) => {
   });
   const nextOrder = (last?.order ?? -1) + 1;
 
-  const created = await prisma.resourceMessage.create({
-    data: { resourceId, order: nextOrder, type, body: body ?? null, mediaUrl: mediaUrl ?? null },
-  });
-  res.status(201).json(created);
+  const intended = {
+    id: parsed.data.id,
+    resourceId,
+    type,
+    body: body ?? null,
+    mediaUrl: mediaUrl ?? null,
+  };
+
+  try {
+    res.status(201).json(
+      await prisma.resourceMessage.create({ data: { ...intended, order: nextOrder } }),
+    );
+  } catch (error) {
+    if (!isPrimaryKeyViolation(error)) throw error;
+    const existing = await prisma.resourceMessage.findUnique({ where: { id: intended.id } });
+    if (!existing) throw error;
+    if (
+      classifyCreateReplay({ existing, intended, keys: MESSAGE_REPLAY_KEYS }) === "conflict"
+    ) {
+      return res.status(409).json({ error: "idempotency_conflict" });
+    }
+    res.status(200).json(existing);
+  }
 });
 
 messagesRouter.patch("/:id", async (req, res) => {
+  if (rejectLongBody(req.body?.body, res)) return;
   const parsed = updateSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   const updated = await prisma.resourceMessage.update({

@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Plus, Tag, Trash2, MessageSquare, Globe } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
-import { api, ApiError } from "@/lib/api";
+import { apiRead, apiMutation, ApiError } from "@/lib/api";
 import type { Keyword, Resource } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -11,18 +11,18 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Drawer } from "@/components/ui/drawer";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { EmptyState } from "@/components/EmptyState";
+import { EmptyState, LoadFailed } from "@/components/EmptyState";
 import { KeywordForm } from "@/components/KeywordForm";
 
 export function Keywords() {
   const qc = useQueryClient();
   const keywordsQ = useQuery<Keyword[]>({
     queryKey: ["keywords"],
-    queryFn: () => api<Keyword[]>("/keywords"),
+    queryFn: ({ signal }) => apiRead<Keyword[]>("/keywords", { signal }),
   });
   const resourcesQ = useQuery<Resource[]>({
     queryKey: ["resources"],
-    queryFn: () => api<Resource[]>("/resources"),
+    queryFn: ({ signal }) => apiRead<Resource[]>("/resources", { signal }),
   });
 
   const [editing, setEditing] = useState<Keyword | null>(null);
@@ -32,7 +32,7 @@ export function Keywords() {
 
   const toggleMutation = useMutation({
     mutationFn: ({ id, active }: { id: string; active: boolean }) =>
-      api<Keyword>(`/keywords/${id}`, { method: "PATCH", body: JSON.stringify({ active }) }),
+      apiMutation<Keyword>(`/keywords/${id}`, { method: "PATCH", body: JSON.stringify({ active }) }),
     onMutate: async ({ id, active }) => {
       await qc.cancelQueries({ queryKey: ["keywords"] });
       const prev = qc.getQueryData<Keyword[]>(["keywords"]);
@@ -49,7 +49,7 @@ export function Keywords() {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => api(`/keywords/${id}`, { method: "DELETE" }),
+    mutationFn: (id: string) => apiMutation(`/keywords/${id}`, { method: "DELETE" }),
     onSuccess: () => {
       toast.success("Keyword deleted");
       qc.invalidateQueries({ queryKey: ["keywords"] });
@@ -60,7 +60,7 @@ export function Keywords() {
     },
   });
 
-  const isLoading = keywordsQ.isLoading || resourcesQ.isLoading;
+  const isLoading = keywordsQ.isPending || resourcesQ.isPending;
 
   // Grouped by post, because a keyword now belongs to one post and the same word
   // can legitimately appear on several with different guides — a flat list of six
@@ -92,7 +92,7 @@ export function Keywords() {
         <div>
           <h2 className="text-xl font-semibold tracking-tight">Keywords</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Words people comment on a post to trigger a DM sequence. Each keyword belongs to one
+            Words people comment on a post to trigger a DM guide. Each keyword belongs to one
             post, so the same word can send a different guide per post.
           </p>
         </div>
@@ -102,7 +102,9 @@ export function Keywords() {
         </Button>
       </div>
 
-      {isLoading ? (
+      {keywordsQ.isError ? (
+        <LoadFailed what="your keywords" onRetry={() => void keywordsQ.refetch()} />
+      ) : isLoading ? (
         <div className="space-y-3">
           {[0, 1, 2].map((i) => (
             <Skeleton key={i} className="h-20" />
@@ -112,7 +114,7 @@ export function Keywords() {
         <EmptyState
           icon={<Tag className="size-5" />}
           title="No keywords yet"
-          description="Add the first word your audience will comment to trigger a DM sequence."
+          description="Add the first word your audience will comment to trigger a DM guide."
           action={
             <Button variant="brand" onClick={() => setCreating(true)}>
               <Plus className="size-4" />
@@ -181,7 +183,7 @@ export function Keywords() {
         title={editing ? "Edit keyword" : "New keyword"}
         description={
           editing
-            ? "Tweak how this trigger replies and gates the sequence."
+            ? "Tweak how this trigger replies and gates the guide."
             : "Define the word, the public reply, and the DM that asks for confirmation."
         }
       >
@@ -200,7 +202,7 @@ export function Keywords() {
       <ConfirmDialog
         open={confirmDelete !== null}
         title={`Delete "${confirmDelete?.keyword}"?`}
-        description="This removes the keyword and any tracking against it. The sequence stays intact."
+        description="This removes the keyword and any tracking against it. The guide stays intact."
         destructive
         confirmLabel="Delete"
         busy={deleteMutation.isPending}
@@ -244,7 +246,7 @@ function KeywordRow({
               )}
             </div>
             <p className="mt-0.5 truncate text-xs text-muted-foreground">
-              → {k.resource?.name ?? "Unknown sequence"}
+              → {k.resource?.name ?? "Unknown guide"}
               {k.resource && (
                 <span className="ml-2 inline-flex items-center gap-1">
                   <MessageSquare className="size-3" />

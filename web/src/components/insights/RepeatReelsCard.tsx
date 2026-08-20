@@ -77,7 +77,7 @@ export function RepeatReelsCard({
                   <span>
                     {c.skipRate === null ? "—" : `${Math.round(c.skipRate * 100)}% skip`}
                   </span>
-                  <span className="text-emerald-400">
+                  <span className="text-signal">
                     {compactNumber.format(c.conversion.completed)} guides
                   </span>
                   {c.usFitScore !== null && <span>US fit {c.usFitScore}</span>}

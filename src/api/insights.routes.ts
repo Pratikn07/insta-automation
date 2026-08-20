@@ -1,4 +1,3 @@
-import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import {
@@ -15,14 +14,16 @@ import {
   getUsReachTrend,
   getGeoWindowTrend,
 } from "../services/experimentService.js";
+import { idempotencyKeyMismatch } from "./createReplay.js";
 import { getFollowerDailyAdds } from "../services/followerFlowService.js";
 import { parseFeedFollowAttributionRange } from "../services/feedFollowAttributionCore.js";
 import { getFeedFollowAttribution } from "../services/feedFollowAttributionService.js";
 import { computeUsFit } from "../services/usFitScore.js";
 import type { ContentProfile } from "../services/geminiAnalysisService.js";
 import { mediaTimestamp } from "./mediaTimestamp.js";
+import { asyncRouter } from "./asyncRouter.js";
 
-export const insightsRouter = Router();
+export const insightsRouter = asyncRouter();
 
 // GET /api/insights/leaderboard — every reel, US-fit scored reels first.
 insightsRouter.get("/leaderboard", async (_req, res) => {
@@ -84,6 +85,7 @@ insightsRouter.get("/experiments", async (_req, res) => {
 });
 
 const createExperimentSchema = z.object({
+  id: z.string().uuid(),
   hypothesis: z.string().min(1).max(500),
   variable: z.string().min(1).max(200),
   reelMediaIds: z.array(z.string()).default([]),
@@ -91,10 +93,20 @@ const createExperimentSchema = z.object({
 });
 
 // POST /api/insights/experiments — create one; baselineUsPct captured at creation.
+//
+// Keyed by a client UUID so a lost response can be resolved by asking again: the
+// replay returns the original experiment, baseline untouched.
 insightsRouter.post("/experiments", async (req, res) => {
   const parsed = createExperimentSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-  res.json(await createExperiment(parsed.data));
+  if (idempotencyKeyMismatch(req.headers["idempotency-key"], parsed.data.id)) {
+    return res.status(400).json({ error: "idempotency_key_mismatch" });
+  }
+  const result = await createExperiment(parsed.data);
+  if (result.status === "conflict") {
+    return res.status(409).json({ error: "idempotency_conflict" });
+  }
+  res.status(result.status === "created" ? 201 : 200).json(result.experiment);
 });
 
 const updateExperimentSchema = z.object({

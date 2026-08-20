@@ -88,6 +88,45 @@ describe("keywordBackfillService", () => {
     expect(count).toBe(0);
     expect(eventLogFindMany).not.toHaveBeenCalled();
   });
+
+  it("excludes the live webhook comment while recovering earlier comments", async () => {
+    keywordFindUnique.mockResolvedValue({
+      id: "kw-1",
+      keyword: "SLEEP",
+      active: true,
+      mediaId: "media-123",
+      gateMessage: "Link here",
+    });
+    eventLogFindMany.mockResolvedValue([
+      {
+        createdAt: new Date("2026-08-06T09:00:00Z"),
+        payload: {
+          commentId: "earlier-comment",
+          fromId: "earlier-user",
+          text: "SLEEP",
+          mediaId: "media-123",
+        },
+      },
+      {
+        createdAt: new Date("2026-08-06T10:00:00Z"),
+        payload: {
+          commentId: "live-comment",
+          fromId: "live-user",
+          text: "SLEEP",
+          mediaId: "media-123",
+        },
+      },
+    ]);
+    conversationFindMany.mockResolvedValue([]);
+
+    const count = await backfillKeyword("kw-1", { excludeCommentIds: ["live-comment"] });
+
+    expect(count).toBe(1);
+    expect(enqueueGate).toHaveBeenCalledOnce();
+    expect(enqueueGate).toHaveBeenCalledWith(
+      expect.objectContaining({ commentId: "earlier-comment", igUserId: "earlier-user" }),
+    );
+  });
 });
 
 // The conversation filter upstream should already have removed these people, so

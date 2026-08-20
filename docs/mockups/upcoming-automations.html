@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Upcoming automations — proposed treatment</title>
+<style>
+  /* The real tokens, copied verbatim from web/src/index.css so this mockup is
+     measured against the same surfaces the console actually renders on. */
+  :root {
+    --background:#f7f5ef; --foreground:#171812;
+    --card:#fffef9; --secondary:#ebe8df;
+    --muted:#ebe8df; --muted-foreground:#66665f;
+    --signal:#2c4a3b; --signal-soft:#dce9e2;
+    --urgent:#a8412b; --urgent-soft:#f5ddd6;
+    --caution:#7a5a0c; --caution-soft:#f0e6cc;
+    --border:#ebe8df; --line:#cac7bd;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--background); color:var(--foreground);
+    font:15px/1.5 "Archivo", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .page { max-width:1080px; margin:0 auto; padding:28px 32px 56px; }
+  .label-caps {
+    font-size:11px; letter-spacing:.08em; text-transform:uppercase;
+    color:var(--muted-foreground); font-weight:500;
+  }
+  h1 { font-size:24px; font-weight:500; letter-spacing:-.01em; margin:0; }
+  h2 { font-size:17px; font-weight:500; margin:0; }
+  h3 { font-size:15px; font-weight:500; margin:0; }
+  .sub { color:var(--muted-foreground); font-size:14px; margin:4px 0 0; }
+  .rule { height:1px; background:var(--border); margin:22px 0; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:8px; }
+
+  /* Status chips — every one of these clears the paper contrast floor. */
+  .chip {
+    display:inline-flex; align-items:center; gap:6px; padding:3px 9px;
+    border-radius:999px; font-size:11.5px; font-weight:500; white-space:nowrap;
+  }
+  .chip .dot { width:6px; height:6px; border-radius:50%; flex:none; }
+  .chip-waiting  { background:var(--caution-soft); color:var(--caution); }
+  .chip-waiting .dot  { background:var(--caution); }
+  .chip-bound    { background:var(--signal-soft); color:var(--signal); }
+  .chip-bound .dot    { background:var(--signal); }
+  .chip-attn     { background:var(--urgent-soft); color:var(--urgent); }
+  .chip-attn .dot     { background:var(--urgent); }
+  .chip-cancel   { background:var(--muted); color:var(--muted-foreground); }
+  .chip-cancel .dot   { background:var(--muted-foreground); }
+
+  /* Upcoming rows: a list, not cards. Rules and dividers, per DESIGN.md. */
+  .rows { border-top:1px solid var(--border); }
+  .row {
+    display:grid; grid-template-columns:130px 1fr auto auto;
+    gap:16px; align-items:center;
+    padding:13px 4px; border-bottom:1px solid var(--border);
+  }
+  .word { font-weight:500; font-variant-numeric:tabular-nums; letter-spacing:.01em; }
+  .row .why { color:var(--muted-foreground); font-size:13px; }
+  .row .why strong { color:var(--foreground); font-weight:500; }
+  .btn {
+    font:inherit; font-size:12.5px; padding:5px 11px; border-radius:6px;
+    border:1px solid var(--line); background:transparent; color:var(--foreground);
+    cursor:pointer;
+  }
+  .btn-quiet { border-color:transparent; color:var(--muted-foreground); }
+  .btn-solid { background:var(--foreground); color:var(--background); border-color:var(--foreground); }
+
+  /* Published grid, just enough to show the relationship. */
+  .filters { display:flex; gap:6px; margin:18px 0 14px; }
+  .pill {
+    font-size:12.5px; padding:5px 12px; border-radius:999px;
+    border:1px solid var(--line); color:var(--muted-foreground); background:transparent;
+  }
+  .pill[aria-pressed="true"] { background:var(--secondary); color:var(--foreground); border-color:var(--secondary); }
+  .grid { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; }
+  .tile { aspect-ratio:4/5; background:var(--secondary); border-radius:6px; position:relative; }
+  .tile .meta { position:absolute; left:8px; bottom:8px; font-size:11px; color:var(--muted-foreground); }
+
+  /* Home attention block. */
+  .attn-row { display:grid; grid-template-columns:26px 1fr auto; gap:14px; padding:14px 0; border-bottom:1px solid var(--border); align-items:start; }
+  .attn-idx { color:var(--muted-foreground); font-size:12px; font-variant-numeric:tabular-nums; padding-top:2px; }
+  .attn-tag { font-size:10.5px; letter-spacing:.07em; text-transform:uppercase; color:var(--urgent); font-weight:600; }
+
+  /* Before / after comparison. */
+  .cmp { display:grid; grid-template-columns:1fr 1fr; gap:0; border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+  .cmp > div { padding:20px 22px; }
+  .cmp > div + div { border-left:1px solid var(--border); }
+  .cmp .head { font-size:12px; font-weight:600; margin-bottom:14px; letter-spacing:.02em; }
+  .old { background:var(--card); }
+  .chips-col { display:flex; flex-direction:column; gap:10px; align-items:flex-start; }
+  /* The tints as-built on the branch — shown on paper, which is the point. */
+  .o1 { background:#fbbf24; color:#fde68a; }
+  .o2 { background:transparent; color:#7dd3fc; border:1px solid #38bdf8; }
+  .o3 { background:transparent; color:#6ee7b7; border:1px solid #34d399; }
+  .o4 { background:transparent; color:#fcd34d; border:1px solid #fbbf24; }
+  .ratio { font-size:11px; color:var(--muted-foreground); margin-left:8px; font-variant-numeric:tabular-nums; }
+  .note { font-size:13px; color:var(--muted-foreground); margin-top:14px; }
+  .empty { color:var(--muted-foreground); font-size:13.5px; padding:14px 4px; }
+  .caption-code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; background:var(--secondary); padding:1px 5px; border-radius:3px; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- ─────────────  1. CONTENT PAGE  ───────────── -->
+  <div class="label-caps">Proposal 1 of 3 · Content</div>
+  <h1 style="margin-top:6px">Content</h1>
+  <p class="sub">Pick a post, attach a keyword.</p>
+
+  <div class="rule"></div>
+
+  <!-- The grid is the page's subject, so it stays first. -->
+  <div class="filters" style="margin-top:0">
+    <button class="pill" aria-pressed="true">All 147</button>
+    <button class="pill">Reels 121</button>
+    <button class="pill">Carousels 26</button>
+  </div>
+  <div class="grid">
+    <div class="tile"><span class="meta">SLEEP · 2 keywords</span></div>
+    <div class="tile"><span class="meta">CARDBOARD</span></div>
+    <div class="tile"><span class="meta">—</span></div>
+    <div class="tile"><span class="meta">POTTY</span></div>
+  </div>
+
+  <div class="rule"></div>
+
+  <!-- Upcoming, INLINE and BELOW the grid. No tabs. -->
+  <div style="display:flex; align-items:baseline; justify-content:space-between">
+    <h2>Set up in advance</h2>
+    <button class="btn">+ Set up another</button>
+  </div>
+  <p class="sub">
+    Instagram doesn’t let us see your scheduled queue. Each of these waits for a post
+    whose caption contains its word — the word is how we recognise the post — and then
+    attaches itself.
+  </p>
+
+  <div class="rows" style="margin-top:14px">
+    <div class="row">
+      <span class="word">SLEEP</span>
+      <span class="why">
+        Sleep Reset Guide · the published caption says
+        <span class="caption-code">Comment SLEEPY</span>, so nothing is attached
+      </span>
+      <span class="chip chip-attn"><span class="dot"></span>Needs attention</span>
+      <span style="display:flex; gap:6px">
+        <button class="btn btn-solid">Fix</button>
+        <button class="btn btn-quiet">Cancel</button>
+      </span>
+    </div>
+    <div class="row">
+      <span class="word">PLAY</span>
+      <span class="why">Toddler Activity Guide · waiting for the post to publish</span>
+      <span class="chip chip-waiting"><span class="dot"></span>Waiting</span>
+      <span style="display:flex; gap:6px">
+        <button class="btn">Edit</button>
+        <button class="btn btn-quiet">Cancel</button>
+      </span>
+    </div>
+    <div class="row">
+      <span class="word">CARDBOARD</span>
+      <span class="why">Cardboard Play Guide · attached itself 2 hours ago</span>
+      <span class="chip chip-bound"><span class="dot"></span>Attached</span>
+      <span><button class="btn btn-quiet">View post</button></span>
+    </div>
+  </div>
+
+  <p class="note">
+    <strong style="font-weight:500; color:var(--foreground)">Below the grid, not above it.</strong>
+    The grid is what the page is for. She scans it, doesn’t find the post she just
+    scheduled, and keeps going — this is where that scan ends. A failure doesn’t need to
+    be high on this page, because Home catches it (proposal 2).
+  </p>
+  <p class="note" style="margin-top:8px">
+    A row like CARDBOARD is a receipt, not an entry: once attached it <em>is</em> an
+    ordinary keyword and already shows on its tile in the grid above, so it drops out
+    24&nbsp;hours after <code>bound_at</code> rather than living here forever. Waiting and
+    needs-attention rows never expire. The asymmetry is deliberate — a success she
+    misses costs her nothing; a failure she misses costs her every commenter on that
+    post.
+  </p>
+
+  <div style="height:40px"></div>
+
+  <!-- The empty variant. This is the correction: it must not render *nothing*. -->
+  <div class="label-caps">…and when nothing is pending</div>
+  <div class="rule" style="margin:12px 0 0"></div>
+  <p class="empty">
+    Scheduled a post that isn’t here yet?
+    <a href="#" style="color:var(--signal)">Set up its keyword in advance</a>
+  </p>
+  <div class="rule" style="margin:0 0 12px"></div>
+
+  <p class="note">
+    <strong style="font-weight:500; color:var(--foreground)">My first version rendered nothing here, and that was my bug, not the branch’s.</strong>
+    <code>Content.tsx</code> has no header action — the only way to make a keyword today
+    is tile → drawer → <em>Attach keyword</em>, which needs a post that exists. So with
+    an empty list and the <em>+</em> living inside it, she could never create her first
+    one.
+  </p>
+  <p class="note" style="margin-top:8px">
+    The branch had already handled this: an always-visible <em>Add upcoming setup</em>
+    button plus a dashed <em>“No upcoming setups”</em> card. This line is the same idea
+    at one-tenth the height — the button and the empty state collapsed into a single
+    sentence, so a rarely-used door doesn’t hold a dashed box open on every visit.
+  </p>
+
+  <div style="height:56px"></div>
+
+  <!-- ─────────────  2. HOME ATTENTION  ───────────── -->
+  <div class="label-caps">Proposal 2 of 3 · Home</div>
+  <h2 style="margin-top:8px">What needs attention</h2>
+  <p class="sub">So a broken setup finds her, instead of waiting to be found.</p>
+
+  <div style="margin-top:16px; border-top:1px solid var(--border)">
+    <div class="attn-row">
+      <span class="attn-idx">01</span>
+      <span>
+        <h3>SLEEP isn’t attached to your new post</h3>
+        <p class="sub" style="margin-top:3px">
+          The caption says <span class="caption-code">Comment SLEEPY</span>. Nothing is
+          being sent to anyone commenting on that reel.
+        </p>
+      </span>
+      <span style="display:flex; flex-direction:column; align-items:flex-end; gap:8px">
+        <span class="attn-tag">Now</span>
+        <button class="btn">Fix</button>
+      </span>
+    </div>
+    <div class="attn-row">
+      <span class="attn-idx">02</span>
+      <span>
+        <h3>Inspect the gate dm sent → replied done loss</h3>
+        <p class="sub" style="margin-top:3px">263 of 749 conversations stop here — the largest measured loss.</p>
+      </span>
+      <span style="display:flex; flex-direction:column; align-items:flex-end; gap:8px">
+        <span class="attn-tag" style="color:var(--muted-foreground)">Today</span>
+        <button class="btn">Inspect</button>
+      </span>
+    </div>
+  </div>
+
+  <div style="height:56px"></div>
+
+  <!-- ─────────────  3. WHY THE TOKENS CHANGE  ───────────── -->
+  <div class="label-caps">Proposal 3 of 3 · Why the colours must change</div>
+  <h2 style="margin-top:8px">The same four states, on paper</h2>
+  <p class="sub">Both columns are rendered on <code>#fffef9</code> — the real card surface.</p>
+
+  <div class="cmp" style="margin-top:16px">
+    <div class="old">
+      <div class="head" style="color:var(--urgent)">As built on the branch</div>
+      <div class="chips-col">
+        <span><span class="chip o1">Waiting</span><span class="ratio">1.23:1</span></span>
+        <span><span class="chip o2">Bound</span><span class="ratio">1.65:1</span></span>
+        <span><span class="chip o3">Attached</span><span class="ratio">1.51:1</span></span>
+        <span><span class="chip o4">Needs attention</span><span class="ratio">1.43:1</span></span>
+      </div>
+      <p class="note">Built for the dark shell. Every one fails the 3:1 floor.</p>
+    </div>
+    <div>
+      <div class="head" style="color:var(--signal)">Proposed</div>
+      <div class="chips-col">
+        <span><span class="chip chip-waiting"><span class="dot"></span>Waiting</span><span class="ratio">5.85:1</span></span>
+        <span><span class="chip chip-bound"><span class="dot"></span>Attached</span><span class="ratio">8.96:1</span></span>
+        <span><span class="chip chip-attn"><span class="dot"></span>Needs attention</span><span class="ratio">5.57:1</span></span>
+        <span><span class="chip chip-cancel"><span class="dot"></span>Cancelled</span><span class="ratio">4.42:1</span></span>
+      </div>
+      <p class="note">Existing tokens. A dot carries the state too, so colour isn’t the only signal.</p>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

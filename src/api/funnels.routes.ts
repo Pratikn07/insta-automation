@@ -1,4 +1,3 @@
-import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { FUNNELS, getFunnelDef } from "../services/funnels/registry.js";
@@ -11,6 +10,7 @@ import {
   type FunnelWindow,
 } from "../services/funnels/runFunnel.js";
 import { DROP_OFF_BUCKETS, type DropOffBucket } from "../services/funnels/dropOff.js";
+import { asyncRouter } from "./asyncRouter.js";
 
 /**
  * Funnel reads. Mounted under apiRouter, so requireAdmin has already run.
@@ -20,7 +20,7 @@ import { DROP_OFF_BUCKETS, type DropOffBucket } from "../services/funnels/dropOf
  * percentage live in src/services/funnels, so the page, the CLI and any MCP
  * client report the same numbers instead of three implementations drifting.
  */
-export const funnelsRouter = Router();
+export const funnelsRouter = asyncRouter();
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 /**

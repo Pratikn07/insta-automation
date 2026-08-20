@@ -67,8 +67,8 @@ export function CountryPicker({
         className={cn(
           "inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition",
           isExplicit
-            ? "border-sky-400/30 bg-sky-400/10 text-sky-200"
-            : "border-white/10 text-muted-foreground hover:bg-white/5 hover:text-foreground",
+            ? "border-funnel-mark bg-mark-soft text-funnel-mark"
+            : "border-border text-muted-foreground hover:bg-muted hover:text-foreground",
         )}
       >
         {isExplicit
@@ -81,10 +81,10 @@ export function CountryPicker({
         <div
           role="dialog"
           aria-label="All reported countries"
-          className="absolute right-0 top-full z-30 mt-1.5 w-72 rounded-xl border border-white/10 bg-[#0d1117] shadow-xl shadow-black/50"
+          className="absolute right-0 top-full z-30 mt-1.5 w-72 rounded-xl border border-border bg-popover shadow-xl"
         >
           <Command className="max-h-80 overflow-hidden">
-            <div className="flex items-center gap-2 border-b border-white/10 px-3 py-2">
+            <div className="flex items-center gap-2 border-b border-border px-3 py-2">
               <Search className="size-3.5 shrink-0 text-muted-foreground" />
               <Command.Input
                 placeholder="Search countries…"
@@ -115,7 +115,7 @@ export function CountryPicker({
                     className={cn(
                       "flex items-center gap-2 rounded-md px-2 py-1.5 text-xs",
                       stackable
-                        ? "cursor-pointer data-[selected=true]:bg-white/10"
+                        ? "cursor-pointer data-[selected=true]:bg-muted"
                         : "cursor-not-allowed opacity-50",
                     )}
                   >
@@ -134,7 +134,7 @@ export function CountryPicker({
                     <Check
                       className={cn(
                         "size-3 shrink-0",
-                        isExplicit && isShown ? "text-sky-300" : "invisible",
+                        isExplicit && isShown ? "text-funnel-mark" : "invisible",
                       )}
                     />
                     <span className="sr-only">
@@ -145,12 +145,12 @@ export function CountryPicker({
               })}
             </Command.List>
           </Command>
-          <div className="border-t border-white/10 px-3 py-2">
+          <div className="border-t border-border px-3 py-2">
             {isExplicit ? (
               <button
                 type="button"
                 onClick={onReset}
-                className="w-full rounded-md py-1 text-[11px] font-medium text-sky-300 transition hover:bg-white/5"
+                className="w-full rounded-md py-1 text-[11px] font-medium text-funnel-mark transition hover:bg-muted"
               >
                 Show top movers again
               </button>

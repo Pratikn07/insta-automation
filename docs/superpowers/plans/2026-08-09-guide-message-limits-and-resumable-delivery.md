@@ -2,29 +2,64 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Prevent Instagram guide messages above 1,000 UTF-16 code units from being saved or partially delivered, and make multi-message guide delivery resumable without automatically duplicating units whose provider outcome is ambiguous.
+**Goal:** Prevent Instagram guide messages above 1,000 Unicode code points from being saved or partially delivered, and make multi-message guide delivery resumable without automatically duplicating units whose provider outcome is ambiguous.
 
 **Architecture:** A single shared TypeScript policy defines the authoring/API limit. Before any Graph call, a pure compiler turns authored resource steps into immutable outbound units and validates the whole plan. PostgreSQL stores one idempotent delivery per trigger plus one row per actual Meta call; short, fenced transactions claim and checkpoint each unit, while every Meta call runs outside the transaction. Definite transient rejections may resume through a bounded worker; ambiguous outcomes stop in `needs_review` until the owner resolves them from the Conversations UI.
 
 **Tech Stack:** TypeScript, Node.js 22, Express, Zod, Prisma 5, PostgreSQL/Supabase, React 19, TanStack Query, Vitest, Testing Library, Vite.
 
+**Spec:** [Maison Editorial production-readiness design](../specs/2026-08-16-maison-editorial-production-readiness-design.md), §2, together with the detailed [guide message limits and resumable delivery design](../specs/2026-08-09-guide-message-limits-and-resumable-delivery-design.md). Where the older design says UTF-16 code units, the Maison production-readiness design supersedes it with Unicode code points.
+
 ## Global Constraints
 
-- The approved design is authoritative: [guide message limits and resumable delivery design](../specs/2026-08-09-guide-message-limits-and-resumable-delivery-design.md).
+- The approved Maison production-readiness design is authoritative; the older delivery design supplies detail only where it does not conflict.
 - Do not automatically split, truncate, normalize, or rewrite an author's text. The author owns every DM boundary.
-- Count JavaScript UTF-16 code units with `value.length` everywhere. Exactly 1,000 is valid; 1,001 is not. An emoji represented by a surrogate pair counts as two.
+- Count Unicode code points with `[...value].length` everywhere. Exactly 1,000 is valid; 1,001 is not. An astral emoji counts as one code point, matching the current production evidence recorded in `src/lib/instagramLimits.ts`.
 - Validate the complete compiled delivery before the first Graph call. One invalid later unit means zero units are sent.
 - A persisted unit is one external Meta call. Image/PDF plus caption is two units and must be checkpointed separately.
 - Use one delivery row per `(trigger_kind, trigger_id)`. Webhook replay must load the existing snapshot, never create or send a second plan.
 - Never keep a database transaction open across `sendTrackedText` or `sendTrackedMedia`.
 - Lock in this order everywhere: `guide_delivery`, then its `guide_delivery_unit` rows in ascending `position`. Queue claims use `FOR UPDATE SKIP LOCKED`.
 - A stale `sending` unit becomes `uncertain`; it never becomes `pending` automatically.
+- A definite transient rejection becomes `retryable`; a permanent rejection
+  becomes `failed`. These are distinct persisted unit states, not one status
+  inferred later from nullable metadata.
 - Only provider-confirmed or owner-confirmed units count as `sent`. Complete the conversation only after every persisted unit is `sent`.
 - Redelivery intro copy is part of the durable plan, not a best-effort send before it. The existing follow-aware closing line remains outside the guide plan and best-effort after confirmed completion.
-- Store snapshotted guide text/media URLs in the delivery ledger, but never place them in application logs or `event_log` payloads. Logs may contain IDs, unit kind/position, code-unit length, fingerprints, allowlisted Graph metadata, and timestamps.
+- Store snapshotted guide text/media URLs in the delivery ledger, but never place them in application logs or `event_log` payloads. Logs may contain IDs, unit kind/position, code-point length, fingerprints, allowlisted Graph metadata, and timestamps.
 - Enable RLS on both new backend-only tables and revoke `anon`/`authenticated` privileges, matching existing Supabase migrations.
 - Follow-gate rechecking is not implemented by this plan. A future `follow_recovery` trigger must call the same delivery service rather than reintroduce a direct sequence sender.
+- The rollout defaults off. An explicit controlled-recipient allowlist plus a
+  stable trigger-ID percentage selector assigns each new trigger to exactly one
+  sender: legacy or ledger, never both. Turning the ledger kill switch off
+  pauses existing ledger work and routes only new, unowned triggers to legacy
+  during the controlled phase.
+- Do not remove the legacy sender until the dated rollout record explicitly
+  says `CONTROLLED PATH STABLE — LEGACY REMOVAL AUTHORIZED`. Removal is a
+  post-rollout task, followed by the full release gate again.
 - Preserve the user's existing untracked `.claude/` directory and `probe-tmp.mjs`; do not stage or modify them.
+
+## Current Branch Baseline
+
+The Maison branch already contains a frontend counter, separate backend/frontend character helpers, API refinement, and a legacy sender guard. Treat these as partial work, not as completed tasks:
+
+- `src/lib/instagramLimits.ts` and `web/src/lib/messageLimits.ts` duplicate the policy and must converge on the shared module in Task 1.
+- `src/api/messages.routes.ts` rejects over-limit content but returns generic flattened Zod errors; Task 1 adds the stable privacy-safe contract.
+- `SequenceEditor.tsx` shows a counter, but Task 3 must prove the complete retained-draft, server-error, caption, and SaveStatus contracts.
+- `sequenceSender.ts` currently skips an invalid unit and resolves; this behavior is explicitly forbidden on the ledger path. Task 5’s preflight test must first prove that one invalid later unit results in zero provider calls. Task 9 isolates legacy and ledger ownership; Task 13 removes the legacy sender only after authorized production stability.
+- Existing unit success is not evidence of durable delivery. Database contracts, replay, uncertainty, and idempotent completion remain unimplemented.
+
+## Plan-Set Dependencies
+
+- Measurement truth is independent and may land first.
+- Implement this plan through Task 11 and the non-production parts of Task 12,
+  then stop at Task 12 Step 5. Do not perform the controlled Meta check yet.
+- The recovery/client plan may begin once Tasks 1–2 here have created the shared
+  message/resource route tests; it does not wait for production rollout.
+- Complete the recovery/client and interface plans, including all pre-production
+  release gates, before returning to Task 12 Step 5 for explicit rollout
+  authorization.
+- Task 13 is a later post-stability cleanup, not part of the initial push.
 
 ---
 
@@ -37,7 +72,7 @@
 - `src/api/resources.routes.test.ts` — invalid-content summaries and history-safe deletion tests.
 - `scripts/audit-guide-message-lengths.ts` — read-only ID/length audit; never prints bodies.
 - `web/src/pages/Sequences.test.tsx` — sequence-list attention badge tests.
-- `prisma/migrations/20260809052000_add_guide_delivery_ledger/migration.sql` — enums, tables, constraints, indexes, RLS, grants.
+- `prisma/migrations/20260817010000_add_guide_delivery_ledger/migration.sql` — enums, tables, constraints, indexes, RLS, grants. The timestamp sorts after every migration currently present on the Maison branch.
 - `src/services/guideDeliveryMigrationContract.test.ts` — catalog-level schema/security contract.
 - `src/services/guideDeliveryPlanner.ts` — pure authored-step-to-unit compiler and full preflight.
 - `src/services/guideDeliveryPlanner.test.ts` — ordering, captions, invalid legacy content, fingerprints.
@@ -54,6 +89,9 @@
 - `src/services/guideDeliveryScheduler.test.ts` — overlap and rejection containment tests.
 - `src/services/guideDeliveryReviewService.ts` — owner-confirm, explicit-risk retry, and cancellation transitions.
 - `src/services/guideDeliveryReviewService.test.ts` — review state/window/audit contracts.
+- `src/services/guideDeliveryRollout.ts` — stable, mutually exclusive legacy/ledger ownership for new trigger IDs.
+- `src/services/guideDeliveryRollout.test.ts` — allowlist, 0%, 100%,
+  stable-bucket, and kill-switch contracts.
 - `src/api/guideDeliveries.routes.ts` — authenticated owner review actions.
 - `src/api/guideDeliveries.routes.test.ts` — request and stable error contracts.
 - `web/src/components/conversations/GuideDeliveryReviewCard.tsx` — owner review UI.
@@ -79,16 +117,19 @@
 - `src/server.ts` — start the delivery recovery/retry scheduler.
 - `web/src/components/conversations/DmThreadList.tsx`, `web/src/components/conversations/DmThreadDrawer.tsx` — surface `Delivery needs review` and render the action card.
 
-### Remove after migration is complete
+### Remove only after controlled production stability is explicitly authorized
 
 - `src/services/sequenceSender.ts`
 - `src/services/sequenceSender.test.ts`
 
-The legacy sender must not remain as an attractive bypass. Remove it only after `rg 'sendSequence' src` shows that every production call site and test has moved to `guideDeliveryService`.
+During the controlled phase, the only permitted legacy call is the explicit
+opposite branch of `guideDeliveryOwner(triggerId)`. Remove it in Task 13 only
+after the rollout entrance condition is recorded. Until then, searches must
+prove there is one selector and no call path can invoke both senders.
 
 ---
 
-### Task 1: Establish one shared 1,000-code-unit policy and enforce it in the messages API
+### Task 1: Establish one shared 1,000-code-point policy and enforce it in the messages API
 
 **Files:**
 
@@ -106,14 +147,14 @@ The legacy sender must not remain as an attractive bypass. Remove it only after 
 Mock `prisma.resourceMessage` in `src/api/messages.routes.test.ts`, mount `messagesRouter` under an Express test app, and cover both `POST /api/messages` and `PATCH /api/messages/:id`:
 
 ```ts
-it.each(["POST", "PATCH"])("%s accepts exactly 1,000 code units", async (method) => {
+it.each(["POST", "PATCH"])("%s accepts exactly 1,000 code points", async (method) => {
   const body = "a".repeat(1_000);
   const response = await sendMessageRequest(method, body);
   expect(response.status).toBe(method === "POST" ? 201 : 200);
 });
 
-it.each(["POST", "PATCH"])("%s rejects 1,001 code units without echoing text", async (method) => {
-  const sentinel = `${"a".repeat(999)}😀`; // 1,001 UTF-16 code units
+it.each(["POST", "PATCH"])("%s rejects 1,001 code points without echoing text", async (method) => {
+  const sentinel = "P".repeat(1_001);
   const response = await sendMessageRequest(method, sentinel);
   expect(response.status).toBe(400);
   expect(response.body).toEqual({
@@ -125,7 +166,7 @@ it.each(["POST", "PATCH"])("%s rejects 1,001 code units without echoing text", a
 });
 ```
 
-Also assert that image and PDF captions go through the same check and that exactly 500 emoji (1,000 code units) is accepted.
+Also assert that image and PDF captions go through the same check, exactly 1,000 emoji is accepted, and a production-shaped body above 1,000 UTF-8 bytes but below 1,000 code points remains accepted.
 
 - [ ] **Step 2: Run the focused test and verify the existing 2,000 limit fails it**
 
@@ -135,7 +176,7 @@ Run:
 npm test -- src/api/messages.routes.test.ts
 ```
 
-Expected: failures show 1,001-unit bodies are accepted or return Zod's generic flattened error instead of `message_body_too_long`.
+Expected: the current route returns Zod's generic flattened error instead of `message_body_too_long`, and the policy still exists in two modules.
 
 - [ ] **Step 3: Add the shared policy module**
 
@@ -146,12 +187,12 @@ export const INSTAGRAM_GUIDE_TEXT_LIMIT = 1_000;
 export const INSTAGRAM_GUIDE_WARNING_AT = 900;
 export const MESSAGE_BODY_TOO_LONG_ERROR = "message_body_too_long" as const;
 
-export function countInstagramCodeUnits(value: string): number {
-  return value.length;
+export function countInstagramCodePoints(value: string): number {
+  return [...value].length;
 }
 
 export function isInstagramGuideTextTooLong(value: string): boolean {
-  return countInstagramCodeUnits(value) > INSTAGRAM_GUIDE_TEXT_LIMIT;
+  return countInstagramCodePoints(value) > INSTAGRAM_GUIDE_TEXT_LIMIT;
 }
 
 export const GUIDE_MESSAGE_LIMIT_GUIDANCE =
@@ -171,7 +212,7 @@ Backend imports must use the NodeNext `.js` suffix, for example:
 ```ts
 import {
   INSTAGRAM_GUIDE_TEXT_LIMIT,
-  countInstagramCodeUnits,
+  countInstagramCodePoints,
 } from "../../shared/guideMessagePolicy.js";
 ```
 
@@ -182,7 +223,7 @@ In `messages.routes.ts`, check only when `req.body.body` is a string, before `sa
 ```ts
 function rejectLongBody(body: unknown, res: Response): boolean {
   if (typeof body !== "string") return false;
-  const actual = countInstagramCodeUnits(body);
+  const actual = countInstagramCodePoints(body);
   if (actual <= INSTAGRAM_GUIDE_TEXT_LIMIT) return false;
   res.status(400).json({
     error: MESSAGE_BODY_TOO_LONG_ERROR,
@@ -232,7 +273,7 @@ git commit -m "fix: enforce Instagram guide message limit"
 
 - [ ] **Step 1: Write failing API tests for invalid-message summaries**
 
-Have the mocked resource query return message bodies, including a 1,001-unit sentinel, then assert the list response exposes only a count:
+Have the mocked resource query return message bodies, including a 1,001-code-point sentinel, then assert the list response exposes only a count:
 
 ```ts
 expect(response.body[0]).toMatchObject({
@@ -255,7 +296,7 @@ Expected: `invalidMessageCount` is absent.
 
 - [ ] **Step 3: Compute the summary with the shared policy**
 
-Extend the existing resource queries with `messages: { select: { body: true } }`, calculate over-limit counts in application code with `isInstagramGuideTextTooLong`, and strip the temporary `messages` array from the list response. Do not use PostgreSQL `length()` here because PostgreSQL counts Unicode characters while the product contract is JavaScript UTF-16 code units.
+Extend the existing resource queries with `messages: { select: { body: true } }`, calculate over-limit counts in application code with `isInstagramGuideTextTooLong`, and strip the temporary `messages` array from the list response. Use the shared application function rather than a separate SQL expression so API, editor, sender, and audit cannot drift.
 
 Add to `Resource` in `web/src/lib/types.ts`:
 
@@ -268,7 +309,7 @@ invalidMessageCount?: number;
 The script queries `ResourceMessage` rows with their resource ID/name and prints only:
 
 ```text
-resourceId=10000000-0000-4000-8000-000000000001 resource="Guide name" messageId=20000000-0000-4000-8000-000000000001 order=3 type=text codeUnits=1434 overBy=434 activeKeywords=1
+resourceId=10000000-0000-4000-8000-000000000001 resource="Guide name" messageId=20000000-0000-4000-8000-000000000001 order=3 type=text codePoints=1434 overBy=434 activeKeywords=1
 ```
 
 It must not print `body`, `mediaUrl`, tokens, or provider data. Sort active guides first, then resource name/order. Report every invalid row, but return exit code `1` only while at least one invalid row belongs to a resource with an active keyword; inactive/unlinked drafts remain visible warnings without blocking live delivery rollout. Return `0` when every active guide is valid.
@@ -279,7 +320,7 @@ Add:
 "audit:guide-message-lengths": "tsx scripts/audit-guide-message-lengths.ts"
 ```
 
-Do not add a mutation mode. The known 1,434-unit active step remains author-owned work.
+Do not add a mutation mode. Every active row reported by the audit remains author-owned work; do not hardcode a count or length from an earlier production snapshot.
 
 - [ ] **Step 5: Write the failing sequence-card UI test**
 
@@ -305,7 +346,7 @@ npm --prefix web test -- src/pages/Sequences.test.tsx
 npm run audit:guide-message-lengths
 ```
 
-Expected: tests pass. Against the current production-shaped data, the audit should report the known active 1,434-unit step (and may also report unlinked legacy rows) using IDs and lengths only, then exit `1`.
+Expected: tests pass. If current production-shaped data contains an active over-limit step, the audit reports it (and may also report unlinked legacy rows) using IDs and lengths only, then exits `1`. Do not assume the transcript’s earlier row count is still current.
 
 - [ ] **Step 8: Commit the audit/indicator slice**
 
@@ -331,8 +372,8 @@ Expand `SequenceEditor.test.tsx` to cover:
 - 899 units: normal counter.
 - 900 units: warning treatment begins.
 - 1,000 units: valid and blur triggers `PATCH /messages/:id`.
-- 1,001 units: error treatment and guidance; blur sends no PATCH.
-- 500 emoji: valid; 501 emoji: invalid.
+- 1,001 code points: error treatment and guidance; blur sends no PATCH.
+- 1,000 emoji: valid; 1,001 emoji: invalid.
 - Image and PDF captions use the same validation.
 - The complete invalid draft remains visible after blur and query refetch.
 - Save status says `Needs attention — message too long` and never `All changes saved` while any row is invalid.
@@ -346,7 +387,7 @@ Use one helper that finds the body textarea and reads calls where the first API 
 npm --prefix web test -- src/pages/SequenceEditor.test.tsx
 ```
 
-Expected: no counter/guidance is rendered, and the 1,001-unit body issues a PATCH.
+Expected: new SaveStatus, retained-draft, stable server-error, and 1,001-emoji assertions fail against the partial current editor implementation.
 
 - [ ] **Step 3: Add an explicit SaveStatus attention input**
 
@@ -370,9 +411,9 @@ Derive these values from the complete local `step.body`, not from the last saved
 
 ```ts
 const body = step.body ?? "";
-const codeUnits = countInstagramCodeUnits(body);
-const overLimit = codeUnits > INSTAGRAM_GUIDE_TEXT_LIMIT;
-const warning = codeUnits >= INSTAGRAM_GUIDE_WARNING_AT && !overLimit;
+const codePoints = countInstagramCodePoints(body);
+const overLimit = codePoints > INSTAGRAM_GUIDE_TEXT_LIMIT;
+const warning = codePoints >= INSTAGRAM_GUIDE_WARNING_AT && !overLimit;
 ```
 
 Render `current / 1,000`, apply warning/error styles, set `aria-invalid`, and render `GUIDE_MESSAGE_LIMIT_GUIDANCE` above 1,000. On body change, clear any matching server-side length error but retain the draft. On blur:
@@ -414,11 +455,11 @@ git commit -m "feat: show Instagram guide message limits in editor"
 
 **Files:**
 
-- Create: `prisma/migrations/20260809052000_add_guide_delivery_ledger/migration.sql`
+- Create: `prisma/migrations/20260817010000_add_guide_delivery_ledger/migration.sql`
 - Create: `src/services/guideDeliveryMigrationContract.test.ts`
 - Modify: `prisma/schema.prisma`
 - Modify: `src/api/resources.routes.ts`
-- Modify: `src/api/resources.routes.test.ts`
+- Modify: `src/api/resources.routes.test.ts` (created by Task 2)
 
 - [ ] **Step 1: Write the failing catalog contract**
 
@@ -478,8 +519,10 @@ enum GuideDeliveryUnitStatus {
   pending
   sending
   sent
+  retryable
   failed
   uncertain
+  cancelled
   @@map("guide_delivery_unit_status")
 }
 
@@ -518,7 +561,9 @@ Use lowercase mapped identifiers, `TIMESTAMPTZ(3)`, the repository's existing `g
 ```sql
 CREATE INDEX "guide_delivery_due_idx"
   ON "guide_delivery" ("next_attempt_at", "created_at", "id")
-  WHERE "status" IN ('planned', 'failed') AND "claim_token" IS NULL;
+  WHERE "claim_token" IS NULL
+    AND ("status" = 'planned'
+      OR ("status" = 'failed' AND "next_attempt_at" IS NOT NULL));
 
 CREATE INDEX "guide_delivery_expired_claim_idx"
   ON "guide_delivery" ("claim_expires_at", "id")
@@ -545,6 +590,11 @@ CONSTRAINT "guide_delivery_unit_payload_shape_check" CHECK (
 ),
 CONSTRAINT "guide_delivery_unit_attempts_check" CHECK ("attempts" >= 0)
 ```
+
+Add a delivery retry-shape check: `next_attempt_at` may be non-null only while
+the delivery is `failed`. A terminal failed delivery has
+`next_attempt_at = NULL`; a retryable failed delivery has a scheduled time.
+Cancellation changes every unsent unit to `cancelled` in the same transaction.
 
 The sent-state check must allow either a provider receipt or `owner_confirmed_at`, because the owner can confirm an ambiguous unit that Meta accepted without returning a locally persisted message ID.
 
@@ -578,7 +628,7 @@ Expected: all configured tests pass; without a migration database the catalog su
 - [ ] **Step 6: Commit the schema slice**
 
 ```bash
-git add prisma/schema.prisma prisma/migrations/20260809052000_add_guide_delivery_ledger/migration.sql src/services/guideDeliveryMigrationContract.test.ts src/api/resources.routes.ts src/api/resources.routes.test.ts
+git add prisma/schema.prisma prisma/migrations/20260817010000_add_guide_delivery_ledger/migration.sql src/services/guideDeliveryMigrationContract.test.ts src/api/resources.routes.ts src/api/resources.routes.test.ts
 git commit -m "feat: add durable guide delivery ledger"
 ```
 
@@ -617,10 +667,10 @@ Expected units:
 Also test:
 
 - `explicit_redelivery` prepends one text unit with origin `redelivery_intro` and no resource-message ID.
-- A 1,001-unit later caption rejects the entire plan.
+- A 1,001-code-point later caption rejects the entire plan.
 - Missing image/PDF URL rejects the entire plan.
 - Missing required Text body rejects the entire plan.
-- Exactly 1,000 units is valid.
+- A text unit containing exactly 1,000 code points is valid.
 - Fingerprints are stable for identical kind/content and change when either changes.
 - Error objects contain IDs, position/type, and measured length but not text or media URL.
 
@@ -704,6 +754,7 @@ export interface GuideDeliveryRepository {
   claimDueBatch(input: ClaimDueGuideDeliveriesInput): Promise<ClaimedGuideDelivery[]>;
   beginUnit(input: BeginGuideUnitInput): Promise<GuideDeliveryUnitRecord | null>;
   markUnitSent(input: MarkGuideUnitSentInput): Promise<boolean>;
+  markUnitRetryable(input: MarkGuideUnitRetryableInput): Promise<boolean>;
   markUnitFailed(input: MarkGuideUnitFailedInput): Promise<boolean>;
   markUnitUncertain(input: MarkGuideUnitUncertainInput): Promise<boolean>;
   releaseClaim(input: ReleaseGuideDeliveryClaimInput): Promise<boolean>;
@@ -745,15 +796,20 @@ For a preflight failure, insert the delivery with `status = failed`, `failure_co
 
 - [ ] **Step 5: Implement claims with short SQL transactions**
 
-Generate claim UUIDs in application code. `claimById` atomically updates one unclaimed `planned`/retryable `failed` row. `claimDueBatch` uses a CTE:
+Generate claim UUIDs in application code. `claimById` atomically updates one
+unclaimed `planned` row or one `failed` row whose non-null `nextAttemptAt` is
+due. A permanent/preflight/window-closed failure has `nextAttemptAt = null` and
+can never be claimed. `claimDueBatch` uses the same predicate in a CTE:
 
 ```sql
 WITH due AS (
   SELECT id
   FROM guide_delivery
-  WHERE status IN ('planned', 'failed')
-    AND claim_token IS NULL
-    AND (next_attempt_at IS NULL OR next_attempt_at <= $1)
+  WHERE claim_token IS NULL
+    AND (
+      status = 'planned'
+      OR (status = 'failed' AND next_attempt_at IS NOT NULL AND next_attempt_at <= $1)
+    )
   ORDER BY COALESCE(next_attempt_at, created_at), created_at, id
   FOR UPDATE SKIP LOCKED
   LIMIT $2
@@ -774,11 +830,15 @@ The claim predicate may ignore an expired send window only when every unit is al
 
 - [ ] **Step 6: Implement unit checkpoints and failure metadata**
 
-`beginUnit` locks the delivery, then the first non-sent unit by ascending position, and changes only `pending` or transient `failed` to `sending`. It increments attempts and timestamps before returning the snapshot to the caller.
+`beginUnit` locks the delivery, then the first non-sent unit by ascending
+position, and changes only `pending` or `retryable` to `sending`. It increments
+attempts and timestamps before returning the snapshot to the caller.
 
 Automatic work must refuse a unit at `GUIDE_DELIVERY_MAX_ATTEMPTS`. An owner-authorized retry may cross that cap exactly once: `beginUnit` atomically consumes a non-null `ownerRetryAuthorizedAt` by setting `ownerRetryConsumedAt` in the same update that changes the unit to `sending`. No worker may infer this authorization from status alone.
 
-`markUnitSent`, `markUnitFailed`, and `markUnitUncertain` each run in their own transaction after the provider call and require:
+`markUnitSent`, `markUnitRetryable`, `markUnitFailed`, and
+`markUnitUncertain` each run in their own transaction after the provider call
+and require:
 
 - matching delivery/claim token;
 - unit belongs to delivery;
@@ -793,7 +853,10 @@ Lock expired deliveries with `FOR UPDATE SKIP LOCKED`, then lock units by positi
 
 - Any `sending` unit becomes `uncertain`; delivery becomes `needs_review`; claim fields clear.
 - All units already `sent` become completion-pending and are returned for bookkeeping; do not send.
-- No `sending` unit and remaining pending/definite-failed units means no Graph boundary was crossed after the last checkpoint; clear the claim and make it safely due again.
+- No `sending` unit and remaining `pending`/`retryable` units means no Graph
+  boundary was crossed after the last checkpoint; clear the claim and make it
+  safely due again. A permanent `failed` unit remains terminal and is never
+  made due by lease reconciliation.
 
 Insert safe aggregate events in the same transactions.
 
@@ -839,9 +902,11 @@ export type DirectMessageSendDisposition =
 
 Reuse the existing closed transport allowlist. Test:
 
-- HTTP 429 and Meta/gateway definite rejection -> `definite_transient`.
+- A parsed Meta/Graph rejection response with no success receipt is definite;
+  classify retryable Graph errors such as 429 as `definite_transient`.
 - `ECONNREFUSED`, `ENOTFOUND`, `EAI_AGAIN` -> `definite_transient`.
-- Timeout/reset/cancel/no response -> `uncertain`.
+- Timeout/reset/cancel/no response and an unstructured gateway/proxy 5xx are
+  `uncertain` because the request may have crossed the provider boundary.
 - Auth/permission and permanent 4xx -> `definite_permanent`.
 - Unknown error -> `uncertain`.
 
@@ -867,6 +932,9 @@ Build the service with injected repository/sender/completion dependencies for un
 - A later invalid legacy caption causes zero calls to either tracked sender.
 - A successful text stores provider ID before the next unit begins.
 - If a caption gets a definite transient rejection, its earlier image stays sent and a resume calls only the caption.
+- A definite transient rejection persists unit `retryable` plus a non-null
+  delivery `nextAttemptAt`; a permanent rejection persists unit `failed` plus
+  a null `nextAttemptAt`.
 - If a text times out, it becomes uncertain, delivery becomes `needs_review`, and no later unit sends.
 - A permanent rejection stops with no retry time.
 - Bounded attempts turn a repeated definite transient rejection into terminal failed.
@@ -969,9 +1037,18 @@ GUIDE_DELIVERY_LEASE_MS: 5 * 60 * 1000       // minimum 60s
 GUIDE_DELIVERY_MAX_ATTEMPTS: 3                // 1..10
 GUIDE_DELIVERY_RETRY_BASE_MS: 60 * 1000       // minimum 10s
 GUIDE_DELIVERY_WORKER_INTERVAL_MS: 60 * 1000  // minimum 10s
+GUIDE_DELIVERY_ENABLED: false                 // safe deployment default
+GUIDE_DELIVERY_ROLLOUT_PERCENT: 0              // 0..100
+GUIDE_DELIVERY_COHORT_IG_USER_IDS: ""          // comma-separated controlled recipients
 ```
 
-Use `z.coerce.number().int()` with the listed bounds. There is no feature flag: this worker is part of the safety contract, and without it stale sends remain invisible.
+Use `z.coerce.number().int()` with the listed bounds and the repository's safe
+environment-boolean parser. Parse the allowlist into trimmed, non-empty IDs
+without logging it. Reject an enabled configuration unless either the allowlist
+is nonempty or rollout percent is above zero. Disabled configuration must start
+no ledger worker and assign no new trigger to the ledger. This is the
+deployment/kill switch required by the approved rollout design; it never falls
+an existing ledger delivery back to the legacy sender.
 
 - [ ] **Step 2: Write failing worker tests**
 
@@ -984,6 +1061,7 @@ The tick order must be:
 
 Test that:
 
+- disabled mode performs no claim, reconciliation, or provider call;
 - stale `sending` -> uncertain/review and no send;
 - expired claim with no begun unit becomes safely due;
 - all-sent incomplete delivery runs bookkeeping only;
@@ -1018,7 +1096,12 @@ The worker never changes `uncertain` automatically and never interprets a missin
 
 - [ ] **Step 6: Start the worker from server startup**
 
-Call `startGuideDeliveryScheduler` once with the environment interval and `runGuideDeliveryTick`. The scheduler runs an immediate startup reconciliation before its interval. Its log entries contain only stable error codes/counts.
+Only when `GUIDE_DELIVERY_ENABLED` is true, call
+`startGuideDeliveryScheduler` once with the environment interval and
+`runGuideDeliveryTick`. The scheduler runs an immediate startup reconciliation
+before its interval. Its log entries contain only stable error codes/counts.
+When disabled, log one stable `guide_delivery_disabled` code and do not touch
+ledger rows.
 
 - [ ] **Step 7: Run worker tests and build**
 
@@ -1038,24 +1121,41 @@ git commit -m "feat: reconcile interrupted guide deliveries"
 
 ---
 
-### Task 9: Route every live guide path through the durable service
+### Task 9: Route a stable, mutually exclusive cohort through the durable service
 
 **Files:**
 
+- Create: `src/services/guideDeliveryRollout.ts`
+- Create: `src/services/guideDeliveryRollout.test.ts`
 - Modify: `src/handlers/messageHandler.ts`
 - Modify: `src/handlers/messageHandler.test.ts`
-- Remove: `src/services/sequenceSender.ts`
-- Remove: `src/services/sequenceSender.test.ts`
 
-- [ ] **Step 1: Replace handler test mocks before production code**
+- [ ] **Step 1: Write the rollout ownership tests**
 
-Mock `deliverGuideForTrigger` and remove `sendSequence`, direct `markCompleted`, and direct follow-up scheduling expectations from guide-path tests. Add assertions for all three paths:
+Define a pure selector returning `"legacy" | "ledger"`. Test that:
+
+- disabled mode always returns `legacy`;
+- an allowlisted controlled recipient returns `ledger` even at 0%;
+- a non-allowlisted recipient remains `legacy` at 0%;
+- 0% returns `legacy` and 100% returns `ledger`;
+- the same trigger ID always receives the same owner across calls;
+- representative IDs distribute across a partial cohort;
+- the selector returns exactly one owner, never a pair or nullable result.
+
+Use SHA-256 over the durable trigger ID and derive a bucket in `0..99`; never use
+`Math.random()` or process-local state.
+
+- [ ] **Step 2: Write both handler-path contracts before changing production code**
+
+Mock `guideDeliveryOwner`, `deliverGuideForTrigger`, and the existing
+`sendSequence`. For each of the three guide paths, prove that `ledger` calls
+only `deliverGuideForTrigger` and `legacy` calls only the existing sender path:
 
 1. Instant keyword delivery for a follower -> `inbound_reply`.
-2. Already-completed keyword -> `explicit_redelivery` with the existing intro copy.
+2. Already-completed keyword -> `explicit_redelivery` with the existing intro.
 3. Open-gate reply, including recovered expired DONE -> `inbound_reply`.
 
-Each call must carry:
+Every ledger call must carry:
 
 ```ts
 {
@@ -1070,55 +1170,84 @@ Each call must carry:
 }
 ```
 
-Assert duplicate webhook processing with the same inbound message reuses the same trigger ID. Retain existing tests showing a confirmed non-follower receives only the follow gate and does not create a guide delivery.
+Assert duplicate webhook processing reuses the same trigger ID and therefore
+the same owner. Retain the tests showing a confirmed non-follower receives only
+the follow gate.
 
-- [ ] **Step 2: Run handler tests and verify they fail**
+- [ ] **Step 3: Run the selector and handler tests and verify they fail**
 
 ```bash
-npm test -- src/handlers/messageHandler.test.ts
+npm test -- src/services/guideDeliveryRollout.test.ts src/handlers/messageHandler.test.ts
 ```
 
-Expected: handler still calls `sendSequence` and performs completion itself.
+Expected: selector is absent and the handler has no exclusive ownership branch.
 
-- [ ] **Step 3: Add one small handler helper for inbound-triggered delivery**
+- [ ] **Step 4: Implement the stable owner selector**
 
-Use a constant for the 24-hour standard-DM window and centralize argument construction to prevent the three branches from drifting. The helper must return the typed `GuideDeliveryResult` so each branch can decide whether to run its existing best-effort closing nudge.
+Expose:
 
-Pass `REDELIVERY_INTRO` into the durable service only for `explicit_redelivery`; remove the direct pre-guide `sendTrackedText` calls. This prevents an intro from landing when preflight rejects the guide and prevents it from duplicating on resume.
-
-- [ ] **Step 4: Keep completion and thread resolution inside the delivery finalizer**
-
-Remove guide-path calls to `markCompleted`, `scheduleFollowUpAfterDelivery`, `markThreadResolved`, and `sequence_completed`. Gate-only and follow-required paths keep their existing direct sends/bookkeeping.
-
-Run the follow-aware closing nudge only when `deliverGuideForTrigger` returns `completed` in that invocation. It remains best-effort and is not allowed to change delivery/conversation status.
-
-For `preflight_failed`, `needs_review`, `retry_scheduled`, or `already_processing`, return normally and leave the inbound thread needing attention unless/until the finalizer resolves it.
-
-- [ ] **Step 5: Remove the bypass sender**
-
-Run:
-
-```bash
-rg -n 'sendSequence|sequenceSender' src
+```ts
+export function guideDeliveryOwner(input: {
+  enabled: boolean;
+  rolloutPercent: number;
+  cohortIgUserIds: ReadonlySet<string>;
+  igUserId: string;
+  triggerId: string;
+}): "legacy" | "ledger";
 ```
 
-Expected before deletion: only the implementation/test files remain. Delete both with `apply_patch`, then run the search again; expected output is empty.
+Return `legacy` before inspecting the cohort when disabled. When enabled,
+return `ledger` for an exact controlled-recipient match; otherwise validate
+percent defensively, hash the exact trigger ID, read an unsigned 32-bit prefix,
+and compare `prefix % 100 < rolloutPercent`. Configuration tests in Task 8
+remain the startup guard; this function still fails closed to `legacy` for
+invalid input.
 
-- [ ] **Step 6: Run handler and backend regression tests**
+- [ ] **Step 5: Centralize the one-owner branch in the handler**
+
+Use a constant for the 24-hour standard-DM window and one helper that receives
+the already-persisted inbound trigger ID. Select ownership once. The `ledger`
+branch uses `deliverGuideForTrigger`; the `legacy` branch preserves the current
+sender, completion, follow-up, thread-resolution, redelivery-intro, and closing
+nudge behavior.
+
+Inside the ledger branch, the redelivery intro is a durable unit and completion
+stays in the new finalizer. Run the follow-aware closing nudge only when the new
+service returns `completed` in that invocation. For `preflight_failed`,
+`needs_review`, `retry_scheduled`, or `already_processing`, return normally and
+leave the inbound thread needing attention.
+
+Never catch a ledger error and fall back to `sendSequence`: after the selector
+assigns ownership, failure is fail-closed for that trigger.
+
+- [ ] **Step 6: Prove there is one visible ownership choke point**
 
 ```bash
-npm test -- src/handlers/messageHandler.test.ts src/services/guideDeliveryService.test.ts
+rg -n 'guideDeliveryOwner|deliverGuideForTrigger|sendSequence' src/handlers/messageHandler.ts
+```
+
+Manually confirm every guide branch reaches the same helper, and that
+`deliverGuideForTrigger` and `sendSequence` appear only in opposite arms of its
+single owner switch. Searches outside the helper may show imports, tests, and
+the two service implementations only.
+
+- [ ] **Step 7: Run handler and backend regression tests**
+
+```bash
+npm test -- src/services/guideDeliveryRollout.test.ts src/handlers/messageHandler.test.ts src/services/guideDeliveryService.test.ts
 npm test
 npm run build
 ```
 
-Expected: all pass. Specifically, expired explicit DONE still creates a delivery because the fresh inbound opens the provider window; arbitrary expired text still does not recover the request.
+Expected: all pass. Expired explicit DONE still works because the fresh inbound
+opens the provider window; arbitrary expired text still does not recover the
+request; every trigger has exactly one sender.
 
-- [ ] **Step 7: Commit the live-path migration**
+- [ ] **Step 8: Commit the controlled ownership path**
 
 ```bash
-git add src/handlers/messageHandler.ts src/handlers/messageHandler.test.ts src/services/sequenceSender.ts src/services/sequenceSender.test.ts
-git commit -m "refactor: route guide sends through delivery ledger"
+git add src/services/guideDeliveryRollout.ts src/services/guideDeliveryRollout.test.ts src/handlers/messageHandler.ts src/handlers/messageHandler.test.ts
+git commit -m "feat: gate durable guide delivery by stable cohort"
 ```
 
 ---
@@ -1156,6 +1285,8 @@ Test:
 - `Retry unit` persists a fresh `ownerRetryAuthorizedAt` with `ownerRetryConsumedAt = null`; beginning that attempt consumes it atomically so a crash/restart cannot turn one acknowledgement into multiple attempts.
 - `Retry unit` is rejected after window close.
 - `Cancel delivery` is allowed while closed, never marks the conversation complete, and is idempotent.
+- Cancellation changes every non-sent unit to `cancelled`; sent units remain
+  immutable evidence.
 - Audit payloads contain actor/action/delivery/unit IDs/timestamp and no snapshots.
 
 - [ ] **Step 2: Write failing API contract tests**
@@ -1245,7 +1376,7 @@ export interface GuideDeliveryReviewUnit {
   id: string;
   position: number;
   kind: "text" | "image" | "file";
-  status: "pending" | "sending" | "sent" | "failed" | "uncertain";
+  status: "pending" | "sending" | "sent" | "retryable" | "failed" | "uncertain" | "cancelled";
 }
 
 export interface GuideDeliveryReview {
@@ -1323,20 +1454,25 @@ git commit -m "feat: review uncertain guide sends in conversations"
 
 ---
 
-### Task 12: Verify rollout safety, document operations, and close the implementation
+### Task 12: Verify rollout safety and prepare the controlled production path
 
 **Files:**
 
 - Create: `docs/guide-delivery-operations.md`
-- Modify as required only for test-discovered defects in files above.
+- Modify: `docs/superpowers/specs/2026-08-09-guide-message-limits-and-resumable-delivery-design.md`
+- Modify: `PRODUCT.md`
 
 - [ ] **Step 1: Write the operations runbook**
 
 Document:
 
 - Pre-deploy read-only audit command and why exit `1` means at least one active guide still blocks activation; inactive draft warnings remain listed without blocking live traffic.
-- The known active 1,434-unit step requires author correction; no SQL update or auto-split is permitted.
+- Every active row returned by the audit requires author correction; no SQL update or auto-split is permitted.
 - Migration-first deployment order.
+- Safe deployment values: ledger disabled, 0% rollout, and an empty allowlist.
+- The explicit authorization and configuration procedure for adding only the
+  controlled Instagram recipient to `GUIDE_DELIVERY_COHORT_IG_USER_IDS` while
+  percentage remains 0.
 - Controlled text-only test.
 - Controlled image-plus-caption test.
 - Forced definite rejection after an earlier confirmed unit, verifying resume skips it.
@@ -1348,13 +1484,18 @@ Document:
 
 - [ ] **Step 2: Run privacy and bypass scans**
 
+Before the scans, update the older guide-delivery design’s authoring/API/preflight references from UTF-16 code units to Unicode code points measured with `[...value].length`. Add the durable-delivery states and rollout status to `PRODUCT.md`; do not claim the new worker is active before controlled activation.
+
 ```bash
-rg -n 'sendSequence|sequenceSender' src
+rg -n 'guideDeliveryOwner|deliverGuideForTrigger|sendSequence' src/handlers/messageHandler.ts
 rg -n 'logger\.(info|warn|error|debug)\([^\n]*(textSnapshot|mediaUrlSnapshot|body)' src/services/guideDelivery* src/api/guideDeliveries.routes.ts
 rg -n 'eventLog\.create|logEvent' src/services/guideDelivery* src/api/guideDeliveries.routes.ts
 ```
 
-Expected: first two searches return no unsafe hits. Manually inspect every event call from the third search and confirm it passes only the allowlisted fields from Global Constraints.
+Expected: the first search shows one ownership choke point with the two senders
+in opposite branches. The second search returns no unsafe hits. Manually inspect
+every event call from the third search and confirm it passes only the allowlisted
+fields from Global Constraints.
 
 - [ ] **Step 3: Run the complete automated verification matrix**
 
@@ -1385,9 +1526,32 @@ Expected: both suites execute (not skip) and pass.
 npm run audit:guide-message-lengths
 ```
 
-Expected before author correction: ID/length-only report and exit `1` because the known 1,434-unit row is active. After the author manually rewrites or divides every affected active guide: inactive/unlinked warnings may still be listed, but there is no over-limit active row and the command exits `0`. Do not change content as part of backend deployment unless the author supplies the exact replacement messages.
+Expected before author correction: ID/length-only report and exit `1` whenever an active over-limit row exists. After the author manually rewrites or divides every affected active guide: inactive/unlinked warnings may still be listed, but there is no over-limit active row and the command exits `0`. Do not change content as part of backend deployment unless the author supplies the exact replacement messages.
 
-- [ ] **Step 5: Perform controlled pre-production delivery checks**
+- [ ] **Step 5: Hard pause for explicit controlled-production authorization**
+
+Do not deploy, change production environment values, add a recipient to the
+allowlist, or send a Meta message merely because the automated checks pass.
+This step is not eligible until the measurement, recovery/client, and interface
+plans have completed their pre-production gates and the combined QA report is
+`READY FOR CONTROLLED ROLLOUT`.
+Present the audit, disposable-database contracts, and full verification output
+to the owner and obtain explicit authorization for this controlled production
+mutation. If authorization is not given, stop here with status
+`READY FOR CONTROLLED ROLLOUT`, not `production complete`.
+
+- [ ] **Step 6: Deploy disabled, then perform only the authorized cohort check**
+
+After authorization:
+
+1. Apply the additive migration first.
+2. Deploy code with `GUIDE_DELIVERY_ENABLED=false`, rollout 0, and an empty
+   allowlist; verify no ledger worker starts and legacy behavior remains active.
+3. Add only the controlled recipient's Instagram user ID, keep percentage 0,
+   enable the ledger, restart, and verify a non-allowlisted probe remains on the
+   legacy branch without receiving a test message.
+
+Using the controlled recipient inside an open messaging window:
 
 Using a controlled Instagram recipient inside an open messaging window:
 
@@ -1398,11 +1562,11 @@ Using a controlled Instagram recipient inside an open messaging window:
 
 Record only delivery/unit IDs and statuses in the verification note; do not paste guide content or provider tokens.
 
-- [ ] **Step 6: Review success criteria against evidence**
+- [ ] **Step 7: Review success criteria against evidence**
 
 Confirm each statement with a named test or controlled check:
 
-- Supported API rejects every text/caption above 1,000 code units.
+- Supported API rejects every text/caption above 1,000 code points.
 - Legacy invalid guide causes zero Graph calls.
 - UI never invents message boundaries.
 - Confirmed units are not resent automatically.
@@ -1410,23 +1574,85 @@ Confirm each statement with a named test or controlled check:
 - Conversation completion occurs only after all units are provider- or owner-confirmed.
 - Webhook replay produces one delivery plan.
 - No delivery transaction spans a Meta call.
+- Controlled and non-controlled triggers each have exactly one sender owner;
+  there is no fallback from a failed ledger trigger to legacy.
 
-- [ ] **Step 7: Commit the runbook and any verification-only corrections**
+- [ ] **Step 8: Commit the runbook and any verification-only corrections**
 
 ```bash
-git add docs/guide-delivery-operations.md
+git add docs/guide-delivery-operations.md docs/superpowers/specs/2026-08-09-guide-message-limits-and-resumable-delivery-design.md PRODUCT.md
 git commit -m "docs: add guide delivery rollout runbook"
 ```
 
-- [ ] **Step 8: Inspect final scope before handoff**
+- [ ] **Step 9: Inspect final scope before handoff**
 
 ```bash
 git status --short
 git log --oneline --decorate -12
-git diff 2b0cde8..HEAD --stat
+git diff origin/main...HEAD --stat
 ```
 
 Expected: only the planned feature files are committed; `.claude/` and `probe-tmp.mjs` remain untouched and untracked.
+
+---
+
+### Task 13: Retire the legacy sender only after controlled stability
+
+This is a post-rollout task. Do not execute it in the initial production push.
+
+**Entrance condition:** the dated QA/rollout record contains the literal status
+`CONTROLLED PATH STABLE — LEGACY REMOVAL AUTHORIZED`, identifies the approving
+owner, and records zero unexplained duplicate sends, completion mismatches, or
+unreviewed uncertain outcomes for the approved observation window.
+
+**Files:**
+
+- Modify: `src/handlers/messageHandler.ts`
+- Modify: `src/handlers/messageHandler.test.ts`
+- Modify: `src/config/env.ts`
+- Modify: `src/config/env.test.ts`
+- Remove: `src/services/sequenceSender.ts`
+- Remove: `src/services/sequenceSender.test.ts`
+- Modify: `docs/guide-delivery-operations.md`
+
+- [ ] **Step 1: Verify and quote the entrance record**
+
+Stop if the exact authorization status or named owner is absent. Link the
+record in the cleanup commit message/body; do not infer approval from traffic
+or elapsed time.
+
+- [ ] **Step 2: Write the post-legacy kill-switch tests**
+
+After legacy removal, disabled mode must fail closed before any provider call
+and surface a stable operational error; it must not silently drop a guide or
+call an alternate sender. Enabled mode routes every guide trigger to the ledger.
+Keep the worker disabled whenever the kill switch is disabled.
+
+- [ ] **Step 3: Remove the legacy branch and sender**
+
+Delete `sendSequence` and its tests only after the new handler tests fail for
+the intended old behavior. Remove rollout percentage/allowlist configuration
+if the authorized production state is 100% ledger; retain only the emergency
+kill switch and its fail-closed operator guidance.
+
+```bash
+rg -n 'sendSequence|sequenceSender' src
+```
+
+Expected after deletion: no result.
+
+- [ ] **Step 4: Re-run the complete release gate**
+
+Run the Task 12 automated matrix, disposable PostgreSQL contracts, privacy
+scans, and controlled-recipient smoke test again. This second controlled test
+also requires explicit owner authorization because it sends real Meta content.
+
+- [ ] **Step 5: Commit the authorized cleanup**
+
+```bash
+git add src/handlers/messageHandler.ts src/handlers/messageHandler.test.ts src/config/env.ts src/config/env.test.ts src/services/sequenceSender.ts src/services/sequenceSender.test.ts docs/guide-delivery-operations.md
+git commit -m "refactor: retire authorized legacy guide sender"
+```
 
 ---
 

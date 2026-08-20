@@ -77,8 +77,8 @@ export function RangeFilter({
             className={cn(
               "rounded-md px-2.5 py-1 text-xs font-medium transition",
               activePreset === preset
-                ? "bg-sky-400/15 text-sky-200"
-                : "text-muted-foreground hover:bg-white/5 hover:text-foreground",
+                ? "bg-mark-soft text-funnel-mark"
+                : "text-muted-foreground hover:bg-muted hover:text-foreground",
             )}
           >
             {label}
@@ -94,8 +94,8 @@ export function RangeFilter({
         className={cn(
           "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition",
           activePreset === null
-            ? "bg-sky-400/15 text-sky-200"
-            : "text-muted-foreground hover:bg-white/5 hover:text-foreground",
+            ? "bg-mark-soft text-funnel-mark"
+            : "text-muted-foreground hover:bg-muted hover:text-foreground",
         )}
       >
         <CalendarDays className="size-3.5" />
@@ -106,7 +106,7 @@ export function RangeFilter({
         <div
           role="dialog"
           aria-label="Choose a date range"
-          className="absolute right-0 top-full z-30 mt-1.5 rounded-xl border border-white/10 bg-[#0d1117] shadow-xl shadow-black/50"
+          className="absolute right-0 top-full z-30 mt-1.5 rounded-xl border border-border bg-popover shadow-xl"
         >
           <RangeCalendar
             min={coverage.from}

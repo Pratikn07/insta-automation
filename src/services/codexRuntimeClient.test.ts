@@ -140,6 +140,33 @@ describe("createCodexRuntimeClient", () => {
     expect(error.retryAt).toBeInstanceOf(Date);
   });
 
+  // Two runtime codes carry meaning the browser must act on. Flattening them into
+  // runtime_unavailable told the browser "try again", which for an unresolved
+  // question means asking the model twice.
+  it.each(["advisor_outcome_pending", "idempotency_conflict"] as const)(
+    "preserves %s across the runtime boundary",
+    async (code) => {
+      const baseUrl = await stubRuntime((_req, res) => jsonResponse(res, 409, { error: code }));
+      const client = createCodexRuntimeClient({ baseUrl, token: RUNTIME_TOKEN });
+
+      await expect(
+        client.askAdvisor({ message: "What should I focus on?", clientMessageId: "msg-1" }),
+      ).rejects.toMatchObject({ code, status: 409 });
+    },
+  );
+
+  it("still reduces an unrecognised runtime code to a generic failure", async () => {
+    // No runtime response detail is forwarded verbatim; only the allowlist crosses.
+    const baseUrl = await stubRuntime((_req, res) =>
+      jsonResponse(res, 409, { error: "some_internal_detail" }),
+    );
+    const client = createCodexRuntimeClient({ baseUrl, token: RUNTIME_TOKEN });
+
+    await expect(
+      client.askAdvisor({ message: "What should I focus on?", clientMessageId: "msg-1" }),
+    ).rejects.toMatchObject({ code: "runtime_unavailable" });
+  });
+
   it("maps a runtime 503 to not-ready with a null retryAt", async () => {
     const baseUrl = await stubRuntime((_req, res) =>
       jsonResponse(res, 503, { error: "app_server_not_ready" }),

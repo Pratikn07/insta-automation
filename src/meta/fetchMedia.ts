@@ -64,6 +64,10 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 // cache and one Graph walk.
 let allCache: { at: number; media: AccountMedia[] } | null = null;
 
+export function invalidateMediaCache(): void {
+  allCache = null;
+}
+
 /**
  * Is this a reel? `media_product_type` is authoritative when present; the
  * `media_type === "VIDEO"` fallback covers older items where Meta omits it.
@@ -161,4 +165,55 @@ export async function fetchAllFeedPosts(): Promise<AccountMedia[]> {
   return media.filter(
     (m) => m.mediaProductType === "FEED" || (m.mediaProductType === null && m.kind !== "reel"),
   );
+}
+
+/**
+ * Fetch newly published media without consulting the Content-page cache.
+ *
+ * Meta orders the edge newest-first, so discovery can stop as soon as a page
+ * reaches the oldest open setup. This supports restart catch-up without walking
+ * the account's full history every minute.
+ */
+export async function fetchMediaPublishedSince(since: Date): Promise<AccountMedia[]> {
+  const media: AccountMedia[] = [];
+  let after: string | undefined;
+  let pages = 0;
+  let reachedOlderMedia = false;
+
+  do {
+    const params: Record<string, string | number> = { fields: MEDIA_FIELDS, limit: PAGE_LIMIT };
+    if (after) params.after = after;
+
+    const res = await insightsGraph.get<MediaResponse>(`/${env.IG_USER_ID}/media`, { params });
+    for (const item of res.data.data ?? []) {
+      const timestamp = item.timestamp ? new Date(item.timestamp) : null;
+      if (timestamp && !Number.isNaN(timestamp.getTime()) && timestamp < since) {
+        reachedOlderMedia = true;
+        continue;
+      }
+      media.push(toMedia(item));
+    }
+
+    after =
+      !reachedOlderMedia && res.data.paging?.next
+        ? res.data.paging?.cursors?.after
+        : undefined;
+    pages += 1;
+  } while (after && pages < MAX_PAGES);
+
+  if (pages >= MAX_PAGES && after) {
+    logger.warn(
+      { pages, media: media.length },
+      "fetchMediaPublishedSince hit MAX_PAGES; some media may be omitted",
+    );
+  }
+  return media;
+}
+
+/** A fresh single-media read used only after a comment intersects a pending word. */
+export async function fetchMediaById(mediaId: string): Promise<AccountMedia> {
+  const response = await insightsGraph.get<GraphMediaItem>(`/${mediaId}`, {
+    params: { fields: MEDIA_FIELDS },
+  });
+  return toMedia(response.data);
 }

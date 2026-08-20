@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Signal — Tiny Soho design system</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..125,400;75..125,500;75..125,600&display=swap" rel="stylesheet">
+<style>
+  /* This page obeys the system it documents: paper ground, rules and rows for
+     hierarchy, no shadows outside a true overlay. If a future edit wraps a group
+     of unrelated figures in a box, the guide has stopped being an example of itself. */
+  :root{
+    --paper:#F7F5EF; --ink:#171812; --raised:#FFFEF9; --quiet:#EBE8DF;
+    --muted:#66665F; --line:#CAC7BD;
+    --signal:#2C4A3B; --signal-soft:#DCE9E2; --urgent:#A8412B; --destructive:#8C3A2B;
+    --f-mark:#2A4A6B; --f-soft:#6B8AA5; --f-unknown:#8F8A80;
+    --ease:cubic-bezier(.19,1,.22,1);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--paper);color:var(--ink);font-family:"Archivo",system-ui,sans-serif;
+       font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}
+  .page{max-width:1000px;margin:0 auto;padding:48px 28px 110px}
+  .label{font-size:.625rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+  h1{font-size:1.75rem;font-weight:500;letter-spacing:-.02em}
+  h2{font-size:1.25rem;font-weight:500;letter-spacing:-.015em}
+  section{border-top:1px solid var(--line);padding-top:20px;margin-top:56px}
+  .lede{max-width:70ch;font-size:.8125rem;line-height:1.625;color:var(--muted);margin-top:12px}
+  table{width:100%;border-collapse:collapse;margin-top:18px}
+  th{font-size:.625rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);
+     text-align:left;padding:0 12px 6px 0;border-bottom:1px solid var(--ink)}
+  td{font-size:.8125rem;padding:9px 12px 9px 0;border-bottom:1px solid var(--quiet);vertical-align:middle}
+  .sw{width:44px;height:24px;display:inline-block;vertical-align:middle;border-radius:2px}
+  .pass{color:var(--signal)} .fail{color:var(--destructive)}
+  .row{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-top:18px}
+
+  .btn{display:inline-flex;align-items:center;justify-content:center;height:36px;padding:0 16px;
+       border:0;border-radius:2px;font:inherit;font-size:13px;font-weight:500;cursor:pointer;
+       transition:opacity .2s,background .2s}
+  .btn:active{transform:scale(.98)}
+  .btn:focus-visible{outline:none;box-shadow:0 0 0 2px var(--paper),0 0 0 4px var(--signal)}
+  .btn-primary{background:var(--ink);color:var(--paper)}
+  .btn-primary:hover{opacity:.9}
+  .btn-brand{background:var(--signal);color:var(--paper)}
+  .btn-brand:hover{opacity:.9}
+  .btn-outline{background:transparent;color:var(--ink);border:1px solid var(--line)}
+  .btn-outline:hover{background:var(--quiet)}
+  @media (pointer:coarse){.btn{min-height:44px}}
+
+  .field{width:100%;max-width:300px;height:36px;background:transparent;color:var(--ink);
+    font:inherit;font-size:14px;border:1px solid var(--line);border-radius:2px;padding:4px 12px}
+  .field::placeholder{color:var(--muted)}
+  .field:focus-visible{outline:none;border-color:var(--signal);
+    box-shadow:0 0 0 1px var(--paper),0 0 0 3px rgba(44,74,59,.35)}
+
+  .rail{width:208px;border-right:1px solid var(--quiet);padding:16px 0;margin-top:18px}
+  .rail .g{font-size:.625rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);padding:14px 20px 5px}
+  .rail a{display:flex;align-items:center;min-height:32px;padding:6px 20px;font-size:13px;
+    color:var(--muted);text-decoration:none;border-left:2px solid transparent;cursor:pointer;
+    transition:color .2s,background .2s}
+  .rail a:hover{background:var(--quiet);color:var(--ink)}
+  .rail a.on{color:var(--ink);font-weight:500;border-left-color:var(--signal)}
+  @media (pointer:coarse){.rail a{min-height:44px}}
+
+  .band{display:grid;grid-template-columns:1.55fr 1fr;border:1px solid var(--line);margin-top:18px}
+  /* Neutral, not moss: a finding may be bad news, so its surface must not
+     celebrate it before the reader has read it. */
+  .read{background:var(--quiet);padding:22px}
+  .read h3{font-size:1.25rem;font-weight:500;line-height:1.375;letter-spacing:-.015em;margin-top:8px}
+  .read p{font-size:.8125rem;line-height:1.625;margin-top:10px;max-width:58ch}
+  .ev{margin-top:12px;background:none;border:0;border-bottom:1px solid currentColor;
+      color:var(--signal);font:inherit;font-size:.625rem;letter-spacing:.14em;
+      text-transform:uppercase;padding:0 0 2px;cursor:pointer}
+  .next{border-left:1px solid var(--line);padding:22px;display:flex;flex-direction:column}
+
+  .act{display:grid;grid-template-columns:26px 1fr auto;gap:12px;align-items:start;
+    border-bottom:1px solid var(--quiet);padding:12px 0;text-decoration:none;color:var(--ink);
+    cursor:pointer;transition:padding .2s var(--ease)}
+  .act:hover{padding-left:6px}
+  .act .no{font-size:12px;color:var(--muted);padding-top:2px}
+  .act .t{display:block;font-size:13.5px;font-weight:500}
+  .act .s{display:block;margin-top:4px;font-size:12px;line-height:1.6;color:var(--muted)}
+  .act .r{text-align:right}
+  .tag{display:block;font-size:.625rem;letter-spacing:.14em;text-transform:uppercase;color:var(--urgent)}
+  .act .b{display:inline-block;margin-top:6px;border:1px solid var(--line);background:var(--raised);
+    border-radius:2px;padding:4px 10px;font-size:12px}
+  @media (pointer:coarse){.act{min-height:44px}}
+
+  .chip{display:inline-block;font-size:12px;border-radius:2px;padding:2px 8px}
+  .chip-ok{background:var(--signal-soft);color:var(--signal)}
+  .chip-warn{background:#F3E3DF;color:var(--destructive)}
+  .chip-unknown{background:var(--quiet);color:var(--muted)}
+
+  .fig{border-top:1px solid var(--quiet);padding-top:12px}
+  .fig .v{font-size:1.8rem;font-weight:500;letter-spacing:-.02em;line-height:1.25;margin-top:8px}
+  .fig .v.counts{font-size:1.4rem}
+  .fig .v.ph{font-size:1.125rem;color:var(--muted)}
+  .fig .n{font-size:11px;color:var(--muted);margin-top:5px}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+  @media (max-width:820px){.band{grid-template-columns:1fr}.next{border-left:0;border-top:1px solid var(--line)}}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header>
+    <div style="display:flex;justify-content:space-between;border-bottom:1px solid var(--quiet);padding-bottom:10px">
+      <span class="label">Tiny Soho</span><span class="label">Design system</span>
+    </div>
+    <h1 style="margin-top:32px">Signal</h1>
+    <p class="lede">The Standing Brief. A daily brief, not a dashboard: the page opens with
+      the finding and puts the numbers underneath as support. Every ratio below is measured
+      against the ground, not chosen by eye.</p>
+  </header>
+
+  <section>
+    <h2>Colour</h2>
+    <p class="lede">One accent for focus and affirmative state, one attention tone that marks
+      a task rather than a failure, and a data vocabulary kept entirely separate from both.</p>
+
+    <p class="label" style="margin-top:28px">Interface</p>
+    <table>
+      <tr><th>Swatch</th><th>Token</th><th>Value</th><th>On paper</th><th>Role</th></tr>
+      <tr><td><span class="sw" style="background:#2C4A3B"></span></td><td>signal</td>
+        <td>#2C4A3B</td><td class="pass">8.96:1</td>
+        <td>The only accent. Active rail edge, healthy status, affirmative actions. Never a data colour, and never tinting a finding.</td></tr>
+      <tr><td><span class="sw" style="background:#DCE9E2"></span></td><td>signal-soft</td>
+        <td>#DCE9E2</td><td>1.15:1</td><td>The healthy chip. Moss reads 7.81:1 on it.</td></tr>
+      <tr><td><span class="sw" style="background:#A8412B"></span></td><td>urgent</td>
+        <td>#A8412B</td><td class="pass">5.57:1</td>
+        <td>Marks the thing to do next. The obvious #E74A25 measures 3.56:1 and was refused.</td></tr>
+      <tr><td><span class="sw" style="background:#8C3A2B"></span></td><td>destructive</td>
+        <td>#8C3A2B</td><td class="pass">6.99:1</td><td>Deletion and irreversible actions only.</td></tr>
+    </table>
+
+    <p class="label" style="margin-top:34px">Neutral</p>
+    <table>
+      <tr><th>Swatch</th><th>Token</th><th>Value</th><th>On paper</th><th>Role</th></tr>
+      <tr><td><span class="sw" style="background:#F7F5EF;border:1px solid #CAC7BD"></span></td>
+        <td>ground</td><td>#F7F5EF</td><td>—</td><td>The page. Everything sits directly on it.</td></tr>
+      <tr><td><span class="sw" style="background:#171812"></span></td><td>ink</td>
+        <td>#171812</td><td class="pass">16.38:1</td><td>Body and headings.</td></tr>
+      <tr><td><span class="sw" style="background:#66665F"></span></td><td>muted-ink</td>
+        <td>#66665F</td><td class="pass">5.31:1</td><td>Secondary copy, labels, placeholders.</td></tr>
+      <tr><td><span class="sw" style="background:#FFFEF9;border:1px solid #CAC7BD"></span></td>
+        <td>raised</td><td>#FFFEF9</td><td>1.08:1</td><td>Controls and floating chrome. Never a card.</td></tr>
+      <tr><td><span class="sw" style="background:#EBE8DF"></span></td><td>quiet</td>
+        <td>#EBE8DF</td><td>1.12:1</td><td>Row rules, hover beds, inert fills.</td></tr>
+      <tr><td><span class="sw" style="background:#CAC7BD"></span></td><td>line</td>
+        <td>#CAC7BD</td><td>1.55:1</td><td>Structural rules and field edges.</td></tr>
+    </table>
+
+    <p class="label" style="margin-top:34px">Data — marks need ≥3:1; these all clear 4.5</p>
+    <div class="row">
+      <span class="sw" style="background:#2C4A3B" title="#2C4A3B 8.96"></span>
+      <span class="sw" style="background:#8C5A1F" title="#8C5A1F 5.35"></span>
+      <span class="sw" style="background:#2A4A6B" title="#2A4A6B 8.41"></span>
+      <span class="sw" style="background:#8C3A2B" title="#8C3A2B 6.99"></span>
+      <span class="sw" style="background:#5A4E7C" title="#5A4E7C 6.84"></span>
+      <span class="sw" style="background:#3F6B22" title="#3F6B22 5.77"></span>
+      <span class="sw" style="background:#1E5F66" title="#1E5F66 6.68"></span>
+      <span class="sw" style="background:#8C3B63" title="#8C3B63 6.59"></span>
+    </div>
+    <p class="lede">5.35 · 5.77 · 6.59 · 6.68 · 6.84 · 6.99 · 8.41 · 8.96 — every country mark
+      is legible enough to carry its own label, not merely to be seen. Funnel marks are
+      #2A4A6B (8.41) and #6B8AA5 (3.30); absence of evidence is #8F8A80 and is deliberately
+      not a hue.</p>
+  </section>
+
+  <section>
+    <h2>Typography</h2>
+    <p class="lede">One family, Archivo, actually loaded. Hierarchy from weight and size, never
+      a second face. Two weights carry the system: 400 for running text, 500 for structure.</p>
+    <table>
+      <tr><th>Role</th><th>Spec</th><th>Specimen</th></tr>
+      <tr><td>Display</td><td>500 / 1.5rem / −0.02em</td>
+        <td style="font-size:1.5rem;font-weight:500;letter-spacing:-.02em">Home</td></tr>
+      <tr><td>Headline</td><td>500 / 1.25rem / 1.375</td>
+        <td style="font-size:1.25rem;font-weight:500;line-height:1.375">Growth is healthy. The reply step is the constraint.</td></tr>
+      <tr><td>Figure</td><td>500 / 1.8rem / tabular</td>
+        <td style="font-size:1.8rem;font-weight:500;letter-spacing:-.02em">+248</td></tr>
+      <tr><td>Title</td><td>500 / 0.9375rem</td>
+        <td style="font-size:.9375rem;font-weight:500">What needs attention</td></tr>
+      <tr><td>Body</td><td>400 / 0.8125rem / 1.625</td>
+        <td style="font-size:.8125rem;line-height:1.625">1,679 of 2,946 conversations stop here.</td></tr>
+      <tr><td>Label</td><td>400 / 0.625rem / 0.14em caps</td>
+        <td><span class="label">US followers this week</span></td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>Components</h2>
+
+    <p class="label" style="margin-top:24px">Buttons — hover, focus and press are live</p>
+    <div class="row">
+      <button class="btn btn-primary">Review message two</button>
+      <button class="btn btn-brand">Confirm</button>
+      <button class="btn btn-outline">Cancel</button>
+    </div>
+    <p class="lede">Brand is paper on moss at 8.96:1 and carries affirmative actions only —
+      never a destructive one, because the accent marks affirmative state.</p>
+
+    <p class="label" style="margin-top:32px">Field</p>
+    <div class="row"><input class="field" placeholder="you@email.com"></div>
+
+    <p class="label" style="margin-top:32px">The rail — hover an item</p>
+    <div class="rail">
+      <div class="g">Daily</div>
+      <a class="on">Home</a><a>Content</a><a>Keywords</a>
+      <div class="g">Review</div>
+      <a>Insights</a><a>Funnels</a>
+    </div>
+    <p class="lede">Light and typographic, no icons. The active route takes a moss left edge
+      rather than a filled pill, so the rail never becomes a block of colour.</p>
+
+    <p class="label" style="margin-top:32px">Today&rsquo;s read, and the best next move</p>
+    <div class="band">
+      <div class="read">
+        <span class="label">Today&rsquo;s read</span>
+        <h3>US follower growth is 31% faster than last week.</h3>
+        <span class="label" style="display:block;margin-top:6px">Last 7 days against the 7 before</span>
+        <p>Separately, 1,679 of 2,946 conversations stop at the reply step — the largest
+          measured loss in the journey.</p>
+        <span class="label" style="display:block;margin-top:6px">Funnel cohort, last 30 days</span>
+        <span class="label" style="display:block;margin-top:14px">Compared with the prior 7 days / newest 2 days still settling / 2,946 in the funnel</span>
+        <button class="ev">Show the evidence</button>
+      </div>
+      <div class="next">
+        <span class="label">Best next move</span>
+        <p style="font-size:.8125rem;line-height:1.625;margin-top:8px;flex:1">Shorten the reply
+          step and ask one question. That is the largest measured leak in the active journey.</p>
+        <button class="btn btn-primary" style="margin-top:14px;width:100%">Inspect the funnel</button>
+      </div>
+    </div>
+    <p class="lede">The read is never authored. It is composed from measurements by a pure function, each clause naming its own window — velocity over 7 days, the funnel over whatever window it actually ran. Without a usable baseline it states counts and says so rather than inventing a direction.</p>
+
+    <p class="label" style="margin-top:32px">Attention rows</p>
+    <div style="margin-top:6px">
+      <a class="act">
+        <span class="no">01</span>
+        <span><span class="t">Inspect the reply-step loss</span>
+          <span class="s">1,679 of 2,946 conversations stop here. What causes it is not yet measured.</span></span>
+        <span class="r"><span class="tag">Now</span><span class="b">Inspect</span></span>
+      </a>
+      <a class="act">
+        <span class="no">02</span>
+        <span><span class="t">Review the recovery backlog</span>
+          <span class="s">19 conversations qualify / 6 have been waiting longer than 24 hours.</span></span>
+        <span class="r"><span class="tag" style="color:var(--muted)">Watch</span><span class="b">Open</span></span>
+      </a>
+    </div>
+
+    <p class="label" style="margin-top:32px">Status chips — three states, and unknown is one of them</p>
+    <div class="row">
+      <span class="chip chip-ok">Healthy</span>
+      <span class="chip chip-warn">12 gave up</span>
+      <span class="chip chip-unknown">Unknown</span>
+    </div>
+    <p class="lede">A row whose data failed to load says "No reading" and wears the grey chip.
+      An earlier build showed a green "Healthy" beside an em-dash — announcing the machine was
+      well while knowing nothing about it, which is the one thing this product must never do.</p>
+
+    <p class="label" style="margin-top:32px">Figures, including the guarded and absent forms</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:28px;margin-top:12px">
+      <div class="fig"><span class="label">US followers this week</span>
+        <div class="v">+248</div><p class="n">vs +189 last week</p></div>
+      <div class="fig"><span class="label">Guide to follow</span>
+        <div class="v counts">5 of 32</div><p class="n">below the minimum sample — counts only</p></div>
+      <div class="fig"><span class="label">Reply rate</span>
+        <div class="v ph">—</div><p class="n">no reading</p></div>
+    </div>
+    <p class="lede">A placeholder is not a figure and does not get a figure's size. At 1.8rem an
+      em-dash is a hole where a value should be, and every tile shows one before the first
+      snapshot lands.</p>
+  </section>
+
+  <section>
+    <h2>Depth, shape and motion</h2>
+    <p class="lede"><strong style="color:var(--ink);font-weight:500">In-flow content has no
+      shadows.</strong> Depth is the paper ground, one barely-raised surface for controls, and
+      rules at two weights. The single exception is a true overlay — the drawer and the confirm
+      dialog float above a scrim and may look like it.</p>
+    <table>
+      <tr><th>Token</th><th>Value</th><th>Use</th></tr>
+      <tr><td>radius sm / md / lg</td><td>2px / 2px / 3px</td><td>Near-square. Never soft.</td></tr>
+      <tr><td>rail / strip</td><td>208px / 48px</td><td>Fixed chrome.</td></tr>
+      <tr><td>content max</td><td>1152px</td><td>Centred, 40px side padding on desktop.</td></tr>
+      <tr><td>ease-house</td><td>cubic-bezier(0.19, 1, 0.22, 1)</td><td>Drawer and rail motion.</td></tr>
+      <tr><td>dur-route</td><td>180ms</td><td>Route cross-fade. The only entrance on a page load.</td></tr>
+      <tr><td>touch target</td><td>44px @ (pointer: coarse)</td><td>Coarse pointer only, so a mouse keeps the density.</td></tr>
+      <tr><td>reduced motion</td><td>all durations → 0</td><td>Read in the shell. Non-negotiable on a daily tool.</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>Guardrails</h2>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:40px;margin-top:18px">
+      <div>
+        <p class="label">Do</p>
+        <ul style="list-style:none;margin-top:12px;font-size:.8125rem;line-height:1.95">
+          <li>Separate with a rule before reaching for a container.</li>
+          <li>Deliver findings on neutral ground.</li>
+          <li>Name the window every clause measured.</li>
+          <li>Keep moss for focus and affirmative state only.</li>
+          <li>Carry counts alongside every rate.</li>
+          <li>Give loading, failed and empty three treatments.</li>
+          <li>Derive every sentence from a measurement.</li>
+          <li>44px targets and press feedback on coarse pointers.</li>
+          <li>Honour prefers-reduced-motion.</li>
+          <li>Load the typeface, and check the built output.</li>
+          <li>Re-measure every colour if the ground changes.</li>
+        </ul>
+      </div>
+      <div>
+        <p class="label">Don&rsquo;t</p>
+        <ul style="list-style:none;margin-top:12px;font-size:.8125rem;line-height:1.95">
+          <li>Draw a container to create hierarchy.</li>
+          <li>Shadow anything that is not a true overlay.</li>
+          <li>Introduce dark chrome, least of all the rail.</li>
+          <li>Tint a surface that carries a finding.</li>
+          <li>Use moss or a country colour as a general accent.</li>
+          <li>State a percentage without a usable baseline.</li>
+          <li>Show a green status beside a value you do not have.</li>
+          <li>Add a second typeface, or pass weight 500.</li>
+          <li>Write an eyebrow above a heading.</li>
+          <li>Rely on hover for anything a phone user needs.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <p class="label" style="margin-top:64px">Full specification in DESIGN.md · tokens in web/src/index.css</p>
+</div>
+</body>
+</html>

@@ -6,7 +6,9 @@ export const Card = React.forwardRef<HTMLDivElement, React.ComponentProps<"div">
     <div
       ref={ref}
       className={cn(
-        "rounded-lg border bg-card text-card-foreground shadow-sm",
+        // No shadow. Signal separates with rules and space; a raised card is the
+        // container language this world replaced.
+        "rounded-lg border bg-card text-card-foreground",
         className,
       )}
       {...props}

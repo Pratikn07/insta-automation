@@ -2,13 +2,14 @@ import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { Film, Images, LayoutGrid, Plus, Tag, ExternalLink } from "lucide-react";
 import { useMemo, useState } from "react";
-import { api } from "@/lib/api";
+import { apiRead } from "@/lib/api";
 import type { Keyword, MediaItem, MediaKind, MediaPage, Resource } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Drawer } from "@/components/ui/drawer";
 import { EmptyState } from "@/components/EmptyState";
 import { KeywordForm } from "@/components/KeywordForm";
+import { UpcomingAutomations } from "@/components/UpcomingAutomations";
 import { cn } from "@/lib/utils";
 
 type Filter = "all" | MediaKind;
@@ -23,19 +24,34 @@ const KIND = {
 export function Content() {
   const mediaQ = useQuery<MediaPage>({
     queryKey: ["content"],
-    queryFn: () => api<MediaPage>("/media/content"),
+    queryFn: ({ signal }) => apiRead<MediaPage>("/media/content", { signal }),
   });
   const keywordsQ = useQuery<Keyword[]>({
     queryKey: ["keywords"],
-    queryFn: () => api<Keyword[]>("/keywords"),
+    queryFn: ({ signal }) => apiRead<Keyword[]>("/keywords", { signal }),
   });
   const resourcesQ = useQuery<Resource[]>({
     queryKey: ["resources"],
-    queryFn: () => api<Resource[]>("/resources"),
+    queryFn: ({ signal }) => apiRead<Resource[]>("/resources", { signal }),
   });
 
   const [selected, setSelected] = useState<MediaItem | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
+
+  /**
+   * How many tiles are mounted.
+   *
+   * `/media/content` deliberately returns every post in one cached response — a
+   * creator account has a few hundred, so the network cost is paid once. The cost
+   * that is NOT paid once is mounting them: 197 tiles means 197 images and 197
+   * animated nodes on first paint. So the paging is here rather than in the API,
+   * which also keeps the filter counts exact and filtering instant.
+   *
+   * 24 is six rows on desktop and twelve on mobile — more than a screen, so there
+   * is always something below the fold to suggest scrolling.
+   */
+  const PAGE = 24;
+  const [visible, setVisible] = useState(PAGE);
 
   // Group keywords by the post they're attached to, so each card can show a
   // count and the drawer can list them — one source of truth, no extra fetch.
@@ -66,20 +82,38 @@ export function Content() {
     () => (filter === "all" ? all : all.filter((m) => m.kind === filter)),
     [all, filter],
   );
+  const shown = useMemo(() => items.slice(0, visible), [items, visible]);
+
+  // Switching filter starts at the top again. Carrying a count across filters
+  // would show 96 reels because you had scrolled through 96 of everything.
+  function changeFilter(next: Filter) {
+    setFilter(next);
+    setVisible(PAGE);
+  }
 
   const isLoading = mediaQ.isLoading || keywordsQ.isLoading || resourcesQ.isLoading;
 
   return (
     <div className="space-y-5">
       <div>
-        <h2 className="text-xl font-semibold tracking-tight">Content</h2>
+        <h1 className="text-2xl font-medium tracking-tight">Content</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Pick a post and attach a keyword. Comments on that post trigger its sequence.
+          Pick a post and attach a keyword. Comments on that post trigger its guide.
         </p>
       </div>
 
+      {/*
+        Above the grid, in one fixed position.
+        With nothing pending this is a single line, so the grid barely moves; with
+        a needs-attention row it expands in place and is visible without scrolling
+        past 197 posts. An earlier version sat below the grid, which was judged
+        against a four-tile mockup and left the whole feature fifty rows down.
+        The position never changes, so it only has to be learned once.
+      */}
+      <UpcomingAutomations resources={resourcesQ.data ?? []} />
+
       {!isLoading && !mediaQ.isError && all.length > 0 && (
-        <FilterTabs value={filter} onChange={setFilter} counts={counts} />
+        <FilterTabs value={filter} onChange={changeFilter} counts={counts} />
       )}
 
       {mediaQ.isError ? (
@@ -111,7 +145,7 @@ export function Content() {
         />
       ) : (
         <div key={filter} className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-          {items.map((item, i) => (
+          {shown.map((item, i) => (
             <motion.button
               key={item.id}
               type="button"
@@ -127,6 +161,22 @@ export function Content() {
               <MediaThumb item={item} count={keywordsByMedia.get(item.id)?.length ?? 0} />
             </motion.button>
           ))}
+        </div>
+      )}
+
+      {shown.length < items.length && (
+        // States the whole number as well as the shown one, so the page never
+        // implies the account has 24 posts.
+        <div className="flex flex-col items-center gap-2 pt-1">
+          <p className="text-[13px] text-muted-foreground tabular-nums">
+            Showing {shown.length} of {items.length}
+          </p>
+          <Button
+            variant="outline"
+            onClick={() => setVisible((current) => current + PAGE)}
+          >
+            Show more
+          </Button>
         </div>
       )}
 
@@ -195,7 +245,7 @@ function FilterTabs({
               <span
                 className={cn(
                   "text-xs tabular-nums",
-                  active ? "text-muted-foreground" : "text-muted-foreground/70",
+                  active ? "text-muted-foreground" : "text-muted-foreground",
                 )}
               >
                 {counts[key]}
@@ -208,6 +258,13 @@ function FilterTabs({
   );
 }
 
+/**
+ * A post tile keeps its border. It is a bounded object — a picked-up, clicked,
+ * filtered thing with a real edge — which is exactly the case the Bounded-Object
+ * rule exists to protect. The badges over the image keep their dark scrim and
+ * white text too: they sit on photography, not on paper, and a paper-coloured
+ * chip would vanish against a bright thumbnail.
+ */
 function MediaThumb({ item, count }: { item: MediaItem; count: number }) {
   const { icon: KindIcon, noun } = KIND[item.kind];
   return (
@@ -230,7 +287,7 @@ function MediaThumb({ item, count }: { item: MediaItem; count: number }) {
         )}
         <div className="absolute left-2 top-2">
           <span
-            className="inline-flex items-center rounded-full bg-black/55 p-1 text-white/90 backdrop-blur"
+            className="inline-flex items-center rounded-sm bg-black/55 p-1 text-white/90 backdrop-blur"
             title={noun}
             aria-label={noun}
           >
@@ -240,8 +297,8 @@ function MediaThumb({ item, count }: { item: MediaItem; count: number }) {
         <div className="absolute right-2 top-2">
           <span
             className={cn(
-              "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium backdrop-blur",
-              count > 0 ? "bg-brand-gradient text-white" : "bg-black/55 text-white/90",
+              "inline-flex items-center gap-1 rounded-sm px-2 py-0.5 text-[10px] font-medium backdrop-blur",
+              count > 0 ? "bg-signal text-background" : "bg-black/55 text-white/90",
             )}
           >
             <Tag className="size-2.5" />
@@ -319,9 +376,7 @@ function MediaDrawer({
 
       <div className="space-y-2">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-medium">
-            Keywords <span className="text-muted-foreground">({keywords.length})</span>
-          </h3>
+          <h3 className="label-caps">Keywords ({keywords.length})</h3>
           <Button size="sm" variant="brand" onClick={() => setAttaching(true)}>
             <Plus className="size-4" />
             Attach keyword
@@ -329,27 +384,27 @@ function MediaDrawer({
         </div>
 
         {keywords.length === 0 ? (
-          <div className="rounded-md border border-dashed bg-card/30 px-4 py-8 text-center text-sm text-muted-foreground">
+          <p className="border-t py-6 text-[13px] text-muted-foreground">
             No keywords on this {noun} yet. Attach one to start automating replies.
-          </div>
+          </p>
         ) : (
           <ul className="space-y-2">
             {keywords.map((k) => (
               <li key={k.id} className="flex items-center gap-3 rounded-md border bg-card/40 p-3">
-                <div className="flex size-8 shrink-0 items-center justify-center rounded bg-brand-gradient/15">
+                <div className="flex size-7 shrink-0 items-center justify-center rounded-sm bg-signal-soft text-signal">
                   <Tag className="size-3.5" />
                 </div>
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="font-mono text-sm font-semibold">{k.keyword}</span>
+                    <span className="font-mono text-sm font-medium">{k.keyword}</span>
                     {!k.active && (
-                      <span className="rounded-full border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                      <span className="rounded-sm border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
                         Paused
                       </span>
                     )}
                   </div>
                   <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                    → {k.resource?.name ?? "Unknown sequence"}
+                    → {k.resource?.name ?? "Unknown guide"}
                   </p>
                 </div>
               </li>

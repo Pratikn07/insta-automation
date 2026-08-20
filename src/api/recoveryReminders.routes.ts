@@ -1,7 +1,7 @@
-import { Router } from "express";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
+import { flags } from "../services/flagService.js";
 import { getIgUsers } from "../services/igUserService.js";
 import { logEvent } from "../services/eventLogger.js";
 import { getRecoveryHealthSnapshot } from "../services/dmRecoveryHealth.js";
@@ -25,13 +25,14 @@ import {
   decodeRecoveryCursor,
   encodeRecoveryCursor,
 } from "./recoveryRemindersCursor.js";
+import { asyncRouter } from "./asyncRouter.js";
 
 /**
  * Read models and owner actions for the DM recovery lens.
  *
  * Mounted under apiRouter, so requireAdmin has already run.
  */
-export const recoveryRemindersRouter = Router();
+export const recoveryRemindersRouter = asyncRouter();
 
 export const RECOVERY_VIEWS = [
   "all",
@@ -623,7 +624,14 @@ function buildTimeline(row: Record<string, unknown>): TimelineEntry[] {
  * Drift is a mislabelled button, not corruption: every action re-reads the row
  * and answers 409 when the status is no longer eligible.
  */
-export const CANCELLABLE = ["waiting", "control", "tracking_unavailable", "send_failed"] as const;
+export const CANCELLABLE = [
+  "waiting",
+  "control",
+  "tracking_unavailable",
+  // No public comment was accepted. Cancelling prevents a later retry; it does
+  // not rewrite or undo the failed Meta attempt already recorded in the timeline.
+  "send_failed",
+] as const;
 export const REVIEWABLE = ["send_failed", "send_uncertain", "tracking_unavailable"] as const;
 
 recoveryRemindersRouter.get("/:id", async (req, res) => {
@@ -1085,7 +1093,7 @@ async function metricsHandler(req: import("express").Request, res: import("expre
   // the snapshot column have a null origin and are kept — excluding them would
   // silently drop the start of the experiment.
   const inMarket = (row: { audienceOrigin: string | null }) =>
-    !env.DM_RECOVERY_WESTERN_ONLY || row.audienceOrigin !== "south_asian";
+    !flags.bool("DM_RECOVERY_WESTERN_ONLY") || row.audienceOrigin !== "south_asian";
 
   const comparableRows = experimentRows.filter(inMarket);
   const treatmentRows = comparableRows.filter((row) => row.cohort === "treatment");

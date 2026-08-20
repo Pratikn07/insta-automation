@@ -1,5 +1,6 @@
 import type { DmRecoveryStatus } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
+import { flags } from "./flagService.js";
 import { logger } from "../lib/logger.js";
 import { recordRecoveryDatabaseFailure } from "./dmRecoveryHealth.js";
 // One-directional: the repository does not import this module, so there is no
@@ -123,7 +124,7 @@ function decideExperimentCohort(
   }
 
   if (acceptedAt.getTime() >= experimentEnd.getTime()) {
-    if (!env.DM_RECOVERY_POST_EXPERIMENT_ENABLED) {
+    if (!flags.bool("DM_RECOVERY_POST_EXPERIMENT_ENABLED")) {
       return {
         status: "control",
         cohort: "control",
@@ -137,7 +138,7 @@ function decideExperimentCohort(
   const cohort = assignRecoveryCohort(
     igUserId,
     env.DM_RECOVERY_EXPERIMENT_VERSION,
-    env.DM_RECOVERY_HOLDOUT_PERCENT,
+    flags.percent("DM_RECOVERY_HOLDOUT_PERCENT"),
   );
 
   return {
