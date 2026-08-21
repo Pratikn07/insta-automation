@@ -1,6 +1,10 @@
 import { EXPERIMENT_REGISTRY, experimentDefinition } from "../config/experimentRegistry.js";
 import { flagDefinition } from "../config/flagRegistry.js";
 import { flags } from "../services/flagService.js";
+import {
+  configuredExperimentOwnedFlagKeys,
+  configuredExperimentState,
+} from "../services/experimentLifecycle.js";
 import { summarizeExperiment } from "../services/experimentSummary.js";
 import { asyncRouter } from "./asyncRouter.js";
 
@@ -20,14 +24,17 @@ export const experimentsRouter = asyncRouter();
  */
 experimentsRouter.get("/", async (_req, res) => {
   const experiments = await Promise.all(
-    EXPERIMENT_REGISTRY.map(async (e) => ({
-      key: e.key,
-      name: e.name,
-      state: e.state,
-      armCount: e.arms.length,
-      blocker: e.blocker,
-      summary: await summarizeExperiment(e.key),
-    })),
+    EXPERIMENT_REGISTRY.map(async (e) => {
+      const state = configuredExperimentState(e.key, e.state);
+      return {
+        key: e.key,
+        name: e.name,
+        state,
+        armCount: e.arms.length,
+        blocker: e.blocker,
+        summary: await summarizeExperiment(e.key),
+      };
+    }),
   );
   res.json({ experiments });
 });
@@ -45,13 +52,14 @@ experimentsRouter.get("/:key", async (req, res) => {
   if (!definition) return res.status(404).json({ error: "not_found" });
 
   const byKey = new Map(flags.snapshot().map((row) => [row.key, row]));
-  const ownedFlags = definition.ownedFlagKeys
+  const ownedFlags = configuredExperimentOwnedFlagKeys(definition.key, definition.ownedFlagKeys)
     .map((key) => flagDefinition(key))
     .filter((d): d is NonNullable<typeof d> => Boolean(d))
     .map((d) => ({ ...d, ...(byKey.get(d.key) ?? {}) }));
 
   res.json({
     ...definition,
+    state: configuredExperimentState(definition.key, definition.state),
     summary: await summarizeExperiment(definition.key),
     ownedFlags,
   });

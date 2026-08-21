@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { ChevronRight } from "lucide-react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { apiRead } from "@/lib/api";
 import { people, windowRemaining } from "@/lib/experimentWindow";
@@ -7,11 +8,21 @@ import type { ExperimentListItem, ExperimentState, ExperimentsResponse } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
-const STATE: Record<ExperimentState, { label: string; tone: string; order: number }> = {
-  running: { label: "Running", tone: "bg-signal-soft text-signal", order: 0 },
-  not_started: { label: "Not started", tone: "bg-muted text-muted-foreground", order: 1 },
-  ended: { label: "Ended", tone: "bg-caution-soft text-caution", order: 2 },
+type LifecycleTab = "active" | "planned" | "concluded";
+
+const STATE: Record<ExperimentState, { label: string; tone: string; tab: LifecycleTab }> = {
+  running: { label: "Active", tone: "bg-signal-soft text-signal", tab: "active" },
+  not_started: { label: "Planned", tone: "bg-muted text-muted-foreground", tab: "planned" },
+  ended: { label: "Concluded", tone: "bg-caution-soft text-caution", tab: "concluded" },
 };
+
+const TABS: { key: LifecycleTab; label: string }[] = [
+  { key: "active", label: "Active" },
+  { key: "planned", label: "Planned" },
+  { key: "concluded", label: "Concluded" },
+];
+
+const dayFormat = new Intl.DateTimeFormat("en-GB", { dateStyle: "medium" });
 
 /**
  * One line per experiment: its name, its state, and the one number that matters.
@@ -22,15 +33,14 @@ const STATE: Record<ExperimentState, { label: string; tone: string; order: numbe
  * nobody converted", which is a different and untrue claim.
  */
 export function Experiments() {
+  const [tab, setTab] = useState<LifecycleTab>("active");
   const query = useQuery<ExperimentsResponse>({
     queryKey: ["experiments"],
     queryFn: ({ signal }) => apiRead<ExperimentsResponse>("/experiments", { signal }),
   });
 
-  // Running first: it is the only one that can need a decision from you.
-  const rows = [...(query.data?.experiments ?? [])].sort(
-    (a, b) => STATE[a.state].order - STATE[b.state].order,
-  );
+  const allRows = query.data?.experiments ?? [];
+  const rows = allRows.filter((row) => STATE[row.state].tab === tab);
 
   return (
     <div className="space-y-5">
@@ -39,6 +49,29 @@ export function Experiments() {
         <p className="mt-1 text-sm text-muted-foreground">
           Where two things are being compared, so you can tell which works better.
         </p>
+      </div>
+
+      <div role="tablist" aria-label="Experiment lifecycle" className="flex gap-1 border-b">
+        {TABS.map((item) => {
+          const count = allRows.filter((row) => STATE[row.state].tab === item.key).length;
+          return (
+            <button
+              key={item.key}
+              type="button"
+              role="tab"
+              aria-selected={tab === item.key}
+              onClick={() => setTab(item.key)}
+              className={cn(
+                "-mb-px min-h-10 border-b-2 px-3 text-[13px] font-medium transition-colors",
+                tab === item.key
+                  ? "border-foreground text-foreground"
+                  : "border-transparent text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {item.label} ({count})
+            </button>
+          );
+        })}
       </div>
 
       {query.isLoading ? (
@@ -56,7 +89,7 @@ export function Experiments() {
           </button>
         </p>
       ) : (
-        <ul className="border-t">
+        <ul>
           {rows.map((row) => (
             <li key={row.key}>
               <Link
@@ -81,6 +114,11 @@ export function Experiments() {
               </Link>
             </li>
           ))}
+          {rows.length === 0 && (
+            <li className="border-b py-6 text-center text-[13px] text-muted-foreground">
+              No {tab} experiments.
+            </li>
+          )}
         </ul>
       )}
     </div>
@@ -97,6 +135,9 @@ function headline(row: ExperimentListItem): string {
   if (row.summary.kind === "not_started") return row.summary.blocker;
 
   const arms = row.summary.arms.map((arm) => `${arm.label} ${people(arm.people)}`);
+  if (row.summary.kind === "ended") {
+    return [...arms, `Concluded ${dayFormat.format(new Date(row.summary.endedAt))}`].join(" · ");
+  }
   const remaining = windowRemaining(row.summary.endsAt);
   return [...arms, remaining].filter(Boolean).join(" · ");
 }

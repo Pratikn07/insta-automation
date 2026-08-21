@@ -2,6 +2,7 @@ import "dotenv/config";
 import { z } from "zod";
 import { DM_RECOVERY_TIMING_EXPERIMENT_VERSION } from "../services/dmRecoveryTimingExperiment.js";
 import { booleanFlag } from "./booleanFlag.js";
+import { RECOVERY_TIMING_V2_CUTOVER_AT } from "./recoveryTimingSchedule.js";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const MIN_TIMING_EXPERIMENT_DAYS = 28;
@@ -50,6 +51,8 @@ export const envSchema = z.object({
   IG_USER_ID: z.string().min(1),
 
   DATABASE_URL: z.string().url(),
+  /** Direct PostgreSQL session for schema migrations; runtime may use a transaction pool. */
+  DIRECT_URL: z.string().url().optional(),
   SUPABASE_URL: z.string().url(),
   SUPABASE_SERVICE_KEY: z.string().min(1),
   SUPABASE_BUCKET: z.string().min(1).default("insta-resources"),
@@ -283,6 +286,15 @@ export const envSchema = z.object({
       value.DM_RECOVERY_EXPERIMENT_VERSION ===
       DM_RECOVERY_TIMING_EXPERIMENT_VERSION
     ) {
+      if (startTime !== new Date(RECOVERY_TIMING_V2_CUTOVER_AT).getTime()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["DM_RECOVERY_EXPERIMENT_START_AT"],
+          message:
+            `${DM_RECOVERY_TIMING_EXPERIMENT_VERSION} must start at the approved cutover ` +
+            RECOVERY_TIMING_V2_CUTOVER_AT,
+        });
+      }
       const durationDays = (endTime - startTime) / DAY_MS;
       if (
         durationDays < MIN_TIMING_EXPERIMENT_DAYS ||

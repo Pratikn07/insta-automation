@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExperimentsResponse } from "@/lib/types";
@@ -60,33 +60,83 @@ const LIST: ExperimentsResponse = {
     },
     {
       key: "recovery-reminder-timing",
-      name: "Recovery reminder timing",
-      state: "running",
+      name: "Recovery reminder — 10 hours vs none",
+      state: "ended",
       armCount: 2,
+      blocker: "This experiment concluded when the new timing test began.",
+      summary: {
+        kind: "ended",
+        arms: [
+          { key: "treatment", label: "10 hours", people: 1958 },
+          { key: "control", label: "No reminder", people: 394 },
+        ],
+        notCounted: [{ reason: "They opened it themselves", people: 531 }],
+        endedAt: "2026-08-21T16:00:00.000Z",
+        conclusion: "This experiment concluded and was replaced by the 2 vs 6 hour test.",
+      },
+    },
+    {
+      key: "recovery-reminder-timing-v2",
+      name: "Recovery reminder — 2 vs 6 hours",
+      state: "running",
+      armCount: 3,
       blocker: "",
       summary: {
         kind: "running",
         arms: [
-          { key: "treatment", label: "Got a reminder", people: 1958 },
-          { key: "control", label: "Got nothing", people: 394 },
+          { key: "two_hour", label: "2 hours", people: 706 },
+          { key: "six_hour", label: "6 hours", people: 701 },
+          { key: "no_reminder", label: "No reminder", people: 157 },
         ],
-        notCounted: [{ reason: "They opened it themselves", people: 531 }],
-        endsAt: "2026-08-21T21:45:00.000Z",
+        notCounted: [],
+        endsAt: "2026-10-02T16:00:00.000Z",
         whenItEnds: "When the window closes, reminders stop and wait for your decision.",
+      },
+    },
+    {
+      key: "cold-message-test",
+      name: "Cold message test",
+      state: "not_started",
+      armCount: 2,
+      blocker: "It has never been switched on, so no message has been tried.",
+      summary: {
+        kind: "not_started",
+        wouldCompare: "An ordinary message versus no further message.",
+        blocker: "It has never been switched on, so no message has been tried.",
       },
     },
   ],
 };
 
 describe("Experiments list", () => {
-  it("shows one line each, linking to its own page", async () => {
+  it("defaults to Active and hides planned and concluded experiments", async () => {
     apiRead.mockResolvedValue(LIST);
     renderPage();
 
-    expect(await screen.findByRole("link", { name: /Recovery reminder timing/ })).toHaveAttribute(
+    expect(await screen.findByRole("link", { name: /Recovery reminder — 2 vs 6 hours/ })).toHaveAttribute(
+      "href",
+      "/experiments/recovery-reminder-timing-v2",
+    );
+    expect(screen.queryByText("Guide delivery rollout")).not.toBeInTheDocument();
+    expect(screen.queryByText("Cold message test")).not.toBeInTheDocument();
+    expect(screen.queryByText("Recovery reminder — 10 hours vs none")).not.toBeInTheDocument();
+  });
+
+  it("shows planned and concluded experiments only in their tabs", async () => {
+    apiRead.mockResolvedValue(LIST);
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("tab", { name: /Planned/ }));
+    expect(screen.getByText("Guide delivery rollout")).toBeInTheDocument();
+    expect(screen.getByText("Cold message test")).toBeInTheDocument();
+    expect(screen.queryByText("Recovery reminder — 2 vs 6 hours")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: /Concluded/ }));
+    expect(screen.getByRole("link", { name: /Recovery reminder — 10 hours vs none/ })).toHaveAttribute(
       "href",
       "/experiments/recovery-reminder-timing",
     );
+    expect(screen.queryByText("Guide delivery rollout")).not.toBeInTheDocument();
   });
 
   // The one number that matters, so the list answers "how is it going" by itself.
@@ -95,7 +145,7 @@ describe("Experiments list", () => {
     renderPage();
 
     expect(
-      await screen.findByText("Got a reminder 1,958 · Got nothing 394 · 3 days left"),
+      await screen.findByText("2 hours 706 · 6 hours 701 · No reminder 157 · 45 days left"),
     ).toBeInTheDocument();
   });
 
@@ -104,21 +154,19 @@ describe("Experiments list", () => {
     apiRead.mockResolvedValue(LIST);
     renderPage();
 
-    expect(await screen.findByText("Not started")).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("tab", { name: /Planned/ }));
+    expect(screen.getAllByText("Planned")).toHaveLength(2);
     expect(screen.getByText(/rollout is at zero/)).toBeInTheDocument();
     expect(screen.queryByText("0")).not.toBeInTheDocument();
   });
 
-  // The API returns registry order; the page decides what you see first.
-  it("puts a running experiment above one that has not started", async () => {
+  it("labels the three lifecycle tabs in owner language", async () => {
     apiRead.mockResolvedValue(LIST);
     renderPage();
 
-    const running = await screen.findByText("Running");
-    const notStarted = screen.getByText("Not started");
-    expect(
-      running.compareDocumentPosition(notStarted) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
+    expect(await screen.findByRole("tab", { name: /Active/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Planned/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Concluded/ })).toBeInTheDocument();
   });
 
   it("says a window has closed rather than counting backwards", async () => {
@@ -126,7 +174,8 @@ describe("Experiments list", () => {
     apiRead.mockResolvedValue(LIST);
     renderPage();
 
-    expect(await screen.findByText(/already closed/)).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("tab", { name: /Concluded/ }));
+    expect(screen.getByText(/Concluded 21 Aug 2026/)).toBeInTheDocument();
   });
 
   it("calls a failed read a connection problem", async () => {

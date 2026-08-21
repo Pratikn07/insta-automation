@@ -108,6 +108,13 @@ export interface ExperimentArmView {
 export type ExperimentSummaryView =
   | { kind: "not_started"; wouldCompare: string; blocker: string }
   | {
+      kind: "ended";
+      arms: { key: string; label: string; people: number }[];
+      notCounted: { reason: string; people: number }[];
+      endedAt: string;
+      conclusion: string;
+    }
+  | {
       kind: "running";
       arms: { key: string; label: string; people: number }[];
       notCounted: { reason: string; people: number }[];

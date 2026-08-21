@@ -55,16 +55,16 @@ the fixed schedules and allocation above.
 
 ## Phase 2: prepare the cutover
 
-Choose one UTC ISO-8601 cutover instant. Calculate the maximum end as exactly 42
-days after it. For example, a start of `2026-09-01T07:00:00.000Z` has a maximum
-end of `2026-10-13T07:00:00.000Z`.
+The owner-approved cutover is **21 August 2026 at 9:00 AM Pacific**. The recorded
+UTC instant is `2026-08-21T16:00:00.000Z`; the maximum end, exactly 42 days
+later, is `2026-10-02T16:00:00.000Z`.
 
 Prepare these values together:
 
 ```dotenv
 DM_RECOVERY_EXPERIMENT_VERSION=read-recovery-timing-v2
-DM_RECOVERY_EXPERIMENT_START_AT=<recorded cutover instant>
-DM_RECOVERY_EXPERIMENT_END_AT=<exactly 42 days after start>
+DM_RECOVERY_EXPERIMENT_START_AT=2026-08-21T16:00:00.000Z
+DM_RECOVERY_EXPERIMENT_END_AT=2026-10-02T16:00:00.000Z
 DM_RECOVERY_POST_EXPERIMENT_ENABLED=false
 ```
 

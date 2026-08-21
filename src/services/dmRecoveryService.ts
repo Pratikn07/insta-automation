@@ -234,7 +234,7 @@ export async function scheduleAcceptedGateRecovery(
     DM_RECOVERY_TIMING_EXPERIMENT_VERSION;
   const insideWindow = acceptedInsideConfiguredWindow(input.acceptedAt);
   const inMarket =
-    !env.DM_RECOVERY_WESTERN_ONLY || audience.origin !== "south_asian";
+    !flags.bool("DM_RECOVERY_WESTERN_ONLY") || audience.origin !== "south_asian";
   const publicReplyText = renderRecoveryCopy("no_confirmed_read", input.keywordSnapshot);
 
   let status: DmRecoveryStatus;

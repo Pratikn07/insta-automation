@@ -40,13 +40,15 @@ test.describe("timing experiment dashboard", () => {
     await expect(
       page.getByText("Showing guide requests received Aug 10 to Aug 16."),
     ).toBeVisible();
-    await expect(page.getByRole("button", { name: "Ready: 1 people, 1 journeys" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Scheduled: 1 people, 1 journeys" })).toBeVisible();
 
     await page.getByRole("button", { name: "14d" }).click();
     await expect(
       page.getByText("Showing guide requests received Aug 3 to Aug 16."),
     ).toBeVisible();
-    await expect(page.getByRole("button", { name: "Ready: 2 people, 2 journeys" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Scheduled: 1 people, 1 journeys" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Due: 1 people, 1 journeys" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "All: 4 people, 4 journeys" })).toBeVisible();
 
     await page.getByRole("button", { name: "30d" }).click();
     await expect(
@@ -65,7 +67,7 @@ test.describe("timing experiment dashboard", () => {
     await expect(
       page.getByText("Showing guide requests received Aug 1 to Aug 5."),
     ).toBeVisible();
-    await expect(page.getByRole("button", { name: "Ready: 0 people, 0 journeys" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Scheduled: 0 people, 0 journeys" })).toBeVisible();
   });
 
   test("filters rows with user-facing timing labels", async ({ page }) => {

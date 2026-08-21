@@ -380,8 +380,8 @@ function timingArmSummary(arm: "two_hour" | "six_hour" | "no_reminder") {
     completedWithin48h: arm === "no_reminder" ? 13 : 68,
     completionRate24h: arm === "no_reminder" ? 41.7 : 50,
     completionRate48h: arm === "no_reminder" ? 54.2 : 61.8,
-    repliedWithin24h: 40,
-    repliedWithin48h: 60,
+    repliedWithin24h: arm === "no_reminder" ? 8 : 40,
+    repliedWithin48h: arm === "no_reminder" ? 12 : 60,
     seenBeforeEligibility: 10,
     sent: arm === "no_reminder" ? 0 : 105,
     attempted: arm === "no_reminder" ? 0 : 107,
@@ -394,7 +394,7 @@ function timingArmSummary(arm: "two_hour" | "six_hour" | "no_reminder") {
     delayedSignalFalsePositiveRate: 0,
     reminderToReplyMinutesMedian: arm === "no_reminder" ? null : 90,
     readEventCoveragePercent: 74,
-    lateSendCount: 1,
+    lateSendCount: arm === "no_reminder" ? 0 : 1,
     latenessMs: { p50: 500, p95: 2_000, max: 3_000 },
     cooldownSuppressions: 1,
     duplicateAttemptCount: 0,
@@ -402,7 +402,10 @@ function timingArmSummary(arm: "two_hour" | "six_hour" | "no_reminder") {
   };
 }
 
-function recoveryTimingExperiment(range: { from: string; to: string }) {
+function recoveryTimingExperiment(
+  range: { from: string; to: string },
+  decision: "collecting" | "exploratory" = "exploratory",
+) {
   return {
     version: RECOVERY_TIMING_VERSION,
     reporting: {
@@ -447,7 +450,7 @@ function recoveryTimingExperiment(range: { from: string; to: string }) {
       treatmentControlConfidenceHarm: false,
       duplicateSafetyEvent: false,
     },
-    decision: { state: "exploratory", automaticRollout: false, conservativeDefault: null },
+    decision: { state: decision, automaticRollout: false, conservativeDefault: null },
   };
 }
 
@@ -837,8 +840,8 @@ const FLAG_ROWS = [
     driftsFromEnv: false,
     updatedBy: null,
     updatedAt: null,
-    experimentKey: "recovery-reminder-timing",
-    experimentName: "Recovery reminder timing",
+    experimentKey: "recovery-reminder-timing-v2",
+    experimentName: "Recovery reminder — 2 vs 6 hours",
   },
   {
     key: "GUIDE_DELIVERY_ROLLOUT_PERCENT",
@@ -878,8 +881,8 @@ const FLAG_ROWS = [
     driftsFromEnv: false,
     updatedBy: null,
     updatedAt: null,
-    experimentKey: "recovery-reminder-timing",
-    experimentName: "Recovery reminder timing",
+    experimentKey: "recovery-reminder-timing-v2",
+    experimentName: "Recovery reminder — 2 vs 6 hours",
   },
   {
     key: "AI_DRAFTS_ENABLED",
@@ -922,14 +925,13 @@ const FLAG_ROWS = [
 ]
 
 // ── Experiments ───────────────────────────────────────────────────────────
-// One running and two not started, which is the real state. The not-started rows
-// are the reason the artifact is worth taking: they must read as a decision
-// ("never switched on") and never as a row of zeroes.
+// One active, two planned, and one concluded. The concluded V1 stays available
+// without crowding the default view; the active V2 is a separate line item.
 const RECOVERY_SUMMARY = {
-  kind: "running" as const,
+  kind: "ended" as const,
   arms: [
-    { key: "treatment", label: "Got a reminder", people: 594 },
-    { key: "control", label: "Got nothing", people: 395 },
+    { key: "treatment", label: "10 hours", people: 594 },
+    { key: "control", label: "No reminder", people: 395 },
   ],
   // Counts taken from production so the artifact shows the real spread, including
   // the buckets an earlier version dropped: waiting, failed, unconfirmed.
@@ -942,7 +944,19 @@ const RECOVERY_SUMMARY = {
     { reason: "The reminder could not be posted", people: 12 },
     { reason: "We could not track it", people: 4 },
   ],
-  endsAt: "2026-08-21T21:45:00.000Z",
+  endedAt: "2026-08-21T16:00:00.000Z",
+  conclusion: "This experiment concluded and was replaced by the 2 vs 6 hour test.",
+};
+
+const RECOVERY_TIMING_SUMMARY = {
+  kind: "running" as const,
+  arms: [
+    { key: "two_hour", label: "2 hours", people: 135 },
+    { key: "six_hour", label: "6 hours", people: 135 },
+    { key: "no_reminder", label: "No reminder", people: 30 },
+  ],
+  notCounted: [],
+  endsAt: "2026-10-02T16:00:00.000Z",
   whenItEnds:
     "When the window closes, reminders stop and wait for your decision. Nothing announces it.",
 };
@@ -965,11 +979,19 @@ const COLD_SUMMARY = {
 const EXPERIMENT_ROWS = [
   {
     key: "recovery-reminder-timing",
-    name: "Recovery reminder timing",
-    state: "running",
+    name: "Recovery reminder — 10 hours vs none",
+    state: "ended",
     armCount: 2,
-    blocker: "",
+    blocker: "This experiment concluded when the 2 vs 6 hour test began.",
     summary: RECOVERY_SUMMARY,
+  },
+  {
+    key: "recovery-reminder-timing-v2",
+    name: "Recovery reminder — 2 vs 6 hours",
+    state: "running",
+    armCount: 3,
+    blocker: "",
+    summary: RECOVERY_TIMING_SUMMARY,
   },
   {
     key: "guide-delivery-rollout",
@@ -992,10 +1014,10 @@ const EXPERIMENT_ROWS = [
 const EXPERIMENT_DETAILS: Record<string, unknown> = {
   "recovery-reminder-timing": {
     key: "recovery-reminder-timing",
-    name: "Recovery reminder timing",
-    state: "running",
+    name: "Recovery reminder — 10 hours vs none",
+    state: "ended",
     doesWhat:
-      "Tests whether leaving a public comment helps when someone never opens the guide we sent them, by leaving one for most people and deliberately saying nothing to the rest.",
+      "Tested whether a public reminder ten hours after a guide request helped compared with saying nothing.",
     affectsWho:
       "People who commented a keyword and were sent a guide but have not opened it. Around 190 a week.",
     outcome: "Whether they received the guide within 48 hours of first asking.",
@@ -1015,8 +1037,26 @@ const EXPERIMENT_DETAILS: Record<string, unknown> = {
     ],
     blocker: "",
     summary: RECOVERY_SUMMARY,
+    ownedFlags: [],
+  },
+  "recovery-reminder-timing-v2": {
+    key: "recovery-reminder-timing-v2",
+    name: "Recovery reminder — 2 vs 6 hours",
+    state: "running",
+    doesWhat:
+      "Compares an earlier public reminder with a later one, while leaving a small holdout without a reminder.",
+    affectsWho:
+      "People who commented a keyword and were sent a guide but have not opened it. Around 190 a week.",
+    outcome: "Whether they received the guide within 48 hours of first asking.",
+    arms: [
+      { key: "two_hour", percent: 45, doesWhat: "Gets a reminder after two hours.", isControl: false },
+      { key: "six_hour", percent: 45, doesWhat: "Gets a reminder after six hours.", isControl: false },
+      { key: "no_reminder", percent: 10, doesWhat: "Gets no reminder.", isControl: true },
+    ],
+    blocker: "",
+    summary: RECOVERY_TIMING_SUMMARY,
     ownedFlags: FLAG_ROWS.filter(
-      (row) => row.experimentKey === "recovery-reminder-timing",
+      (row) => row.experimentKey === "recovery-reminder-timing-v2",
     ),
   },
   "guide-delivery-rollout": {
@@ -1582,12 +1622,19 @@ function installFetchStub(): void {
 
     if (path === "/recovery-reminders/metrics" && method === "GET") {
       const open = recoveryScenario() === "recovery-circuit";
-      const range = isTimingRecoveryScenario() ? recoveryRange(requestUrl, true) : null;
+      const isExperimentDetail = activeScenario() === "experiment-detail";
+      const range = isExperimentDetail
+        ? RECOVERY_COVERAGE
+        : isTimingRecoveryScenario()
+          ? recoveryRange(requestUrl, true)
+          : null;
       if (isTimingRecoveryScenario() && !range) {
         return json({ error: "invalid_recovery_scope" }, 400);
       }
       return json({
-        timingExperiment: range ? recoveryTimingExperiment(range) : null,
+        timingExperiment: range
+          ? recoveryTimingExperiment(range, isExperimentDetail ? "collecting" : "exploratory")
+          : null,
         health: {
           circuitOpen: open,
           reason: open ? "auth_or_permission" : null,
@@ -1877,7 +1924,7 @@ const initialEntry =
         ? // The lone Stop now with no matching start — the safety model made visible.
           "/switches/DM_RECOVERY_ENABLED"
         : harnessScenario === "experiment-detail"
-          ? "/experiments/recovery-reminder-timing"
+          ? "/experiments/recovery-reminder-timing-v2"
           : "/";
 
 createRoot(document.getElementById("root")!).render(
