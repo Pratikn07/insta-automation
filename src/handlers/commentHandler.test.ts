@@ -9,6 +9,7 @@ const replyToComment = vi.fn();
 const sendTrackedPrivateReply = vi.fn();
 const logEvent = vi.fn();
 const rememberUsername = vi.fn();
+const getFollowState = vi.fn();
 const enqueueGate = vi.fn();
 const claimComment = vi.fn();
 const openConversationIn = vi.fn();
@@ -58,7 +59,7 @@ vi.mock("../services/eventLogger.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../services/eventLogger.js")>();
   return { ...actual, logEvent };
 });
-vi.mock("../services/igUserService.js", () => ({ rememberUsername }));
+vi.mock("../services/igUserService.js", () => ({ rememberUsername, getFollowState }));
 vi.mock("../services/gateQueueService.js", () => ({ enqueueGate }));
 vi.mock("../services/commentClaimService.js", () => ({ claimComment }));
 vi.mock("../lib/logger.js", () => ({
@@ -132,6 +133,7 @@ beforeEach(() => {
     sendTrackedPrivateReply,
     logEvent,
     rememberUsername,
+    getFollowState,
     enqueueGate,
     scheduleAcceptedGateRecovery,
     scheduleSettingsBlockedRecovery,
@@ -176,6 +178,7 @@ beforeEach(() => {
   recordJourneyPublicAcknowledgement.mockResolvedValue(undefined);
   logEvent.mockResolvedValue(undefined);
   rememberUsername.mockResolvedValue(undefined);
+  getFollowState.mockResolvedValue({ isFollower: null, followerCount: null, isVerified: null });
   enqueueGate.mockResolvedValue(undefined);
   scheduleAcceptedGateRecovery.mockResolvedValue({ id: "rec-1", status: "waiting" });
   scheduleSettingsBlockedRecovery.mockResolvedValue({ id: "rec-2", status: "waiting" });
@@ -572,6 +575,63 @@ describe("duplicate journey suppression", () => {
     });
   }
 
+  it("sends the warm gate and records its variant for a cached follower", async () => {
+    getFollowState.mockResolvedValue({ isFollower: true, followerCount: null, isVerified: null });
+    sendTrackedPrivateReply.mockResolvedValue({
+      instagramMessageId: "mid-1",
+      dmMessageId: "dm-1",
+      acceptedAt: new Date("2026-08-20T16:54:00.000Z"),
+    });
+
+    await handleComment(COMMENT);
+
+    expect(sendTrackedPrivateReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "So lovely to see you again 💛 Reply DONE and I’ll send your guide right over.",
+      }),
+    );
+    expect(logEvent).toHaveBeenCalledWith("dm_sent", {
+      conversationId: "conversation-1",
+      kind: "gate",
+      gateVariant: "known_follower",
+    });
+  });
+
+  it("uses the default gate and a safe diagnostic when cached follow state cannot be read", async () => {
+    getFollowState.mockRejectedValue(new Error("FOLLOW-CACHE-ERROR-SENTINEL"));
+    sendTrackedPrivateReply.mockResolvedValue({
+      instagramMessageId: "mid-1",
+      dmMessageId: "dm-1",
+      acceptedAt: new Date("2026-08-20T16:54:00.000Z"),
+    });
+
+    await handleComment(COMMENT);
+
+    expect(getFollowState).toHaveBeenCalledWith("ig-user-1");
+    expect(sendTrackedPrivateReply).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "PRIVATE-DM-SENTINEL" }),
+    );
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      { igUserId: "ig-user-1", followerState: "unavailable" },
+      "Cached follower state unavailable; using default gate",
+    );
+    const capturedLogs = JSON.stringify(childLogger.warn.mock.calls);
+    expect(capturedLogs).not.toContain("FOLLOW-CACHE-ERROR-SENTINEL");
+  });
+
+  it("queues the selected warm gate text after a failed send", async () => {
+    getFollowState.mockResolvedValue({ isFollower: true, followerCount: null, isVerified: null });
+    sendTrackedPrivateReply.mockRejectedValue(new Error("rate limited"));
+
+    await handleComment(COMMENT);
+
+    expect(enqueueGate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        gateMessage: "So lovely to see you again 💛 Reply DONE and I’ll send your guide right over.",
+      }),
+    );
+  });
+
   it("sends no second gate DM when the journey is reused", async () => {
     reusedJourney();
 
@@ -580,6 +640,7 @@ describe("duplicate journey suppression", () => {
     expect(sendTrackedPrivateReply).not.toHaveBeenCalled();
     expect(enqueueGate).not.toHaveBeenCalled();
     expect(scheduleAcceptedGateRecovery).not.toHaveBeenCalled();
+    expect(getFollowState).not.toHaveBeenCalled();
   });
 
   // The public reply is per-COMMENT, not per-journey: a comment left visibly

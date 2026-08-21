@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { apiRead, apiMutation, ApiError } from "@/lib/api";
+import { DEFAULT_PUBLIC_REPLY } from "@/lib/automationCopy";
 import { useOperationId } from "@/lib/useOperationId";
 import type { Keyword, MediaKind, MediaPage, Resource } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -53,7 +54,7 @@ const emptyForm: KeywordFormState = {
   sequenceMode: "new",
   newSequenceName: "",
   resourceId: "",
-  publicReply: "Check your DMs! 💌",
+  publicReply: DEFAULT_PUBLIC_REPLY,
   gateMessage: "Reply DONE to receive your guide.",
   active: true,
 };
@@ -302,7 +303,7 @@ export function KeywordForm({
           <Input
             value={form.publicReply}
             onChange={(e) => setForm((f) => ({ ...f, publicReply: e.target.value }))}
-            placeholder="Check your DMs! 💌"
+            placeholder={DEFAULT_PUBLIC_REPLY}
             required
             maxLength={280}
           />

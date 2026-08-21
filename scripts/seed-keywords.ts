@@ -36,7 +36,7 @@ async function main() {
       data: {
         keyword: "PLAY",
         resourceId: playResource.id,
-        publicReply: "Check your DMs ❤️",
+        publicReply: "It’s waiting for you 💛 Check your DMs (and Requests)!",
         gateMessage:
           "Hi! ❤️\n\nBefore I send the activity guide, please follow @tinysoho and reply DONE once you've followed.\n\nI share toddler activities, learning ideas, and parenting tips almost every day.",
       },
