@@ -76,7 +76,11 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 async function getFollowConversion(): Promise<FollowConversion> {
   const windowDays = env.FOLLOW_RECHECK_MAX_AGE_DAYS;
 
-  const [row] = await prisma.$queryRaw<
+  // The two reads below are independent — one counts conversations in the yield
+  // pool, the other counts users with a second follow reading — so they run
+  // concurrently. Awaiting them in series cost a full extra query's latency on
+  // every dashboard load, and this service is the slowest thing Home waits for.
+  const poolQuery = prisma.$queryRaw<
     { delivered: bigint; rechecked: bigint; converted: bigint }[]
   >`
     WITH pool AS (
@@ -102,7 +106,7 @@ async function getFollowConversion(): Promise<FollowConversion> {
 
   // Follow-through is a separate query: it counts USERS with a second reading,
   // not conversations, and must not disturb the yield numbers above.
-  const [ft] = await prisma.$queryRaw<{ checked: bigint; still_following: bigint }[]>`
+  const followThroughQuery = prisma.$queryRaw<{ checked: bigint; still_following: bigint }[]>`
     SELECT
       COUNT(DISTINCT c.ig_user_id) AS checked,
       COUNT(DISTINCT c.ig_user_id) FILTER (WHERE c.follow_through_is_follower IS TRUE)
@@ -113,6 +117,9 @@ async function getFollowConversion(): Promise<FollowConversion> {
       AND (e.payload->>'followerAtDelivery')::boolean IS FALSE
       AND c.follow_through_at IS NOT NULL
   `;
+
+  const [[row], [ft]] = await Promise.all([poolQuery, followThroughQuery]);
+
   const followThroughChecked = Number(ft?.checked ?? 0);
   const stillFollowing = Number(ft?.still_following ?? 0);
   const retention = summarizeRetention(followThroughChecked, stillFollowing);

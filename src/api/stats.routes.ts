@@ -1,13 +1,32 @@
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
-import { getDashboardStats } from "../services/statsService.js";
+import { getDashboardStats, type DashboardStats } from "../services/statsService.js";
 import { getIgUsers } from "../services/igUserService.js";
+import { createReadThroughCache } from "../lib/readThroughCache.js";
 import { asyncRouter } from "./asyncRouter.js";
 
 export const statsRouter = asyncRouter();
 
+/**
+ * Home reads this on every mount, and it is the most expensive read in the app:
+ * twelve queries, two of which are multi-second aggregates over event_log.
+ *
+ * Everything in it is an hour-scale operational count — today's DM total, queue
+ * depths, follower yield over a 30-day window, the token countdown. None of it
+ * changes meaningfully inside half a minute, so recomputing per page load bought
+ * nothing and starved the connection pool.
+ *
+ * Exported so tests can start from a cold cache; nothing in production should
+ * need to reach for it.
+ */
+export const STATS_CACHE_TTL_MS = 30_000;
+export const statsCache = createReadThroughCache<DashboardStats>({
+  ttlMs: STATS_CACHE_TTL_MS,
+  maxEntries: 1,
+});
+
 statsRouter.get("/", async (_req, res) => {
-  const stats = await getDashboardStats();
+  const stats = await statsCache.get("dashboard", getDashboardStats);
   res.json(stats);
 });
 

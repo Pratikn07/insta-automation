@@ -10,6 +10,7 @@ import {
   type FunnelWindow,
 } from "../services/funnels/runFunnel.js";
 import { DROP_OFF_BUCKETS, type DropOffBucket } from "../services/funnels/dropOff.js";
+import { createReadThroughCache } from "../lib/readThroughCache.js";
 import { asyncRouter } from "./asyncRouter.js";
 
 /**
@@ -73,6 +74,39 @@ function isWindowError(w: FunnelWindow | WindowError): w is WindowError {
   return "error" in w;
 }
 
+/**
+ * The cohort query behind a funnel is the single slowest read in the API (~1.7s
+ * mean), and Home runs one on every mount.
+ *
+ * The key carries the whole denominator — funnel, both cohort bounds and the
+ * minimum sample — because serving one window's numbers under another window's
+ * label is precisely the unstated-denominator bug `resolveWindow` refuses to
+ * commit. A caller walking date ranges gets a miss per range, capped by
+ * maxEntries.
+ *
+ * Exported so tests can start from a cold cache.
+ */
+export const FUNNEL_CACHE_TTL_MS = 60_000;
+export const funnelCache = createReadThroughCache<
+  Awaited<ReturnType<typeof runGuideFollowFunnel>>
+>({ ttlMs: FUNNEL_CACHE_TTL_MS, maxEntries: 32 });
+
+/**
+ * Quantised to the TTL, because `defaultWindow()` is `now`-relative to the
+ * millisecond: keying on the raw bounds would miss on every single request, and
+ * the default window is exactly the one Home loads. Explicit windows arrive
+ * day-aligned from `resolveWindow`, so their buckets are already stable.
+ *
+ * The consequence is deliberate: consecutive loads inside a bucket share one
+ * snapshot, so the `window.to` echoed back can trail real time by up to a TTL.
+ * That is what a cached read means, and it keeps the numbers and the label they
+ * are reported under consistent with each other.
+ */
+export function funnelCacheKey(key: string, window: FunnelWindow, minSample: number): string {
+  const bucket = (d: Date) => Math.floor(d.getTime() / FUNNEL_CACHE_TTL_MS);
+  return `${key}|${bucket(window.from)}|${bucket(window.to)}|${minSample}`;
+}
+
 // GET /api/funnels — what funnels exist. Drives the section's nav without the
 // client hardcoding a list that drifts from the registry.
 funnelsRouter.get("/", (_req, res) => {
@@ -107,7 +141,11 @@ funnelsRouter.get("/:key", async (req, res) => {
   }
 
   // Only one funnel so far; the registry grows into a switch here.
-  res.json(await runGuideFollowFunnel(prisma, window, def.minSample));
+  res.json(
+    await funnelCache.get(funnelCacheKey(def.key, window, def.minSample), () =>
+      runGuideFollowFunnel(prisma, window, def.minSample),
+    ),
+  );
 });
 
 // GET /api/funnels/:key/drop-off/:bucket — who fell out, and what we know about
