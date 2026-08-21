@@ -15,7 +15,8 @@ import {
   getGeoWindowTrend,
 } from "../services/experimentService.js";
 import { idempotencyKeyMismatch } from "./createReplay.js";
-import { getFollowerDailyAdds } from "../services/followerFlowService.js";
+import { getFollowerDailyAdds, type FollowerFlowResult } from "../services/followerFlowService.js";
+import { createReadThroughCache } from "../lib/readThroughCache.js";
 import { parseFeedFollowAttributionRange } from "../services/feedFollowAttributionCore.js";
 import { getFeedFollowAttribution } from "../services/feedFollowAttributionService.js";
 import { computeUsFit } from "../services/usFitScore.js";
@@ -58,10 +59,29 @@ insightsRouter.get("/geo-window-trend", async (_req, res) => {
   res.json({ points: await getGeoWindowTrend() });
 });
 
+/**
+ * Home's slowest read by a wide margin — 9–13s on every load before this, which
+ * was the whole of the dashboard's perceived ~10s wait.
+ *
+ * The series is one point per Pacific analytics day over a 90-day lookback, built
+ * from snapshots a worker writes at most hourly, so consecutive page loads cannot
+ * produce different bars. The one genuinely live value is `stock`, which
+ * followerFlowService fetches from the Graph API per call so the headline cannot
+ * drift from the profile; a minute of staleness there is a fair trade for not
+ * rebuilding 90 days of history on every mount.
+ *
+ * Exported so tests can start from a cold cache.
+ */
+export const FOLLOWER_FLOW_CACHE_TTL_MS = 60_000;
+export const followerFlowCache = createReadThroughCache<FollowerFlowResult>({
+  ttlMs: FOLLOWER_FLOW_CACHE_TTL_MS,
+  maxEntries: 1,
+});
+
 // GET /api/insights/follower-daily-adds — daily net follower adds by region
 // (diffed from cumulative follower_demographics snapshots) + latest stock.
 insightsRouter.get("/follower-daily-adds", async (_req, res) => {
-  res.json(await getFollowerDailyAdds());
+  res.json(await followerFlowCache.get("default", getFollowerDailyAdds));
 });
 
 // GET /api/insights/feed-follow-attribution — Meta-attributed gross follows for
