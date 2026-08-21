@@ -1,6 +1,12 @@
 import "dotenv/config";
 import { z } from "zod";
+import { DM_RECOVERY_TIMING_EXPERIMENT_VERSION } from "../services/dmRecoveryTimingExperiment.js";
 import { booleanFlag } from "./booleanFlag.js";
+import { RECOVERY_TIMING_V2_CUTOVER_AT } from "./recoveryTimingSchedule.js";
+
+const DAY_MS = 24 * 60 * 60 * 1_000;
+const MIN_TIMING_EXPERIMENT_DAYS = 28;
+const MAX_TIMING_EXPERIMENT_DAYS = 42;
 
 /**
  * The one Graph signature that must never enter the settings-blocked allowlist.
@@ -45,6 +51,8 @@ export const envSchema = z.object({
   IG_USER_ID: z.string().min(1),
 
   DATABASE_URL: z.string().url(),
+  /** Direct PostgreSQL session for schema migrations; runtime may use a transaction pool. */
+  DIRECT_URL: z.string().url().optional(),
   SUPABASE_URL: z.string().url(),
   SUPABASE_SERVICE_KEY: z.string().min(1),
   SUPABASE_BUCKET: z.string().min(1).default("insta-resources"),
@@ -169,6 +177,8 @@ export const envSchema = z.object({
    */
   DM_RECOVERY_HISTORICAL_ENABLED: booleanFlag(false),
   DM_RECOVERY_HISTORICAL_INTERVAL_MS: z.coerce.number().int().min(10_000).default(300_000),
+  // Legacy read-recovery-v1 inputs. V2 uses code-frozen 2h/6h schedules and a
+  // 45/45/10 allocation, so neither value is consulted for a randomized v2 row.
   DM_RECOVERY_DELAY_HOURS: z.coerce.number().int().min(1).max(168).default(10),
   DM_RECOVERY_COOLDOWN_HOURS: z.coerce.number().int().min(1).max(168).default(24),
   DM_RECOVERY_WORKER_INTERVAL_MS: z.coerce.number().int().min(10_000).default(60_000),
@@ -272,7 +282,47 @@ export const envSchema = z.object({
         path: ["DM_RECOVERY_EXPERIMENT_END_AT"],
         message: "DM_RECOVERY_EXPERIMENT_END_AT must be strictly after DM_RECOVERY_EXPERIMENT_START_AT",
       });
+    } else if (
+      value.DM_RECOVERY_EXPERIMENT_VERSION ===
+      DM_RECOVERY_TIMING_EXPERIMENT_VERSION
+    ) {
+      if (startTime !== new Date(RECOVERY_TIMING_V2_CUTOVER_AT).getTime()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["DM_RECOVERY_EXPERIMENT_START_AT"],
+          message:
+            `${DM_RECOVERY_TIMING_EXPERIMENT_VERSION} must start at the approved cutover ` +
+            RECOVERY_TIMING_V2_CUTOVER_AT,
+        });
+      }
+      const durationDays = (endTime - startTime) / DAY_MS;
+      if (
+        durationDays < MIN_TIMING_EXPERIMENT_DAYS ||
+        durationDays > MAX_TIMING_EXPERIMENT_DAYS
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["DM_RECOVERY_EXPERIMENT_END_AT"],
+          message:
+            `${DM_RECOVERY_TIMING_EXPERIMENT_VERSION} must enroll for ` +
+            `${MIN_TIMING_EXPERIMENT_DAYS} to ${MAX_TIMING_EXPERIMENT_DAYS} days`,
+        });
+      }
     }
+  }
+
+  if (
+    value.DM_RECOVERY_EXPERIMENT_VERSION ===
+      DM_RECOVERY_TIMING_EXPERIMENT_VERSION &&
+    value.DM_RECOVERY_POST_EXPERIMENT_ENABLED
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["DM_RECOVERY_POST_EXPERIMENT_ENABLED"],
+      message:
+        `${DM_RECOVERY_TIMING_EXPERIMENT_VERSION} does not assign followers ` +
+        "after its enrollment window",
+    });
   }
 
   if (value.DM_RECOVERY_ENABLED && (!hasStart || !hasEnd)) {

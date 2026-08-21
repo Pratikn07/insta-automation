@@ -1,5 +1,8 @@
 # Feature request: reactivate the past audience
 
+> **Historical context.** References to the prospective ten-hour or 90/10
+> workflow describe v1 as it existed when this request was captured.
+
 **Status:** request — not designed, not scheduled
 **Raised:** 2026-08-07
 **Relates to:** DM Recovery Reminders (`feat/instagram-read-recovery-reminders`)

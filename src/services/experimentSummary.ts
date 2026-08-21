@@ -1,6 +1,10 @@
+import type { Prisma } from "@prisma/client";
 import { experimentDefinition } from "../config/experimentRegistry.js";
 import { env } from "../config/env.js";
+import { RECOVERY_TIMING_V2_CUTOVER_AT } from "../config/recoveryTimingSchedule.js";
 import { prisma } from "../lib/prisma.js";
+import { DM_RECOVERY_TIMING_EXPERIMENT_VERSION } from "./dmRecoveryTimingExperiment.js";
+import { configuredExperimentState } from "./experimentLifecycle.js";
 import { flags } from "./flagService.js";
 
 /**
@@ -24,6 +28,13 @@ export type NotCounted = { reason: string; people: number };
 
 export type ExperimentSummary =
   | { kind: "not_started"; wouldCompare: string; blocker: string }
+  | {
+      kind: "ended";
+      arms: ArmCount[];
+      notCounted: NotCounted[];
+      endedAt: string;
+      conclusion: string;
+    }
   | {
       kind: "running";
       arms: ArmCount[];
@@ -67,15 +78,38 @@ type ReminderGroup = {
   _count: number;
 };
 
+type TimingAssignment = {
+  igUserId: string;
+  timingArm: string | null;
+};
+
+export function legacyRecoverySummaryWhere(
+  acceptedBefore: Date,
+): Prisma.DmRecoveryReminderWhereInput {
+  return {
+    triggerKind: "no_confirmed_read",
+    experimentVersionSnapshot: null,
+    OR: [
+      { acceptedAt: { lt: acceptedBefore } },
+      // Tracking-unavailable exclusions are never accepted into the experiment;
+      // for those rows, eligibleAt is the stable observation boundary.
+      { acceptedAt: null, eligibleAt: { lt: acceptedBefore } },
+    ],
+  };
+}
+
 export type SummarizerDeps = {
-  groupRecoveryReminders: () => Promise<ReminderGroup[]>;
+  groupRecoveryReminders: (acceptedBefore: Date) => Promise<ReminderGroup[]>;
+  listTimingAssignments: () => Promise<TimingAssignment[]>;
+  experimentState: (key: string) => "running" | "not_started" | "ended";
+  legacyExperimentEndedAt: () => string;
   experimentEndsAt: () => string | null;
   postExperimentEnabled: () => boolean;
 };
 
 export function createExperimentSummarizer(deps: SummarizerDeps) {
-  async function recoveryReminderTiming(): Promise<ExperimentSummary> {
-    const rows = await deps.groupRecoveryReminders();
+  async function legacyRecoveryReminderTiming(): Promise<ExperimentSummary> {
+    const rows = await deps.groupRecoveryReminders(new Date(RECOVERY_TIMING_V2_CUTOVER_AT));
 
     let treatment = 0;
     let control = 0;
@@ -107,24 +141,68 @@ export function createExperimentSummarizer(deps: SummarizerDeps) {
       skipped.set(label, (skipped.get(label) ?? 0) + row._count);
     }
 
+    const arms = [
+      { key: "treatment", label: "10 hours", people: treatment },
+      { key: "control", label: "No reminder", people: control },
+    ];
+    const notCounted = [...skipped.entries()]
+      .map(([reason, people]) => ({ reason, people }))
+      .sort((a, b) => b.people - a.people);
+
+    if (deps.experimentState("recovery-reminder-timing") === "running") {
+      return {
+        kind: "running",
+        arms,
+        notCounted,
+        endsAt: deps.legacyExperimentEndedAt(),
+        whenItEnds:
+          "At cutover, new requests move to the 2 vs 6 hour test. Existing V1 assignments keep their original timing.",
+      };
+    }
+
     return {
-      kind: "running",
-      arms: [
-        { key: "treatment", label: "Got a reminder", people: treatment },
-        { key: "control", label: "Got nothing", people: control },
-      ],
-      notCounted: [...skipped.entries()]
-        .map(([reason, people]) => ({ reason, people }))
-        .sort((a, b) => b.people - a.people),
-      endsAt: deps.experimentEndsAt(),
-      whenItEnds: deps.postExperimentEnabled()
-        ? "Reminders keep going after the window closes."
-        : "When the window closes, reminders stop and wait for your decision. Nothing announces it.",
+      kind: "ended",
+      arms,
+      notCounted,
+      endedAt: deps.legacyExperimentEndedAt(),
+      conclusion: "This experiment concluded and was replaced by the 2 vs 6 hour test.",
     };
   }
 
-  const RUNNING: Record<string, () => Promise<ExperimentSummary>> = {
-    "recovery-reminder-timing": recoveryReminderTiming,
+  async function recoveryReminderTimingV2(): Promise<ExperimentSummary> {
+    const rows = await deps.listTimingAssignments();
+    const assignmentByPerson = new Map<string, string>();
+    for (const row of rows) {
+      if (
+        !assignmentByPerson.has(row.igUserId) &&
+        (row.timingArm === "two_hour" ||
+          row.timingArm === "six_hour" ||
+          row.timingArm === "no_reminder")
+      ) {
+        assignmentByPerson.set(row.igUserId, row.timingArm);
+      }
+    }
+
+    const count = (arm: string) =>
+      [...assignmentByPerson.values()].filter((assigned) => assigned === arm).length;
+
+    return {
+      kind: "running",
+      arms: [
+        { key: "two_hour", label: "2 hours", people: count("two_hour") },
+        { key: "six_hour", label: "6 hours", people: count("six_hour") },
+        { key: "no_reminder", label: "No reminder", people: count("no_reminder") },
+      ],
+      notCounted: [],
+      endsAt: deps.experimentEndsAt(),
+      whenItEnds:
+        "When the window closes, reminders stop and wait for your decision. Nothing announces it.",
+    };
+  }
+
+  const MEASURED: Record<string, () => Promise<ExperimentSummary>> = {
+    "recovery-reminder-timing": legacyRecoveryReminderTiming,
+    "recovery-reminder-timing-v2": recoveryReminderTimingV2,
   };
 
   return {
@@ -135,7 +213,7 @@ export function createExperimentSummarizer(deps: SummarizerDeps) {
 
       // Nothing to query, and no zeroes to print. A row of zeroes reads as
       // failure; "never switched on" reads as a decision.
-      if (definition.state !== "running") {
+      if (deps.experimentState(key) === "not_started") {
         return {
           kind: "not_started",
           wouldCompare: definition.arms.map((a) => a.doesWhat).join(" versus "),
@@ -143,17 +221,18 @@ export function createExperimentSummarizer(deps: SummarizerDeps) {
         };
       }
 
-      const summarize = RUNNING[key];
-      if (!summarize) throw new Error(`No summary registered for running ${key}`);
+      const summarize = MEASURED[key];
+      if (!summarize) throw new Error(`No summary registered for measured ${key}`);
       return summarize();
     },
   };
 }
 
 export const experimentSummarizer = createExperimentSummarizer({
-  groupRecoveryReminders: async () => {
+  groupRecoveryReminders: async (acceptedBefore) => {
     const rows = await prisma.dmRecoveryReminder.groupBy({
       by: ["cohort", "status", "suppressionReason"],
+      where: legacyRecoverySummaryWhere(acceptedBefore),
       _count: { _all: true },
     });
     return rows.map((r) => ({
@@ -163,6 +242,21 @@ export const experimentSummarizer = createExperimentSummarizer({
       _count: r._count._all,
     }));
   },
+  listTimingAssignments: async () =>
+    prisma.dmRecoveryReminder.findMany({
+      where: {
+        triggerKind: "no_confirmed_read",
+        experimentVersionSnapshot: DM_RECOVERY_TIMING_EXPERIMENT_VERSION,
+        timingArm: { not: null },
+      },
+      select: { igUserId: true, timingArm: true },
+      orderBy: [{ acceptedAt: "asc" }, { id: "asc" }],
+    }),
+  experimentState: (key) => {
+    const definition = experimentDefinition(key);
+    return configuredExperimentState(key, definition?.state ?? "not_started");
+  },
+  legacyExperimentEndedAt: () => RECOVERY_TIMING_V2_CUTOVER_AT,
   experimentEndsAt: () => env.DM_RECOVERY_EXPERIMENT_END_AT ?? null,
   postExperimentEnabled: () => flags.bool("DM_RECOVERY_POST_EXPERIMENT_ENABLED"),
 });

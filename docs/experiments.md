@@ -23,10 +23,12 @@ outcome names a stage in a `FunnelDef` (`src/services/funnels/registry.ts`) —
 implemented. New metrics are added as funnel definitions, which `funnels.md` already
 names as the intended way to extend.
 
-**3. A rate below `minSample` prints counts, never a percentage.** Straight from
-`funnels.md`: "15.6%" over 32 people and over 3,200 are different claims and only one
-of them is a number. Reuse `guardedRate`. When it returns null, say what is still
-missing — *"about 400 more people needed"* — rather than showing a p-value.
+**3. A rate below `minSample` is never presented as a settled result.** Straight
+from `funnels.md`: "15.6%" over 32 people and over 3,200 are different claims.
+General funnels reuse `guardedRate`. A predeclared experiment detail may show the
+raw count, denominator, rate, and uncertainty together so the arms can be audited,
+but it must label immature or partial evidence as collecting or exploratory and
+must not choose a winner from it.
 
 **4. Arms are immutable once anyone is assigned.** Recutting the split mid-flight
 invalidates the result you were waiting for.
@@ -113,14 +115,15 @@ Rules that follow from this, all enforced by tests rather than review:
    contradict themselves.
 3. **A switch is never named the same as its experiment.** The row prints
    "*switch* · part of *experiment*", and identical names read as a tautology.
-4. **`not_started` returns intent and a blocker, never zeroes.** Zeroes read as "we
-   tried and nobody converted"; "never switched on" reads as a decision. It is listed
-   rather than hidden, because a list of experiments you could run tomorrow is the most
-   useful thing on the page.
-5. **Counts in whole people, never rates.** No confidence intervals, no significance,
-   no "visitors remaining". The Optimizely pages this borrows its shape from report
-   285,991 visitors; recovery reminders have 594 sends. `docs/funnels.md` already
-   refuses to print a rate its sample cannot support.
+4. **Lifecycle is visible.** The list defaults to Active and separates Planned and
+   Concluded experiments into their own tabs. A `not_started` experiment returns
+   intent and a blocker, never misleading zeroes. A concluded experiment leaves the
+   working list but remains available with its frozen result and decision record.
+5. **The list stays in whole people; the detail explains the comparison.** List rows
+   remain scannable counts. A predeclared experiment detail can show completion
+   counts, denominators, rates, pairwise differences, and 95% ranges when all of those
+   labels are shown together. Only the complete, matured experiment window may drive
+   the final decision; partial ranges are exploratory.
 6. **Every person lands in exactly one bucket.** An arm, or a named skip. The obvious
    implementation — treatment is `sent`, skipped is `suppressed` — silently dropped 71
    real people out of 2,360 and still looked complete.
@@ -174,9 +177,11 @@ says control wins 11.5% to 14.3% the other way, because a reminder was suppresse
 anyone who had already engaged — so the people who got one are, by construction, the
 non-responders. Only the matched comparison above answers the question that was asked.
 
-## Not built yet
+## Current closing scope
 
-Closing experiments — the decisions surface, the diagram drawn from stored steps and
-arms, funnel-backed outcomes, the verdict language, and the worker that executes rule 6
-— is specified in
-`docs/superpowers/specs/2026-08-18-experiments-and-flags-design.md` as Phase 2.
+The Recovery timing experiments now have Active, Planned, and Concluded list views
+and a frozen comparison detail. V2 shows all three arms, its predeclared 48-hour
+primary outcome, 24-hour and reply context, direct pair comparisons, a plain-language
+decision, and safety checks. It never changes rollout automatically. The general
+stored decision workflow, step diagram, and worker that executes rule 6 remain Phase 2
+in `docs/superpowers/specs/2026-08-18-experiments-and-flags-design.md`.

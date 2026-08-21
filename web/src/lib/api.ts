@@ -1,4 +1,5 @@
 import { supabase } from "./supabase";
+import type { DayRange } from "./dateRange";
 import { awaitWithSignal, withDeadline } from "./requestDeadline";
 import { MutationNotDispatchedError, MutationOutcomeUnknownError } from "./mutationOutcome";
 import type {
@@ -207,14 +208,25 @@ export const recoveryApi = {
   list: (query: string, options: ReadOptions = {}) =>
     // `asOf` is the eligibleAt boundary this page was read at. Echo it back with
     // the cursor so a paginated run stays on one boundary.
-    apiRead<{ rows: RecoveryReminderRow[]; nextCursor: string | null; asOf: string }>(
+    apiRead<{
+      rows: RecoveryReminderRow[];
+      nextCursor: string | null;
+      asOf: string;
+      range: DayRange | null;
+    }>(
       `/recovery-reminders${query ? `?${query}` : ""}`,
       options,
     ),
-  counts: (options: ReadOptions = {}) =>
-    apiRead<RecoveryCounts>("/recovery-reminders/counts", options),
-  metrics: (options: ReadOptions = {}) =>
-    apiRead<RecoveryMetrics>("/recovery-reminders/metrics", options),
+  counts: (query = "", options: ReadOptions = {}) =>
+    apiRead<RecoveryCounts>(
+      `/recovery-reminders/counts${query ? `?${query}` : ""}`,
+      options,
+    ),
+  metrics: (query = "", options: ReadOptions = {}) =>
+    apiRead<RecoveryMetrics>(
+      `/recovery-reminders/metrics${query ? `?${query}` : ""}`,
+      options,
+    ),
   settingsVerifications: (options: ReadOptions = {}) =>
     apiRead<{ records: SettingsBlockedVerificationRecord[] }>(
       "/recovery-reminders/settings-verifications",

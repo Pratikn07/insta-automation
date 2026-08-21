@@ -1,3 +1,5 @@
+import type { DayRange } from "./dateRange";
+
 export type MessageType = "text" | "image" | "pdf";
 export type ConversationState = "awaiting_done" | "completed" | "expired";
 
@@ -105,6 +107,13 @@ export interface ExperimentArmView {
  */
 export type ExperimentSummaryView =
   | { kind: "not_started"; wouldCompare: string; blocker: string }
+  | {
+      kind: "ended";
+      arms: { key: string; label: string; people: number }[];
+      notCounted: { reason: string; people: number }[];
+      endedAt: string;
+      conclusion: string;
+    }
   | {
       kind: "running";
       arms: { key: string; label: string; people: number }[];
@@ -893,6 +902,7 @@ export type RecoveryStatus =
 export type RecoveryCohort = "treatment" | "control" | "not_applicable";
 export type RecoveryTriggerKind = "no_confirmed_read" | "settings_blocked";
 export type RecoverySettingsEvidenceStatus = "current" | "stale" | "retired" | "missing";
+export type RecoveryTimingArm = "two_hour" | "six_hour" | "no_reminder";
 
 export interface RecoverySettingsEvidence {
   status: RecoverySettingsEvidenceStatus;
@@ -946,6 +956,9 @@ export interface RecoveryReminderRow {
   triggerKind: RecoveryTriggerKind;
   status: RecoveryStatus;
   cohort: RecoveryCohort;
+  experimentVersion: string | null;
+  timingArm: RecoveryTimingArm | null;
+  timingLabel: string | null;
   acceptedAt: string | null;
   eligibleAt: string;
   seenAt: string | null;
@@ -1002,7 +1015,95 @@ export interface RecoveryCohortSummary {
   completionRate48h: number | null;
 }
 
+export type RecoveryTimingDecision =
+  | "collecting"
+  | "exploratory"
+  | "inconclusive"
+  | "two_hour_wins"
+  | "six_hour_wins"
+  | "safety_review";
+
+export interface RecoveryProportionComparison {
+  differencePercentagePoints: number | null;
+  confidenceInterval95: { low: number; high: number } | null;
+  zScore: number | null;
+  pValue: number | null;
+}
+
+export interface RecoveryReportingScope {
+  asOf: string;
+  coverage: DayRange;
+  range: DayRange;
+  resultsCompleteThrough: string | null;
+  stillCollectingFollowers: number;
+  fullExperimentRange: boolean;
+}
+
+/** Exact wire contract returned by the v2 timing metrics endpoint. */
+export interface RecoveryTimingArmSummary {
+  arm: RecoveryTimingArm;
+  assigned: number;
+  allocationPercent: number | null;
+  matured: number;
+  immature: number;
+  completedWithin24h: number;
+  completedWithin48h: number;
+  completionRate24h: number | null;
+  completionRate48h: number | null;
+  repliedWithin24h: number;
+  repliedWithin48h: number;
+  seenBeforeEligibility: number;
+  sent: number;
+  attempted: number;
+  suppressed: number;
+  suppressionReasons: Record<string, number>;
+  sendFailed: number;
+  sendUncertain: number;
+  sendExceptionRate: number | null;
+  delayedSignalFalsePositives: number;
+  delayedSignalFalsePositiveRate: number | null;
+  reminderToReplyMinutesMedian: number | null;
+  readEventCoveragePercent: number | null;
+  lateSendCount: number;
+  latenessMs: { p50: number | null; p95: number | null; max: number | null };
+  cooldownSuppressions: number;
+  duplicateAttemptCount: number;
+  confirmedDuplicateSends: number;
+}
+
+export interface RecoveryTimingExperimentMetrics {
+  version: string;
+  reporting: RecoveryReportingScope;
+  arms: {
+    twoHour: RecoveryTimingArmSummary;
+    sixHour: RecoveryTimingArmSummary;
+    noReminder: RecoveryTimingArmSummary;
+  };
+  timingComparison: RecoveryProportionComparison;
+  treatmentControlComparisons: {
+    twoHour: RecoveryProportionComparison;
+    sixHour: RecoveryProportionComparison;
+  };
+  allocation: {
+    indexFollowers: number;
+    assignmentDriftFollowers: number;
+  };
+  safety: {
+    twoHourMateriallyWorse: boolean;
+    sixHourMateriallyWorse: boolean;
+    controlPointEstimateHarm: boolean;
+    treatmentControlConfidenceHarm: boolean;
+    duplicateSafetyEvent: boolean;
+  };
+  decision: {
+    state: RecoveryTimingDecision;
+    automaticRollout: false;
+    conservativeDefault: "six_hour" | null;
+  };
+}
+
 export interface RecoveryMetrics {
+  timingExperiment: RecoveryTimingExperimentMetrics | null;
   experiment: {
     version: string;
     startAt: string | null;

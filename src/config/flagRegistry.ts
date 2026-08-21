@@ -46,10 +46,9 @@ export interface FlagDefinition {
   /**
    * The experiment this flag is part of, if any.
    *
-   * Five of these belong to recovery reminder timing — its kill switch, its split,
-   * its eligibility rule, its circuit breaker, and what happens when it ends. Listed
-   * flat they looked like five unrelated things, which is most of why the single
-   * page felt arbitrary.
+   * Recovery V1 and V2 are sequential experiments over one pipeline. Their shared
+   * live controls are assigned to the experiment currently running by
+   * experimentLifecycle; V1-only historical settings remain attached to V1.
    *
    * Absent is the honest answer for a flag where a comparison is merely
    * *conceivable* but has never been declared. `experimentRegistry.ts` explains why
@@ -73,7 +72,7 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
       "No public reminders are posted. People who miss the message simply never get the guide.",
     pageMayEnable: false,
     pageMayStop: true,
-    experimentKey: "recovery-reminder-timing",
+    experimentKey: "recovery-reminder-timing-v2",
   },
   {
     key: "GUIDE_DELIVERY_ENABLED",
@@ -157,7 +156,7 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
     // direction this console is not allowed to move anything.
     pageMayEnable: false,
     pageMayStop: false,
-    experimentKey: "recovery-reminder-timing",
+    experimentKey: "recovery-reminder-timing-v2",
   },
 
   // ── Experiments: measuring something ─────────────────────────────────────
@@ -178,30 +177,30 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
   },
   {
     key: "DM_RECOVERY_HOLDOUT_PERCENT",
-    name: "Reminder holdout",
+    name: "Legacy reminder holdout",
     group: "experiment",
     kind: "percent",
     doesWhat:
-      "The share of people deliberately left without a reminder, so we can tell whether reminding helps at all.",
-    affectsWho: "A fixed share of the people eligible for a reminder.",
+      "Set the no-reminder share in the original 10-hour experiment. The 2 vs 6 hour experiment uses its fixed 45/45/10 assignment instead.",
+    affectsWho: "Only assignments made by the original 10-hour experiment.",
     ifOff:
       "At zero, everyone eligible gets a reminder and there is no way left to prove the reminder is what worked.",
-    pageMayEnable: true,
-    pageMayStop: true,
+    pageMayEnable: false,
+    pageMayStop: false,
     experimentKey: "recovery-reminder-timing",
   },
   {
     key: "DM_RECOVERY_POST_EXPERIMENT_ENABLED",
-    name: "Keep reminding after the test ends",
+    name: "Legacy post-test reminders",
     group: "experiment",
     kind: "boolean",
     doesWhat:
-      "Keeps sending reminders after the test window closes, instead of pausing everything until someone reviews the result.",
-    affectsWho: "Everyone eligible for a reminder after the window closes.",
+      "Controlled what the original 10-hour experiment did after its window closed. V2 always stops new assignments at its end.",
+    affectsWho: "Only the original 10-hour experiment's post-window behavior.",
     ifOff:
       "Once the window closes, reminders stop and wait for a decision. Nothing announces it, which is why this one is worth watching.",
-    pageMayEnable: true,
-    pageMayStop: true,
+    pageMayEnable: false,
+    pageMayStop: false,
     experimentKey: "recovery-reminder-timing",
   },
   {
@@ -216,7 +215,7 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
     ifOff: "Reminders are posted regardless of where the person appears to be from.",
     pageMayEnable: true,
     pageMayStop: true,
-    experimentKey: "recovery-reminder-timing",
+    experimentKey: "recovery-reminder-timing-v2",
   },
   {
     key: "DM_RECOVERY_ORIGIN_LLM_ENABLED",

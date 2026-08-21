@@ -131,15 +131,15 @@ describe("SwitchDetail", () => {
   it("links back to the experiment it belongs to", async () => {
     apiRead.mockResolvedValue(
       flag({
-        experimentKey: "recovery-reminder-timing",
-        experimentName: "Recovery reminder timing",
+        experimentKey: "recovery-reminder-timing-v2",
+        experimentName: "Recovery reminder — 2 vs 6 hours",
       }),
     );
     renderDetail();
 
-    expect(await screen.findByRole("link", { name: /Recovery reminder timing/ })).toHaveAttribute(
+    expect(await screen.findByRole("link", { name: /Recovery reminder — 2 vs 6 hours/ })).toHaveAttribute(
       "href",
-      "/experiments/recovery-reminder-timing",
+      "/experiments/recovery-reminder-timing-v2",
     );
   });
 

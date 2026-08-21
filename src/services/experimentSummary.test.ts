@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { createExperimentSummarizer } from "./experimentSummary.js";
+import {
+  createExperimentSummarizer,
+  legacyRecoverySummaryWhere,
+} from "./experimentSummary.js";
 
 type Row = {
   cohort: string;
@@ -11,6 +14,14 @@ type Row = {
 function make(rows: Row[]) {
   return createExperimentSummarizer({
     groupRecoveryReminders: vi.fn().mockResolvedValue(rows),
+    listTimingAssignments: vi.fn().mockResolvedValue([]),
+    experimentState: (key: string) =>
+      key === "recovery-reminder-timing-v2"
+        ? "running"
+        : key === "recovery-reminder-timing"
+          ? "ended"
+          : "not_started",
+    legacyExperimentEndedAt: () => "2026-08-21T16:00:00.000Z",
     experimentEndsAt: () => "2026-08-21T21:45:00.000Z",
     postExperimentEnabled: () => false,
   });
@@ -49,14 +60,41 @@ const ROWS: Row[] = [
 const TOTAL_PEOPLE = ROWS.reduce((sum, r) => sum + r._count, 0);
 
 describe("recovery reminder timing summary", () => {
+  it("freezes the legacy query at the V2 cutover", async () => {
+    const groupRecoveryReminders = vi.fn().mockResolvedValue(ROWS);
+    const summarizer = createExperimentSummarizer({
+      ...make([]).deps,
+      groupRecoveryReminders,
+    });
+
+    await summarizer.summarize("recovery-reminder-timing");
+
+    expect(groupRecoveryReminders).toHaveBeenCalledWith(
+      new Date("2026-08-21T16:00:00.000Z"),
+    );
+  });
+
+  it("keeps pre-cutover null-accepted exclusions but rejects post-cutover ones", () => {
+    const cutover = new Date("2026-08-21T16:00:00.000Z");
+
+    expect(legacyRecoverySummaryWhere(cutover)).toEqual({
+      triggerKind: "no_confirmed_read",
+      experimentVersionSnapshot: null,
+      OR: [
+        { acceptedAt: { lt: cutover } },
+        { acceptedAt: null, eligibleAt: { lt: cutover } },
+      ],
+    });
+  });
+
   it("counts each arm in whole people", async () => {
     const summary = await make(ROWS).summarize("recovery-reminder-timing");
 
-    expect(summary.kind).toBe("running");
-    if (summary.kind !== "running") throw new Error("expected running");
+    expect(summary.kind).toBe("ended");
+    if (summary.kind !== "ended") throw new Error("expected ended");
     expect(summary.arms).toEqual([
-      { key: "treatment", label: "Got a reminder", people: 594 },
-      { key: "control", label: "Got nothing", people: 395 },
+      { key: "treatment", label: "10 hours", people: 594 },
+      { key: "control", label: "No reminder", people: 395 },
     ]);
   });
 
@@ -65,9 +103,9 @@ describe("recovery reminder timing summary", () => {
   // as a skip would delete most of the control arm.
   it("keeps every control person in the control arm whatever their reason says", async () => {
     const summary = await make(ROWS).summarize("recovery-reminder-timing");
-    if (summary.kind !== "running") throw new Error("expected running");
+    if (summary.kind !== "ended") throw new Error("expected ended");
 
-    expect(summary.arms[1]).toEqual({ key: "control", label: "Got nothing", people: 395 });
+    expect(summary.arms[1]).toEqual({ key: "control", label: "No reminder", people: 395 });
     const skipReasons = summary.notCounted.map((n) => n.reason);
     expect(skipReasons).not.toContain("completed");
     expect(skipReasons).not.toContain("completed_elsewhere");
@@ -77,7 +115,7 @@ describe("recovery reminder timing summary", () => {
   // control. Folding them in either direction would overstate that side.
   it("reports the skipped separately, with why, biggest first", async () => {
     const summary = await make(ROWS).summarize("recovery-reminder-timing");
-    if (summary.kind !== "running") throw new Error("expected running");
+    if (summary.kind !== "ended") throw new Error("expected ended");
 
     expect(summary.notCounted).toEqual([
       { reason: "They opened it themselves", people: 531 },
@@ -104,7 +142,7 @@ describe("recovery reminder timing summary", () => {
    */
   it("accounts for every person, in exactly one bucket", async () => {
     const summary = await make(ROWS).summarize("recovery-reminder-timing");
-    if (summary.kind !== "running") throw new Error("expected running");
+    if (summary.kind !== "ended") throw new Error("expected ended");
 
     const inArms = summary.arms.reduce((sum, a) => sum + a.people, 0);
     const skipped = summary.notCounted.reduce((sum, n) => sum + n.people, 0);
@@ -119,7 +157,7 @@ describe("recovery reminder timing summary", () => {
       { cohort: "treatment", status: "cancelled", suppressionReason: null, _count: 3 },
       { cohort: "treatment", status: "sending", suppressionReason: null, _count: 2 },
     ]).summarize("recovery-reminder-timing");
-    if (summary.kind !== "running") throw new Error("expected running");
+    if (summary.kind !== "ended") throw new Error("expected ended");
 
     const skipped = summary.notCounted.reduce((sum, n) => sum + n.people, 0);
     expect(skipped).toBe(5);
@@ -129,30 +167,91 @@ describe("recovery reminder timing summary", () => {
     ]);
   });
 
-  it("says when it ends and what happens then", async () => {
+  it("records when the original test concluded", async () => {
     const summary = await make(ROWS).summarize("recovery-reminder-timing");
-    if (summary.kind !== "running") throw new Error("expected running");
+    if (summary.kind !== "ended") throw new Error("expected ended");
 
-    expect(summary.endsAt).toBe("2026-08-21T21:45:00.000Z");
-    expect(summary.whenItEnds).toMatch(/reminders stop/i);
-  });
-
-  it("says the opposite when post-experiment sending is on", async () => {
-    const s = createExperimentSummarizer({
-      groupRecoveryReminders: vi.fn().mockResolvedValue(ROWS),
-      experimentEndsAt: () => "2026-08-21T21:45:00.000Z",
-      postExperimentEnabled: () => true,
-    });
-    const summary = await s.summarize("recovery-reminder-timing");
-    if (summary.kind !== "running") throw new Error("expected running");
-
-    expect(summary.whenItEnds).toMatch(/keep going/i);
+    expect(summary.endedAt).toBe("2026-08-21T16:00:00.000Z");
+    expect(summary.conclusion).toMatch(/replaced by the 2 vs 6 hour test/i);
   });
 
   it("renders no percentage anywhere", async () => {
     const summary = await make(ROWS).summarize("recovery-reminder-timing");
 
     expect(JSON.stringify(summary)).not.toMatch(/%/);
+  });
+});
+
+describe("2 vs 6 hour timing summary", () => {
+  it("counts unique assigned people in all three arms", async () => {
+    const summarizer = createExperimentSummarizer({
+      groupRecoveryReminders: vi.fn().mockResolvedValue([]),
+      listTimingAssignments: vi.fn().mockResolvedValue([
+        { igUserId: "person-1", timingArm: "two_hour" },
+        { igUserId: "person-1", timingArm: "two_hour" },
+        { igUserId: "person-2", timingArm: "six_hour" },
+        { igUserId: "person-3", timingArm: "no_reminder" },
+      ]),
+      experimentState: (key: string) =>
+        key === "recovery-reminder-timing-v2"
+          ? "running"
+          : key === "recovery-reminder-timing"
+            ? "ended"
+            : "not_started",
+      legacyExperimentEndedAt: () => "2026-08-21T16:00:00.000Z",
+      experimentEndsAt: () => "2026-10-02T16:00:00.000Z",
+      postExperimentEnabled: () => false,
+    });
+
+    const summary = await summarizer.summarize("recovery-reminder-timing-v2");
+    expect(summary).toMatchObject({
+      kind: "running",
+      arms: [
+        { key: "two_hour", label: "2 hours", people: 1 },
+        { key: "six_hour", label: "6 hours", people: 1 },
+        { key: "no_reminder", label: "No reminder", people: 1 },
+      ],
+      endsAt: "2026-10-02T16:00:00.000Z",
+    });
+  });
+
+  it("always says enrollment stops at the end of V2", async () => {
+    const summarizer = createExperimentSummarizer({
+      ...make([]).deps,
+      postExperimentEnabled: () => true,
+    });
+
+    const summary = await summarizer.summarize("recovery-reminder-timing-v2");
+    expect(summary).toMatchObject({
+      kind: "running",
+      whenItEnds:
+        "When the window closes, reminders stop and wait for your decision. Nothing announces it.",
+    });
+  });
+});
+
+describe("scheduled recovery cutover", () => {
+  it("keeps V1 measured as running and V2 as planned before activation", async () => {
+    const listTimingAssignments = vi.fn().mockResolvedValue([]);
+    const summarizer = createExperimentSummarizer({
+      groupRecoveryReminders: vi.fn().mockResolvedValue(ROWS),
+      listTimingAssignments,
+      experimentState: (key: string) =>
+        key === "recovery-reminder-timing" ? "running" : "not_started",
+      legacyExperimentEndedAt: () => "2026-08-21T16:00:00.000Z",
+      experimentEndsAt: () => "2026-10-02T16:00:00.000Z",
+      postExperimentEnabled: () => false,
+    });
+
+    const v1 = await summarizer.summarize("recovery-reminder-timing");
+    const v2 = await summarizer.summarize("recovery-reminder-timing-v2");
+
+    expect(v1).toMatchObject({ kind: "running", endsAt: "2026-08-21T16:00:00.000Z" });
+    expect(v2).toMatchObject({
+      kind: "not_started",
+      blocker: "Scheduled for 21 Aug 2026 at 9:00 AM Pacific.",
+    });
+    expect(listTimingAssignments).not.toHaveBeenCalled();
   });
 });
 

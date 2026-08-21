@@ -6,10 +6,9 @@
  * matters: the older Insights → Experiments tab defined it by feeling and now holds
  * 94 rows nobody can close.
  *
- * `not_started` is a state rather than a separate place, because a list of
- * experiments you could run tomorrow is the most useful thing on the page. It is
- * also why a not-started experiment carries a `blocker` instead of zeroes — zeroes
- * read as failure, "never switched on" reads as a decision.
+ * Lifecycle states are shown in separate Active, Planned, and Concluded tabs. A
+ * planned experiment carries a `blocker` instead of zeroes — zeroes read as failure,
+ * while a schedule or unmet prerequisite explains why no comparison exists yet.
  */
 
 export type ExperimentState = "running" | "not_started" | "ended";
@@ -33,42 +32,72 @@ export interface ExperimentDefinition {
   arms: ExperimentArm[];
   /** Flags that belong to this experiment. Each appears under exactly one. */
   ownedFlagKeys: string[];
-  /** Why it is not running. Empty for a running experiment. */
+  /** Schedule or reason it is not running; may be retained for dynamic lifecycle UI. */
   blocker: string;
 }
 
 export const EXPERIMENT_REGISTRY: readonly ExperimentDefinition[] = [
   {
     key: "recovery-reminder-timing",
-    name: "Recovery reminder timing",
-    state: "running",
+    name: "Recovery reminder — 10 hours vs none",
+    state: "ended",
     doesWhat:
-      "Tests whether leaving a public comment helps when someone never opens the guide we sent them, by leaving one for most people and deliberately saying nothing to the rest.",
+      "Tested whether leaving a public comment ten hours after a guide request helped, by reminding most people and deliberately saying nothing to the rest.",
     affectsWho:
-      "People who commented a keyword and were sent a guide but have not opened it. Around 190 a week.",
+      "People who commented a keyword, were sent a guide, and had not opened it ten hours later.",
     outcome: "Whether they received the guide within 48 hours of first asking.",
     arms: [
       {
         key: "treatment",
         percent: 90,
-        doesWhat: "Gets a public comment on the reel telling them to check their requests.",
+        doesWhat: "Got a public comment after ten hours telling them to check their requests.",
         isControl: false,
       },
       {
         key: "control",
         percent: 10,
-        doesWhat: "Gets nothing, so we can tell whether the reminder is what worked.",
+        doesWhat: "Got no reminder, so the reminder's effect could be measured.",
+        isControl: true,
+      },
+    ],
+    ownedFlagKeys: ["DM_RECOVERY_HOLDOUT_PERCENT", "DM_RECOVERY_POST_EXPERIMENT_ENABLED"],
+    blocker: "This experiment concluded when the 2 vs 6 hour timing test began.",
+  },
+  {
+    key: "recovery-reminder-timing-v2",
+    name: "Recovery reminder — 2 vs 6 hours",
+    state: "running",
+    doesWhat:
+      "Compares an earlier public reminder with a later one, while leaving a small holdout without a reminder to show whether either reminder helps at all.",
+    affectsWho:
+      "People who commented a keyword and were sent a guide but have not opened it. Around 190 a week.",
+    outcome: "Whether they received the guide within 48 hours of first asking.",
+    arms: [
+      {
+        key: "two_hour",
+        percent: 45,
+        doesWhat: "Gets a public reminder two hours after asking for the guide.",
+        isControl: false,
+      },
+      {
+        key: "six_hour",
+        percent: 45,
+        doesWhat: "Gets a public reminder six hours after asking for the guide.",
+        isControl: false,
+      },
+      {
+        key: "no_reminder",
+        percent: 10,
+        doesWhat: "Gets no reminder, so we can tell whether either timing helps.",
         isControl: true,
       },
     ],
     ownedFlagKeys: [
       "DM_RECOVERY_ENABLED",
-      "DM_RECOVERY_HOLDOUT_PERCENT",
       "DM_RECOVERY_WESTERN_ONLY",
       "DM_RECOVERY_FAILURE_RATE_PERCENT",
-      "DM_RECOVERY_POST_EXPERIMENT_ENABLED",
     ],
-    blocker: "",
+    blocker: "Scheduled for 21 Aug 2026 at 9:00 AM Pacific.",
   },
   {
     key: "guide-delivery-rollout",

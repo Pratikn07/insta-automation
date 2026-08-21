@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "prisma generate && tsc",
-    "start": "prisma migrate deploy && node dist/src/server.js",
+    "start": "node dist/src/migrate.js && node dist/src/server.js",
     "migrate:deploy": "prisma migrate deploy",
     "migrate:status": "prisma migrate status",
     "postinstall": "prisma generate",

@@ -1,10 +1,15 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { RecoveryReminderRow } from "../../lib/types";
+import type {
+  RecoveryReminderRow,
+  RecoveryTimingArm,
+  RecoveryTimingArmSummary,
+  RecoveryTimingExperimentMetrics,
+} from "../../lib/types";
 
 const list = vi.fn();
 const counts = vi.fn();
@@ -19,9 +24,11 @@ vi.mock("../../lib/api", () => ({
   apiRead: (path: string) => apiGet(path),
   apiMutation: (...a: unknown[]) => apiGet(...a),
   recoveryApi: {
+    // These tests exercise query construction. Request cancellation is covered
+    // by the API client tests, so keep the spies focused on the query argument.
     list: (query: unknown) => list(query),
-    counts: () => counts(),
-    metrics: () => metrics(),
+    counts: (query: unknown) => counts(query),
+    metrics: (query: unknown) => metrics(query),
     settingsVerifications: () => settingsVerifications(),
     activateSettingsVerification: (id: string) => activateSettingsVerification(id),
   },
@@ -41,6 +48,9 @@ function row(overrides: Partial<RecoveryReminderRow> = {}): RecoveryReminderRow 
     triggerKind: "no_confirmed_read",
     status: "waiting",
     cohort: "treatment",
+    experimentVersion: null,
+    timingArm: null,
+    timingLabel: null,
     acceptedAt: "2026-08-06T00:00:00.000Z",
     eligibleAt: "2026-08-06T10:00:00.000Z",
     seenAt: null,
@@ -80,8 +90,92 @@ const cohortSummary = {
   completionRate48h: 25,
 };
 
+function timingArm(
+  arm: RecoveryTimingArm,
+  overrides: Partial<RecoveryTimingArmSummary> = {},
+): RecoveryTimingArmSummary {
+  return {
+    arm,
+    assigned: 100,
+    allocationPercent: arm === "no_reminder" ? 10 : 45,
+    matured: 80,
+    immature: 20,
+    completedWithin24h: 36,
+    completedWithin48h: 48,
+    completionRate24h: 45,
+    completionRate48h: 60,
+    repliedWithin24h: 30,
+    repliedWithin48h: 42,
+    seenBeforeEligibility: 12,
+    sent: arm === "no_reminder" ? 0 : 76,
+    attempted: arm === "no_reminder" ? 0 : 78,
+    suppressed: arm === "no_reminder" ? 100 : 2,
+    suppressionReasons: arm === "no_reminder" ? { experiment_control: 100 } : {},
+    sendFailed: arm === "no_reminder" ? 0 : 1,
+    sendUncertain: arm === "no_reminder" ? 0 : 1,
+    sendExceptionRate: arm === "no_reminder" ? null : 2.6,
+    delayedSignalFalsePositives: 1,
+    delayedSignalFalsePositiveRate: 1.3,
+    reminderToReplyMinutesMedian: arm === "no_reminder" ? null : 95,
+    readEventCoveragePercent: 72,
+    lateSendCount: arm === "no_reminder" ? 0 : 3,
+    latenessMs: { p50: 1_000, p95: 3_000, max: 5_000 },
+    cooldownSuppressions: 1,
+    duplicateAttemptCount: 0,
+    confirmedDuplicateSends: 0,
+    ...overrides,
+  };
+}
+
+const TIMING_EXPERIMENT: RecoveryTimingExperimentMetrics = {
+  version: "read-recovery-timing-v2",
+  reporting: {
+    asOf: "2026-08-17T03:00:00.000Z",
+    coverage: { from: "2026-07-01", to: "2026-08-16" },
+    range: { from: "2026-07-18", to: "2026-08-16" },
+    resultsCompleteThrough: "2026-08-14",
+    stillCollectingFollowers: 60,
+    fullExperimentRange: false,
+  },
+  arms: {
+    twoHour: timingArm("two_hour"),
+    sixHour: timingArm("six_hour"),
+    noReminder: timingArm("no_reminder"),
+  },
+  timingComparison: {
+    differencePercentagePoints: 3.2,
+    confidenceInterval95: { low: -1.1, high: 7.5 },
+    zScore: 1.4,
+    pValue: 0.16,
+  },
+  treatmentControlComparisons: {
+    twoHour: {
+      differencePercentagePoints: 4,
+      confidenceInterval95: { low: -2, high: 10 },
+      zScore: 1.2,
+      pValue: 0.23,
+    },
+    sixHour: {
+      differencePercentagePoints: 1,
+      confidenceInterval95: { low: -5, high: 7 },
+      zScore: 0.3,
+      pValue: 0.76,
+    },
+  },
+  allocation: { indexFollowers: 300, assignmentDriftFollowers: 0 },
+  safety: {
+    twoHourMateriallyWorse: false,
+    sixHourMateriallyWorse: false,
+    controlPointEstimateHarm: false,
+    treatmentControlConfidenceHarm: false,
+    duplicateSafetyEvent: false,
+  },
+  decision: { state: "exploratory", automaticRollout: false, conservativeDefault: null },
+};
+
 const METRICS = {
   ...HEALTHY,
+  timingExperiment: TIMING_EXPERIMENT,
   experiment: {
     version: "v1",
     startAt: null,
@@ -139,12 +233,148 @@ beforeEach(() => {
     { id: "kw-1", keyword: "SLEEP" },
     { id: "kw-2", keyword: "CALM" },
   ]);
-  metrics.mockReset().mockResolvedValue(METRICS);
+  metrics.mockReset().mockImplementation(async (query = "") => {
+    if (!query) return METRICS;
+    const params = new URLSearchParams(String(query));
+    return {
+      ...METRICS,
+      timingExperiment: {
+        ...TIMING_EXPERIMENT,
+        reporting: {
+          ...TIMING_EXPERIMENT.reporting,
+          range: {
+            from: params.get("from") ?? TIMING_EXPERIMENT.reporting.range.from,
+            to: params.get("to") ?? TIMING_EXPERIMENT.reporting.range.to,
+          },
+        },
+      },
+    };
+  });
   settingsVerifications.mockReset().mockResolvedValue({ records: [] });
   activateSettingsVerification.mockReset().mockResolvedValue(undefined);
 });
 
 describe("DmRecoveryList", () => {
+  it("loads metrics first, then gives counts and rows the identical server scope", async () => {
+    let release!: (value: typeof METRICS) => void;
+    metrics.mockReset().mockReturnValue(
+      new Promise<typeof METRICS>((resolve) => {
+        release = resolve;
+      }),
+    );
+
+    renderList();
+    await waitFor(() => expect(metrics).toHaveBeenCalledWith(""));
+    expect(counts).not.toHaveBeenCalled();
+    expect(list).not.toHaveBeenCalled();
+
+    await act(async () => release(METRICS));
+
+    const scope =
+      "from=2026-07-18&to=2026-08-16&asOf=2026-08-17T03%3A00%3A00.000Z";
+    await waitFor(() => expect(counts).toHaveBeenCalledWith(scope));
+    await waitFor(() => expect(list).toHaveBeenCalledWith(expect.stringContaining(scope)));
+  });
+
+  it("surfaces a metrics failure and retries before loading scoped data", async () => {
+    metrics.mockReset().mockRejectedValueOnce(new Error("boom")).mockResolvedValue(METRICS);
+    renderList();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Couldn’t load recovery reporting/i);
+    expect(counts).not.toHaveBeenCalled();
+    expect(list).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    expect(await screen.findByRole("heading", { name: "Recovery timing" })).toBeInTheDocument();
+    await waitFor(() => expect(counts).toHaveBeenCalled());
+    await waitFor(() => expect(list).toHaveBeenCalled());
+  });
+
+  it("uses the server asOf when describing whether a scoped row is due", async () => {
+    metrics.mockResolvedValue({
+      ...METRICS,
+      timingExperiment: {
+        ...TIMING_EXPERIMENT,
+        reporting: {
+          ...TIMING_EXPERIMENT.reporting,
+          asOf: "2020-01-01T00:00:00.000Z",
+          coverage: { from: "2019-12-01", to: "2020-01-01" },
+          range: { from: "2019-12-03", to: "2020-01-01" },
+          resultsCompleteThrough: "2019-12-29",
+        },
+      },
+    });
+    list.mockResolvedValue({
+      rows: [
+        row({
+          acceptedAt: "2019-12-31T22:00:00.000Z",
+          eligibleAt: "2020-01-01T01:00:00.000Z",
+        }),
+      ],
+      nextCursor: null,
+    });
+
+    renderList();
+
+    expect(await screen.findByText("Waiting for read confirmation")).toBeInTheDocument();
+    expect(screen.queryByText("No confirmed read")).not.toBeInTheDocument();
+  });
+
+  it("starts at 30 days and exposes presets plus a custom date range", async () => {
+    renderList();
+
+    for (const name of ["7d", "14d", "30d", "All", "Custom"]) {
+      expect(await screen.findByRole("button", { name })).toBeInTheDocument();
+    }
+    expect(screen.getByRole("button", { name: "30d" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText("Showing guide requests received Jul 18 to Aug 16.")).toBeInTheDocument();
+  });
+
+  it("refetches metrics before moving rows and counts to a selected preset", async () => {
+    renderList();
+    await screen.findByText("@sarah");
+
+    await userEvent.click(screen.getByRole("button", { name: "7d" }));
+
+    const scope =
+      "from=2026-08-10&to=2026-08-16&asOf=2026-08-17T03%3A00%3A00.000Z";
+    await waitFor(() => expect(metrics).toHaveBeenCalledWith(scope));
+    await waitFor(() => expect(counts).toHaveBeenLastCalledWith(scope));
+    await waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.stringContaining(scope)));
+  });
+
+  it("commits a custom date range through metrics before moving the list", async () => {
+    renderList();
+    await screen.findByRole("button", { name: "Custom" });
+
+    await userEvent.click(screen.getByRole("button", { name: "Custom" }));
+    const dialog = screen.getByRole("dialog", { name: "Choose a date range" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "2026-08-01" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "2026-08-05" }));
+
+    const scope =
+      "from=2026-08-01&to=2026-08-05&asOf=2026-08-17T03%3A00%3A00.000Z";
+    await waitFor(() => expect(metrics).toHaveBeenCalledWith(scope));
+    await waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.stringContaining(scope)));
+  });
+
+  it("renders all three timing cards", async () => {
+    renderList();
+    expect(await screen.findByRole("heading", { name: "2-hour reminder" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "6-hour reminder" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "No reminder" })).toBeInTheDocument();
+  });
+
+  it("shows health and legacy metrics when v2 has no requests yet", async () => {
+    metrics.mockResolvedValue({ ...METRICS, timingExperiment: null });
+    renderList();
+
+    expect(await screen.findByText(/No recovery timing requests yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/Treatment 48h/i)).toBeInTheDocument();
+    expect(screen.queryByText(CIRCUIT_PAUSED_MESSAGE)).not.toBeInTheDocument();
+  });
+
   it("shows a view tab per state with its record count", async () => {
     renderList();
     for (const label of [
@@ -327,16 +557,12 @@ describe("DmRecoveryList", () => {
   // Letting the server pick a fresh one per page moved the boundary between
   // pages, and a row that crossed it appeared on neither, so page 1's boundary
   // has to travel with the cursor.
-  it("replays the first page's boundary on later pages", async () => {
+  it("reuses the metrics boundary and opaque cursor on later pages", async () => {
     const user = userEvent.setup();
-    const asOf = "2026-08-06T12:00:00.000Z";
-    list.mockResolvedValueOnce({ rows: [row({ id: "a" })], nextCursor: "cursor-2", asOf });
+    list.mockResolvedValueOnce({ rows: [row({ id: "a" })], nextCursor: "opaque-cursor-2" });
     list.mockResolvedValueOnce({
       rows: [row({ id: "b", username: "mo" })],
       nextCursor: null,
-      // A later server read would hand back a drifted boundary; the client must
-      // keep sending the original.
-      asOf: "2026-08-06T12:00:30.000Z",
     });
 
     renderList();
@@ -344,16 +570,20 @@ describe("DmRecoveryList", () => {
 
     await waitFor(() => {
       const query = list.mock.calls.at(-1)![0] as string;
-      expect(new URLSearchParams(query).get("asOf")).toBe(asOf);
+      const params = new URLSearchParams(query);
+      expect(params.get("cursor")).toBe("opaque-cursor-2");
+      expect(params.get("from")).toBe("2026-07-18");
+      expect(params.get("to")).toBe("2026-08-16");
+      expect(params.get("asOf")).toBe("2026-08-17T03:00:00.000Z");
     });
   });
 
-  it("omits the boundary on the first page", async () => {
+  it("includes the metrics boundary on the first page", async () => {
     renderList();
 
     await waitFor(() => expect(list).toHaveBeenCalled());
     const query = list.mock.calls[0]![0] as string;
-    expect(new URLSearchParams(query).has("asOf")).toBe(false);
+    expect(new URLSearchParams(query).get("asOf")).toBe("2026-08-17T03:00:00.000Z");
   });
 
   // The banner must reassure, not alarm: nothing is lost while the circuit is open.
@@ -395,7 +625,7 @@ describe("DmRecoveryList", () => {
   });
 
   describe("filters", () => {
-    it("narrows the query by keyword and cohort", async () => {
+    it("narrows the query by keyword and user-facing timing", async () => {
       renderList();
       // The select renders before its options arrive, so waiting for the
       // combobox alone races the keyword fetch.
@@ -404,8 +634,9 @@ describe("DmRecoveryList", () => {
       await userEvent.selectOptions(screen.getByRole("combobox", { name: /keyword/i }), "kw-2");
       await waitFor(() => expect(list).toHaveBeenCalledWith(expect.stringContaining("keywordId=kw-2")));
 
-      await userEvent.selectOptions(screen.getByRole("combobox", { name: /cohort/i }), "control");
-      await waitFor(() => expect(list).toHaveBeenCalledWith(expect.stringContaining("cohort=control")));
+      await userEvent.selectOptions(screen.getByRole("combobox", { name: /timing/i }), "two_hour");
+      await waitFor(() => expect(list).toHaveBeenCalledWith(expect.stringContaining("timingArm=two_hour")));
+      await waitFor(() => expect(counts).toHaveBeenLastCalledWith(expect.stringContaining("timingArm=two_hour")));
     });
 
     // A filtered result under the previous filter's badge is the same lie as the
@@ -418,7 +649,7 @@ describe("DmRecoveryList", () => {
       renderList();
       await screen.findByText("@before");
 
-      await userEvent.selectOptions(screen.getByRole("combobox", { name: /cohort/i }), "control");
+      await userEvent.selectOptions(screen.getByRole("combobox", { name: /timing/i }), "no_reminder");
 
       expect(await screen.findByText("@after")).toBeInTheDocument();
       expect(screen.queryByText("@before")).not.toBeInTheDocument();
@@ -428,6 +659,7 @@ describe("DmRecoveryList", () => {
   // The cohort split costs real reminders that are deliberately withheld. If the
   // comparison is never displayed, that cost buys nothing.
   it("renders the experiment comparison, not just the health banner", async () => {
+    metrics.mockResolvedValue({ ...METRICS, timingExperiment: null });
     renderList();
 
     expect(await screen.findByText(/treatment 48h/i)).toBeInTheDocument();
@@ -440,6 +672,7 @@ describe("DmRecoveryList", () => {
   it("shows an absent rate as absent rather than as zero", async () => {
     metrics.mockResolvedValue({
       ...METRICS,
+      timingExperiment: null,
       experiment: {
         ...METRICS.experiment,
         treatment: { ...METRICS.experiment.treatment, completionRate48h: null },
@@ -460,5 +693,23 @@ describe("DmRecoveryList", () => {
     renderList();
 
     expect(await screen.findByText(/original post unavailable/i)).toBeInTheDocument();
+  });
+
+  it("shows a v2 row's timing label instead of cohort jargon", async () => {
+    list.mockResolvedValue({
+      rows: [
+        row({
+          experimentVersion: "read-recovery-timing-v2",
+          timingArm: "two_hour",
+          timingLabel: "2-hour reminder",
+        }),
+      ],
+      nextCursor: null,
+    });
+    renderList();
+
+    const rowButton = await screen.findByRole("button", { name: /@sarah/ });
+    expect(within(rowButton).getByText("2-hour reminder")).toBeInTheDocument();
+    expect(screen.queryByText(/^Treatment$/)).not.toBeInTheDocument();
   });
 });

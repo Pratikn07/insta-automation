@@ -120,7 +120,7 @@ The source documents were checked on 2026-08-13 and 2026-08-14 against older com
 
 - `feat/expanded-recovery-audience` is no longer merely in flight; PR #12 is merged into `main`.
 - The cohort funnel layer and Funnels page are merged through PR #13 and should be reused for funnel measurement.
-- `feat/dm-recovery-timing-v2` contains committed and uncommitted work for `GROW-002`; treat that feature as in progress but unmerged, not shipped.
+- `GROW-002` shipped through PR #37; its approved production cutover is 21 August 2026 at 9:00 AM Pacific.
 - `feature/follower-aware-comment-gate` contains a focused plan and partial implementation for `GROW-004`; treat it as in progress but unmerged.
 - `feature/guide-message-delivery` contains an approved and implemented explicit sequence-save slice that is absent from `main`; it is tracked as `REL-006` rather than left only on that branch.
 - `feature/ai-followup-experiment` is a stale, heavily divergent, dirty worktree. Its useful requirements remain inputs to `PARENT-002`; none of its code is an approved merge source.
@@ -182,7 +182,7 @@ The source documents were checked on 2026-08-13 and 2026-08-14 against older com
 | ID | Item | State | Size | Why it matters |
 |---|---|---|---|---|
 | `GROW-001` | Public-reply follow-ask A/B test | Candidate — partial design; measurement rules incomplete | M | Tests the only follow ask visible to every commenter |
-| `GROW-002` | Timely prospective recovery experiment | In progress — unmerged worktree | M–L | Tests whether a reminder within hours recovers fresh intent |
+| `GROW-002` | Timely prospective recovery experiment | Shipped — activation scheduled for 21 Aug 2026 | M–L | Tests whether a reminder within hours recovers fresh intent |
 | `GROW-003` | Shared audience policy on keyword public replies | Needs decision — measured policy gap | S–M | Existing audience flag covers almost none of the relevant public comments |
 | `GROW-004` | Known-follower gate wording | In progress — unmerged branch | S | Removes factually wrong follow language for known followers |
 | `GROW-005` | Repost and advocacy experiment | Candidate | S experiment; L platform | Tests voluntary sharing after genuine value is delivered |
@@ -223,7 +223,7 @@ This sequence balances correctness, learning speed, and business value. It is a 
 1. **Protect truth and auditability:** `REL-001`, then `REL-002`.
 2. **Evaluate what already exists:** run `REL-003` shadow verification without enabling sends.
 3. **Test the highest-value retention assumption cheaply:** implement only Slices A and B of `PARENT-001`; measure whether parents answer before building routing.
-4. **Finish or deliberately stop active branch work:** rebase and review `REL-006`, `GROW-002`, and `GROW-004` before creating competing implementations.
+4. **Finish or deliberately stop active branch work:** rebase and review `REL-006` and `GROW-004` before creating competing implementations.
 5. **Select one concurrent growth experiment:** `GROW-001` for public follow-ask learning or `GROW-002` for fresh-intent recovery. Do not launch both simultaneously if their cohorts or outcomes can interfere.
 6. **Resolve the audience-policy gap:** decide and design `GROW-003`, now that the expanded audience taxonomy is merged.
 7. **Design public-context engagement separately:** resolve the privacy and approval boundary for `GROW-008` before treating it as an extension of private AI replies.
@@ -370,7 +370,12 @@ The experiment does not prove that an individual public reply caused an Instagra
 
 **Source:** IA-FR-013
 
-**State:** In progress. `feat/dm-recovery-timing-v2` contains committed and uncommitted work and has not been integrated into `main`. The experiment remains unapproved for production activation.
+**State:** Shipped through PR #37. Production activation is approved for 21 August 2026 at 9:00 AM Pacific, with a maximum end of 2 October 2026 at 9:00 AM Pacific.
+
+The shipped scope supersedes the earlier candidate below: it uses fixed 45% two-hour,
+45% six-hour, and 10% no-reminder arms, with guide completion within 48 hours as the
+primary outcome and no automatic winner rollout. The older 50/50 and single-delay
+proposal is retained below only as historical rationale.
 
 **Size:** Medium–Large because reliable eligibility, control assignment, last-second rechecks, pacing, and ambiguous-send safety matter more than the copy.
 

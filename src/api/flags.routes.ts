@@ -4,9 +4,19 @@ import { experimentName } from "../config/experimentRegistry.js";
 import { prisma } from "../lib/prisma.js";
 import { flags } from "../services/flagService.js";
 import { logEvent } from "../services/eventLogger.js";
+import { configuredFlagExperimentKey } from "../services/experimentLifecycle.js";
 import { asyncRouter } from "./asyncRouter.js";
 
 export const flagsRouter = asyncRouter();
+
+function definitionWithCurrentExperiment(definition: NonNullable<ReturnType<typeof flagDefinition>>) {
+  const experimentKey = configuredFlagExperimentKey(definition.key, definition.experimentKey);
+  return {
+    ...definition,
+    experimentKey,
+    experimentName: experimentName(experimentKey),
+  };
+}
 
 /**
  * Exactly one value, matching the flag's kind.
@@ -33,8 +43,7 @@ flagsRouter.get("/", (_req, res) => {
   const byKey = new Map(flags.snapshot().map((row) => [row.key, row]));
   res.json({
     flags: FLAG_REGISTRY.map((definition) => ({
-      ...definition,
-      experimentName: experimentName(definition.experimentKey),
+      ...definitionWithCurrentExperiment(definition),
       ...(byKey.get(definition.key) ?? {}),
     })),
   });
@@ -52,8 +61,7 @@ flagsRouter.get("/:key", (req, res) => {
   if (!definition) return res.status(404).json({ error: "not_found" });
   const row = flags.snapshot().find((entry) => entry.key === definition.key);
   res.json({
-    ...definition,
-    experimentName: experimentName(definition.experimentKey),
+    ...definitionWithCurrentExperiment(definition),
     ...row,
   });
 });
@@ -139,8 +147,7 @@ flagsRouter.patch("/:key", async (req, res) => {
   await flags.refresh();
   const row = flags.snapshot().find((entry) => entry.key === definition.key);
   res.json({
-    ...definition,
-    experimentName: experimentName(definition.experimentKey),
+    ...definitionWithCurrentExperiment(definition),
     ...row,
   });
 });

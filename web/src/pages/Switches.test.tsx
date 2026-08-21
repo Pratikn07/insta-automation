@@ -107,14 +107,14 @@ describe("Switches list", () => {
           key: "DM_RECOVERY_ENABLED",
           name: "Recovery reminders",
           group: "outbound",
-          experimentKey: "recovery-reminder-timing",
-          experimentName: "Recovery reminder timing",
+          experimentKey: "recovery-reminder-timing-v2",
+          experimentName: "Recovery reminder — 2 vs 6 hours",
         }),
       ],
     });
     renderPage();
 
-    expect(await screen.findByText("part of Recovery reminder timing")).toBeInTheDocument();
+    expect(await screen.findByText("part of Recovery reminder — 2 vs 6 hours")).toBeInTheDocument();
   });
 
   it("says nothing about experiments for a standalone switch", async () => {

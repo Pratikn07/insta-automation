@@ -1,5 +1,8 @@
 # Instagram Read-Recovery Reminders: Tasks 1–18 QA Audit
 
+> **Historical v1 QA record.** Two-week and ten-hour references in this audit
+> describe the original release, not `read-recovery-timing-v2` activation.
+
 ## Document purpose
 
 This document is the implementation-gap register, verification record, and release QA plan for

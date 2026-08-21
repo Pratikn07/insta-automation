@@ -4,12 +4,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const summarize = vi.fn();
 const snapshot = vi.fn();
+const lifecycle = vi.fn();
+const ownedFlagKeys = vi.fn();
 
 vi.mock("../services/experimentSummary.js", () => ({
   summarizeExperiment: (key: string) => summarize(key),
 }));
 vi.mock("../services/flagService.js", () => ({
   flags: { snapshot: () => snapshot() },
+}));
+vi.mock("../services/experimentLifecycle.js", () => ({
+  configuredExperimentState: (key: string, declared: string) => lifecycle(key, declared),
+  configuredExperimentOwnedFlagKeys: (key: string, declared: string[]) =>
+    ownedFlagKeys(key, declared),
 }));
 
 const { experimentsRouter } = await import("./experiments.routes.js");
@@ -38,23 +45,76 @@ const RUNNING = {
   whenItEnds: "When the window closes, reminders stop and wait for your decision.",
 };
 
+const ENDED = {
+  kind: "ended",
+  arms: [
+    { key: "treatment", label: "10 hours", people: 594 },
+    { key: "control", label: "No reminder", people: 395 },
+  ],
+  notCounted: [],
+  endedAt: "2026-08-21T16:00:00.000Z",
+  conclusion: "This experiment concluded and was replaced by the 2 vs 6 hour test.",
+};
+
+const TIMING_RUNNING = {
+  kind: "running",
+  arms: [
+    { key: "two_hour", label: "2 hours", people: 450 },
+    { key: "six_hour", label: "6 hours", people: 450 },
+    { key: "no_reminder", label: "No reminder", people: 100 },
+  ],
+  notCounted: [],
+  endsAt: "2026-10-02T16:00:00.000Z",
+  whenItEnds: "When the window closes, reminders stop and wait for your decision.",
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   snapshot.mockReturnValue([]);
-  summarize.mockImplementation((key: string) =>
-    Promise.resolve(key === "recovery-reminder-timing" ? RUNNING : NOT_STARTED),
-  );
+  lifecycle.mockImplementation((_key: string, declared: string) => declared);
+  ownedFlagKeys.mockImplementation((_key: string, declared: string[]) => declared);
+  summarize.mockImplementation((key: string) => {
+    if (key === "recovery-reminder-timing") return Promise.resolve(ENDED);
+    if (key === "recovery-reminder-timing-v2") return Promise.resolve(TIMING_RUNNING);
+    return Promise.resolve(NOT_STARTED);
+  });
 });
 
 describe("experiments API", () => {
-  it("lists all three with their state", async () => {
+  it("uses the configured lifecycle instead of showing the cutover early", async () => {
+    lifecycle.mockImplementation((key: string, declared: string) => {
+      if (key === "recovery-reminder-timing") return "running";
+      if (key === "recovery-reminder-timing-v2") return "not_started";
+      return declared;
+    });
+
+    const response = await request(app()).get("/api/experiments").expect(200);
+    const byKey = new Map(
+      response.body.experiments.map((row: { key: string; state: string }) => [row.key, row.state]),
+    );
+    expect(byKey.get("recovery-reminder-timing")).toBe("running");
+    expect(byKey.get("recovery-reminder-timing-v2")).toBe("not_started");
+  });
+
+  it("lists the concluded V1 and active V2 as separate experiments", async () => {
     const response = await request(app()).get("/api/experiments").expect(200);
 
-    expect(response.body.experiments).toHaveLength(3);
-    const recovery = response.body.experiments.find(
+    expect(response.body.experiments).toHaveLength(4);
+    const concluded = response.body.experiments.find(
       (e: { key: string }) => e.key === "recovery-reminder-timing",
     );
-    expect(recovery).toMatchObject({ name: "Recovery reminder timing", state: "running" });
+    const active = response.body.experiments.find(
+      (e: { key: string }) => e.key === "recovery-reminder-timing-v2",
+    );
+    expect(concluded).toMatchObject({
+      name: "Recovery reminder — 10 hours vs none",
+      state: "ended",
+    });
+    expect(active).toMatchObject({
+      name: "Recovery reminder — 2 vs 6 hours",
+      state: "running",
+      armCount: 3,
+    });
   });
 
   /**
@@ -68,15 +128,16 @@ describe("experiments API", () => {
     const response = await request(app()).get("/api/experiments").expect(200);
 
     const recovery = response.body.experiments.find(
-      (e: { key: string }) => e.key === "recovery-reminder-timing",
+      (e: { key: string }) => e.key === "recovery-reminder-timing-v2",
     );
     expect(recovery.summary).toMatchObject({
       kind: "running",
       arms: [
-        { key: "treatment", label: "Got a reminder", people: 594 },
-        { key: "control", label: "Got nothing", people: 395 },
+        { key: "two_hour", label: "2 hours", people: 450 },
+        { key: "six_hour", label: "6 hours", people: 450 },
+        { key: "no_reminder", label: "No reminder", people: 100 },
       ],
-      endsAt: "2026-08-21T21:45:00.000Z",
+      endsAt: "2026-10-02T16:00:00.000Z",
     });
   });
 
@@ -116,21 +177,19 @@ describe("experiments API", () => {
     ]);
 
     const response = await request(app())
-      .get("/api/experiments/recovery-reminder-timing")
+      .get("/api/experiments/recovery-reminder-timing-v2")
       .expect(200);
 
     expect(response.body).toMatchObject({
-      key: "recovery-reminder-timing",
+      key: "recovery-reminder-timing-v2",
       state: "running",
       summary: { kind: "running" },
     });
-    expect(response.body.arms).toHaveLength(2);
+    expect(response.body.arms).toHaveLength(3);
     expect(response.body.ownedFlags.map((f: { key: string }) => f.key)).toEqual([
       "DM_RECOVERY_ENABLED",
-      "DM_RECOVERY_HOLDOUT_PERCENT",
       "DM_RECOVERY_WESTERN_ONLY",
       "DM_RECOVERY_FAILURE_RATE_PERCENT",
-      "DM_RECOVERY_POST_EXPERIMENT_ENABLED",
     ]);
     // Descriptions come along, so the page needs one request.
     expect(response.body.ownedFlags[0].doesWhat.length).toBeGreaterThan(20);
@@ -144,10 +203,26 @@ describe("experiments API", () => {
     snapshot.mockReturnValue([]);
 
     const response = await request(app())
-      .get("/api/experiments/recovery-reminder-timing")
+      .get("/api/experiments/recovery-reminder-timing-v2")
       .expect(200);
 
-    expect(response.body.ownedFlags).toHaveLength(5);
+    expect(response.body.ownedFlags).toHaveLength(3);
+  });
+
+  it("shows no live controls on V2 before the scheduled cutover", async () => {
+    lifecycle.mockImplementation((key: string, declared: string) =>
+      key === "recovery-reminder-timing-v2" ? "not_started" : declared,
+    );
+    ownedFlagKeys.mockImplementation((key: string, declared: string[]) =>
+      key === "recovery-reminder-timing-v2" ? [] : declared,
+    );
+
+    const response = await request(app())
+      .get("/api/experiments/recovery-reminder-timing-v2")
+      .expect(200);
+
+    expect(response.body.state).toBe("not_started");
+    expect(response.body.ownedFlags).toEqual([]);
   });
 
   it("404s an unknown experiment", async () => {

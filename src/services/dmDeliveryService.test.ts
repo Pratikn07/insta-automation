@@ -212,8 +212,8 @@ describe("sendTrackedPrivateReply", () => {
     });
   });
 
-  // The 10-hour recovery clock starts at this timestamp, and the same instant is
-  // written to local history, so the two must not drift apart.
+  // Recovery eligibility starts at this timestamp (legacy v1 used 10 hours;
+  // v2 freezes 2 or 6 hours by arm), and local history must use the same instant.
   it("stamps local history with the same instant it reports as acceptedAt", async () => {
     recordOutboundMessage.mockResolvedValue({ threadId: "thread-1", messageId: "dm-1" });
 

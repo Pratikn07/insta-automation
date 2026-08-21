@@ -3,6 +3,42 @@ import { FLAG_REGISTRY, flagDefinition } from "./flagRegistry.js";
 import { EXPERIMENT_REGISTRY, experimentDefinition } from "./experimentRegistry.js";
 
 describe("experiment registry", () => {
+  it("keeps the concluded 10-hour test separate from the active 45/45/10 timing test", () => {
+    const concluded = experimentDefinition("recovery-reminder-timing");
+    const active = experimentDefinition("recovery-reminder-timing-v2");
+
+    expect(concluded).toMatchObject({
+      name: "Recovery reminder — 10 hours vs none",
+      state: "ended",
+    });
+    expect(concluded?.arms.map((arm) => [arm.key, arm.percent])).toEqual([
+      ["treatment", 90],
+      ["control", 10],
+    ]);
+
+    expect(active).toMatchObject({
+      name: "Recovery reminder — 2 vs 6 hours",
+      state: "running",
+    });
+    expect(active?.arms.map((arm) => [arm.key, arm.percent])).toEqual([
+      ["two_hour", 45],
+      ["six_hour", 45],
+      ["no_reminder", 10],
+    ]);
+  });
+
+  it("keeps legacy-only settings on V1 and shared live controls on V2", () => {
+    expect(experimentDefinition("recovery-reminder-timing")?.ownedFlagKeys).toEqual([
+      "DM_RECOVERY_HOLDOUT_PERCENT",
+      "DM_RECOVERY_POST_EXPERIMENT_ENABLED",
+    ]);
+    expect(experimentDefinition("recovery-reminder-timing-v2")?.ownedFlagKeys).toEqual([
+      "DM_RECOVERY_ENABLED",
+      "DM_RECOVERY_WESTERN_ONLY",
+      "DM_RECOVERY_FAILURE_RATE_PERCENT",
+    ]);
+  });
+
   it("declares arms for every experiment, because that is what makes it one", () => {
     for (const e of EXPERIMENT_REGISTRY) {
       expect(e.arms.length, `${e.key} arms`).toBeGreaterThanOrEqual(2);

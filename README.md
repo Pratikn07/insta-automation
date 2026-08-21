@@ -39,6 +39,24 @@ treat healthy journeys as unread ones. Do not enable
 observed; see [docs/meta-verification.md](docs/meta-verification.md) for the
 launch runbook.
 
+## DM recovery timing experiment
+
+The current prospective experiment compares public recovery comments sent two
+hours after gate-DM acceptance, sent six hours after acceptance, or intentionally
+withheld. Followers are assigned deterministically in a fixed 45% / 45% / 10%
+split under version `read-recovery-timing-v2`.
+
+The Recovery dashboard uses guide-request dates (`7d`, `14d`, `30d`, `All`, or a
+custom range), not campaign names. It reports immature 48-hour outcomes
+separately and never declares a winner from a partial range. There is no
+automatic rollout.
+
+Code deployment does not authorize activation. Keep the safe v1 configuration
+until the schema, real-Postgres contracts, Meta signals, and owner checklist are
+complete. Follow the
+[DM recovery timing experiment runbook](docs/dm-recovery-timing-experiment-runbook.md)
+for cutover, monitoring, analysis, and rollback.
+
 ## Layout
 
 ```
@@ -54,4 +72,4 @@ prisma/schema.prisma      DB schema
 scripts/seed-keywords.ts  seed initial keywords
 ```
 
-See `/Users/pratik.nandoskar/.claude/plans/tell-me-all-the-concurrent-hamming.md` for the full plan.
+Detailed operational documentation lives in [`docs/`](docs/).

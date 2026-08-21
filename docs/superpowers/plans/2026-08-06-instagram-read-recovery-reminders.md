@@ -1,5 +1,9 @@
 # Instagram Read-Recovery Reminders Implementation Plan
 
+> **Historical v1 implementation plan.** Ten-hour eligibility, the two-week
+> window, and 90/10 assignment below describe `read-recovery-v1`, not new v2
+> enrollment.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Automatically post one safe, auditable public reply on the original Instagram comment when an accepted gate DM still has no confirmed read or engagement after ten hours, or immediately when Meta returns an allowlisted message-settings rejection.

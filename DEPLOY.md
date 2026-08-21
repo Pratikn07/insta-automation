@@ -42,6 +42,7 @@ railway variables \
   --set IG_ACCESS_TOKEN=... \
   --set IG_USER_ID=... \
   --set DATABASE_URL='postgresql://...supabase.co:5432/postgres?...' \
+  --set DIRECT_URL='postgresql://postgres:...@db.PROJECT.supabase.co:5432/postgres' \
   --set SUPABASE_URL=https://kukpvpklizsvedcmybhn.supabase.co \
   --set SUPABASE_SERVICE_KEY=... \
   --set SUPABASE_BUCKET=insta-resources \
@@ -53,8 +54,10 @@ railway variables \
 
 ### Deploy:
 
-`npm start` runs `prisma migrate deploy` and then the compiled API, so an ordinary
-release applies its own migrations and nothing has to be remembered:
+`npm start` runs `prisma migrate deploy` and then the compiled API. When
+`DIRECT_URL` is configured, only migration uses that direct session; application
+traffic continues through the capped `DATABASE_URL` transaction pool. An ordinary
+release therefore applies its own migrations and nothing has to be remembered:
 
 ```sh
 railway up
@@ -504,7 +507,7 @@ Both are recoverable only by re-doing work the owner already did.
 | Magic link goes to localhost | Supabase Redirect URL not set; add `https://tiny-soho-admin.vercel.app/**`. |
 | `invalid_token` on every API call | Supabase project URL or anon key on Vercel doesn't match Railway's `SUPABASE_URL` / `SUPABASE_SERVICE_KEY`. They must point to the same project. |
 | Webhook not firing | Meta webhook callback still points to old ngrok URL. Update in Meta App Dashboard. |
-| Prisma migration error on Railway start | `DATABASE_URL` missing `?schema=public` or `?pgbouncer=true&connection_limit=1`. Check Supabase → Connection string → URI format. |
+| Prisma migration error on Railway start | `DIRECT_URL` is missing or cannot reach Supabase's direct database endpoint. Runtime `DATABASE_URL` should use transaction port 6543 with `?pgbouncer=true&connection_limit=5`. |
 | 500s only on Vercel, fine locally | Railway deploy probably failed mid-way. `railway logs` to inspect. |
 
 ---

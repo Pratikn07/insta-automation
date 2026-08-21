@@ -176,7 +176,7 @@ test.describe("visual QA artifacts", () => {
     expect(outboundBox!.y).toBeLessThan(assistiveBox!.y);
 
     // Five switches move together and nothing used to say so.
-    await expect(page.getByText("part of Recovery reminder timing").first()).toBeVisible();
+    await expect(page.getByText("part of Recovery reminder — 2 vs 6 hours").first()).toBeVisible();
 
     await settleAnimations(page);
     await capture(page, testInfo.project.name, "switches");
@@ -201,53 +201,46 @@ test.describe("visual QA artifacts", () => {
     await expect(page.getByRole("switch")).toHaveCount(0);
     await expect(page.getByText("Turning this back on needs a deploy")).toBeVisible();
     await expect(
-      page.getByRole("link", { name: "Recovery reminder timing" }),
+      page.getByRole("link", { name: "Recovery reminder — 2 vs 6 hours" }),
     ).toBeVisible();
 
     await settleAnimations(page);
     await capture(page, testInfo.project.name, "switch-detail");
   });
 
-  /**
-   * Three lines. The two not-started rows are why this artifact matters: they must
-   * read as a decision, never as a row of zeroes.
-   */
+  /** Active is intentionally quiet; planned and concluded work stay one tab away. */
   test("experiments", async ({ page }, testInfo) => {
     await open(page, "experiments");
     await expect(page.getByRole("heading", { level: 1, name: "Experiments" })).toBeVisible();
 
-    await expect(page.getByText("Running")).toBeVisible();
-    await expect(page.getByText("Not started").first()).toBeVisible();
-    await expect(page.getByText(/never been switched on/)).toBeVisible();
-    // Running sorts above not-started: it is the only one that can need a decision.
-    const running = page.getByText("Running");
-    const notStarted = page.getByText("Not started").first();
-    const runningBox = await running.boundingBox();
-    const notStartedBox = await notStarted.boundingBox();
-    expect(runningBox!.y).toBeLessThan(notStartedBox!.y);
+    await expect(page.getByRole("tab", { name: /Active/ })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByText("Recovery reminder — 2 vs 6 hours")).toBeVisible();
+    await expect(page.getByText("Recovery reminder — 10 hours vs none")).toHaveCount(0);
+    await expect(page.getByText("Guide delivery rollout")).toHaveCount(0);
 
     await settleAnimations(page);
     await capture(page, testInfo.project.name, "experiments");
   });
 
-  /**
-   * The result page. Counts in whole people, the suppression breakdown that makes
-   * the books close, and no statistics anywhere.
-   */
+  /** The approved option-A detail: one comparison table across all three arms. */
   test("experiment detail", async ({ page }, testInfo) => {
     await open(page, "experiment-detail");
     await expect(
-      page.getByRole("heading", { level: 1, name: "Recovery reminder timing" }),
+      page.getByRole("heading", { level: 1, name: "Recovery reminder — 2 vs 6 hours" }),
     ).toBeVisible();
 
-    await expect(page.getByText("Got a reminder")).toBeVisible();
-    await expect(page.getByText("Got nothing")).toBeVisible();
-    await expect(page.getByText("People, not rates.")).toBeVisible();
-    // The buckets an earlier version dropped, now named.
-    await expect(page.getByText("Waiting to be posted")).toBeVisible();
-    await expect(page.getByText("The reminder could not be posted")).toBeVisible();
-    // The window that stops sending when it shuts.
-    await expect(page.getByText(/Closes 21 Aug 2026/)).toBeVisible();
+    const comparison = page.getByRole("table", { name: "Experiment comparison" });
+    await expect(comparison).toBeVisible();
+    await expect(comparison.getByRole("columnheader", { name: "2 hours" })).toBeVisible();
+    await expect(comparison.getByRole("columnheader", { name: "6 hours" })).toBeVisible();
+    await expect(comparison.getByRole("columnheader", { name: "No reminder" })).toBeVisible();
+    await expect(
+      page.getByRole("region", { name: "Direct comparisons" }).getByText("2 vs 6 hours", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(page.getByText(/Still collecting complete 48-hour results/)).toBeVisible();
+    await expect(page.getByRole("region", { name: "Safety checks" })).toBeVisible();
 
     await settleAnimations(page);
     await capture(page, testInfo.project.name, "experiment-detail");
