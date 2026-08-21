@@ -264,6 +264,7 @@ export function Home() {
         avgPerDay7={flowSummary?.avgPerDay7 ?? null}
         stats={statsQ.data}
         funnel={funnelQ.data}
+        points={flowPoints}
         isFlowLoading={flowQ.isLoading}
         isStatsLoading={statsQ.isLoading}
         isFunnelLoading={funnelQ.isLoading}

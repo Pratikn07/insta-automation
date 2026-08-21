@@ -136,7 +136,7 @@
       },
       "figure": {
         "displayName": "Figure",
-        "purpose": "Measured values, tabular. Placeholders drop to label scale."
+        "purpose": "Measured values, tabular. One ladder, defined once in index.css as figure-lead / figure-base / figure-small / figure-inline; tracking tightens as size grows. Placeholders are off the ladder at 1.25rem muted, and a withheld figure keeps its mark."
       },
       "title": {
         "displayName": "Title",

@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { FollowerStock, GuideFollowResult, Stats } from "@/lib/types";
+import type { FollowerDailyAddsPoint, FollowerStock, GuideFollowResult, Stats } from "@/lib/types";
 import type { ComparableWeekResult } from "@/lib/followerFlow";
 import { FollowerKpiRow } from "./FollowerKpiRow";
 
@@ -39,6 +39,33 @@ const stock: FollowerStock = {
   other: 771,
   countriesReported: 45,
 };
+
+// Ten trailing days for the score's series: eight measured, one still
+// provisional, and one Meta never measured. The unmeasured day must draw nothing
+// rather than a zero-height bar, and it must still be counted in the caption.
+const points: FollowerDailyAddsPoint[] = [
+  { day: "2026-07-16", us: 40, basis: "diff", provisional: false },
+  { day: "2026-07-17", us: 62, basis: "diff", provisional: false },
+  { day: "2026-07-18", us: -8, basis: "diff", provisional: false },
+  { day: "2026-07-19", us: 91, basis: "diff", provisional: false },
+  { day: "2026-07-20", us: null, basis: "no_snapshot", provisional: false },
+  { day: "2026-07-21", us: 55, basis: "diff", provisional: false },
+  { day: "2026-07-22", us: 73, basis: "multi_day_span", provisional: false },
+  { day: "2026-07-23", us: 48, basis: "diff", provisional: false },
+  { day: "2026-07-24", us: 66, basis: "diff", provisional: false },
+  { day: "2026-07-25", us: 31, basis: "diff", provisional: true },
+].map((p) => ({
+  ...p,
+  capturedAt: `${p.day}T23:00:00.000Z`,
+  southAsian: 0,
+  anglosphere: 0,
+  other: 0,
+  total: p.us,
+  unattributed: 0,
+  reportedTotalDelta: p.us,
+  spanDays: 1,
+  stale: false,
+})) as FollowerDailyAddsPoint[];
 
 const stats: Stats = {
   activeKeywords: 8,
@@ -111,6 +138,7 @@ describe("FollowerKpiRow", () => {
   it("answers US growth in real counts, not percentage points", () => {
     const html = renderToStaticMarkup(
       <FollowerKpiRow
+        points={points}
         weekComparison={comparison}
         stock={stock}
         avgPerDay7={108}
@@ -131,6 +159,7 @@ describe("FollowerKpiRow", () => {
   it("withholds an interpretive count while the newest measurements are settling", () => {
     const html = renderToStaticMarkup(
       <FollowerKpiRow
+        points={points}
         weekComparison={insufficient}
         stock={stock}
         avgPerDay7={108}
@@ -148,6 +177,7 @@ describe("FollowerKpiRow", () => {
   it("withholds the comparison when there is not enough history", () => {
     const html = renderToStaticMarkup(
       <FollowerKpiRow
+        points={points}
         weekComparison={{
           ...insufficient,
           reason: "not_enough_history",
@@ -170,6 +200,7 @@ describe("FollowerKpiRow", () => {
   it("shows the total-follower milestone and its pace", () => {
     const html = renderToStaticMarkup(
       <FollowerKpiRow
+        points={points}
         weekComparison={comparison}
         stock={stock}
         avgPerDay7={108}
@@ -188,6 +219,7 @@ describe("FollowerKpiRow", () => {
   it("keeps the all-regions daily rate that the trimmed chart panel gave up", () => {
     const html = renderToStaticMarkup(
       <FollowerKpiRow
+        points={points}
         weekComparison={comparison}
         stock={stock}
         avgPerDay7={108}
@@ -206,6 +238,7 @@ describe("FollowerKpiRow", () => {
   it("shows Instagram's real follower count, disclosing the reported subtotal", () => {
     const html = renderToStaticMarkup(
       <FollowerKpiRow
+        points={points}
         weekComparison={comparison}
         stock={stock}
         avgPerDay7={91}
@@ -224,6 +257,7 @@ describe("FollowerKpiRow", () => {
   it("falls back to the reported subtotal when the profile fetch failed", () => {
     const html = renderToStaticMarkup(
       <FollowerKpiRow
+        points={points}
         weekComparison={comparison}
         stock={{ ...stock, followersTotal: null }}
         avgPerDay7={91}
@@ -241,6 +275,7 @@ describe("FollowerKpiRow", () => {
   it("leads the third tile with the reply rate and its counts", () => {
     const html = renderToStaticMarkup(
       <FollowerKpiRow
+        points={points}
         weekComparison={comparison}
         stock={stock}
         avgPerDay7={108}
@@ -263,6 +298,7 @@ describe("FollowerKpiRow", () => {
     // would put a number on Home that the data can no longer support.
     const html = renderToStaticMarkup(
       <FollowerKpiRow
+        points={points}
         weekComparison={comparison}
         stock={stock}
         avgPerDay7={108}
@@ -280,6 +316,7 @@ describe("FollowerKpiRow", () => {
   it("degrades each tile independently when its feed is missing", () => {
     const html = renderToStaticMarkup(
       <FollowerKpiRow
+        points={points}
         weekComparison={{
           status: "insufficient",
           reason: "not_enough_history",
@@ -316,6 +353,7 @@ describe("FollowerKpiRow reply-rate tile", () => {
 
     const html = renderToStaticMarkup(
       <FollowerKpiRow
+        points={points}
         weekComparison={comparison}
         stock={stock}
         avgPerDay7={108}
@@ -328,5 +366,107 @@ describe("FollowerKpiRow reply-rate tile", () => {
     );
     expect(html).toContain("2 of 4");
     expect(html).not.toContain("50%");
+    // A meter is a number drawn as length. A half-filled bar beside "2 of 4"
+    // would state the very percentage the text withholds, so the mark is
+    // withheld too — no funnel fill anywhere in the row.
+    expect(html).not.toContain("bg-funnel-mark");
+  });
+
+  it("draws the reply meter once the rate clears the minimum sample", () => {
+    const html = renderToStaticMarkup(
+      <FollowerKpiRow
+        points={points}
+        weekComparison={comparison}
+        stock={stock}
+        avgPerDay7={108}
+        stats={stats}
+        funnel={funnel}
+        isFlowLoading={false}
+        isStatsLoading={false}
+        isFunnelLoading={false}
+      />,
+    );
+    expect(html).toContain("bg-funnel-mark");
+  });
+
+  describe("the score's daily series", () => {
+    it("draws nothing for a day Meta never measured, rather than a zero bar", () => {
+      const html = renderToStaticMarkup(
+        <FollowerKpiRow
+          points={points}
+          weekComparison={comparison}
+          stock={stock}
+          avgPerDay7={108}
+          stats={stats}
+          funnel={funnel}
+          isFlowLoading={false}
+          isStatsLoading={false}
+          isFunnelLoading={false}
+        />,
+      );
+      // Ten slots, one of them basis "no_snapshot" — so nine bars, not ten. A
+      // tenth bar of zero height would say nobody followed that day, which is
+      // the one thing the data does not say.
+      const bars = html.match(/<rect /g) ?? [];
+      expect(bars).toHaveLength(9);
+    });
+
+    it("marks a still-settling day with the provisional colour, not the US series", () => {
+      const html = renderToStaticMarkup(
+        <FollowerKpiRow
+          points={points}
+          weekComparison={comparison}
+          stock={stock}
+          avgPerDay7={108}
+          stats={stats}
+          funnel={funnel}
+          isFlowLoading={false}
+          isStatsLoading={false}
+          isFunnelLoading={false}
+        />,
+      );
+      expect(html).toContain("var(--color-chart-provisional)");
+      // And the accent is never a data series colour, per index.css.
+      expect(html).not.toContain("var(--color-signal)");
+    });
+
+    it("says how much of the window was measured when the week cannot be compared", () => {
+      const html = renderToStaticMarkup(
+        <FollowerKpiRow
+          points={points}
+          weekComparison={insufficient}
+          stock={stock}
+          avgPerDay7={108}
+          stats={stats}
+          funnel={funnel}
+          isFlowLoading={false}
+          isStatsLoading={false}
+          isFunnelLoading={false}
+        />,
+      );
+      // The cell keeps its series so it is not an empty hole, but it never sums
+      // the measured days into a stand-in for the withheld figure.
+      expect(html).toContain("9 of the last 10 days measured");
+      expect(html).toContain("<rect ");
+      expect(html).not.toContain("+182");
+    });
+
+    it("omits the series entirely when no day has been measured", () => {
+      const html = renderToStaticMarkup(
+        <FollowerKpiRow
+          points={points.map((p) => ({ ...p, us: null, basis: "no_snapshot" as const }))}
+          weekComparison={insufficient}
+          stock={stock}
+          avgPerDay7={108}
+          stats={stats}
+          funnel={funnel}
+          isFlowLoading={false}
+          isStatsLoading={false}
+          isFunnelLoading={false}
+        />,
+      );
+      // An axis with no bars is a chart claiming a series it does not have.
+      expect(html).not.toContain("<rect ");
+    });
   });
 });

@@ -42,10 +42,10 @@ typography:
     fontWeight: 500
   figure:
     fontFamily: "Archivo, ui-sans-serif, sans-serif"
-    fontSize: "1.8rem"
+    fontSize: "3.25rem" # figure-lead at sm and up; 2.6rem below
     fontWeight: 500
-    lineHeight: 1.25
-    letterSpacing: "-0.02em"
+    lineHeight: 1.05
+    letterSpacing: "-0.025em"
   body:
     fontFamily: "Archivo, ui-sans-serif, sans-serif"
     fontSize: "0.8125rem"
@@ -279,8 +279,9 @@ type. A font that is not loaded is not a choice.
 - **Display** (500, 1.5rem, `-0.02em`): the page name. One per screen.
 - **Headline** (500, 1.25rem, 1.375): today's read. The most important sentence
   on the surface and the only place a full sentence is set large.
-- **Figure** (500, 1.8rem, tabular): the scored metric. Supporting figures at
-  1.4rem, placeholders at 1.125rem in muted ink.
+- **Figure** (500, 3.25rem, 1.05, `-0.025em`, tabular): the scored metric, one
+  per surface. A figure is a ladder rather than a size — see *The Figure Ladder
+  Rule* — and there are currently two of them.
 - **Title** (500, 0.9375rem): section headings above a rule.
 - **Body** (400, 0.8125rem, 1.625): all running copy, at a 54–74ch measure.
 - **Label** (400, 0.625rem, `0.14em`, uppercase): every field name and section
@@ -292,10 +293,57 @@ type. A font that is not loaded is not a choice.
 component. Numbers here are compared down columns, and a new component must not
 be able to ship proportional figures by omission.
 
+**The Figure Ladder Rule.** A figure is a ladder, not a size, and there is exactly
+one ladder. It is defined once in `index.css` as four utilities, in the same way
+and for the same reason as `label-caps`: so the scale cannot drift between
+screens.
+
+| Utility | Size | Tracking | Leading | Used for |
+| --- | --- | --- | --- | --- |
+| `figure-lead` | 2.6rem → **3.25rem** at `sm` | `-0.03em` | 1.05 | The one scored figure on a surface |
+| `figure-base` | 2.25rem | `-0.025em` | 1.05 | Supporting figures beside a lead |
+| `figure-small` | 1.5rem | `-0.02em` | 1.1 | A compact figure, or a value too long to lead |
+| `figure-inline` | 1rem | `-0.01em` | 1.4 | A figure inside a sentence or a table row |
+
+All four carry weight 500 and `tabular-nums`, so a call site never repeats them —
+and must never add `tracking-*` beside one. **Tracking tightens as the type
+grows, and that is optical correction rather than inconsistency:** `-0.03em` at
+the lead would be far too tight at 1rem. That part of the ladder is deliberately
+not flat. A stray `tracking-tight` would fight the utility by stylesheet order
+rather than class order, which is the kind of bug that looks like nothing.
+
+`figure-lead` carries the ladder's only responsive step. 3.25rem is right in a
+desktop column and overbearing at 375px, where it crowds the mark beneath it.
+
+**How it got here, because the history is the argument for one definition.** This
+document originally recorded a single `figure` of 1.8rem. That was never accurate:
+`GuardedNumber` ran 2.6rem → 3rem from the commit that introduced this system and
+wrote this document, so the record described one call site and missed the other
+from the first day. Home's band and the Funnels hero then grew independently
+until the two leads sat at 3.25rem and 3rem, and 1.5rem meant "kpi" in one file
+and "too long to be a figure" in the other. Unifying them moved Home's lead down
+to 2.6rem on a phone and the Funnels hero up to 3.25rem on a desktop.
+
 **The Placeholder Is Not A Figure Rule.** An em-dash standing in for a missing
-number is set at label scale, not figure scale. Rendered at figure size it is a
-60px hole where a value should be, and every tile shows one before the first
-snapshot lands.
+number drops to 1.25rem in muted ink — headline scale, not figure scale. At the
+lead figure's own size it is a ~55px hole where a value should be, and every tile
+shows one before the first snapshot lands. The cell is carried by its mark
+instead: see *The Withheld Figure Still Has A Shape Rule*.
+
+**The Withheld Figure Still Has A Shape Rule.** A cell whose figure is withheld
+keeps its mark. A week that cannot be *compared* still contains days that were
+*measured*, so the score cell draws its trailing series and says how much of the
+window was measured, rather than showing a lone em-dash on bare paper. It never
+sums those days into a stand-in figure — that would be a wrong number rather than
+a withheld one. Descriptive marks may show provisional and catch-up data with
+their qualifications; the restriction is on claims, not on visibility.
+
+**The Mark Obeys The Figure Rule.** A meter is a number rendered as length, so it
+is withheld wherever the figure is. A rate below its minimum sample prints its raw
+counts and draws no meter at all, because a half-filled bar beside "2 of 4" states
+the percentage the text deliberately refuses to print. A day nobody measured
+draws nothing and keeps its slot: a zero-height bar would say nobody followed
+that day, which is the one thing the data does not say.
 
 ## Layout
 

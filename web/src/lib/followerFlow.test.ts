@@ -9,6 +9,7 @@ import {
   ratePerDay,
   summarizeFollowerFlow,
   summarizeFollowerFlowForRange,
+  trailingUsSlots,
 } from "./followerFlow";
 import { describeFreshness } from "./homeDashboard";
 
@@ -589,5 +590,62 @@ describe("chartGeometry gutter", () => {
     );
     expect(geo.ticks.length).toBeGreaterThanOrEqual(2);
     expect(Math.max(...geo.ticks.map((t) => t.value))).toBeGreaterThanOrEqual(160);
+  });
+});
+
+describe("trailingUsSlots", () => {
+  it("keeps an unmeasured day as a null slot instead of closing the gap", () => {
+    dayCounter = 0;
+    const slots = trailingUsSlots(
+      series(
+        point({ us: 40 }),
+        point({ us: 0, basis: "no_snapshot" }),
+        point({ us: 55 }),
+      ),
+      3,
+    );
+    expect(slots.map((s) => s.value)).toEqual([40, null, 55]);
+  });
+
+  it("treats stale and pending days as unmeasured, never as zero", () => {
+    dayCounter = 0;
+    const slots = trailingUsSlots(
+      series(point({ us: 12, basis: "stale" }), point({ us: 9, basis: "pending" })),
+      2,
+    );
+    // A day nobody counted is not a day nobody followed.
+    expect(slots.map((s) => s.value)).toEqual([null, null]);
+  });
+
+  it("counts a multi-day catch-up span as measured", () => {
+    dayCounter = 0;
+    const slots = trailingUsSlots(
+      series(point({ us: 73, basis: "multi_day_span", spanDays: 3 })),
+      1,
+    );
+    expect(slots[0].value).toBe(73);
+  });
+
+  it("keeps negatives, which are real net losses", () => {
+    dayCounter = 0;
+    const slots = trailingUsSlots(series(point({ us: -8 })), 1);
+    expect(slots[0].value).toBe(-8);
+  });
+
+  it("flags a still-settling day without discarding its value", () => {
+    dayCounter = 0;
+    const slots = trailingUsSlots(series(point({ us: 31, provisional: true })), 1);
+    expect(slots[0]).toEqual({ value: 31, provisional: true });
+  });
+
+  it("returns the trailing window, oldest first, and never more than exists", () => {
+    dayCounter = 0;
+    const slots = trailingUsSlots(
+      series(point({ us: 1 }), point({ us: 2 }), point({ us: 3 })),
+      2,
+    );
+    expect(slots.map((s) => s.value)).toEqual([2, 3]);
+    dayCounter = 0;
+    expect(trailingUsSlots(series(point({ us: 1 })), 14)).toHaveLength(1);
   });
 });
