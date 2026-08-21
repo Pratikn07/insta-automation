@@ -1,12 +1,15 @@
 import { ArrowDownRight, ArrowRight, ArrowUpRight, MessageSquareReply, Trophy, Users } from "lucide-react";
-import type { FollowerStock, GuideFollowResult, Stats } from "@/lib/types";
+import type { FollowerDailyAddsPoint, FollowerStock, GuideFollowResult, Stats } from "@/lib/types";
 import {
   describeStockVsFlow,
+  trailingUsSlots,
   formatSignedCount,
   type ComparableWeekResult,
   type FlowTrend,
 } from "@/lib/followerFlow";
 import { KpiTile } from "./KpiTile";
+import { KpiSparkBars } from "./KpiSparkBars";
+import { KpiMeter } from "./KpiMeter";
 
 // The three numbers Home exists to answer: is the US audience growing, how big
 // is the account, and does the guide funnel earn follows. Formatting lives here
@@ -16,6 +19,12 @@ const TREND_ICON: Record<FlowTrend, typeof ArrowUpRight> = {
   steady: ArrowRight,
   slowing: ArrowDownRight,
 };
+
+/** Trailing window for the score's series. Two weeks shows shape without noise. */
+const SPARK_DAYS = 14;
+
+/** Followers between milestones, matching describeStockVsFlow's own step. */
+const MILESTONE_STEP = 1000;
 
 const numberFormat = new Intl.NumberFormat("en-US");
 
@@ -44,6 +53,12 @@ interface FollowerKpiRowProps {
   stats: Stats | undefined;
   /** Guide → follow funnel. Feeds the third tile; see the note on it below. */
   funnel: GuideFollowResult | undefined;
+  /**
+   * The daily series. Home already holds it for the chart; the score cell needs
+   * it because a week that cannot be COMPARED still has days that were MEASURED,
+   * and the cell was rendering an em-dash over the top of them.
+   */
+  points: FollowerDailyAddsPoint[];
   isFlowLoading: boolean;
   isStatsLoading: boolean;
   isFunnelLoading: boolean;
@@ -54,6 +69,7 @@ export function FollowerKpiRow({
   stock,
   avgPerDay7,
   funnel,
+  points,
   isFlowLoading,
   isStatsLoading,
   isFunnelLoading,
@@ -70,6 +86,46 @@ export function FollowerKpiRow({
           multi_day_span: "A catch-up span prevents a week-to-week comparison",
           duplicate_day: "Duplicate daily measurements need attention",
         }[weekComparison.reason];
+
+  // The series caption. When the week is comparable the context line already
+  // carries the comparison, so this only names what the bars are. When it is not,
+  // it says how much of the window was actually measured — the honest reason the
+  // figure above it is withheld.
+  //
+  // It never sums the measured days into a substitute figure. PRODUCT.md's
+  // measurement contract withholds the week-over-week claim on exactly these
+  // states, and a partial sum printed under "US followers this week" would be a
+  // wrong number rather than a withheld one. Showing the shape is allowed:
+  // "descriptive charts may still show provisional and catch-up data with their
+  // qualifications. The restriction applies to claims, not visibility."
+  const sparkSlots = trailingUsSlots(points, SPARK_DAYS);
+  const measuredInWindow = sparkSlots.filter((s) => s.value !== null).length;
+  const sparkNote =
+    sparkSlots.length === 0
+      ? null
+      : comparable
+        ? `Daily US adds · last ${sparkSlots.length} days`
+        : `Daily US adds · ${measuredInWindow} of the last ${sparkSlots.length} days measured`;
+
+  // Progress between milestones. describeStockVsFlow rounds UP to the next
+  // thousand, so the run-up started one step below it.
+  const milestoneBase = stock ? (stock.followersTotal ?? stock.totalCounted) : null;
+  const milestoneFraction =
+    milestoneBase !== null && milestone
+      ? (milestoneBase - (milestone.nextMilestone - MILESTONE_STEP)) / MILESTONE_STEP
+      : null;
+
+  // A meter is a number rendered as length, so it is governed by the same rule as
+  // the figure: a rate below the funnel's minimum sample is withheld, and drawing
+  // a half-filled bar would state the "50%" the text deliberately refuses to
+  // print. Gated on the SAME `pct !== null` condition the value uses, so the
+  // figure and the mark can never disagree about whether a rate exists.
+  // FollowerKpiRow.test.tsx asserts this; it is doctrine, not styling.
+  const replyDenominator = funnel?.headline.rate.denominator ?? 0;
+  const replyFraction =
+    funnel && funnel.headline.rate.pct !== null && replyDenominator > 0
+      ? funnel.headline.rate.numerator / replyDenominator
+      : null;
 
   return (
     // ONE band, not three tiles standing on the ground. Home's neighbours both
@@ -98,7 +154,14 @@ export function FollowerKpiRow({
         label="US followers this week"
         value={comparable ? formatSignedCount(comparable.current.us) : "—"}
         context={comparisonContext}
-        note={null}
+        note={sparkNote}
+        visual={
+          <KpiSparkBars
+            points={points}
+            days={SPARK_DAYS}
+            title={`Daily US net follower adds over the last ${SPARK_DAYS} days`}
+          />
+        }
         Icon={Users}
         tone="emerald"
         isLoading={isFlowLoading}
@@ -123,6 +186,14 @@ export function FollowerKpiRow({
         // gave up its own headline) and the 45-country subtotal, so the smaller
         // number stays visible and explained rather than silently disappearing.
         note={stock === null ? null : buildTotalsNote(stock, avgPerDay7)}
+        visual={
+          milestoneFraction === null || milestone === null ? undefined : (
+            <KpiMeter
+              fraction={milestoneFraction}
+              title={`Progress toward ${numberFormat.format(milestone.nextMilestone)} followers`}
+            />
+          )
+        }
         Icon={Trophy}
         tone="sky"
         isLoading={isFlowLoading}
@@ -163,6 +234,18 @@ export function FollowerKpiRow({
           funnel
             ? `${numberFormat.format(funnel.headline.rate.denominator - funnel.headline.rate.numerator)} never replied · see Funnels`
             : null
+        }
+        // The funnel's own hue, because this figure IS the funnel headline. One
+        // filled share on a visible track: index.css keeps funnels to ONE colour
+        // per chart precisely so length carries the magnitude instead of hue.
+        visual={
+          replyFraction === null ? undefined : (
+            <KpiMeter
+              fraction={replyFraction}
+              fillClassName="bg-funnel-mark"
+              title={`${numberFormat.format(funnel!.headline.rate.numerator)} of ${numberFormat.format(replyDenominator)} answered the unlock DM`}
+            />
+          )
         }
         Icon={MessageSquareReply}
         tone="violet"

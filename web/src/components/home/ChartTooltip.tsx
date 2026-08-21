@@ -59,16 +59,16 @@ export function ChartTooltip({
       className="pointer-events-none absolute z-20 rounded-xl border border-line bg-popover p-3 shadow-lg"
     >
       <div className="flex items-baseline justify-between gap-3">
-        <span className="text-xs font-semibold text-foreground">{model.heading}</span>
+        <span className="text-xs font-medium text-foreground">{model.heading}</span>
         {model.totalLabel && (
-          <span className="text-xs font-semibold tabular-nums text-funnel-mark">
+          <span className="text-xs font-medium tabular-nums text-funnel-mark">
             {model.totalLabel}
           </span>
         )}
       </div>
 
       {(model.rows.length > 0 || model.emptyLabel) && (
-        <div className="mt-2 space-y-1 border-t border-border pt-2">
+        <div className="mt-2 space-y-1 border-t border-t-line pt-2">
           {model.rows.map((row) => (
             <div key={row.key} className="flex items-center gap-2 text-[11px]">
               <span
@@ -76,7 +76,7 @@ export function ChartTooltip({
                 style={{ backgroundColor: colorOf(row.key) }}
               />
               <span className="flex-1 truncate text-muted-foreground">{labelOf(row.key)}</span>
-              <span className="font-semibold tabular-nums text-foreground">{row.valueLabel}</span>
+              <span className="font-medium tabular-nums text-foreground">{row.valueLabel}</span>
             </div>
           ))}
           {model.emptyLabel && (
@@ -86,7 +86,7 @@ export function ChartTooltip({
       )}
 
       {model.notes.length > 0 && (
-        <div className="mt-2 space-y-0.5 border-t border-border pt-2">
+        <div className="mt-2 space-y-0.5 border-t border-t-line pt-2">
           {model.notes.map((note) => (
             <p key={note} className="text-[10px] leading-snug text-caution">
               {note}
@@ -96,7 +96,7 @@ export function ChartTooltip({
       )}
 
       {actionHint && (
-        <p className="mt-2 border-t border-border pt-2 text-[10px] font-medium text-funnel-mark">
+        <p className="mt-2 border-t border-t-line pt-2 text-[10px] font-medium text-funnel-mark">
           {actionHint}
         </p>
       )}

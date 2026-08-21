@@ -14,6 +14,99 @@ async function openRecovery(page: import("@playwright/test").Page, scenario: str
   await expect(page.getByRole("heading", { name: "DM recovery" })).toBeVisible();
 }
 
+test.describe("timing experiment dashboard", () => {
+  test("keeps summary cards, badges, and rows on one date scope", async ({ page }) => {
+    await openRecovery(page, "recovery-timing-arms");
+
+    await expect(page.getByRole("heading", { name: "2-hour reminder" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "6-hour reminder" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "No reminder" })).toBeVisible();
+    await expect(page.getByText(/56 followers are still collecting/)).toBeVisible();
+
+    for (const label of ["7d", "14d", "30d", "Custom"]) {
+      await expect(page.getByRole("button", { name: label })).toBeVisible();
+    }
+    const allDates = page.locator('button[aria-pressed]').filter({ hasText: /^All$/ });
+    await expect(allDates).toBeVisible();
+    await expect(page.getByRole("button", { name: "30d" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(
+      page.getByText("Showing guide requests received Jul 18 to Aug 16."),
+    ).toBeVisible();
+
+    await page.getByRole("button", { name: "7d" }).click();
+    await expect(
+      page.getByText("Showing guide requests received Aug 10 to Aug 16."),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Scheduled: 1 people, 1 journeys" })).toBeVisible();
+
+    await page.getByRole("button", { name: "14d" }).click();
+    await expect(
+      page.getByText("Showing guide requests received Aug 3 to Aug 16."),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Scheduled: 1 people, 1 journeys" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Due: 1 people, 1 journeys" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "All: 4 people, 4 journeys" })).toBeVisible();
+
+    await page.getByRole("button", { name: "30d" }).click();
+    await expect(
+      page.getByText("Showing guide requests received Jul 18 to Aug 16."),
+    ).toBeVisible();
+
+    await allDates.click();
+    await expect(
+      page.getByText("Showing guide requests received Jul 1 to Aug 16."),
+    ).toBeVisible();
+
+    await page.getByRole("button", { name: "Custom" }).click();
+    const calendar = page.getByRole("dialog", { name: "Choose a date range" });
+    await calendar.getByRole("button", { name: "2026-08-01" }).click();
+    await calendar.getByRole("button", { name: "2026-08-05" }).click();
+    await expect(
+      page.getByText("Showing guide requests received Aug 1 to Aug 5."),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Scheduled: 0 people, 0 journeys" })).toBeVisible();
+  });
+
+  test("filters rows with user-facing timing labels", async ({ page }) => {
+    await openRecovery(page, "recovery-timing-arms");
+    await page.getByRole("button", { name: /^All:/ }).click();
+
+    await page.getByRole("combobox", { name: /Timing/i }).selectOption("no_reminder");
+
+    await expect(page.getByRole("button", { name: /@nora/ })).toBeVisible();
+    await expect(page.getByRole("button", { name: /@tanya/ })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "All: 1 people, 1 journeys" })).toBeVisible();
+  });
+
+  test("shows persisted details for every arm and locks the no-reminder control", async ({
+    page,
+  }) => {
+    await openRecovery(page, "recovery-timing-arms");
+    await page.getByRole("button", { name: /^All:/ }).click();
+
+    for (const [username, label] of [
+      ["tanya", "2-hour reminder"],
+      ["sima", "6-hour reminder"],
+    ] as const) {
+      await page.getByRole("button", { name: new RegExp(`@${username}`) }).click();
+      const drawer = page.getByRole("dialog");
+      await expect(drawer.getByText("Timing experiment")).toBeVisible();
+      await expect(drawer.getByText(new RegExp(label))).toBeVisible();
+      await drawer.getByText("Close", { exact: true }).click();
+    }
+
+    await page.getByRole("button", { name: /@nora/ }).click();
+    const controlDrawer = page.getByRole("dialog");
+    await expect(controlDrawer.getByText("No-reminder experiment arm")).toBeVisible();
+    await expect(controlDrawer.getByText(/intentionally held back for measurement/i)).toBeVisible();
+    await expect(controlDrawer.getByRole("button", { name: /send now/i })).toHaveCount(0);
+    await expect(controlDrawer.getByRole("button", { name: "Cancel reminder" })).toHaveCount(0);
+  });
+});
+
 test.describe("evidence language", () => {
   test("explains that recovery can automatically publish a public comment", async ({ page }) => {
     await openRecovery(page, "recovery-ready");

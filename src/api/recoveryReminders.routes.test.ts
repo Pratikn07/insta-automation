@@ -7,6 +7,9 @@ const findUnique = vi.fn();
 const updateMany = vi.fn();
 const groupBy = vi.fn();
 const count = vi.fn();
+const aggregate = vi.fn();
+const conversationFindMany = vi.fn();
+const dispatchFindMany = vi.fn();
 const getIgUsers = vi.fn();
 const getRecoveryHealthSnapshot = vi.fn();
 const logEvent = vi.fn();
@@ -17,7 +20,9 @@ const retireSettingsBlockedVerification = vi.fn();
 const eventFindFirst = vi.fn();
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
-    dmRecoveryReminder: { findMany, findUnique, updateMany, groupBy, count },
+    dmRecoveryReminder: { findMany, findUnique, updateMany, groupBy, count, aggregate },
+    conversation: { findMany: conversationFindMany },
+    publicRecoveryDispatch: { findMany: dispatchFindMany },
     settingsBlockedVerification: { findMany: verificationFindMany },
     eventLog: { findFirst: eventFindFirst },
   },
@@ -49,6 +54,7 @@ const envMock = {
 vi.mock("../config/env.js", () => ({ env: envMock }));
 
 const { recoveryRemindersRouter, viewWhere } = await import("./recoveryReminders.routes.js");
+const { encodeRecoveryCursor } = await import("./recoveryRemindersCursor.js");
 
 function makeApp() {
   const app = express();
@@ -69,6 +75,8 @@ function row(overrides: Record<string, unknown> = {}) {
     triggerKind: "no_confirmed_read",
     status: "waiting",
     cohort: "treatment",
+    experimentVersionSnapshot: null,
+    timingArm: null,
     acceptedAt: new Date("2026-08-06T00:00:00.000Z"),
     eligibleAt: new Date("2026-08-06T10:00:00.000Z"),
     seenAt: null,
@@ -94,13 +102,42 @@ function row(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function timingRow(overrides: Record<string, unknown> = {}) {
+  return row({
+    id: "10000000-0000-4000-8000-000000000001",
+    keywordId: "kw-1",
+    experimentVersionSnapshot: "read-recovery-timing-v2",
+    timingArm: "two_hour",
+    acceptedAt: new Date("2026-08-01T08:00:00.000Z"),
+    eligibleAt: new Date("2026-08-01T10:00:00.000Z"),
+    seenReceivedAt: null,
+    engagedReceivedAt: null,
+    repliedAt: null,
+    suppressedAt: null,
+    conversation: { completedAt: null, canonicalIntent: null },
+    ...overrides,
+  });
+}
+
+function mockV2Coverage() {
+  aggregate.mockResolvedValue({
+    _min: { acceptedAt: new Date("2026-07-01T08:00:00.000Z") },
+    _max: { acceptedAt: new Date("2026-08-16T08:00:00.000Z") },
+  });
+}
+
+const SCOPED_AS_OF = "2026-08-17T03:00:00.000Z";
+
 beforeEach(() => {
-  for (const fn of [findMany, findUnique, updateMany, groupBy, count, getIgUsers, getRecoveryHealthSnapshot, logEvent, eventFindFirst, verificationFindMany, activateSettingsBlockedVerification, retireSettingsBlockedVerification]) {
+  for (const fn of [findMany, findUnique, updateMany, groupBy, count, aggregate, conversationFindMany, dispatchFindMany, getIgUsers, getRecoveryHealthSnapshot, logEvent, eventFindFirst, verificationFindMany, activateSettingsBlockedVerification, retireSettingsBlockedVerification]) {
     fn.mockReset();
   }
   findMany.mockResolvedValue([]);
   groupBy.mockResolvedValue([]);
   count.mockResolvedValue(0);
+  aggregate.mockResolvedValue({ _min: { acceptedAt: null }, _max: { acceptedAt: null } });
+  conversationFindMany.mockResolvedValue([]);
+  dispatchFindMany.mockResolvedValue([]);
   getIgUsers.mockResolvedValue({});
   getRecoveryHealthSnapshot.mockResolvedValue({ circuitOpen: false });
   eventFindFirst.mockResolvedValue(null);
@@ -238,6 +275,9 @@ describe("GET /", () => {
       triggerKind: "no_confirmed_read",
       status: "waiting",
       cohort: "treatment",
+      experimentVersion: null,
+      timingArm: null,
+      timingLabel: null,
       acceptedAt: "2026-08-06T00:00:00.000Z",
       eligibleAt: "2026-08-06T10:00:00.000Z",
       seenAt: null,
@@ -488,6 +528,123 @@ describe("GET / boundary stability across pages", () => {
   });
 });
 
+describe("date-scoped v2 list and counts", () => {
+  beforeEach(() => {
+    mockV2Coverage();
+  });
+
+  it("uses the canonical v2 version, Pacific accepted range, and accepted-time order", async () => {
+    findMany.mockResolvedValue([
+      timingRow({ timingArm: "two_hour" }),
+    ]);
+
+    const res = await request(makeApp()).get(
+      `/api/recovery-reminders?from=2026-08-01&to=2026-08-16&asOf=${encodeURIComponent(SCOPED_AS_OF)}`,
+    );
+
+    expect(res.status).toBe(200);
+    expect(findMany.mock.calls[0]![0]).toMatchObject({
+      where: {
+        experimentVersionSnapshot: "read-recovery-timing-v2",
+        acceptedAt: {
+          gte: new Date("2026-08-01T07:00:00.000Z"),
+          lt: new Date("2026-08-17T07:00:00.000Z"),
+        },
+      },
+      orderBy: [{ acceptedAt: "desc" }, { id: "desc" }],
+    });
+    expect(res.body.rows[0]).toMatchObject({
+      experimentVersion: "read-recovery-timing-v2",
+      timingArm: "two_hour",
+      timingLabel: "2-hour reminder",
+    });
+  });
+
+  it("applies the no-reminder arm to both list and filtered badges", async () => {
+    groupBy.mockResolvedValue([]);
+    await request(makeApp()).get(
+      `/api/recovery-reminders?from=2026-08-01&to=2026-08-16&asOf=${encodeURIComponent(SCOPED_AS_OF)}&timingArm=no_reminder`,
+    );
+    await request(makeApp()).get(
+      `/api/recovery-reminders/counts?from=2026-08-01&to=2026-08-16&asOf=${encodeURIComponent(SCOPED_AS_OF)}&timingArm=no_reminder`,
+    );
+
+    expect(findMany.mock.calls[0]![0].where).toMatchObject({
+      experimentVersionSnapshot: "read-recovery-timing-v2",
+      timingArm: "no_reminder",
+    });
+    for (const [args] of groupBy.mock.calls) {
+      expect(args.where).toMatchObject({
+        experimentVersionSnapshot: "read-recovery-timing-v2",
+        timingArm: "no_reminder",
+        acceptedAt: {
+          gte: new Date("2026-08-01T07:00:00.000Z"),
+          lt: new Date("2026-08-17T07:00:00.000Z"),
+        },
+      });
+    }
+  });
+
+  it("keeps an opaque second-page cursor on the exact range and asOf", async () => {
+    const firstId = "10000000-0000-4000-8000-000000000001";
+    const secondId = "10000000-0000-4000-8000-000000000002";
+    findMany
+      .mockResolvedValueOnce([timingRow({ id: firstId }), timingRow({ id: secondId })])
+      .mockResolvedValueOnce([timingRow({ id: secondId })]);
+
+    const base = `/api/recovery-reminders?from=2026-08-01&to=2026-08-16&asOf=${encodeURIComponent(SCOPED_AS_OF)}&limit=1`;
+    const first = await request(makeApp()).get(base);
+    expect(first.body.nextCursor).not.toBe(firstId);
+
+    const second = await request(makeApp()).get(
+      `${base}&cursor=${encodeURIComponent(first.body.nextCursor)}`,
+    );
+    expect(second.status).toBe(200);
+    expect(findMany.mock.calls[1]![0]).toMatchObject({
+      cursor: { id: firstId },
+      skip: 1,
+    });
+  });
+
+  it("rejects a cursor reused with a different range", async () => {
+    const cursor = encodeRecoveryCursor({
+      id: "10000000-0000-4000-8000-000000000001",
+      from: "2026-08-01",
+      to: "2026-08-16",
+      asOf: SCOPED_AS_OF,
+    });
+
+    const res = await request(makeApp()).get(
+      `/api/recovery-reminders?from=2026-08-02&to=2026-08-16&asOf=${encodeURIComponent(SCOPED_AS_OF)}&cursor=${encodeURIComponent(cursor)}`,
+    );
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: "invalid_cursor_scope" });
+    expect(findMany).not.toHaveBeenCalled();
+  });
+
+  it("clamps an overlapping request and returns its effective range", async () => {
+    const res = await request(makeApp()).get(
+      `/api/recovery-reminders?from=2026-06-25&to=2026-07-05&asOf=${encodeURIComponent(SCOPED_AS_OF)}`,
+    );
+
+    expect(res.body.range).toEqual({ from: "2026-07-01", to: "2026-07-05" });
+    expect(findMany.mock.calls[0]![0].where.acceptedAt).toEqual({
+      gte: new Date("2026-07-01T07:00:00.000Z"),
+      lt: new Date("2026-07-06T07:00:00.000Z"),
+    });
+  });
+
+  it.each([
+    ["only from", `from=2026-08-01&asOf=${encodeURIComponent(SCOPED_AS_OF)}`],
+    ["reversed dates", `from=2026-08-16&to=2026-08-01&asOf=${encodeURIComponent(SCOPED_AS_OF)}`],
+    ["malformed dates", `from=August-1&to=2026-08-16&asOf=${encodeURIComponent(SCOPED_AS_OF)}`],
+    ["a future asOf", "from=2026-08-01&to=2026-08-16&asOf=2099-01-01T00%3A00%3A00.000Z"],
+  ])("rejects %s", async (_label, query) => {
+    const res = await request(makeApp()).get(`/api/recovery-reminders?${query}`);
+    expect(res.status).toBe(400);
+  });
+});
+
 describe("GET /metrics", () => {
   // Registered after /:id, Express captures "metrics" as an id and the
   // endpoint 404s.
@@ -495,6 +652,118 @@ describe("GET /metrics", () => {
     const res = await request(makeApp()).get("/api/recovery-reminders/metrics");
     expect(res.status).toBe(200);
     expect(findUnique).not.toHaveBeenCalled();
+  });
+
+  it("returns the latest 30 days of v2 timing coverage by default", async () => {
+    mockV2Coverage();
+    findMany.mockImplementation(async (args) =>
+      args?.where?.experimentVersionSnapshot === "read-recovery-timing-v2"
+        ? [timingRow()]
+        : [],
+    );
+
+    const res = await request(makeApp()).get("/api/recovery-reminders/metrics");
+
+    expect(res.status).toBe(200);
+    expect(res.body.timingExperiment).toMatchObject({
+      version: "read-recovery-timing-v2",
+      reporting: {
+        asOf: expect.any(String),
+        coverage: { from: "2026-07-01", to: "2026-08-16" },
+        range: { from: "2026-07-18", to: "2026-08-16" },
+        resultsCompleteThrough: expect.any(String),
+      },
+      arms: {
+        twoHour: expect.any(Object),
+        sixHour: expect.any(Object),
+        noReminder: expect.any(Object),
+      },
+      timingComparison: expect.any(Object),
+      decision: expect.any(Object),
+    });
+
+    const timingQuery = findMany.mock.calls.find(
+      ([args]) => args?.where?.experimentVersionSnapshot === "read-recovery-timing-v2",
+    )![0];
+    expect(timingQuery.where).toMatchObject({
+      experimentVersionSnapshot: "read-recovery-timing-v2",
+      timingArm: { not: null },
+      triggerKind: "no_confirmed_read",
+      acceptedAt: {
+        gte: new Date("2026-07-18T07:00:00.000Z"),
+        lt: new Date("2026-08-17T07:00:00.000Z"),
+      },
+    });
+  });
+
+  it("requires metrics custom dates together", async () => {
+    mockV2Coverage();
+    const res = await request(makeApp()).get(
+      "/api/recovery-reminders/metrics?from=2026-08-01",
+    );
+    expect(res.status).toBe(400);
+    expect(findMany).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["reversed dates", `from=2026-08-16&to=2026-08-01&asOf=${encodeURIComponent(SCOPED_AS_OF)}`],
+    ["a non-overlapping range", `from=2026-06-01&to=2026-06-30&asOf=${encodeURIComponent(SCOPED_AS_OF)}`],
+    ["a future asOf", "from=2026-08-01&to=2026-08-16&asOf=2099-01-01T00%3A00%3A00.000Z"],
+  ])("rejects metrics with %s", async (_label, query) => {
+    mockV2Coverage();
+    const res = await request(makeApp()).get(
+      `/api/recovery-reminders/metrics?${query}`,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("wires exact-pair sibling completion and confirmed duplicate evidence", async () => {
+    mockV2Coverage();
+    const source = timingRow();
+    findMany.mockImplementation(async (args) =>
+      args?.where?.experimentVersionSnapshot === "read-recovery-timing-v2"
+        ? [source]
+        : [],
+    );
+    conversationFindMany.mockResolvedValue([
+      {
+        igUserId: source.igUserId,
+        keywordId: "another-keyword",
+        completedAt: new Date("2026-08-01T09:00:00.000Z"),
+      },
+      {
+        igUserId: source.igUserId,
+        keywordId: source.keywordId,
+        completedAt: new Date("2026-08-01T12:00:00.000Z"),
+      },
+    ]);
+    dispatchFindMany.mockResolvedValue([
+      { sourceId: source.id },
+      { sourceId: source.id },
+    ]);
+
+    const res = await request(makeApp()).get(
+      `/api/recovery-reminders/metrics?from=2026-08-01&to=2026-08-16&asOf=${encodeURIComponent(SCOPED_AS_OF)}`,
+    );
+
+    expect(res.body.timingExperiment.arms.twoHour.completedWithin24h).toBe(1);
+    expect(res.body.timingExperiment.safety.duplicateSafetyEvent).toBe(true);
+    expect(conversationFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          igUserId: { in: [source.igUserId] },
+          keywordId: { in: [source.keywordId] },
+        }),
+      }),
+    );
+    expect(dispatchFindMany).toHaveBeenCalledWith({
+      where: {
+        sourceKind: "prospective",
+        sourceId: { in: [source.id] },
+        state: "sent",
+      },
+      select: { sourceId: true },
+    });
   });
 
   it("excludes settings_blocked rows from the cohort comparison", async () => {
@@ -659,6 +928,7 @@ describe("GET /metrics", () => {
     expect(res.status).toBe(200);
     expect(res.body.experiment.treatment.eligiblePeople).toBe(0);
     expect(res.body.experiment.control.withheld).toBe(0);
+    expect(res.body.timingExperiment).toBeNull();
     // The cohort query is skipped entirely, not issued with a sentinel filter.
     for (const call of findMany.mock.calls) {
       expect(call[0]?.where?.id).toBeUndefined();
@@ -704,7 +974,12 @@ describe("POST /:id/cancel", () => {
   it.each(["waiting", "control", "tracking_unavailable", "send_failed"])(
     "cancels an unsent %s item",
     async (status) => {
-      findUnique.mockResolvedValue({ id: "rec-1", status });
+      findUnique.mockResolvedValue({
+        id: "rec-1",
+        status,
+        experimentVersionSnapshot: null,
+        timingArm: null,
+      });
       updateMany.mockResolvedValue({ count: 1 });
 
       const res = await request(makeApp()).post("/api/recovery-reminders/rec-1/cancel");
@@ -728,6 +1003,22 @@ describe("POST /:id/cancel", () => {
       );
     },
   );
+
+  it("refuses to cancel a v2 no-reminder control", async () => {
+    findUnique.mockResolvedValue({
+      id: "rec-1",
+      status: "control",
+      experimentVersionSnapshot: "read-recovery-timing-v2",
+      timingArm: "no_reminder",
+    });
+
+    const res = await request(makeApp()).post("/api/recovery-reminders/rec-1/cancel");
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({ error: "experiment_control_immutable" });
+    expect(updateMany).not.toHaveBeenCalled();
+    expect(logEvent).not.toHaveBeenCalled();
+  });
 
   it.each(["sending", "sent", "send_uncertain", "cancelled"])(
     "returns 409 for %s",

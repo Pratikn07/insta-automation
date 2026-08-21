@@ -19,6 +19,7 @@ import {
   startPublicRecoveryDispatch,
 } from "./publicRecoveryDispatchRepository.js";
 import { resolveCanonicalConversation } from "./canonicalConversation.js";
+import { DM_RECOVERY_TIMING_EXPERIMENT_VERSION } from "./dmRecoveryTimingExperiment.js";
 
 export type ClaimedRecovery = DmRecoveryReminder & { claimToken: string };
 
@@ -278,6 +279,8 @@ function toPolicyInput(
     triggerKind: row.triggerKind,
     status: statusOverride ?? row.status,
     cohort: row.cohort,
+    experimentVersionSnapshot: row.experimentVersionSnapshot,
+    timingArm: row.timingArm,
     eligibleAt: row.eligibleAt,
     instagramGateMessageId: row.instagramGateMessageId,
     seenAt: row.seenAt,
@@ -344,12 +347,26 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  */
 const DUE_SELECTION_HEADROOM = 3;
 
+const SENDABLE_ASSIGNMENT_WHERE: Prisma.DmRecoveryReminderWhereInput = {
+  OR: [
+    { experimentVersionSnapshot: null },
+    {
+      experimentVersionSnapshot: DM_RECOVERY_TIMING_EXPERIMENT_VERSION,
+      cohort: "treatment",
+      timingArm: { in: ["two_hour", "six_hour"] },
+    },
+  ],
+};
+
 export async function listDueRecoveryIds(now: Date, limit: number): Promise<string[]> {
   const rows = await prisma.dmRecoveryReminder.findMany({
     where: {
       status: "waiting",
       eligibleAt: { lte: now },
-      OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
+      AND: [
+        SENDABLE_ASSIGNMENT_WHERE,
+        { OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }] },
+      ],
     },
     select: { id: true },
     orderBy: [{ eligibleAt: "asc" }, { createdAt: "asc" }],
@@ -428,7 +445,10 @@ export async function claimRecovery(
               status: "waiting",
               claimToken: null,
               eligibleAt: { lte: now },
-              OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
+              AND: [
+                SENDABLE_ASSIGNMENT_WHERE,
+                { OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }] },
+              ],
             },
             data: {
               status: "sending",
@@ -681,6 +701,7 @@ export async function reconcileExpiredProspectiveLeases(
         status: "sending",
         claimToken: { not: null },
         claimExpiresAt: { lte: now },
+        AND: [SENDABLE_ASSIGNMENT_WHERE],
       },
       orderBy: [{ igUserId: "asc" }, { id: "asc" }],
     });
@@ -772,10 +793,17 @@ export async function releaseOrSuppressClaim(
         : // pause, release and wait all hand the row back untouched: the person
           // has not been judged, only deferred.
           { status: "waiting" as const, claimedAt: null, claimExpiresAt: null, claimToken: null };
+  const releasesToWaiting =
+    decision.kind !== "suppress" && decision.kind !== "holdout";
 
   try {
     const res = await prisma.dmRecoveryReminder.updateMany({
-      where: { id, status: "sending", ...(claimToken ? { claimToken } : {}) },
+      where: {
+        id,
+        status: "sending",
+        ...(claimToken ? { claimToken } : {}),
+        ...(releasesToWaiting ? { AND: [SENDABLE_ASSIGNMENT_WHERE] } : {}),
+      },
       data,
     });
     return res.count > 0;

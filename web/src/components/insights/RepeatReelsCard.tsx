@@ -21,7 +21,10 @@ export function RepeatReelsCard({
   const candidates = rankRepeatCandidates(rows);
 
   return (
-    <div className="rounded-lg border bg-card/40 p-4">
+    // Opened by a rule, matching every other section on the Insights page. It was
+    // `rounded-lg border bg-card/40`, and --color-card is reserved for controls
+    // and floating chrome, "never a wrapper around ordinary page content".
+    <div className="border-t border-t-foreground pt-4">
       <h3 className="mb-1 flex items-center gap-1.5 text-sm font-medium">
         <Repeat2 className="size-4 text-muted-foreground" /> Which reels should I repeat?
       </h3>
@@ -38,10 +41,13 @@ export function RepeatReelsCard({
           skip rate, or guide deliveries.
         </p>
       ) : (
-        <ol className="space-y-2">
+        <ol>
           {candidates.map((c) => (
-            <li key={c.mediaId} className="flex gap-3 rounded-md border bg-background/40 p-2.5">
-              <div className="relative aspect-[9/16] w-12 shrink-0 overflow-hidden rounded bg-accent">
+            <li
+              key={c.mediaId}
+              className="flex gap-3 py-2.5 [&:not(:first-child)]:border-t [&:not(:first-child)]:border-t-line"
+            >
+              <div className="relative aspect-[9/16] w-12 shrink-0 overflow-hidden rounded-sm bg-accent">
                 {c.thumbnailUrl ? (
                   <img src={c.thumbnailUrl} alt="" loading="lazy" className="size-full object-cover" />
                 ) : (
@@ -49,7 +55,12 @@ export function RepeatReelsCard({
                     <Film className="size-4" />
                   </div>
                 )}
-                <span className="absolute left-1 top-1 flex size-4 items-center justify-center rounded-full bg-black/75 text-[9px] font-bold text-white">
+                {/* The rank marker. Squared — a number in a circle is the icon bed
+                    DESIGN.md assigns to the old console — and weight 500, where
+                    `font-bold` was 700, two steps past the top of the scale. The
+                    dark scrim stays: this sits over arbitrary photography, the one
+                    place a ground-measured token cannot do the work. */}
+                <span className="absolute left-1 top-1 flex size-4 items-center justify-center rounded-sm bg-black/75 text-[9px] font-medium text-white">
                   {c.rank}
                 </span>
               </div>
@@ -63,7 +74,7 @@ export function RepeatReelsCard({
                       target="_blank"
                       rel="noreferrer"
                       aria-label="Open reel on Instagram"
-                      className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:text-foreground"
+                      className="shrink-0 rounded-sm p-1 text-muted-foreground transition-colors hover:text-foreground"
                     >
                       <ArrowUpRight className="size-3.5" />
                     </a>

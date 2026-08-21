@@ -24,6 +24,9 @@ function row(overrides: Partial<RecoveryReminderRow> = {}): RecoveryReminderRow 
     triggerKind: "no_confirmed_read",
     status: "waiting",
     cohort: "treatment",
+    experimentVersion: null,
+    timingArm: null,
+    timingLabel: null,
     acceptedAt: hoursAgo(12),
     eligibleAt: ELIGIBLE.toISOString(),
     seenAt: null,
@@ -125,6 +128,30 @@ describe("recoveryStatusView", () => {
         expect(recoveryStatusView(row({ status }), NOW).canCancel).toBe(true);
       },
     );
+
+    it("never allows cancellation of the v2 no-reminder arm", () => {
+      const view = recoveryStatusView(
+        row({
+          status: "control",
+          cohort: "control",
+          experimentVersion: "read-recovery-timing-v2",
+          timingArm: "no_reminder",
+          timingLabel: "No reminder",
+        }),
+        NOW,
+      );
+
+      expect(view.canCancel).toBe(false);
+      expect(view.label).toBe("No-reminder experiment arm");
+      expect(view.description).toMatch(/intentionally held back for measurement/i);
+    });
+
+    it("keeps legacy control cancellation and language unchanged", () => {
+      const view = recoveryStatusView(row({ status: "control", cohort: "control" }), NOW);
+
+      expect(view.canCancel).toBe(true);
+      expect(view.label).toBe("Control group—reminder intentionally withheld");
+    });
 
     it.each(["sending", "sent", "send_uncertain", "cancelled", "suppressed"] as const)(
       "refuses to cancel %s",

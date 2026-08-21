@@ -6,12 +6,17 @@ const upsert = vi.fn();
 const refresh = vi.fn();
 const snapshot = vi.fn();
 const logEvent = vi.fn();
+const flagExperimentKey = vi.fn();
 
 vi.mock("../lib/prisma.js", () => ({ prisma: { flagOverride: { upsert } } }));
 vi.mock("../services/flagService.js", () => ({
   flags: { snapshot: () => snapshot(), refresh: () => refresh() },
 }));
 vi.mock("../services/eventLogger.js", () => ({ logEvent }));
+vi.mock("../services/experimentLifecycle.js", () => ({
+  configuredFlagExperimentKey: (key: string, declared: string | undefined) =>
+    flagExperimentKey(key, declared),
+}));
 
 const { flagsRouter } = await import("./flags.routes.js");
 
@@ -57,6 +62,7 @@ beforeEach(() => {
     row("DM_RECOVERY_FAILURE_RATE_PERCENT", { valueBool: null, valuePercent: 50 }),
   ]);
   upsert.mockResolvedValue({});
+  flagExperimentKey.mockImplementation((_key: string, declared: string | undefined) => declared);
 });
 
 describe("flags API", () => {
@@ -100,10 +106,10 @@ describe("flags API", () => {
       kind: "boolean",
       pageMayEnable: false,
       pageMayStop: true,
-      experimentKey: "recovery-reminder-timing",
+      experimentKey: "recovery-reminder-timing-v2",
       // Served, not looked up client-side: the console keeping its own key-to-name
       // map is how a renamed experiment would keep its old name on this switch.
-      experimentName: "Recovery reminder timing",
+      experimentName: "Recovery reminder — 2 vs 6 hours",
     });
     expect(response.body.ifOff.length).toBeGreaterThan(10);
   });
@@ -114,6 +120,19 @@ describe("flags API", () => {
     expect(response.body.key).toBe("AI_ADVISOR_ENABLED");
     expect(response.body.experimentKey).toBeUndefined();
     expect(response.body.experimentName).toBeNull();
+  });
+
+  it("links shared recovery controls to V1 before cutover", async () => {
+    flagExperimentKey.mockImplementation((key: string, declared: string | undefined) =>
+      key === "DM_RECOVERY_ENABLED" ? "recovery-reminder-timing" : declared,
+    );
+
+    const response = await request(app()).get("/api/flags/DM_RECOVERY_ENABLED").expect(200);
+
+    expect(response.body).toMatchObject({
+      experimentKey: "recovery-reminder-timing",
+      experimentName: "Recovery reminder — 10 hours vs none",
+    });
   });
 
   it("404s a single flag that does not exist", async () => {

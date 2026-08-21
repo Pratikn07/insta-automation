@@ -152,7 +152,8 @@ async function tickBody(): Promise<OriginEnrichmentResult> {
   const batchSize = Math.min(env.DM_RECOVERY_ORIGIN_BATCH_SIZE, MAX_ORIGIN_BATCH);
 
   // Newest first. New arrivals are the ones with a reminder already ticking
-  // toward its ten-hour send; an old unclassified row has no deadline.
+  // toward its frozen eligibility (10h in v1, 2h/6h in v2); an old
+  // unclassified row has no deadline.
   const due = await prisma.igUser.findMany({
     where: ORIGIN_STILL_DUE,
     select: { id: true, username: true, name: true },

@@ -12,6 +12,7 @@ const $transaction = vi.fn();
 const loggerInfo = vi.fn();
 const loggerError = vi.fn();
 const assignRecoveryCohortMock = vi.fn();
+const assignRecoveryTimingArmMock = vi.fn();
 const igUserFindUnique = vi.fn();
 const lockAndValidateSettingsBlockedVerificationEvidence = vi.fn();
 
@@ -33,6 +34,7 @@ const envMock = {
   DM_RECOVERY_EXPERIMENT_START_AT: "2026-08-01T00:00:00Z",
   DM_RECOVERY_EXPERIMENT_END_AT: "2026-08-15T00:00:00Z",
   DM_RECOVERY_POST_EXPERIMENT_ENABLED: false,
+  DM_RECOVERY_WESTERN_ONLY: false,
 };
 
 vi.mock("../config/env.js", () => ({ env: envMock }));
@@ -42,6 +44,14 @@ vi.mock("./dmRecoveryPolicy.js", async (importOriginal) => {
   return {
     ...original,
     assignRecoveryCohort: assignRecoveryCohortMock,
+  };
+});
+
+vi.mock("./dmRecoveryTimingExperiment.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./dmRecoveryTimingExperiment.js")>();
+  return {
+    ...original,
+    assignRecoveryTimingArm: assignRecoveryTimingArmMock,
   };
 });
 
@@ -140,6 +150,7 @@ beforeEach(() => {
   loggerInfo.mockReset();
   loggerError.mockReset();
   assignRecoveryCohortMock.mockReset();
+  assignRecoveryTimingArmMock.mockReset();
   igUserFindUnique.mockReset();
   lockAndValidateSettingsBlockedVerificationEvidence.mockReset();
   // Default: an unclassified person, so the name screen decides.
@@ -153,6 +164,7 @@ beforeEach(() => {
 
   // Default: treatment assignment
   assignRecoveryCohortMock.mockReturnValue("treatment");
+  assignRecoveryTimingArmMock.mockReturnValue("two_hour");
 
   // Default upsert returns the created data
   upsert.mockImplementation(async ({ create }) => ({
@@ -176,11 +188,165 @@ beforeEach(() => {
   envMock.DM_RECOVERY_EXPERIMENT_START_AT = "2026-08-01T00:00:00Z";
   envMock.DM_RECOVERY_EXPERIMENT_END_AT = "2026-08-15T00:00:00Z";
   envMock.DM_RECOVERY_POST_EXPERIMENT_ENABLED = false;
+  envMock.DM_RECOVERY_WESTERN_ONLY = false;
 });
 
 // ── scheduleAcceptedGateRecovery ─────────────────────────────────────────
 
 describe("scheduleAcceptedGateRecovery", () => {
+  describe("read-recovery-timing-v2 assignment", () => {
+    beforeEach(() => {
+      envMock.DM_RECOVERY_EXPERIMENT_VERSION = "read-recovery-timing-v2";
+    });
+
+    it.each([
+      ["two_hour", "waiting", "treatment", "2026-08-06T10:00:00.000Z"],
+      ["six_hour", "waiting", "treatment", "2026-08-06T14:00:00.000Z"],
+      ["no_reminder", "control", "control", "2026-08-06T08:00:00.000Z"],
+    ] as const)(
+      "persists the frozen %s assignment and schedule",
+      async (timingArm, status, cohort, eligibleAt) => {
+        assignRecoveryTimingArmMock.mockReturnValue(timingArm);
+
+        await scheduleAcceptedGateRecovery(ACCEPTED_INPUT);
+
+        expect(assignRecoveryTimingArmMock).toHaveBeenCalledWith("ig-1");
+        expect(upsert).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: { commentId: "comment-1" },
+            create: expect.objectContaining({
+              experimentVersionSnapshot: "read-recovery-timing-v2",
+              timingArm,
+              status,
+              cohort,
+              acceptedAt: ACCEPTED_INPUT.acceptedAt,
+              eligibleAt: new Date(eligibleAt),
+            }),
+            update: {},
+          }),
+        );
+      },
+    );
+
+    it("excludes an untrackable accepted DM before timing assignment", async () => {
+      await scheduleAcceptedGateRecovery({
+        ...ACCEPTED_INPUT,
+        instagramGateMessageId: null,
+      });
+
+      expect(assignRecoveryTimingArmMock).not.toHaveBeenCalled();
+      expect(upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({
+            status: "tracking_unavailable",
+            cohort: "not_applicable",
+            experimentVersionSnapshot: null,
+            timingArm: null,
+          }),
+        }),
+      );
+    });
+
+    it("stores an out-of-market exclusion without randomizing it", async () => {
+      envMock.DM_RECOVERY_WESTERN_ONLY = true;
+      igUserFindUnique.mockResolvedValue({
+        username: "priya_m",
+        name: "Priya M",
+        inferredOrigin: "south_asian",
+        originConfidence: "high",
+        originMethod: CURRENT_ORIGIN_METHOD,
+      });
+
+      const result = await scheduleAcceptedGateRecovery(ACCEPTED_INPUT);
+
+      expect(result.status).toBe("suppressed");
+      expect(assignRecoveryTimingArmMock).not.toHaveBeenCalled();
+      expect(upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({
+            status: "suppressed",
+            cohort: "not_applicable",
+            suppressionReason: "audience_out_of_market",
+            suppressedAt: ACCEPTED_INPUT.acceptedAt,
+            experimentVersionSnapshot: null,
+            timingArm: null,
+          }),
+        }),
+      );
+    });
+
+    it.each([
+      ["before enrollment", "2026-07-31T23:59:59.999Z", "experiment_not_started"],
+      ["at the end boundary", "2026-08-15T00:00:00.000Z", "experiment_awaiting_review"],
+      ["after enrollment", "2026-08-20T08:00:00.000Z", "experiment_awaiting_review"],
+    ] as const)(
+      "does not randomize a DM accepted %s",
+      async (_label, acceptedAt, lastErrorCategory) => {
+        await scheduleAcceptedGateRecovery({
+          ...ACCEPTED_INPUT,
+          acceptedAt: new Date(acceptedAt),
+        });
+
+        expect(assignRecoveryTimingArmMock).not.toHaveBeenCalled();
+        expect(upsert).toHaveBeenCalledWith(
+          expect.objectContaining({
+            create: expect.objectContaining({
+              status: "control",
+              experimentVersionSnapshot: null,
+              timingArm: null,
+              lastErrorCategory,
+            }),
+          }),
+        );
+      },
+    );
+
+    it("keeps the first persisted assignment on a duplicate scheduling call", async () => {
+      assignRecoveryTimingArmMock.mockReturnValue("six_hour");
+      upsert.mockResolvedValue({
+        id: "existing-row",
+        status: "waiting",
+        cohort: "treatment",
+        experimentVersionSnapshot: "read-recovery-timing-v2",
+        timingArm: "two_hour",
+      });
+
+      await scheduleAcceptedGateRecovery(ACCEPTED_INPUT);
+
+      expect(upsert).toHaveBeenCalledWith(expect.objectContaining({ update: {} }));
+    });
+
+    it("qualifies a captured comment even when mediaId is null", async () => {
+      await scheduleAcceptedGateRecovery({ ...ACCEPTED_INPUT, mediaId: null });
+
+      expect(assignRecoveryTimingArmMock).toHaveBeenCalledWith("ig-1");
+      expect(upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({
+            commentId: "comment-1",
+            mediaId: null,
+            experimentVersionSnapshot: "read-recovery-timing-v2",
+            timingArm: "two_hour",
+          }),
+        }),
+      );
+    });
+
+    it("logs the persisted version and arm without follower data", async () => {
+      await scheduleAcceptedGateRecovery(ACCEPTED_INPUT);
+
+      const creationLog = loggerInfo.mock.calls.find(
+        ([fields]) => fields.eventCode === "dm_recovery_created",
+      )?.[0];
+      expect(creationLog).toMatchObject({
+        experimentVersion: "read-recovery-timing-v2",
+        timingArm: "two_hour",
+      });
+      expect(creationLog).not.toHaveProperty("igUserId");
+      expect(creationLog).not.toHaveProperty("publicReplyText");
+    });
+  });
+
   it("creates a treatment row with correct eligibleAt, copy, cohort, and template", async () => {
     await scheduleAcceptedGateRecovery(ACCEPTED_INPUT);
 
@@ -191,6 +357,8 @@ describe("scheduleAcceptedGateRecovery", () => {
           triggerKind: "no_confirmed_read",
           status: "waiting",
           cohort: "treatment",
+          experimentVersionSnapshot: null,
+          timingArm: null,
           eligibleAt: new Date("2026-08-06T18:00:00Z"),
           instagramGateMessageId: "mid-1",
           publicReplyText:
@@ -501,6 +669,8 @@ describe("scheduleSettingsBlockedRecovery", () => {
           triggerKind: "settings_blocked",
           status: "waiting",
           cohort: "not_applicable",
+          experimentVersionSnapshot: null,
+          timingArm: null,
           acceptedAt: null,
           eligibleAt: new Date("2026-08-06T08:00:00Z"),
           instagramGateMessageId: null,
@@ -529,9 +699,11 @@ describe("scheduleSettingsBlockedRecovery", () => {
   });
 
   it("never enters control — cohort is always not_applicable", async () => {
+    envMock.DM_RECOVERY_EXPERIMENT_VERSION = "read-recovery-timing-v2";
     await scheduleSettingsBlockedRecovery(SETTINGS_INPUT);
 
     expect(assignRecoveryCohortMock).not.toHaveBeenCalled();
+    expect(assignRecoveryTimingArmMock).not.toHaveBeenCalled();
     expect(upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         create: expect.objectContaining({
@@ -724,7 +896,14 @@ describe("recordRecoveryReaction", () => {
   });
 
   it("preserves status on control rows", async () => {
-    findMany.mockResolvedValue([makeRow({ status: "control" })]);
+    findMany.mockResolvedValue([
+      makeRow({
+        status: "control",
+        cohort: "control",
+        experimentVersionSnapshot: "read-recovery-timing-v2",
+        timingArm: "no_reminder",
+      }),
+    ]);
 
     await recordRecoveryReaction({
       instagramMessageId: "mid-1",

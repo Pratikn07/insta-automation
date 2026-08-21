@@ -1,7 +1,12 @@
 import { createHash } from "node:crypto";
-import type { DmRecoveryCohort, DmRecoveryTriggerKind } from "@prisma/client";
+import type {
+  DmRecoveryCohort,
+  DmRecoveryTimingArm,
+  DmRecoveryTriggerKind,
+} from "@prisma/client";
 import type { Origin } from "./originInference.js";
 import { normalizeRecoveryKeyword } from "./recoveryCopyCore.js";
+import { DM_RECOVERY_TIMING_EXPERIMENT_VERSION } from "./dmRecoveryTimingExperiment.js";
 
 export const RECOVERY_TEMPLATE_VERSION = "v1";
 
@@ -28,6 +33,7 @@ export type RecoverySuppressionReason =
   // posted. Named for the decision, not for the person: it records why WE did
   // not post, and it is never shown to anyone outside the dashboard.
   | "audience_out_of_market"
+  | "experiment_assignment_invalid"
   | "owner_cancelled"
   | "reconciled_alias";
 
@@ -76,6 +82,8 @@ export type RecoveryPolicyInput = {
   triggerKind: DmRecoveryTriggerKind;
   status: string;
   cohort: DmRecoveryCohort;
+  experimentVersionSnapshot: string | null;
+  timingArm: DmRecoveryTimingArm | null;
   eligibleAt: Date;
   instagramGateMessageId: string | null;
   seenAt: Date | null;
@@ -123,7 +131,7 @@ const TERMINAL_STATUSES = new Set([
  *  5. Person cooldown (24h)
  *  6. Newer candidate
  *  7. Settings fallback
- *  8. Ten-hour eligibility wait
+ *  8. Frozen eligibility wait
  *  9. Holdout (control cohort)
  * 10. Send no-confirmed-read reminder
  */
@@ -224,9 +232,21 @@ export function decideRecovery(input: RecoveryPolicyInput): RecoveryDecision {
     return { kind: "send_settings_fallback" };
   }
 
-  // 8. Ten-hour eligibility wait
+  // 8. Frozen eligibility wait
   if (input.now.getTime() < input.eligibleAt.getTime()) {
     return { kind: "wait" };
+  }
+
+  // V2 eligibility is frozen at insertion. Never recompute or repair an arm at
+  // send time: an inconsistent row is evidence of corruption and must fail
+  // closed before a public comment can be posted.
+  if (input.experimentVersionSnapshot === DM_RECOVERY_TIMING_EXPERIMENT_VERSION) {
+    const validV2Treatment =
+      input.cohort === "treatment" &&
+      (input.timingArm === "two_hour" || input.timingArm === "six_hour");
+    if (!validV2Treatment) {
+      return { kind: "suppress", reason: "experiment_assignment_invalid" };
+    }
   }
 
   // 9. Holdout

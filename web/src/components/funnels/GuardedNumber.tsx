@@ -29,18 +29,26 @@ export interface GuardedNumberProps {
  * inline row it also styled. The mark colour (funnel-mark, 8.41:1) is legible at
  * every size, so the rate now uses one value that is right everywhere rather
  * than one that happens to pass at the top of the page.
+ *
+ * The sizes are steps on the shared figure ladder in index.css, not values
+ * chosen here. This file used to hold its own scale, and it drifted from Home's:
+ * the two leads landed on 3rem and 3.25rem, and 1.5rem meant "kpi" here and
+ * "too long to be a figure" there. Each utility carries its own size, leading,
+ * tracking, weight and tabular-nums, so do not re-add `tracking-*` or
+ * `tabular-nums` at a call site — the ladder tightens tracking as type grows and
+ * a stray class would fight it by stylesheet order.
  */
 const SIZES = {
   hero: {
-    value: "text-[2.6rem] sm:text-[3rem] font-medium tracking-[-0.03em]",
+    value: "figure-lead",
     counts: "mt-3 text-[13px] text-foreground/85",
   },
   kpi: {
-    value: "text-2xl font-medium tracking-[-0.02em]",
+    value: "figure-small",
     counts: "mt-1 text-xs text-muted-foreground",
   },
   inline: {
-    value: "text-base font-medium tracking-[-0.01em]",
+    value: "figure-inline",
     counts: "mt-0.5 text-[11px] text-muted-foreground",
   },
 } as const;
@@ -53,7 +61,7 @@ export function GuardedNumber({ rate, unit, size = "kpi", className }: GuardedNu
     return (
       <div className={className}>
         {/* Counts occupy the value slot. There is no percentage to hide. */}
-        <div className={cn(s.value, "tabular-nums text-foreground")}>{counts}</div>
+        <div className={cn(s.value, "text-foreground")}>{counts}</div>
         <p className={s.counts}>
           {rate.belowMinSample ? "too few to rate" : "nothing measured yet"}
           {unit ? ` · ${unit}` : ""}
@@ -64,7 +72,7 @@ export function GuardedNumber({ rate, unit, size = "kpi", className }: GuardedNu
 
   return (
     <div className={className}>
-      <div className={cn(s.value, "tabular-nums text-funnel-mark")}>
+      <div className={cn(s.value, "text-funnel-mark")}>
         {rate.pct}%
       </div>
       <p className={s.counts}>

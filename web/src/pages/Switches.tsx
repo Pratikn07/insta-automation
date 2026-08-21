@@ -42,13 +42,26 @@ export function Switches() {
         </p>
       </div>
 
+      {/*
+        `line`, not ink, even though this rule sits at page level directly under
+        the title. It only ever appears while loading or after a failure: the
+        loaded page has no rule in this slot at all — its groups open with
+        `label-caps border-b border-line`. Ink (16.38:1) would make a skeleton
+        the loudest mark on the page and then delete it the moment real data
+        arrives, so the placeholder borrows the weight of the content it stands
+        in for.
+
+        The colour is named because the base layer sets `border-color` on `*`: a
+        bare `border-t` resolves to --color-border (#EBE8DF), 1.12:1 on the
+        ground, which is no rule at all. That was the bug in both branches.
+      */}
       {query.isLoading ? (
-        <div className="space-y-2 border-t pt-3">
+        <div className="space-y-2 border-t border-t-line pt-3">
           <Skeleton className="h-8 rounded-md" />
           <Skeleton className="h-8 rounded-md" />
         </div>
       ) : query.isError ? (
-        <p className="border-t py-4 text-[13px] text-muted-foreground">
+        <p className="border-t border-t-line py-4 text-[13px] text-muted-foreground">
           Couldn&apos;t load your switches — the API did not answer. This is a connection
           problem, not an empty list.{" "}
           <button
@@ -89,7 +102,10 @@ function SwitchRow({ flag }: { flag: FlagView }) {
     <li>
       <Link
         to={`/switches/${flag.key}`}
-        className="grid grid-cols-[1fr_auto_auto_16px] items-center gap-3 border-b py-3 transition-[padding] hover:pl-1.5 active:opacity-60 [@media(pointer:coarse)]:min-h-11"
+        // `border-b-line`, matching the group heading's rule directly above the
+        // first row. Bare it was #EBE8DF / 1.12:1, so sixteen rows ran together
+        // as one block of text — the separation this list is built out of.
+        className="grid grid-cols-[1fr_auto_auto_16px] items-center gap-3 border-b border-b-line py-3 transition-[padding] hover:pl-1.5 active:opacity-60 [@media(pointer:coarse)]:min-h-11"
       >
         <span className="text-sm font-medium">{flag.name}</span>
         <span className="text-[12.5px] text-muted-foreground">

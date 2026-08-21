@@ -42,6 +42,7 @@ railway variables \
   --set IG_ACCESS_TOKEN=... \
   --set IG_USER_ID=... \
   --set DATABASE_URL='postgresql://...supabase.co:5432/postgres?...' \
+  --set DIRECT_URL='postgresql://postgres:...@db.PROJECT.supabase.co:5432/postgres' \
   --set SUPABASE_URL=https://kukpvpklizsvedcmybhn.supabase.co \
   --set SUPABASE_SERVICE_KEY=... \
   --set SUPABASE_BUCKET=insta-resources \
@@ -53,8 +54,10 @@ railway variables \
 
 ### Deploy:
 
-`npm start` runs `prisma migrate deploy` and then the compiled API, so an ordinary
-release applies its own migrations and nothing has to be remembered:
+`npm start` runs `prisma migrate deploy` and then the compiled API. When
+`DIRECT_URL` is configured, only migration uses that direct session; application
+traffic continues through the capped `DATABASE_URL` transaction pool. An ordinary
+release therefore applies its own migrations and nothing has to be remembered:
 
 ```sh
 railway up
@@ -316,6 +319,10 @@ vercel --prod
 
 Save the production URL Vercel prints (e.g. `https://tiny-soho-admin.vercel.app`).
 
+> **First-time setup only.** The existing `tinysoho-admin` project has since been
+> connected to GitHub, so day-to-day frontend deploys happen by merging to `main`.
+> See *Updating later* — do not run this against the live project.
+
 ---
 
 ## 4. Wire up the cross-service URLs
@@ -500,7 +507,7 @@ Both are recoverable only by re-doing work the owner already did.
 | Magic link goes to localhost | Supabase Redirect URL not set; add `https://tiny-soho-admin.vercel.app/**`. |
 | `invalid_token` on every API call | Supabase project URL or anon key on Vercel doesn't match Railway's `SUPABASE_URL` / `SUPABASE_SERVICE_KEY`. They must point to the same project. |
 | Webhook not firing | Meta webhook callback still points to old ngrok URL. Update in Meta App Dashboard. |
-| Prisma migration error on Railway start | `DATABASE_URL` missing `?schema=public` or `?pgbouncer=true&connection_limit=1`. Check Supabase → Connection string → URI format. |
+| Prisma migration error on Railway start | `DIRECT_URL` is missing or cannot reach Supabase's direct database endpoint. Runtime `DATABASE_URL` should use transaction port 6543 with `?pgbouncer=true&connection_limit=5`. |
 | 500s only on Vercel, fine locally | Railway deploy probably failed mid-way. `railway logs` to inspect. |
 
 ---
@@ -512,8 +519,18 @@ Both are recoverable only by re-doing work the owner already did.
 git push                        # if you set up GitHub auto-deploy, otherwise:
 railway up
 
-# Frontend changes
-cd web && vercel --prod
+# Frontend changes — nothing to run. Merging to `main` deploys the console.
 ```
+
+**The console is git-connected; do not deploy it by hand.** Vercel clones
+`github.com/Pratikn07/insta-automation` on every push, so merging to `main` ships
+the frontend on its own — a docs-only merge rebuilds it too. Running
+`cd web && vercel --prod` uploads your **local working tree**, which can push
+uncommitted or half-finished work straight to production and leave the deployed
+console ahead of `main`. Use it only for the first-time setup above.
+
+A branch push shows up as a **Canceled** preview within a couple of seconds. That
+is the Ignored Build Step doing its job — `if [ "$VERCEL_ENV" = "production" ];
+then exit 1; else exit 0; fi` — not a broken build.
 
 Both CLIs preserve env vars across deploys. You only set them once.

@@ -891,6 +891,14 @@ enum DmRecoveryCohort {
   @@map("dm_recovery_cohort")
 }
 
+enum DmRecoveryTimingArm {
+  two_hour
+  six_hour
+  no_reminder
+
+  @@map("dm_recovery_timing_arm")
+}
+
 model DmRecoveryReminder {
   id                          String                @id @default(uuid()) @db.Uuid
   conversationId              String                @map("conversation_id") @db.Uuid
@@ -906,6 +914,8 @@ model DmRecoveryReminder {
   triggerKind                 DmRecoveryTriggerKind @map("trigger_kind")
   status                      DmRecoveryStatus
   cohort                      DmRecoveryCohort
+  experimentVersionSnapshot   String?               @map("experiment_version_snapshot")
+  timingArm                   DmRecoveryTimingArm?  @map("timing_arm")
   acceptedAt                  DateTime?             @map("accepted_at") @db.Timestamptz(3)
   eligibleAt                  DateTime              @map("eligible_at") @db.Timestamptz(3)
   seenAt                      DateTime?             @map("seen_at") @db.Timestamptz(3)
@@ -962,6 +972,7 @@ model DmRecoveryReminder {
   @@index([igUserId, sentAt])
   @@index([igUserId, keywordId, status])
   @@index([cohort, eligibleAt])
+  @@index([experimentVersionSnapshot, acceptedAt], map: "dm_recovery_reminder_experiment_version_accepted_at_idx")
   @@index([audienceOrigin, audienceOriginConfidence])
   @@index([settingsVerificationId, triggerKind, status], map: "dm_recovery_reminder_settings_verification_id_trigger_kind_stat")
   @@map("dm_recovery_reminder")

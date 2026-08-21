@@ -4,6 +4,7 @@ import {
   clampRange,
   coverageOf,
   filterPointsToRange,
+  formatRangeLabel,
   precedingRange,
   rangeLengthDays,
   resolvePreset,
@@ -88,6 +89,14 @@ describe("resolvePreset", () => {
 
   it("is null without coverage", () => {
     expect(resolvePreset("7d", null)).toBeNull();
+  });
+});
+
+describe("formatRangeLabel", () => {
+  it("formats abstract day keys without shifting them across timezones", () => {
+    expect(formatRangeLabel({ from: "2026-08-01", to: "2026-08-16" })).toMatch(
+      /^Aug 1 .+ Aug 16, 2026$/,
+    );
   });
 });
 
