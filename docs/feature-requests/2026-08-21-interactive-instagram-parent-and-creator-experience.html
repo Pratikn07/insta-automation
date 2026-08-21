@@ -1,0 +1,752 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Feature request: Interactive Instagram parent and creator experience</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --fr-bg: light-dark(#f5f3ed, #11120f);
+      --fr-surface: light-dark(#ffffff, #1a1b17);
+      --fr-surface-soft: light-dark(#ecebe3, #24251f);
+      --fr-text: light-dark(#26271f, #f1f1eb);
+      --fr-muted: light-dark(#66685e, #b1b3aa);
+      --fr-border: light-dark(#d9dad1, #393b34);
+      --fr-accent: #d8583f;
+      --fr-accent-soft: light-dark(#fae8e1, #44271f);
+      --fr-good: light-dark(#4f784b, #b0d4ac);
+      --fr-warn: light-dark(#976918, #ecc476);
+      --fr-code: light-dark(#f0efe8, #23241f);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--fr-bg);
+      color: var(--fr-text);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.6;
+    }
+    a { color: var(--fr-accent); text-underline-offset: 3px; }
+    code {
+      padding: .1em .35em;
+      border-radius: 4px;
+      background: var(--fr-code);
+      font-size: .9em;
+    }
+    .fr-shell { width: min(1180px, calc(100% - 28px)); margin: 0 auto; padding: 26px 0 72px; }
+    .fr-hero {
+      padding: clamp(24px, 5vw, 54px);
+      border: 1px solid var(--fr-border);
+      border-radius: 18px;
+      background: var(--fr-surface);
+    }
+    .fr-eyebrow {
+      margin: 0 0 8px;
+      color: var(--fr-accent);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+    h1, h2, h3, h4 { line-height: 1.2; color: var(--fr-text); }
+    h1 {
+      max-width: 900px;
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(34px, 6vw, 66px);
+      font-weight: 500;
+      letter-spacing: -.035em;
+    }
+    h2 {
+      margin: 0 0 14px;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(25px, 4vw, 38px);
+      font-weight: 500;
+      letter-spacing: -.02em;
+    }
+    h3 { margin: 26px 0 10px; font-size: 18px; }
+    h4 { margin: 0 0 7px; font-size: 15px; }
+    p { margin: 0 0 13px; }
+    ul, ol { padding-left: 22px; }
+    li + li { margin-top: 7px; }
+    .fr-lede {
+      max-width: 850px;
+      margin: 18px 0 0;
+      color: var(--fr-muted);
+      font-size: clamp(16px, 2vw, 20px);
+    }
+    .fr-tags { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 22px; }
+    .fr-tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 29px;
+      padding: 5px 9px;
+      border-radius: 999px;
+      background: var(--fr-surface-soft);
+      color: var(--fr-muted);
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .fr-tag.recommended { background: var(--fr-accent-soft); color: var(--fr-accent); }
+    .fr-nav {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      gap: 7px;
+      margin: 14px 0;
+      padding: 10px;
+      overflow-x: auto;
+      border: 1px solid var(--fr-border);
+      border-radius: 12px;
+      background: color-mix(in srgb, var(--fr-bg) 92%, transparent);
+      backdrop-filter: blur(12px);
+    }
+    .fr-nav a {
+      flex: 0 0 auto;
+      padding: 6px 9px;
+      border-radius: 6px;
+      color: var(--fr-muted);
+      font-size: 12px;
+      font-weight: 600;
+      text-decoration: none;
+    }
+    .fr-nav a:hover { background: var(--fr-surface-soft); color: var(--fr-text); }
+    .fr-section {
+      scroll-margin-top: 74px;
+      margin-top: 14px;
+      padding: clamp(22px, 4vw, 40px);
+      border: 1px solid var(--fr-border);
+      border-radius: 16px;
+      background: var(--fr-surface);
+    }
+    .fr-section > :last-child { margin-bottom: 0; }
+    .fr-callout {
+      margin: 18px 0;
+      padding: 15px 17px;
+      border-left: 4px solid var(--fr-accent);
+      border-radius: 0 8px 8px 0;
+      background: var(--fr-accent-soft);
+    }
+    .fr-callout strong { display: block; margin-bottom: 4px; }
+    .fr-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .fr-card {
+      padding: 17px;
+      border: 1px solid var(--fr-border);
+      border-radius: 10px;
+      background: var(--fr-bg);
+    }
+    .fr-card p:last-child, .fr-card ul:last-child { margin-bottom: 0; }
+    .fr-num {
+      display: inline-grid;
+      place-items: center;
+      width: 29px;
+      height: 29px;
+      margin-bottom: 10px;
+      border-radius: 50%;
+      background: var(--fr-accent);
+      color: white;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .fr-table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td {
+      padding: 10px 11px;
+      border-bottom: 1px solid var(--fr-border);
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      color: var(--fr-muted);
+      font-size: 11px;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+    .fr-flow {
+      display: flex;
+      align-items: stretch;
+      gap: 7px;
+      margin: 18px 0;
+      overflow-x: auto;
+    }
+    .fr-flow span {
+      display: grid;
+      place-items: center;
+      min-width: 116px;
+      padding: 12px;
+      border: 1px solid var(--fr-border);
+      border-radius: 8px;
+      background: var(--fr-bg);
+      text-align: center;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .fr-flow i { align-self: center; color: var(--fr-accent); font-style: normal; }
+    .fr-mock-note {
+      margin-bottom: 16px;
+      color: var(--fr-muted);
+      font-size: 13px;
+    }
+    .fr-mock-host {
+      min-height: 240px;
+      padding-top: 4px;
+    }
+    .fr-loading {
+      display: grid;
+      min-height: 240px;
+      place-items: center;
+      color: var(--fr-muted);
+      font-size: 13px;
+    }
+    .fr-source-list { columns: 2; column-gap: 30px; }
+    .fr-source-list li { break-inside: avoid; margin-bottom: 8px; }
+    .fr-footer {
+      padding: 24px 4px 0;
+      color: var(--fr-muted);
+      text-align: center;
+      font-size: 12px;
+    }
+    @media (max-width: 760px) {
+      .fr-grid { grid-template-columns: 1fr; }
+      .fr-source-list { columns: 1; }
+      .fr-section { padding: 21px 16px; }
+      .fr-shell { width: min(100% - 16px, 1180px); }
+    }
+    @media print {
+      .fr-nav { position: static; }
+      .fr-section, .fr-hero { break-inside: avoid; box-shadow: none; }
+      .fr-mock-host { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="fr-shell">
+    <header class="fr-hero" id="top">
+      <p class="fr-eyebrow">Feature request · 21 August 2026</p>
+      <h1>Interactive Instagram parent and creator experience</h1>
+      <p class="fr-lede">Turn Tiny SOHO’s comment-to-DM automation from a text gate followed by a file sequence into a coherent, measurable parent journey—and give the creator one visual workspace to build, preview, publish and improve that journey safely.</p>
+      <div class="fr-tags">
+        <span class="fr-tag recommended">Recommended: staged vertical slice</span>
+        <span class="fr-tag">Status: proposed</span>
+        <span class="fr-tag">Scope: parent DM + creator console</span>
+        <span class="fr-tag">No production authorization</span>
+        <span class="fr-tag">One self-contained document</span>
+      </div>
+    </header>
+
+    <nav class="fr-nav" aria-label="Feature request sections">
+      <a href="#summary">Summary</a>
+      <a href="#evidence">Evidence</a>
+      <a href="#parent">Parent experience</a>
+      <a href="#parent-mock">Parent mock</a>
+      <a href="#creator">Creator console</a>
+      <a href="#creator-mock">Creator mock</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#measurement">Measurement</a>
+      <a href="#rollout">Rollout</a>
+      <a href="#acceptance">Acceptance</a>
+      <a href="#decisions">Decisions</a>
+    </nav>
+
+    <section class="fr-section" id="summary">
+      <h2>Executive summary</h2>
+      <p>This feature request treats the parent’s Instagram conversation and the creator’s console as two views of one product. A parent should see a native, low-friction, useful conversation. The creator should see the exact same journey as a versioned visual flow, not reconstruct it mentally across Content, Keywords and Sequences.</p>
+      <div class="fr-callout">
+        <strong>Recommended first release</strong>
+        Validate whether a native one-tap response is supported on the initial comment private-reply path, then run one end-to-end experiment for one high-volume keyword. The slice includes the parent interaction, the creator’s complete preview, explicit draft/save/publish states, launch validation and durable measurement. It does not attempt the entire roadmap at once.
+      </div>
+      <div class="fr-flow" aria-label="Shared product journey">
+        <span>Instagram post</span><i>→</i>
+        <span>Keyword comment</span><i>→</i>
+        <span>Public reply</span><i>→</i>
+        <span>Opening DM</span><i>→</i>
+        <span>Parent action</span><i>→</i>
+        <span>Guide</span><i>→</i>
+        <span>Next value</span><i>→</i>
+        <span>Measured outcome</span>
+      </div>
+      <h3>Why both sides belong together</h3>
+      <ul>
+        <li>A new parent-facing interaction cannot ship safely unless the creator can configure and preview it.</li>
+        <li>A beautiful creator editor is not valuable if production can still send only the old text-only path.</li>
+        <li>The preview, sender, action router and measurement system should consume the same versioned journey definition.</li>
+        <li>Every visual enhancement must correspond to an actual Meta-supported payload and a measurable event.</li>
+      </ul>
+    </section>
+
+    <section class="fr-section" id="evidence">
+      <h2>Problem evidence and current state</h2>
+      <div class="fr-grid">
+        <article class="fr-card">
+          <h3>Largest parent loss: answering the gate</h3>
+          <p>Historical 30-day evidence in the canonical backlog records 1,588 opened conversations, 1,565 delivered gate DMs and 622 user replies—approximately 40%. About 943 people received the gate wording but never replied. Everything downstream performed comparatively well.</p>
+        </article>
+        <article class="fr-card">
+          <h3>Repeat value is rare</h3>
+          <p>Of 1,266 people who completed a keyword flow, 1,203 completed exactly one and only 63 completed two or more. The current repeat-interaction baseline is therefore about 5%.</p>
+        </article>
+        <article class="fr-card">
+          <h3>Returning relationships already exist</h3>
+          <p>2,369 current followers had completed at least one guide; 284 later requested a different resource. The system has enough returning behavior to justify respectful recognition without exposing private history.</p>
+        </article>
+        <article class="fr-card">
+          <h3>The creator enters for setup, not analysis</h3>
+          <p>The product record says the creator posts a Reel or carousel, logs in, attaches keywords and edits sequences. Analytics exist for decisions she owns, but the daily setup surfaces do not carry the relevant finding back into that workflow.</p>
+        </article>
+      </div>
+
+      <h3>Repository audit</h3>
+      <div class="fr-table-wrap">
+        <table>
+          <thead><tr><th>Area</th><th>Current behavior</th><th>Experience gap</th></tr></thead>
+          <tbody>
+            <tr><td>Private reply sender</td><td><code>src/meta/sendMessage.ts</code> sends text for the current comment-private-reply path.</td><td>No typed outbound quick replies, button templates or carousel blocks.</td></tr>
+            <tr><td>Inbound events</td><td><code>src/types/meta.ts</code> and <code>messageHandler.ts</code> already recognize quick-reply payloads; postbacks are received.</td><td>Postbacks mainly record recovery evidence instead of routing arbitrary journey actions.</td></tr>
+            <tr><td>Guide sequence</td><td><code>sequenceSender.ts</code> and the schema support text, image and PDF messages.</td><td>No authorable native choices, buttons, cards or conditional branches.</td></tr>
+            <tr><td>Parent metadata</td><td>Resources already carry kind, theme, age range and alternative text. Instagram users carry follower data.</td><td>No purpose-built age answer, consent/correction state or recommendation history.</td></tr>
+            <tr><td>Creator publishing</td><td>Content attaches a keyword; Keywords manages inventory; Sequences edits guide steps.</td><td>The creator must assemble the end-to-end journey mentally across destinations.</td></tr>
+            <tr><td>Preview</td><td>The sequence editor previews the messages sent after a DONE reply.</td><td>It omits public copy, opening DM, follower state, parent actions and the closing branch.</td></tr>
+            <tr><td>Saving</td><td>Current main persists authored fields on blur and reports aggregate save status.</td><td>The approved explicit-save behavior in <code>REL-006</code> is not yet integrated into main.</td></tr>
+            <tr><td>Conversations</td><td>The page exposes separate object lenses and an incomplete person lineage.</td><td>The owner scans records instead of one human-centered queue and complete history.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Platform capabilities and constraints</h3>
+      <ul>
+        <li>Quick replies provide native preset responses. Meta documents a maximum of 13 text choices, each limited to 20 characters; they are not available on desktop Instagram.</li>
+        <li>Button templates support up to three postback or URL actions.</li>
+        <li>Generic templates can combine images, text and buttons; multiple elements form a horizontal carousel.</li>
+        <li>Ice breakers support up to four starter questions and are mobile-only.</li>
+        <li>The initial comment private reply is one message. Meta’s documented sample uses text. Follow-up messages become possible only after the recipient responds and must respect the current messaging window.</li>
+        <li>Instagram controls the native appearance. Tiny SOHO controls content, sequence, imagery, actions, branching and timing—not button color, typography or layout.</li>
+        <li>The screenshot that inspired this request demonstrates a one-tap pattern, but the exact initial-private-reply payload must be verified with Tiny SOHO’s login type, permissions and current API version before the design treats it as guaranteed.</li>
+      </ul>
+
+      <h3>Product constraints this request preserves</h3>
+      <ul>
+        <li>Two console users continue to share one permission model. No role-specific console is introduced.</li>
+        <li>Template automation may send only after a person configures and publishes it. AI-authored copy remains owner-reviewed.</li>
+        <li>Guide access is not conditional on following, sharing, answering an optional profile question or continuing a conversation.</li>
+        <li>Public messages never reveal facts learned privately.</li>
+        <li>Ambiguous provider outcomes are never retried automatically when doing so could duplicate a real message.</li>
+        <li>The console interprets evidence only when the sample supports the claim; otherwise it presents qualified counts.</li>
+      </ul>
+    </section>
+
+    <section class="fr-section" id="parent">
+      <h2>Parent Instagram experience</h2>
+      <p>The desired parent experience is warm, concise and native to Instagram. It reduces effort before value, makes the delivered resource feel intentional, and offers a useful next step without turning the conversation into a growth trap.</p>
+
+      <div class="fr-grid">
+        <article class="fr-card"><span class="fr-num">1</span><h4>One-tap guide unlock</h4><p>Replace manual DONE typing with a clearly labeled native response when the private-reply capability spike confirms support. The button must generate a normal inbound message event and open the valid follow-up window. Any free-text response must continue to work.</p></article>
+        <article class="fr-card"><span class="fr-num">2</span><h4>Known-follower path</h4><p>When cached follower state is confidently true, use warm recognition instead of asking the person to follow again. Unknown status uses neutral wording, not a claim. Recognition changes copy only; it does not expose history or gate the guide.</p></article>
+        <article class="fr-card"><span class="fr-num">3</span><h4>Visually packaged guide</h4><p>Deliver a short introduction, useful image/card, concise instructions and the downloadable resource in a deliberate order. Every image includes reviewed alternative text, and the delivery remains usable when rich templates are unavailable.</p></article>
+        <article class="fr-card"><span class="fr-num">4</span><h4>Choose the next need</h4><p>After the requested guide has been delivered, offer a small set of relevant topics such as sleep, meals or activities. This is a post-value choice, not a prerequisite. Record the selected need as an explicit answer.</p></article>
+        <article class="fr-card"><span class="fr-num">5</span><h4>Optional age-aware recommendations</h4><p>Explain why an age band would improve suggestions, provide a Skip action and ask only after value. Start by measuring answer viability; do not build automated routing until parsing, privacy and content coverage pass their thresholds.</p></article>
+        <article class="fr-card"><span class="fr-num">6</span><h4>Returning-parent recognition</h4><p>Acknowledge that the person is returning and deliver the newly requested resource. Private history may prevent repetition behind the scenes, but no private fact is copied into a public comment or unnecessary DM.</p></article>
+        <article class="fr-card"><span class="fr-num">7</span><h4>Saveable parenting artifact</h4><p>Offer one reviewed static bedtime card, routine checklist, recipe card or activity card. Saving and downloading work without social sharing, names or exact child age. Tiny SOHO attribution remains subtle.</p></article>
+        <article class="fr-card"><span class="fr-num">8</span><h4>Lightweight feedback</h4><p>After value and only inside a valid window, ask whether the resource helped using two low-effort responses. Negative or nuanced feedback opens a human-review path rather than an automated persuasion sequence.</p></article>
+        <article class="fr-card"><span class="fr-num">9</span><h4>Inbox ice breakers</h4><p>Provide up to four stable starter questions for visitors who begin from the profile inbox: sleep guides, toddler recipes, activities and a general parenting question. Each route has a safe deterministic first response or human handoff.</p></article>
+        <article class="fr-card"><span class="fr-num">10</span><h4>Persistent resource menu</h4><p>Provide a small account-wide menu for browsing guides, reopening the latest resource or asking Tiny SOHO. The menu is not personalized with sensitive data and never promises a human reply that cannot be delivered.</p></article>
+      </div>
+
+      <h3>Parent copy principles</h3>
+      <ul>
+        <li>Lead with the requested value; do not make parents prove loyalty.</li>
+        <li>Use warm, practical, concise language and at most one contextually appropriate emoji.</li>
+        <li>Never diagnose, shame, pressure, invent personal familiarity or imply that an unreviewed AI message was personally typed.</li>
+        <li>Every optional question explains its purpose and includes a skip path.</li>
+        <li>Buttons use explicit verbs: “Send me the guide”, “Open full guide”, “Skip for now”. Avoid vague “Yes” or “Continue”.</li>
+        <li>The typed-message fallback remains supported for accessibility, desktop Instagram and unsupported clients.</li>
+      </ul>
+    </section>
+
+    <section class="fr-section" id="parent-mock">
+      <h2>Interactive parent mock suite</h2>
+      <p class="fr-mock-note">Ten separate Instagram DM concepts show the parent journey from first response through repeat value. Use the numbered controls and the white native-style actions inside each mock. These are behavior proposals; Instagram renders the final native controls.</p>
+      <div class="fr-mock-host" id="fr-parent-mock"><div class="fr-loading">Loading the embedded parent mock…</div></div>
+      <noscript>The interactive mock requires JavaScript. All functional requirements remain documented above.</noscript>
+    </section>
+
+    <section class="fr-section" id="creator">
+      <h2>Creator console experience</h2>
+      <p>The creator console should organize itself around the daily job: connect the new post, verify the entire audience journey, publish safely and return later to understand whether it worked. Existing account-wide inventory remains available without forcing daily setup through separate pages.</p>
+
+      <div class="fr-grid">
+        <article class="fr-card"><span class="fr-num">1</span><h4>Daily publishing workspace</h4><p>Show new and upcoming posts with clear states: needs setup, draft, ready, live or needs attention. Rank the one next setup action. Upcoming automations remain visible before a post is published and become bindable afterward.</p></article>
+        <article class="fr-card"><span class="fr-num">2</span><h4>Post automation studio</h4><p>Represent the full journey on one page: post, keyword, public reply, opening DM, parent action, guide and closing action. Selecting a step opens a focused editor. Keywords and Sequences remain account-wide inventory surfaces until the studio truly absorbs their full jobs.</p></article>
+        <article class="fr-card"><span class="fr-num">3</span><h4>End-to-end Instagram preview</h4><p>Render the complete experience, not only the post-DONE sequence. Switch among new parent, known follower and returning parent. Preview mobile-native limitations and a desktop/text fallback. The preview consumes the same versioned definition as production.</p></article>
+        <article class="fr-card"><span class="fr-num">4</span><h4>Interactive block library</h4><p>Add typed blocks for text, image, PDF, quick replies, button templates and carousel cards. Unsupported combinations fail validation. Every action has a stable payload, explicit destination and fallback behavior.</p></article>
+        <article class="fr-card"><span class="fr-num">5</span><h4>Launch-readiness checklist</h4><p>Validate the connected post, trigger uniqueness, message limits, media/link availability, complete branch destinations, follower wording, alternative text and measurement readiness before publication.</p></article>
+        <article class="fr-card"><span class="fr-num">6</span><h4>Explicit save and live versions</h4><p>Authored text remains a local draft until Save changes or the documented keyboard shortcut. Structural operations may remain immediate. Saving and publishing are separate. Navigation warns while dirty or saving, and failed saves preserve the draft.</p></article>
+        <article class="fr-card"><span class="fr-num">7</span><h4>Results attached to the post</h4><p>Bring the post’s measured journey back into the setup surface: keyword requests, opening replies, parent responses, guides delivered and qualified follow evidence. State the largest eligible loss and one evidence-backed next move.</p></article>
+        <article class="fr-card"><span class="fr-num">8</span><h4>Safe A/B experiments</h4><p>Version exact copy and block definitions, assign participants deterministically, declare the primary outcome and threshold before launch, and preserve the exact experience each person received. Prevent overlapping experiments that confound the same cohort.</p></article>
+        <article class="fr-card"><span class="fr-num">9</span><h4>One actionable people queue</h4><p>Show one row per person only when a human decision is required. Consolidate reasons into badges and open the complete corrected timeline. This feature waits for <code>REL-001</code> and real draft examples rather than inventing another partial history.</p></article>
+        <article class="fr-card"><span class="fr-num">10</span><h4>Mobile quick-edit mode</h4><p>Keep mobile narrow: choose the newest post, attach a validated automation, verify the active trigger and leave. Experiments, bulk changes and deep analysis remain desktop work.</p></article>
+      </div>
+
+      <h3>Creator information architecture</h3>
+      <ul>
+        <li><strong>Content</strong> becomes the daily post-centric entrypoint and may host the Automation Studio.</li>
+        <li><strong>Keywords</strong> remains the account-wide trigger inventory for editing, pausing and deleting until every one of those jobs is safely absorbed elsewhere.</li>
+        <li><strong>Sequences</strong> remains the reusable guide library and detailed block editor.</li>
+        <li><strong>Home</strong> keeps cross-product interpretation and the single ranked next move.</li>
+        <li><strong>Conversations</strong> evolves toward one actionable queue and complete person view only after its lineage is correct.</li>
+      </ul>
+    </section>
+
+    <section class="fr-section" id="creator-mock">
+      <h2>Interactive creator-console mock suite</h2>
+      <p class="fr-mock-note">Ten separate desktop concepts cover daily setup, journey authoring, exact preview, message blocks, launch checks, versions, post results, experiments, the people queue and mobile quick edits. The numbers inside the post-results and experiment screens are explicitly illustrative mock data, not production claims.</p>
+      <div class="fr-mock-host" id="fr-creator-mock"><div class="fr-loading">Loading the embedded creator mock…</div></div>
+      <noscript>The interactive mock requires JavaScript. All functional requirements remain documented above.</noscript>
+    </section>
+
+    <section class="fr-section" id="architecture">
+      <h2>Shared experience architecture</h2>
+      <p>The recommended architecture introduces a versioned interactive journey rather than adding one-off button fields to Keyword and Resource. The unit must be understandable by the authoring UI, preview renderer, sender, action router and analytics without each subsystem inventing a parallel interpretation.</p>
+
+      <h3>Conceptual components</h3>
+      <div class="fr-table-wrap">
+        <table>
+          <thead><tr><th>Component</th><th>Responsibility</th><th>Boundary</th></tr></thead>
+          <tbody>
+            <tr><td>Journey definition</td><td>Connect one post context, one or more triggers, message blocks, actions, branches and terminal outcomes.</td><td>Contains author intent, not mutable delivery state.</td></tr>
+            <tr><td>Journey version</td><td>Freeze exact copy, media references, action payloads, eligibility rules and experiment identity.</td><td>Published versions are immutable; edits create a draft/new version.</td></tr>
+            <tr><td>Block schema</td><td>Validate text, image, PDF, quick replies, button template and generic/carousel blocks.</td><td>Only platform-supported combinations compile.</td></tr>
+            <tr><td>Action router</td><td>Convert quick-reply and postback payloads into deterministic transitions.</td><td>Unknown, expired, duplicate or stale actions fail closed and are recorded.</td></tr>
+            <tr><td>Compiler/sender</td><td>Compile the published journey into Meta payloads and durable delivery units.</td><td>Uses existing idempotency and ambiguous-send safety; never interprets author intent ad hoc.</td></tr>
+            <tr><td>Preview renderer</td><td>Render the version for new, known-follower, returning, desktop-fallback and error states.</td><td>Consumes the same schema and validation results as the sender.</td></tr>
+            <tr><td>Evidence ledger</td><td>Record eligible exposure, block sent, action selected, transition, delivery outcome and terminal result.</td><td>Stores the exact journey version and payload identity needed for audit and experiment analysis.</td></tr>
+            <tr><td>Creator studio</td><td>Edit drafts, inspect validation, preview states, publish versions and read qualified outcomes.</td><td>Does not bypass backend policy or send directly to Instagram.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Conceptual data contracts</h3>
+      <ul>
+        <li><strong>Journey:</strong> stable identity, media/post association, lifecycle state, current draft and published version.</li>
+        <li><strong>JourneyVersion:</strong> immutable version number, content snapshot, policy version, creator, timestamps and optional experiment arm.</li>
+        <li><strong>JourneyBlock:</strong> stable block ID, type, ordered content, accessibility metadata and delivery fallback.</li>
+        <li><strong>JourneyAction:</strong> stable payload ID, visible label, action type, destination block or URL, eligibility and expiry behavior.</li>
+        <li><strong>JourneyExecution:</strong> one participant/post-trigger run with resolved version, audience state and window state.</li>
+        <li><strong>JourneyEvent:</strong> append-only observation for exposure, provider acceptance, inbound choice, transition, failure, uncertainty, completion and suppression.</li>
+        <li><strong>ParentProfileFact:</strong> separately governed explicit answer with purpose, provenance, confidence, correction/deletion state and retention policy. It is not general assistant memory.</li>
+      </ul>
+
+      <h3>State and transition requirements</h3>
+      <ul>
+        <li>Every action payload names the journey version, action and execution using an opaque signed or server-resolved identifier; never trust client-readable labels for routing.</li>
+        <li>Webhook handling is idempotent by provider message/postback identity. A repeated webhook cannot deliver the next block twice.</li>
+        <li>A free-text reply while a quick-reply prompt is open follows a defined fallback: continue the guide for an unlock prompt, or route to existing conversation handling for substantive text.</li>
+        <li>A newer journey from the same person cannot accidentally satisfy an older open action without an explicit compatibility rule.</li>
+        <li>Closed messaging windows, deleted posts, unavailable media, invalid URLs and provider uncertainty become visible execution states.</li>
+        <li>Publishing validates the complete reachable graph. No visible action may point to a missing, draft-only or unsupported destination.</li>
+      </ul>
+
+      <h3>Save and publish model</h3>
+      <ol>
+        <li>Editing produces local dirty state.</li>
+        <li><strong>Save changes</strong> persists a draft snapshot and preserves newer typing that occurred while the request was in flight.</li>
+        <li><strong>Publish</strong> promotes a validated immutable version. Existing executions remain pinned to the version they entered unless an explicit migration is approved.</li>
+        <li>Pausing prevents new executions but does not erase evidence or silently cancel deliveries already in progress.</li>
+        <li>Rollback republishes a known valid historical version as a new auditable release; it does not mutate history.</li>
+      </ol>
+    </section>
+
+    <section class="fr-section" id="safety">
+      <h2>Policy, privacy and safety</h2>
+      <div class="fr-grid">
+        <article class="fr-card">
+          <h3>Guide access and growth</h3>
+          <ul>
+            <li>Deliver the requested resource after the person opens the messaging path.</li>
+            <li>Do not condition access on following, sharing, feedback or profile answers.</li>
+            <li>Test follow asks separately with control, treatment and stable evidence.</li>
+          </ul>
+        </article>
+        <article class="fr-card">
+          <h3>Parent data</h3>
+          <ul>
+            <li>Collect only explicit facts tied to a defined recommendation purpose.</li>
+            <li>Provide Skip, correction and deletion behavior.</li>
+            <li>Never expose exact age in public or shareable output by default.</li>
+          </ul>
+        </article>
+        <article class="fr-card">
+          <h3>Public versus private context</h3>
+          <ul>
+            <li>Public copy may acknowledge a relationship in general terms.</li>
+            <li>Private facts never enter a public prompt or automatic comment.</li>
+            <li>Context-aware public drafting remains owner-reviewed in its first slice.</li>
+          </ul>
+        </article>
+        <article class="fr-card">
+          <h3>Human authority</h3>
+          <ul>
+            <li>Deterministic published templates may run unattended.</li>
+            <li>AI drafts require review under the current product boundary.</li>
+            <li>Sensitive, medical, developmental, hostile or ambiguous content hands off.</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section class="fr-section" id="measurement">
+      <h2>Measurement and experiment contract</h2>
+      <h3>Recommended first-slice hypothesis</h3>
+      <p>A shorter opening DM with one native one-tap response produces a higher matching guide-completion rate than the current typed-reply gate, without increasing complaints, opt-outs, delivery ambiguity or duplicate sends.</p>
+
+      <div class="fr-table-wrap">
+        <table>
+          <thead><tr><th>Class</th><th>Measure</th><th>Contract</th></tr></thead>
+          <tbody>
+            <tr><td>Primary</td><td>Matching journey completion inside the declared attribution window.</td><td>Declared before launch; one boolean per eligible execution.</td></tr>
+            <tr><td>Mechanism</td><td>Opening-DM response/action rate.</td><td>Historical aggregate reference is approximately 40%, not a guaranteed per-keyword baseline.</td></tr>
+            <tr><td>Retention</td><td>People completing two or more distinct resource interactions.</td><td>Historical aggregate reference is 63 of 1,266, about 5%.</td></tr>
+            <tr><td>Growth support</td><td>Qualified follower outcome where measurement coverage permits.</td><td>Do not infer exact per-person follow causality when Meta does not provide it.</td></tr>
+            <tr><td>Creator</td><td>Time to configure a post, completion rate, validation failures and save uncertainty.</td><td>Establish baseline observation before claiming improvement.</td></tr>
+            <tr><td>Guardrails</td><td>Opt-outs, complaints, blocks, duplicate sends, uncertain sends, failed deliveries and safety handoffs.</td><td>Visible by arm and journey version; predefined stop conditions.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Experiment rules</h3>
+      <ul>
+        <li>Resolve assignment deterministically from a stable participant identifier plus experiment namespace.</li>
+        <li>Store the exact visible copy, block definition, payload mapping, journey version, keyword, post and timestamps.</li>
+        <li>Define eligibility, exclusions, attribution window, minimum sample and minimum useful lift before launch.</li>
+        <li>Do not overwrite mutable Keyword copy and reconstruct history from its latest value.</li>
+        <li>Do not launch overlapping public-copy, recovery and opening-DM experiments on the same cohort unless the analysis can isolate them.</li>
+        <li>Do not declare a winner early or select whichever metric happens to look best.</li>
+      </ul>
+    </section>
+
+    <section class="fr-section" id="rollout">
+      <h2>Recommended staged rollout</h2>
+      <div class="fr-grid">
+        <article class="fr-card"><span class="fr-num">0</span><h4>Capability and correctness gate</h4><p>Verify Meta payloads against the current API version and app permissions, especially quick replies on the initial private reply. Resolve guide/follow policy, complete the required audit trail, define block limits and instrument provider evidence. Integrate or deliberately supersede the focused <code>REL-006</code> save work.</p></article>
+        <article class="fr-card"><span class="fr-num">1</span><h4>One vertical experiment</h4><p>Choose one revalidated high-volume keyword. Ship the shortest complete path: versioned opening copy, one-tap action or documented fallback, exact creator preview, explicit saves, launch checks, action routing and outcome evidence. Keep the guide content otherwise unchanged.</p></article>
+        <article class="fr-card"><span class="fr-num">2</span><h4>Post automation studio</h4><p>Move the post’s complete journey into a single authoring surface, add supported block types and attach qualified results to the post. Preserve inventory pages until no unique job is lost.</p></article>
+        <article class="fr-card"><span class="fr-num">3</span><h4>Post-value retention</h4><p>Test one optional next-need prompt. Separately run <code>PARENT-001</code> answer-rate and conservative parsing slices before age-aware automated routing. Do not bundle a channel invitation into the same learning period.</p></article>
+        <article class="fr-card"><span class="fr-num">4</span><h4>Returning value and artifacts</h4><p>Add returning-parent recognition and one static saveable artifact for a measured high-volume need. Keep sharing optional and avoid exact-age personalization until profile rules are proven.</p></article>
+        <article class="fr-card"><span class="fr-num">5</span><h4>Discovery and human workflow</h4><p>Add ice breakers and the persistent menu after their deterministic destinations exist. Build the unified Needs You queue only after <code>REL-001</code> and real shadow/approved draft evidence provide trustworthy rows.</p></article>
+      </div>
+
+      <h3>Release controls</h3>
+      <ul>
+        <li>Every new block type and action router ships behind an explicit server-side enablement boundary.</li>
+        <li>Roll out by journey/version allowlist before percentage rollout.</li>
+        <li>Keep the existing text path available as a kill-switch fallback.</li>
+        <li>Document live owner, deployment steps, observation window and rollback trigger.</li>
+        <li>Do not migrate active production traffic merely because a draft was saved.</li>
+      </ul>
+    </section>
+
+    <section class="fr-section" id="acceptance">
+      <h2>Acceptance criteria</h2>
+      <h3>Parent experience</h3>
+      <ul>
+        <li>An eligible comment receives exactly one allowed private reply and records the provider outcome.</li>
+        <li>If the initial one-tap action is supported, tapping it creates one idempotent inbound/action event and advances the correct published journey version.</li>
+        <li>Free-text responses still unlock the requested guide; DONE is an analytics hint, not a brittle parser requirement.</li>
+        <li>Known followers never receive factually incorrect “follow first” wording.</li>
+        <li>Unknown follower status never produces a false familiarity claim.</li>
+        <li>The guide remains available without following, answering optional questions, giving positive feedback or sharing.</li>
+        <li>Next-need and age prompts appear only after requested value and include Skip where personal data is involved.</li>
+        <li>Unsupported desktop/native controls have a usable text fallback.</li>
+        <li>Every sent block has durable success, retryable failure, terminal failure or uncertain evidence; uncertain sends are not automatically retried.</li>
+      </ul>
+
+      <h3>Creator experience</h3>
+      <ul>
+        <li>One post workspace shows every reachable step from comment through terminal outcome.</li>
+        <li>The preview renders new, known-follower, returning and unsupported-client paths from the same saved journey version as production.</li>
+        <li>The editor cannot publish unsupported block combinations, missing action targets, excessive button counts, overlong labels/messages, inaccessible images or broken required URLs.</li>
+        <li>Draft, dirty, saving, saved, publishing, live, failed and needs-attention states are explicit.</li>
+        <li>Saving does not silently publish; publishing creates an immutable auditable version.</li>
+        <li>Failed and partial saves preserve local work and do not misreport “All changes saved”.</li>
+        <li>Leaving while dirty or saving produces the approved navigation warning.</li>
+        <li>Post results state evidence windows, denominators, qualifications and missing coverage.</li>
+        <li>Experiments preserve exact variants and prevent ambiguous cohort overlap.</li>
+        <li>Mobile quick edit exposes only validated post binding, trigger and activation—not destructive bulk operations.</li>
+      </ul>
+
+      <h3>Accessibility and responsive behavior</h3>
+      <ul>
+        <li>All console controls are keyboard accessible with visible focus and screen-reader labels.</li>
+        <li>Meaning never depends on color alone; states include text and icons.</li>
+        <li>Phone preview is not the only representation of message content.</li>
+        <li>The studio remains usable at the existing supported desktop widths and reduces to the explicit mobile quick-edit flow on narrow screens.</li>
+        <li>Alternative text is required for authored informational images and retained in the published version.</li>
+      </ul>
+    </section>
+
+    <section class="fr-section" id="testing">
+      <h2>Test and verification plan</h2>
+      <div class="fr-table-wrap">
+        <table>
+          <thead><tr><th>Layer</th><th>Required verification</th></tr></thead>
+          <tbody>
+            <tr><td>Capability spike</td><td>Sandbox/live-test-account evidence for private reply, quick reply, postback, button template, generic template, ice breaker and persistent-menu payloads under the current login type and permissions.</td></tr>
+            <tr><td>Schema validation</td><td>Block counts, label/message limits, URLs, media, alt text, action destinations, reachability, cycles, terminal paths and fallback availability.</td></tr>
+            <tr><td>Routing</td><td>Quick reply, postback, free text, duplicate webhook, stale action, cross-journey reply, closed window, opt-out and unknown payload.</td></tr>
+            <tr><td>Delivery</td><td>Planned units, retries, resume, ambiguous outcome, captioned media ordering, idempotency and version pinning.</td></tr>
+            <tr><td>Policy</td><td>Known/unknown follower copy, guide access, optional-question Skip, privacy provenance, public/private separation and human-review boundaries.</td></tr>
+            <tr><td>Creator UI</td><td>Draft/save/publish transitions, partial failures, navigation guard, block editing, preview parity, launch checks, responsive layout and accessibility.</td></tr>
+            <tr><td>Analytics</td><td>Eligibility, stable assignment, exact variant snapshot, one-person denominators, attribution windows, guardrails and insufficient-sample states.</td></tr>
+            <tr><td>Operations</td><td>Shadow mode, allowlist rollout, kill switch, alerting, version rollback and post-deploy evidence reconciliation.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="fr-section" id="risks">
+      <h2>Risks and mitigations</h2>
+      <div class="fr-table-wrap">
+        <table>
+          <thead><tr><th>Risk</th><th>Impact</th><th>Mitigation</th></tr></thead>
+          <tbody>
+            <tr><td>Initial private reply does not accept quick replies for this app configuration.</td><td>The flagship one-tap concept cannot be used at the largest drop-off.</td><td>Run Slice 0 first. Retain the text prompt, and test shorter copy without claiming the button is supported.</td></tr>
+            <tr><td>Rich editor and sender drift.</td><td>The preview looks correct but production sends something else.</td><td>One shared schema/compiler contract plus payload fixtures and parity tests.</td></tr>
+            <tr><td>More UI increases setup complexity.</td><td>The creator takes longer or publishes incomplete flows.</td><td>Post-centric progressive disclosure, templates, launch checks and a narrow mobile path.</td></tr>
+            <tr><td>Profile questions feel intrusive.</td><td>Trust, answer rate or opt-out behavior worsens.</td><td>Ask after value, explain purpose, provide Skip, start with an answer-rate experiment and stop on complaints.</td></tr>
+            <tr><td>Experiments overlap.</td><td>Results cannot identify which intervention caused a change.</td><td>Experiment registry, cohort-conflict validation and one primary intervention per cohort/time window.</td></tr>
+            <tr><td>Duplicate or uncertain sends.</td><td>Parents receive repeated messages and brand trust falls.</td><td>Durable units, idempotency keys, explicit uncertainty and no automatic ambiguous retries.</td></tr>
+            <tr><td>Private context leaks publicly.</td><td>Material privacy and trust harm.</td><td>Separate public-safe provenance, deterministic checks and owner review for contextual public drafts.</td></tr>
+            <tr><td>Premature navigation consolidation.</td><td>Account-wide keyword or sequence management becomes harder.</td><td>Keep destinations until the receiving studio demonstrably absorbs every unique job.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="fr-section" id="decisions">
+      <h2>Decisions required before implementation slices</h2>
+      <ol>
+        <li><strong>First-release outcome:</strong> approve matching guide completion as the primary first-slice outcome, with opening response as the mechanism metric.</li>
+        <li><strong>Private-reply capability:</strong> accept the capability-spike result as the authority for whether the one-tap control can appear in the initial DM.</li>
+        <li><strong>Follow treatment:</strong> confirm that follow asks may be tested but never block the requested guide.</li>
+        <li><strong>First keyword:</strong> revalidate current traffic before selecting the first experimental keyword; historical volume alone is not sufficient.</li>
+        <li><strong>V1 block types:</strong> recommended first set is text, image, PDF and quick replies; button templates and carousels follow after the core compiler/router is proven.</li>
+        <li><strong>Save/publish model:</strong> approve separate explicit Save and Publish actions rather than implicit live mutation.</li>
+        <li><strong>Age-loop form:</strong> measure one optional question first; select exact age versus age band only after copy/privacy review. The mock’s age bands are a concept, not a settled product decision.</li>
+        <li><strong>Creator results:</strong> approve which post-level outcomes can be measured honestly with current Meta coverage.</li>
+        <li><strong>Admin cadence:</strong> decide whether the Needs You queue is checked more than once daily or mainly each morning; this determines its default sort.</li>
+        <li><strong>Navigation absorption:</strong> do not remove Keywords or Sequences until a focused design proves that the studio covers their account-wide jobs.</li>
+      </ol>
+
+      <h3>Explicitly out of scope for the first release</h3>
+      <ul>
+        <li>Broad autonomous AI conversations or AI-controlled sending policy.</li>
+        <li>Medical, developmental or psychological advice.</li>
+        <li>Automated affiliate/product recommendation.</li>
+        <li>A full personalized resource catalog before repeat demand and content coverage are measured.</li>
+        <li>Exact child-age exposure in public or shareable artifacts.</li>
+        <li>Mandatory sharing, advocacy or channel joining.</li>
+        <li>Wholesale navigation redesign or role-based permissions.</li>
+        <li>Merging divergent feature branches wholesale.</li>
+      </ul>
+    </section>
+
+    <section class="fr-section" id="dependencies">
+      <h2>Dependencies and canonical backlog mapping</h2>
+      <div class="fr-table-wrap">
+        <table>
+          <thead><tr><th>This request area</th><th>Canonical item</th><th>Relationship</th></tr></thead>
+          <tbody>
+            <tr><td>Complete person history</td><td><code>REL-001</code></td><td>Correctness prerequisite for the Needs You drill-in and trustworthy routed-message evidence.</td></tr>
+            <tr><td>One actionable queue</td><td><code>REL-004</code></td><td>Creator mock refines its desired people-centered shape; implementation waits for real rows.</td></tr>
+            <tr><td>Explicit saves</td><td><code>REL-006</code></td><td>Required behavior should be integrated narrowly and extended to versioned publishing.</td></tr>
+            <tr><td>Public-copy experiment</td><td><code>GROW-001</code></td><td>Must not overlap the opening-DM experiment on the same cohort without isolation.</td></tr>
+            <tr><td>Known-follower wording</td><td><code>GROW-004</code></td><td>Feeds the follower-state preview and launch check.</td></tr>
+            <tr><td>Context-aware public recognition</td><td><code>GROW-008</code></td><td>Remains a separate privacy/approval boundary from private journey personalization.</td></tr>
+            <tr><td>Age-aware next-resource loop</td><td><code>PARENT-001</code></td><td>Mocks illustrate the parent UI; staged viability and parsing rules remain authoritative.</td></tr>
+            <tr><td>Shareable artifact</td><td><code>PARENT-003</code></td><td>One static reviewed artifact is the recommended first slice.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="fr-section" id="definition">
+      <h2>Definition of done for this feature request</h2>
+      <p>This document is a product proposal and visual specification, not implementation authorization. The feature is complete only when:</p>
+      <ul>
+        <li>The capability and policy decisions above are recorded.</li>
+        <li>The selected vertical slice has a focused technical design and implementation plan.</li>
+        <li>The live creator UI and Instagram delivery compile from the same versioned journey.</li>
+        <li>The first experiment reaches its predefined sample or stop rule with auditable evidence.</li>
+        <li>The creator can build, preview, validate, save and publish without ambiguous live state.</li>
+        <li>A parent can request and receive the guide without unnecessary friction or coercive requirements.</li>
+        <li>Operations can identify, pause and roll back the exact journey version safely.</li>
+        <li>The canonical backlog is updated with the resulting decision, implementation links and shipped state rather than duplicating scope indefinitely.</li>
+      </ul>
+    </section>
+
+    <section class="fr-section" id="sources">
+      <h2>Sources</h2>
+      <ul class="fr-source-list">
+        <li><a href="../../PRODUCT.md">PRODUCT.md</a></li>
+        <li><a href="./2026-08-16-instagram-automation-canonical-backlog.md">Canonical feature backlog</a></li>
+        <li><a href="../../src/meta/sendMessage.ts">Current Meta sender</a></li>
+        <li><a href="../../src/types/meta.ts">Meta webhook types</a></li>
+        <li><a href="../../src/handlers/messageHandler.ts">Message handler</a></li>
+        <li><a href="../../src/handlers/postbackHandler.ts">Postback handler</a></li>
+        <li><a href="../../src/services/sequenceSender.ts">Sequence sender</a></li>
+        <li><a href="../../prisma/schema.prisma">Prisma schema</a></li>
+        <li><a href="../../web/src/pages/Content.tsx">Content page</a></li>
+        <li><a href="../../web/src/components/KeywordForm.tsx">Keyword form</a></li>
+        <li><a href="../../web/src/pages/SequenceEditor.tsx">Sequence editor</a></li>
+        <li><a href="../../web/src/pages/Conversations.tsx">Conversations page</a></li>
+        <li><a href="https://www.postman.com/meta/instagram/documentation/6yqw8pt/instagram-api?entity=request-23987686-8365d531-b49f-4e07-8e76-19f8608947a3">Meta Instagram API: quick replies and templates</a></li>
+        <li><a href="https://www.postman.com/meta/instagram/documentation/6yqw8pt/instagram-api?entity=request-23987686-af579d08-121e-4897-8f45-5fd41ace49df">Meta Instagram API: private replies</a></li>
+        <li><a href="https://www.postman.com/meta/instagram/documentation/6yqw8pt/instagram-api?entity=request-23987686-fdf7020f-3cd0-4a5d-859b-66fb856b80b6">Meta Instagram API: ice breakers</a></li>
+      </ul>
+    </section>
+
+    <footer class="fr-footer">Proposed feature request · Tiny SOHO Instagram automation · Parent and creator experience</footer>
+  </main>
+
+  <script>
+    const embeddedMocks = {
+      parent: "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",
+      creator: "H4sICJhkiGoAA2NyZWF0b3ItY29uc29sZS1leHBlcmllbmNlLmh0bWwA1X3tjuTIkdh/PQWvduXqtrprimR99sz0aXZmVju+2d256ZEOwmJwyyKzurhTRZZIVve0Bw2sDVjAwfph3B18d7AMf/ww4Cc42DBgwI+yL2A/giMiM8lMMskiq3tWOq206uJHZmRkZHxH8FEQXllh8LjnJ8zL4uTUj6M0XrNT9n7LkpBFPuud/8SyHqXZzZrhX5b1Sf2z1gd6wrL8eA0PpP6KbdiZtQ4vV5kVeMm7h+L+dRhkqzPLHg5/Ki9tvSAIo8sza7R9bw0tZ7h9/1AdTQxzisMcfeKMnLG9PLE+WTpLhwXH8tFlHGWnS28Trm/OrBdRxpITaxeepl6UnqYAJbxy6m23AHV6k2Zsc2J9tg6jd196/gX9/hzeP7F6F+wyZtYvX/ROrOJVPsftT/Zi4Z9bH6xF/P40Df8lrWgRJwFLTuHSwzavL3ZZFkcne58Lo+0u2/9YytbMb/Fcxt5nHtwG4BGLZzD+Cu5lrWAe+P5pmnmXBQkYtnjjJZdhdAa76+2yuDU6cWy47LNtdrpiXpBPEYTpdu3BRi/XLCcWD8gkOg1hL1N+A+FKMnn7u12ahcsbHDBjuMp06/nsdMGya8Yi+dSltwXQRwUJFqA7QJ62I++0BP9d6L9jSQ54MdrQGjXS+XQ29aZDoHNv6s3nS53Ogb7gdNl2MQJdvmY4wJk1Hg7l9TXL4Cic4lqJIgfDOdvIm7jxp1kCdL6Mk82ZtdsC7L6XsoN2KAuzNauutOksO45rMzzLU/jHMZ/lX7AYRvLgbL4JNyy1vmLX1ut440V4RIvTqWHGX3ub7ZED+Dmx3KvrE8uZb98f78VVGDGgM37dHgxndUg8HQwdicXWSNpFmc4lu++3U9rvKy8JPfj/aLeBufwzK/MWu7WX4IW0E3jwYtp8uuhgTMvnAlgbsKyNDlvO0PHE4P+U1+IrlizX8fXp+zOFF1hW6ifxer0A2AX7yFZh1HUJ+QoQcH7I1Dk2AK/cXndigHeKJ1w5VJx9w+LgOkwZBtqOBYvAD0awY+7CDdzJsf7WaeIF4Q440Xw+V0b0/HeXCdBCoO/+kv4DY9kze24XYxkIZbyc2OM5POrP/LnvHsoY/F2S4tDbOERh2RXV3yDpnXIJw0CNyJId673NN0DgQID/STAbz9ylCQmlW/IFjo9OQAUs88J1BxHhs2Lhgr5nCn2rxDI0yQMXqaVZWZlMJrMxbutivJh6ew51y3VuV8Cg91B6TtGufvoOIs05mwa4htHC8Ry3iTS9YOQ6pJstF/acmZY7P0RkTe5bZF2HURBfN2osyvZPZsMqAzuzVmEQFIrDHl4xD7zAQV4xcz3XreMV9rjFfkyXkyUKCtu2neFSGQoUnpUXIGhDywZStkb4L+Xd5HLhHY0AjBGwLXd8Yg1s5/jEosswIv/vYOQcH3fC5iKJr1NFycmPjWvgsUNNVBx0SicVgs6lkBn5LFgGM0T+0HWcwmSowzDD/+Dz9sL27Xk3ZARxVqYrhatI1Mxqz+S4oME6+IjxIwWMJ+PZaNkNvl2yLsMHtH7kDoeoLI2dn+boERJ+zZY6wJq9pjLA0komHcSeMwfe0ij2ZvPZYmajfsQWQ2/ayFtaogLMwaq4uEzCIKc2+PsUyBDuZAyF2W4T0SmFY4pY23jv8dzYy+TYyDdG044QJaoEy/FMZ1k9NRLRQlOtJ/oponbpDp3FfqL32YK5SPRT0EHGXTmAF3WxzvaI3lzEIp7teaOIdRaO74xR5thLmy3uz4awJ/tEVRfknMKi3jVTG1wBe9SIIXFQnVGVk6jX2rGSFiqX2Z1Sdoh0E+wtsRV5V6cIKRxNyYGyWNrkXQZZewu2NhjeqOSPG0kKGI0/Q2E9m8GfjonVzA5QY2z7vtUYXCbSy8dReu3qiURjLl9gzp/goDQItEmzhjydzCcoyxajxcQzqoyFiOmIloHnZ+FVoSs3SKFgOWslhegJtPmWo+WILfe4FLrAC/cq+ugeD9F0Op+g8PRG3mReqDVEW7Tp+na3hGbjhQUkSBACmuq+22Qvo3BynDZ2xHK2dMt6a1ujx7tkf2AXYKFkjjvSYwH8yu3mH8t93e7SrfN1HyLbnLInqb03rPOat5Ulcz9/08KRtMkZNl969nzezBUqoI66aYHAJODO3XioYmMT2V0neBX/XUt79ByLgm66BEUItOOZ82uTB25qVNFrdcZJMPWXez1aXRR7MqFmTSwVjDLbQX8WW8I/e/f6Y/izOFYH2yQEEr35QzqxBCSXqzjNauAgrWHrJUBEJlgMt+scU+h5XziLkbfoqO0TkGdwULzFmgFLtmJUcjI4M4PR+GG+FQFbert1pzBStjMcxDCiA97lPI5rzNU7+sLASPIZGhvODPSAcRNZT5zJaLxADPsLthgf6Au7XsEaSYeE56O4YCidUDpYt1GDGBhQ5OhzXBeUnMYzu5zaLpKPNw+muTHeDaZrL4naqGbDABE+mroT22+CaT6ajGw0eNl0EUyHB8G0Sy6ZEqaphWrG7MDnLtF5M6a80WjkOqQwesNZZ60nUkyYPbxb2vuu646dZR3v7hSLmNue3XFzCeSumpp+gLtoaUOz7TIyyUJ82ORGaXYeshEbB0jqru26ufOwEzb0wGijCMT/eIeKwKrjfHTfFid5xJyDvGaKvwykxDI5llccl1yPg9lY8aPx7e0aG6Gp3YPAS9gWhj4CA0V37B3XEFxbCgBBfpoosYYuME1GFT+jFubZJwXVOOBdj8GMzRnyMSdwlo7X8RgIJJytPfjDX4XrgBJltHmHrfWEbLXbFLFeGDxEDR63ENAHki4XntxwnRi8ZmPlWnNEZ7/WGzEvAcqDx2AHjuwRsItLPMsLf+LNiPMzdzFGbxwaNLPFbN6Ri9B6B+maMXSKtZrcmbiTMUqo6WzC5ktrPMPJmbMA0XWMiG4/7zKOg7bTLm1/PnNJBs/8Cax5TGsee97E6TgtHpK20/puMPGGhOpgPBuKaYOlN/FGxx3JCrhnZKAtbwGv7LKctsIoZRlPYSAvddWjaHKocl4+3c/KiVsr0TwM5sH/RKQO/xl0dNHD8dsviBwfjvekWRC1STrS7XG3M6DpblHyGnAnsNvsEFtMgylS35x5w3lziKgK5LgzlBuWeffmNlCXOdnjTWir1O42mj1biICuclWMVPKpNzluvKHnzI0EpG7Bx1dYJORX3npXTk7jyG6OBThTMPWGMrzk73HB1frbRnV0d9Bi/Hh7Y1xLs699OppOJoH0qs26nY9uTjWUp/dAd5QpFsUBO0h9cmZ3U58UZOzJEBmZwuOzbr633H6bunPXqbPfpq3sN7b00H7z7cD2ytapTO5Vj5mIFmCo/z78afm2DWSCWEufmpbCMhQ5tyT0HBvE0gzUqYnL01Y6AYSw6CGWQyOw06ou6dQ7ldp4SkegWmNew8hGTtPkS1gEo4VLoW5grrM9KcHtk3cj2KE4qQSfqgtVjQYtOUSLQdclrSwD20f6Ho1HU7ejIwS0ra2AssRNWpNkyMjoKMdy7M5j6DIwp6PFOvbflbAjZ2kWMZPxZMp9sbVJgvcVXG9ZOECypmXxAGnOeQFBPbvcw/2mwSxAMet6ru+O67hfu8gD537O0LHtoOk8tdF2u9r7nTEMNKlFcNRMuTknzm5boAmm6VAbEkUSDZowvr4ojlhr+l+xdTmYx9WO5jg1sPjplNQOZz6e+SY0z+5LLd+uYEEVMpyrjEsNmc2MhR6qjrAv3XNkJGcM3JLWOPJG/qiWnJ0ukbThGP+pSfecYxB+Ysj2BCgc58Sengxst0j1JAMS4OroxkHk4o5XMj2dpthjEek12kjt3L0GuqJENfdEGtomurqvFC6+cs2r3ehqLmXE/ChZrhSboiwWJL6OChJfoHflARO5s440NuhI41odqTbhtc7H5Pr+FBWJAITGBL3ms+FkqqQOSd3SWdiBO/zoVBF5m0afij0BQm0m073ZZJ0A8ldeEcJS2Z0zNYVF6Yi2MysMjKhtVvRGERzvZUrRbFSpEJwaM8ymjRlmdovsI0wuWNoyx6tCLBW+4oscr6UxcjutlVcjpyNeBpuKW4Ir1aoUajwYrjgY08nYoQ1a+K7NKprPQTU1G6CmOPQN9rem7+4xjx23YjiUXS9Sng5r9njWgUBH9sgZNeac2GM4lV7jmdzrpO12JuPNNlbKdkxlaHqKqsmjMFQNga5CZb/7geUFKqxOY7FnjarefDqfz3EL5pN5TRFj15T4lF1uYB1tqhNHBpS5tVyjBcvLC0G4PtcxpYADXqrUso3nY26AfGxKV6k/IDWVQ+3SgXLPoDf2pnsLt+7iGhJY6ZCay880EOXCbU7NZc7SmVUbA5TqogCrbo2ePDyxxyeD4aykJzud66GQNZ6uw0Wiet/vPxg9NUnzrg4gAtaoLkxMJbLzKkXu82dOgKXcjz8zsFnVn9kml/BjODk54tIsiaNLsLpLgrHiRKhKkZaWvZiHwpKVWcpWeHNYLOBhsbLqWY3XtfYeetGVl2pOuS4ONf56TQlDGwf/8G4OfpOMnevB3Ham15hNKHOO6K8xS80duWMHnX1sDv+M7sXnpKDxnjIs/BXz361DzEHVBZLtyBL5TkMdtrvOve1uXaym3e5O2JQN5e52zN2g5d/nrtxLGMM2lKTad6pJZe5ySEhy5qOh08ikR8HUG82pkjMYes0x4s6Y6ZpWOt+bVjqZTHla6WyxnLoddUDvip0uvChiBq/KR06HNAQ6jKZ/NRWs9iB4ge3jxo1n7rQ+xbSdqeYwn46UM2zG/zRwA9cmU80fLux7YZhXLEnDOMIkjnaueviR8ucP4mTuHfP4TObBgWl8UxFtdJbAy4pq2bsoQgo2FUbXFbH3xCMlMEHcMgojILgn16eBrzp346sLNgvQMnMdd+Q0hrPG/piNkan5Ex941cd0NG5YloS+wSZvb9uMmm2bSjm4odNQJ2AN2SgH5GY05tZ38VEdklsvFrLY44wz2cYzZ+5QFcIQxHRJ5LbPYtqbg95tIVqqZWNLrNpksllHWljuIiqpODSLgF4/WA7Yw2rjCGukWBsdBIH0FuoRtsZCpNnCMwvQrupWlniKTm/oadIypbpF2gjwP1FxtXACZ9btwCzD9boCZjUpIYenlBpVW+LXNkeU+fFmw6LAwxxiAwNyW6yfwYHFHAVn7MztZaNpiZ5bm9K82TjoWNNXgjXdeOt7TXKZutPJxOMeRm8e7BFO1cTQ2X0nhpYXLPw4jSvuxi7VZk4tM6WdbtkOov/fPSRayk6CemapmkhiyJSYG2N1f5CUR285X45l0k9jdM8duxPqUdbGAVMN7x20QUBs6W6ddTABF0DOOHU3I9B87sYTv51n/7BFLZpEODUf2lPc7d6TVvGbHduxU8BrvDOgun2FmjMR9WhKjRpVrTl3rk8rzB1DZmx9sSkPQrkudkvtWDoUboiOyi5ajvW2o7ArNZBVX3Clxa9N0QlM6bWpbVg1Z5a/VcMpRsHEp4Lb4chxF41W0Hg8HeH59kf+ZLEvlHW34014OTtbMBBEag6IOKO93sMKysp1ROS5d1TJh1g4VbitMC0Nicf1ecdtOj+11dXjRQhXsfjkrmWfeJ6csSIV+SGatdB/OwFbzv9zVBVbcwVPjY09u+T/jc35fxNn6lBS93Q0H9W2e3TaVGMvQLiN97Z7RF855o9WA5vjE2d6AsAM7NFdEwAFLWh5cEWzX8lWDC1093mlHOYGvmzQ6B8O1MfQ4u4rW0zAKbjDwSaoGGabsKuQXVetG43W63s0t20LcFB9aScJFV9erg35RffqHde9puUUCt5fbk/1v9461KRYYoYC1b7iO+bqjK6O6vQ6zPxV+1Jn11DqbBtC9nVJJLVNUD4ZL2eL8SJf/l0yQGhNZ2feMlOiIncSmqIRplMRmrYhFdXunIp6SOYcX+UgXi4rRcxKQQ96ZNAtN7bH7shvXSFdDJ6jUeKAFKvW+stmm5nNPXsyNKhvah/srh7yvV2+ioS9ugZ2d+8KiFSWxOs9yWTteIrWnLJr1o0GTFNTrx+tTX2XDOD9TeqLNIc7FZLfhc8YUGxuWeXeoWVVFGfVT15MxWcPGjvceVPfVKt+GO3/fMOC0LOOlNzqKTZ0Ps5ha9sRXXf6EBcQTKllP+Va3/cyeagP7ky7DK61Rq45uI2aQrWsQq/VLa7WfaOi3Hh5WLnRog+5oSVzWxSILsuKpTLjX0yi9DL9QwAdB8VQjB6BzREsS8TaDae2782HEIw07TaMKLS8CyQ8s6yCm6L3ZjUNt/v4egvXQ8HlbVcVTXUkuDw3kFuPwzs0nbR8WvWZtX1H8wg0HvdOMLv3NFgem94TgHaqAej2h0bP8P2IMymNb2u72x4wGDai1SRKJ9IXVZaaCqQQab1QGrmdhJKvfftLTsfbQXJO3hpk/oEjebwOG0N+YaYyyrjLKPnXMg7lFLmoLtdmdBLWKmGVs4pbC3zZOlejBCIlc7vbrvSaN0+rO2Hjao7oAcOf840Rajifi08BQqFYS8rWSzAGuq1BNCuTFumYhHXehqzTlu3lbLD8brxSzWeoG3Rq6KLiaqfdsh49EJ+JxL9TRmSBH2FL08c9X3wfsGfRJ6NIqj/uPeWAWQIwSwFMnPq0x786+QiJFM5LMZzKFsRD8FgQXsm/4ddWeZ5/g693Xp5TTvTowVZ5c+UYpqLOWT3+wczy1fNnwBVurO1usQ7TFfAF6zpO3pHN+OjByskBfKBA+IhyX9R5dlGmjI+/zm3rARxqwC08K3DxgCPjnHPYR6B2KIMgj8vH4D80lK9iLEHzLL+Ehw0c+t75owcwmhwYvw5aDMwZX68OePoiVT4x/3X+eZikmQq7fE88Jsd8tcusbMUkUD98/w+pFRBCU5aBGom4tEA1QokTL67CeJdapLUMdMQQck3Ac3ap0YlyV3DjnkIApdUFcYbIobkOvVc7+C4BFIh9GGRhdJPGq3jgx5sS5jTa0VcAVpcKvZeGAVNuo91UogOx7bDd4SVlPyjvGxAE9kGvsrrioya98zcXKgrO38AyrIuvv/haXn2gHc3KDLnJoIFROsO5QdA7/xrMM/R9a8e2ZlxUlnpAT5mHPx/3vog3rLoYqb33zn/43b8WUOOTVcjveSlfMi/dJeyQlbyIUpQhaeNqfvt3YjXy6coCWs31OYmJ5ql+96/EVOLhj467V5zfHoK7p1wpaVzPv/9vYj3i4cMw92fsBhhY0Ii6T8RE8tnDZrpgwBVBLDXv0l/9FzFZ/vhH36cnu4Dk+oEbhQndxKSaF/Z3vyu2q3hl3+IePSB2qVwgM7yYAX/mko3/4Kw0vGKPe9t4DRAjl8dbBmbdIJZU92QhnIQOmt1sYXj+oxCsCbvCM/3vrFcY/ANB+OgBf6TV6xF7DxT/FfybBL71w2//Wn9fhVvbyxjX+EtQHUhOS5dqGJGkYZ6/wq+3MgbzxqjHrTEZIsxSa8FWIGLiZCC2HnaIq4ZCT/STcJvxCY+Ojq3H52o0KM2sJI4z67EVxP6OaoYvWfZ8zfDPz25eBEf9euW2r/imcSShsL2h/qePaeAB0H9yc0FZOHFy1P+krNdVx8Av+Da9DPfLL/GPdda/RPfLLwk7s/4t/kD5NTJx61/C2+VXiNrrX8HblRUB7TUtCG6XX0HKa3gFb+Mr+jRgMXyB1ulj64i248RKdwvxl7Q7H1v9PtHNt4r6XrYWckO3ouWcP1q5559+oEFvQbV2zx9t4bec5xbJdh83FKD04D3x522Fxwid/VsdK+JrF7A+YpQn1jtQVJUllZmdeP7TD/jcLU5I790KvlcaXXACw+gnwBDUaYw8Q1H0+G057acf4O0/tb4lroI/bnvfWmcw2q0CkOAqJZD41wyK/VzEwY3cS23dFfuR3gQ2q6O++NRAVTIojfd7yhYTpuROiY369AMCclswpxLY3IAHsBEBJ7z9n4BUh4c/mO/PIzGZtkt8yjJi4jR7DSZ4PkdB8CdEJjnJvywmL+irhBXh1NCoHTCAwInhOSk8BpRjb+8+bGf/9fOnL14978NOFjfRJUQ3X7188mu81b94+fz5q/7xbeUc6SDkraZV1Nc8B2vs8TNX/wz2WaaHEBXysfK5hG0kqjtSMKWhjS/q8zACpZHblrQ48dEfWp+6NONOyY7KxbGivsInFuZNG4mCE72f9+6tULHWWlk91QZkaM2M8Vn6o/lZhAwfxf/XcFdaWrB5JVKKYHEbbLkL2IrYdV8TzPLpeMsi9HQ8tvijiNp3UXwd9ZUtAey+jK8YmPKgGKSMWTfxzvIuUeb8v//01//B+nW8Syze1v5yh7pEmFog0oObgTrKmTJFAtuW4MTqAzTRX7A1WM2MYtd89Bc/fP8PV8y6jLl/AZZC1HAVZjdiOgInfccCawlKij4kUMMLC9QXeiqBBQTBmunQEqh8rjfeFrQd7HmMwTSceb2GFcPfYTboPywhT7RUemxcGC7ma8BuCVh+/nDEDdfDOAw//P7fKMPzUao0iO76KvuU3fwkq7KHZ85cs+R/+P6/8v9ac/enGgczjqWwYnj1f9T4RdRWc2XfQeUxbK7WO5eOEVju3+wHA/ufVVYreY1FjsrHPSXOLsLEerIcOtOViTcsTUGPCDjNLDDD3LN4AUlmBCXY4KETx+R2n5DN+2zRSaW/CjFaM7610Z+uAeILlnBKv4z/xLpA37V1HWYroiGq8mFEkV50CXQVR+glGKhswoxi3s4KHRiEl8FgYGQttyWtLgVcg/0Uo9rzTU62H5STB1oqEDr3qOZu1L4Qifkdk68VHiJt+gyZfJJm8BtsLPglDPj+iTIN16Dh5uHuR228BE4mpuBwM0Yqr0f9N3Hg3dCgBcgAWP9JlqHdBBSPEekNr0FC8wmvIqt6EaHTPPE2pB2cIIwRlkUBQ7GSXWTtIi/LcNIAABHa3lGfPNzABHlCOr6J8x0fWz9TFAYptpVd5UHjkkGPMpXE11EfvymJnG23hZ1HrOPQqYYB/h+hyhz1iVHiSt+sEJ4ACxGsTQiLeof8y8usd/BAKhlrannXcAdfeAVDwEGzZxh02GUMbl3G1v/5R+s1Y+v+idCbESYWpDAKOU3wRez80D8+Kcl4WHs9lKT/EJBgv1pphMKDwh8pigRrG/rvboAcblJ86MJfsWC35uICAN/ECQZOALKnXgJ0oUH3LPGWmbK5BBhSIqyJNQNFehcCxaJTjgIr8dCnCoDkUkHB1A2cYJbgzSqSXoZXhFT0V+Cs+Q3U6dAFYD3RxQyC+asQxb6m5uU0I9injBhS8h/m1VDwkQeoZciPAmUVmkKqErqJ3EO+UTCxjf/6OuLCGvGBGkEEAhxb0XCFY0lxiw1vCXfDQLpW4NRmeL2L6D3QTWiGWZ/vwzK83CWAPCJky8PTksQ+cDN8OJ8gihNkkTc1s4jT8RmTRu4m5uguCx+t1hBFJI56/hlwq8Cigy+5BKECRBzdf8TT2c8FPWfKScJtzo95AqSIB52cLuJAYHSEv61umxKm5QKuDyQhmYd2bE4KzRjJpq+y9yoyTC5LLgnya7cnDfz+X4COFTHgudkuCGOF3SOJqywyf+AAVv88CAWvB+kFrJRZ34lpUSCiSAe5HmHBqSVSPeFp5AsBQz7KPYrt2P5n6jYpTEAcWlhfEl5e4jfVE7Zdh8jjgLtylY6+1ZjFlwxATQZllkK7IXdMaOzatQvUWbk8T7VdvLMQEJsEg5YVTEyWy/2M9KN66vepQMWnPmRlnHAEw8nfPu4h2gwOYPldB9Vh/8ioTypGaSFbcX9q9M/cODUIMFJ3hBoqrHy5SU/59xRYUHDd27KbtnYHfPkxhl7Vvu2IRQ15IrLQiL9P2mJPDHZmkTdgH/aevweJJRmqBcfAX9WhjiQR+2PCG4WYfDqjN83E99v/3hZ96pj7kPeUeqeRAfrsy5RMzTrkvUZj9I8Jd18LD8GzL5sx9/u/aou5YsSc3e1D4Ndo4XrSYN9FmN70TwaDv0Cgm5H39//YFnkXheNiH9Jcae2mqFDaFsgPsA3pz1fPPv8ngz6KdHH/XyMS/+//+rdtkUhDgqK/3K3FyPtPMM+5ASUWpDkoiSyoQ+CXISmfhSVTi0KhWh1bZTUsF9Wk6uQV5ogPg9TOP6qTi+7iStnsp0/fwFVyTp5fiJEfPeC/H9FXT7Sh4XePO0eF7CZ3WRytb8x+BX2CQkL7MvreaqZOxmYVJDXqiR87UfbvhrCIngDUIKXiiBY7ohr+C9vLBkXE6NuSjtxJHf58t15bosJTUYafRwGo7qfoBFTcA/ljZpU4D/TX+D+E05ehnEafC2KLvBC8aTSPP4CGDBAV8dV2WrAcW4ykhGdRD+ZyUGoGoGnHu8uV4NQBQy6SgE30t2j+4R5xyFbeFqQAbCBVvT37+qvnqvuD/KbAKMhJpWnFn6FlL3YrTu5XL5YJDhxVjQet4qQXzc3zE+iJsXj63vk+zid7jPNu2oL9oVf5cQ9MaGRYEvuFN7HdkNpY5NkHzQ//DyzwNfBbltxpxNzf3Tt/Lf80OTwNdusI7FY1JQIoTAQ56sNQBR7g/7JVczRK1dDIRRIXigf9FEpFwtItWISMLup02+BAzVvr9mqM8oel7PJhZWE0RFWmFU1QUa3KHeXNATpdHW1Cy6/CNFysGZ0iXCOgQV1mIcgu0AI/Nnuk7xP0Qh9sBvwrqpRWWGaCLDHNzNB/RjT4Y8D/C66MNYF+QYebeJ0gX050MkmsDLxLUiotoFed8hWvTc7BCtQ8+zLnX4I6ZUESNg9QcnzxEIjTh1GIPHp4xGOGt/cgBUVsgRclpIocfIHxGvEBgY36kCUqcg4Vhi+ZFgxAz80K/o/I3Up3222coD4VlQkqlADFUTvJqGjjqFjnK92Fa3ieAgTY9DNhVOFBziHZ8KEyuYaBVHUYPQGZLTxBFnYiDn5851Gzz9jp4DOWwjYILE9fs0HiavVZOdXqV6uT7Lc0aAQhyOhvUDkprU66avFX4XnlmZZAQlkOMZATqANZsvNFgqIwBuqMpYNgeoEWWwEU/SxBBdx85615KDDeIizwy/e2qlFzv0CB7ViAxA1JFaBnoFusYy/A+mzdTr1fMP58FwKjEG7XAiDtcgm0r8sCn8dcP9LmcQGkgCYulID65RYlMXdQy3w4IC5QGd59JMBklKuATF4pU7yfgI5IGwkoA1MJi3o8ymzeA1edpFIYgGThFv/qgeHw8xtFMQ3/WZHkxUcT8pyF//y/dU/AQpznRb2Br4TXG/1zdq1G0QoOcYQbAJEhB9iRDBu+IcLrgHHuBgwd3gZQnsr4Slp1OpVBcUu6SnXvjU6hnBwwwKnYwPWqy0dSUl56uwiMZVIAVR2FXz9FDwPsRppaud5/WPDqKXrOrUUSv0MTF4VIHsVC91cqg4GgvtygXwMehn+vhdrYMmz1mqsYYqg1LQHVAC2cBfoKef71uJYelafcBBnx4t4sRct4vYsKhGFCah+pZxedioualsLTJlRlhD8v8inuwX5/LffIxEsKa02wE46VU7q237d5j+aCnhFi+TLQ1GxB0JYJXIHqipqkdwUkhdzZbENUHblmp+zHW6mIMGHwfxeFwO4pRr6Cn7jyPRYTkSacLyuKEUdLsG4pNi4irn+saxZ2ONf0wyv0uVEv3mWI2Q+bUJZu1Rq5ceG1Z+99OIWKiaANcI9L5+rBMnyP1NSABwtZQO/8T9qhIncInQqbF2sN/T1OG903lWJDH3yX8rhEwiSLGHadvwTc6qgoEiDe/1EgQIlcNC9apk0AO0+tcEP9FjLMt+Uug3qfVLFmsKfq1lwrkA/LA1KTcihzthABrvXAGlPK03UM69gm8RXjCTgJoxKVXLgBD1CyQShfWKTWiLQszp4xXyfn76+E46+zksATmhU14a5pLmRe/zNLfKNEVReevwfDw8egDTzCs0EoD0R59CCPxpcYAQF8BtzetK6TEJPbkCYWLKHKAsQgTEPqOs7LvJQCGzvUEWDvoqCzTwO3EkNQyHcDSoQT67BmA4trbFwtgU3AwAKAwJTVWlPVi/HLiHwXqluiolE8C1PUd1v5Mrj6QF9mEvO10CGUDznlmoB6rVCOJbi0blSTUWGiTHeMPfBUM57ShrnlLBto2vUPv/v7C8qWhzHqyqc7Kzg8F9GX6mWH+IQelSOHpYUp2R3Ccb633gAvklE5MAhZ1msTA5TuXSHW8ikxcxuQ6KmVN+JS1Rxrn/Esx2gD2tN1THmCkkcLyHjAVYt84AV4jXtYzp+k73gY6zrerQMLQ4yUN/jogXgAi5DwlfqAJFA1ZShSom+qnqtXRU50SImTHog+OGeoSgjfZH14UqGWX4khgdcCSRTpXoLq5QeWxO0KyShfg6qqRsrXmXrns3bS8CmX5PJANclD5Dlw9DYxFx4ibxhPG51JswLE0+rUqLthivarmrZb1UuF37UIR5Hy/mR3iWnRsKRXsKvhO/N6XpaTqO60nElL9VVUJB+ypKFrVk3QjQAnco+DoJMApnRS/t0CVfq+5lfQbPUwyZt71ngCvSJ5US9rZ61frOJrOOmUwkkjKUoLVhTAFNeYMKBHG9a8oojHRg/JNC1W1n+xXu/SLOHBAqoJXLMreIQMfKCgJWoR1rTIhRVZ7hL5mANeKkLQpCtlmOiZre2DBaKRUYV38OsY9j4fObPcx5QbhDIvu6kGSB3DnhdjFNFC2Gcfy7yVVJzmceyZAssrobmIQFyHQexiEJKkqVTNy2PcWeALjfe7+oRd6tFRFfd5O6ieGfMKM1DFL34OyqA7rNd5jJt3v8JPL/W0VSo7bRS7FYDUoO+dYJnPDKAIgmkHyistIlts4oEAjUZVgCTltQPoF6q9d3d4HBM8tgLPPk2iUhdRJsOauoiXXnKJr254dxwwheI0LRdFOKOhYkXE2y16t3j4tsjXUKogtgZBZMjAmKIV+AZnB/UJI3cYek+ASQol0svTP7h1LcIowkAlrZK8TXmFJuj8bL3kqpdidqpJHza3PEtFXJ4FCl6mMdb7E4TPKReLmKkiBy+8JbOePPhMpGrJ20b5JzsKmQWgVCLRh3ViAd7DS/yBCE1lODtlyRVrSDzzrtuJQCUvuICbCrbIFwjC7it2LX1JQP7LZejzlDK4FapyUpa+6EVcyqCaF5s7y/naKne53VHeQWF74r1Tutfae52r3/zjS2k98/+V+CjYE6pM491aDGdPDFRbKHs+Hv4U95MlG6wLytA5mS/VrFQq3xDrnX9Orjjr57KEVpQw8qwqTNyrlErflMvBeTytYSau7+T8mCPZineZT8278niVyqhTVuFgxYZLdFWL3yro/QzRi7VqwAv+AOj9dV1Vuqyh59hbJOf8f23rjyV/KnrDzpE7GSvPmyuUP9omvUH+yA+ckQVWT5OB5wpvn9hU0YeNcikvd14SYNe85njQx8wMA+aB3jhgWUAX4RbJbQ9xqBUPFv/KmPCdprJ6WexHjRHMlmHEgh8j7Y1XBMl8mDTytiBn96zqC3I2hD7mqGBUxPcitOqFE4c8lREQxUpaQHWhjt/swuQOq+zmxr/w0LSiFA1Y4XpPoE5kmmux14cYxGJeguIxpI/Iw4vhprS8XOSwrKoidNIKePAW+LCiEyBBcfcRp0kW46KoBF5RDV6CxpKotnHRg82sILxm9K0Qa5l4lB2MhbCL79B9hqcrFYlJBTGjsMCfub1K3qd2CoK6LFiP6CzACwMEJWGeyvqK5ZWgnrXabYAKAuaHKU/rs4okS44EXd7DNqHuIu7sFetq4/UGQ44PV3LB8UmqDT2Kj9SXSij5HWSAN56hV5L6BfTe+ZftqPtLGKuZop9QaxVPBOVOd1sRliI/rJoZUjOI2vanSC0gBQI3cgdGAiUaF0/MV4LpletoFCOGu9m//5+NfURyTJYQCAPvR+BXLaN8MNYeBG4pEhYIpWmD5f/CR0SdadImaVDGHklwYCosybCrm4rA+8NP6m32oueiNfdsxg5XzkHdufZ4pAnDfzx01xopHMMgVbAwiwXdaGaf+ZunQQkWpkUf86NMuJHNkMt4LjqclcKVpeKAPecUVdWfcwPoL/dgVXrbZSQdX4WnZImJZY/UthxmQfRaHtGK4VpyRYiPk1bWTd/VJK+Z5CGUsE9+5QUptD98//u/QPYdLsFKZ6K865JlRAjIwOMlhpz+9Ifv/2PdSvWVkC0YYQOAoCgoMAFdwKYmcStOFw5gUUR5IgooUYK9evZ5LsGCQR1krl2GrHC0toLsNS9wQEf2Kk+m5XA95Y48uMWt4ziq9JWoh2tShmurFXFVaw7uowqAf9ITg6eKViKu/gazdk+pBA/ripoUknpn/Z/hNvJPWuxIJ408bOxyJsIBQH2ip8YJRjfC5Q0PzzNgwe30D55bzPsJAb7591Nkbxy18RDiMUZt/RT25BRQ/F28yFWSgKXvwHQR9PM+zG5UpeQVVWQsY3+XooK73wVffMTFnLS/10v35wXu4ZxHYKdgRpnupCNrhBpeIHYLKj4Ruly0DBN+pbunboYW3JPIW9+AkQSnTPFZ0QYtdut3efmDyCOROAS8pgNLEBG5guBtUL9Trpx4S3QAqm2gsGpsYOwHWovbanSj+FBpkUL9lex0Izu/KInUxtAZ7/kz07lwQwRC++poHUx5JU+b4Leo2BSHomUqAHGbVuM/UXhd28C6jILlFTXCSVsbWC8JIvoGqXRRvKRmQ1qnodxNsafSkb7LWPSL5siVV9Ue/G/4V0/zvka987IzpV1bViFhDXGWh2VvRxkqYF9wfmQfsgAzJlCGFXBUkg9qe+fpZYQn6Ikt+tlIlXULY2FejGRjlP2lnKk2yVXir7d5WznsiCY0k8f4PTZxeQmKLgVbd1vgWuyr/EsHR6LJ67Eiaap9iZ+sQX1Tv/HVPx4AOTwHVB0d4e9ST0zLwosDQhdSz4AT1FHfky1N6D6qynDMB/jVDuz6KGEpGjjeKt+EKy+FS5c33iI9UqHHQuEBOQe+ePPlS8BC3mNvsPG2R0fyJ8AA779v1/QXBhWaPb1EnX7xj1tBxdK+zG/QevhqqTUxv/gzy74dYDcuAcMAxlXaAx8PvotD0Bf7CgZoOebNgFvqPsDPyjbAtQEoyM9RE+LHmCVHfR9IE6vEjirPWwXxfLXbLOBhHEHuE0fYQ+15vgtH2tVb4w7mPQ9lG4bHhsUd9b8pITRLdqz3VkUJ6LhH8v5xPtwgpSqbF1EWY6z+6AMvhjvDpq2g6VPcQX6fqs+PKYb3RUt2uJZugO5X/Uaa4xrQi6K8Uac9vkCsP8BmpiBgTe298XZ5OXjtWNsJPlSeidYwXv5MX9sE2Tqdd5UX7cH1vab0j/6Z9U2/0l+ie6fCt3rzw76IlNPwetMjkXmeR6Qqr6rMk96XpdZyBOkUp8SOjFRF1ejFfDdKdtP7BQ0qExWRMprmlUg05+4F5NiiuJTvNc7WLsxQmYgi0TTHM5F9DHTLE1V5vm9Th5nKaEo+NIcb01lIrxChWSqYrcmt679VT6pKMUiENawm7yijMhz8beAgeLkj0+k+tw+7E6Ioo9HyX4rIAQ03vgKRI/kD2AAPS5MSpMUbALP6ePlp2aUetvwxf1XyRbxWfjo/lZosquSd3KWNDLpt2Pa2WyeZTz+oLOEbHOHtN8O3t+3SSY1v2/h2OV3U1DpGMz1E5xieDr2LsnBtqRnKpAh9q2P1tl7K/KTEg2XfkDf8GxB1vFNrL1JmyuoYJua8zfuD1w2vtQUwsWcK3jS8r7TzML1OW0Z8HTuEUsBC6+sBx41y9tGo1+pB5N287QhFIMTf2gg6i1BRUnNcRXcT9bCKS4aDL+50ZheHwdGeaQg9tcoyJMAlriGfLz8uNlDjAUVBhRxM8hF02RjYzvamTBsD1aUJK8TDJ1w6MAGnim9Mo789+EDJb7vWE6vWTaB8lsRl0zHiNbYNA4vCZg1WMV7N3vM2CMrO0wUDJdH1ztQnvuJCCjLAzeEb0Iei4eAM1iy6zFao7Ff2kj8JsoEl2ZPgOw/1UCSLoz6Pc4IyXVvAva8K+dMPfDVyv+nXbWNhMrIL3ijkh+//VmjSmOvry37ANVXKF6DCRZdHHAPHRUHQwdTFjV8jDdCmfqPWlb1Vvk6qUoWwoPNNh8cr2wfXOm63/PQS8nl821+jXywrw1Q++0lZn+GUWcTOgTyrfIcHW7qPpDOA/g+//5u+PghCHu+ywig2Vzs2WXGlLUt20dP6XeMnV61h1vlB/rbOEfLLHTepeK+ECQGijDH0W1MkuoNk0l79AvWqqZKJWoygL1K5cRAt8hKrfVDxp8rExK9q8qifc5BKfxxZriURMSvMHOASoopaL9i6oGIvUDbE1b5xfnKcDfDbJPjlPP4hpjWmT54GXvLu6BM2WzpsfGJ94jju2HGPG0ehnkBP4zVZydow/jwI/AkM487GI9drHMY3DTAaT4KRCwMsJsF0UYFD3ckS4REeGh4PwhT5BnlBkh1rT5eYK0n5uA37r+RTlmhSvl2iSHm5Iz0W75VWTwCm8vsAZTTkbx2KBJF006A4i7QTffX8qlGVp7DzM/mdufphlei00d0CIqHiZsEsEzTTK5Fnar3fKb4sDHs9jQQvdoj/kt/FFKot+xkwuQPhxsQMghsv/OUq3pDP4nMJsPgO2y4iU6MMv2Ot4l2SA09ZFyLXUc++UBp4lfM6ZHkKrxzSkkAGlMJ0jfxQpiZRO7vQsJ7U2+ByLmAKXA0W+GAsES632Qg9CI1viE9aSM+TJ3InxHY8JbcLuqLSFda4ggZGlcRr6o8CiPfkZvBxRDgAY21ZXgte66vhpFyj/hbpKKoOnKCLsSo5Qbvoqv8eMPm9+GsQ1o7uGtSZ0eaCc/kNvi6VYw7l2/JLKh9odNzcRybKpx8QOu58aUpBEc/Zb2/r0ktEJs095JeIuZy3tzJBQlxx4UoNfJhaIM9JmDX1+qzMMyrmoV612tcoYFkBdbYSOaAeNS6pzcaQzR9EIa4h7eJg84SHCC8obtkgHrT4Zln4qGPoIki9s/csag9XA2zxcqkdnLqleFdN4lMJidYsA+4YF4E5IN3YifJiSYmgkuCqKaO80Fp/KCGjFEM0xHBkhE6NH37DJYHCNNTP6JagL0J8eFN9ZReV1aVv+Rc4YbUYILQeKBHCVHgTbhXipZSeuunoZvEsV1XqHuZ3i6eJHkyx00E1zFeNJMtnI+9KeQ5dYOpGyQDjY4pPy6cwMlHzVBkV1qnqWFGjwMVVU5xOp+PrMApAHqx3fohRDO3ngHcTeIGkcPQBB0vSM+uDxZMJLBssihVDKwH/tm5NEUNadfuDQO5mvuRza6ifLHH99LHuT6ruSE7mhbFOaD0IjEdGvBsh+9khkOkP3R7zv8BoFB/BFtkP/x9tiDinl/cAAA=="
+    };
+
+    async function decodeGzipBase64(value) {
+      const bytes = Uint8Array.from(atob(value), character => character.charCodeAt(0));
+      if (!("DecompressionStream" in window)) {
+        throw new Error("This browser cannot open the embedded compressed mock.");
+      }
+      const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+      return new Response(stream).text();
+    }
+
+    async function mountMock(targetId, encoded) {
+      const target = document.getElementById(targetId);
+      try {
+        const fragment = await decodeGzipBase64(encoded);
+        target.innerHTML = fragment;
+        const scripts = Array.from(target.querySelectorAll("script"));
+        for (const oldScript of scripts) {
+          const script = document.createElement("script");
+          script.textContent = oldScript.textContent;
+          oldScript.replaceWith(script);
+        }
+      } catch (error) {
+        target.innerHTML = '<div class="fr-loading">The embedded mock could not open in this browser. The complete requirements remain available in this document.</div>';
+      }
+    }
+
+    mountMock("fr-parent-mock", embeddedMocks.parent);
+    mountMock("fr-creator-mock", embeddedMocks.creator);
+  </script>
+</body>
+</html>
