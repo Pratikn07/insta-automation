@@ -8,7 +8,7 @@ vi.mock("../lib/prisma.js", () => ({
   prisma: { $queryRawUnsafe: queryRawUnsafe },
 }));
 
-const { funnelsRouter } = await import("./funnels.routes.js");
+const { funnelsRouter, funnelCache } = await import("./funnels.routes.js");
 
 function makeApp() {
   const app = express();
@@ -18,6 +18,9 @@ function makeApp() {
 
 beforeEach(() => {
   queryRawUnsafe.mockReset().mockResolvedValue([]);
+  // The route cache is module state, so without this a test's query-count
+  // assertion would depend on which earlier test warmed which window.
+  funnelCache.invalidate();
 });
 
 describe("GET /api/funnels", () => {
@@ -81,5 +84,57 @@ describe("GET /api/funnels/:key", () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("window_too_wide");
     expect(queryRawUnsafe).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /api/funnels/:key caching", () => {
+  it("serves a repeat read of the same window without re-running the cohort query", async () => {
+    const app = makeApp();
+    const window = { from: "2026-07-01", to: "2026-08-01" };
+    const first = await request(app).get("/api/funnels/guide-follow").query(window);
+    const second = await request(app).get("/api/funnels/guide-follow").query(window);
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(second.body).toEqual(first.body);
+    expect(queryRawUnsafe).toHaveBeenCalledOnce();
+  });
+
+  /**
+   * The regression this guards is subtle and was live for a moment: defaultWindow()
+   * is `now`-relative to the millisecond, so keying the cache on the raw bounds
+   * missed on every request — leaving the one path Home actually loads uncached.
+   */
+  it("caches the default window, which is the path Home loads", async () => {
+    const app = makeApp();
+    await request(app).get("/api/funnels/guide-follow");
+    await request(app).get("/api/funnels/guide-follow");
+
+    expect(queryRawUnsafe).toHaveBeenCalledOnce();
+  });
+
+  it("never serves one window's numbers under another window's label", async () => {
+    const app = makeApp();
+    await request(app).get("/api/funnels/guide-follow").query({ from: "2026-07-01", to: "2026-08-01" });
+    const other = await request(app)
+      .get("/api/funnels/guide-follow")
+      .query({ from: "2026-06-01", to: "2026-07-01" });
+
+    expect(other.body.window.from).toBe("2026-06-01T00:00:00.000Z");
+    expect(other.body.window.to).toBe("2026-07-01T00:00:00.000Z");
+    expect(queryRawUnsafe).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries rather than caching a failed cohort query", async () => {
+    const app = makeApp();
+    queryRawUnsafe.mockRejectedValueOnce(new Error("db unavailable"));
+
+    await request(app).get("/api/funnels/guide-follow");
+
+    queryRawUnsafe.mockResolvedValue([]);
+    const recovered = await request(app).get("/api/funnels/guide-follow");
+
+    expect(recovered.status).toBe(200);
+    expect(queryRawUnsafe).toHaveBeenCalledTimes(2);
   });
 });
