@@ -362,8 +362,8 @@ describe("scheduleAcceptedGateRecovery", () => {
           eligibleAt: new Date("2026-08-06T18:00:00Z"),
           instagramGateMessageId: "mid-1",
           publicReplyText:
-            'I sent your guide 💛 Check your DMs/Requests. If you don\u2019t see it, DM @tinysoho \u201cPROTEIN\u201d.',
-          templateVersion: "v1",
+            '@someone I sent your guide 💛 Check your DMs/Requests. If you don\u2019t see it, DM @tinysoho \u201cPROTEIN\u201d.',
+          templateVersion: "v2",
         }),
         update: {},
       }),
@@ -676,7 +676,7 @@ describe("scheduleSettingsBlockedRecovery", () => {
           instagramGateMessageId: null,
           gateDmMessageId: null,
           publicReplyText:
-            'I couldn\u2019t send your DM 💛 Your message-request settings blocked it. DM @tinysoho \u201cPROTEIN\u201d.',
+            '@someone I couldn\u2019t send your DM 💛 Your message-request settings blocked it. DM @tinysoho \u201cPROTEIN\u201d.',
           settingsEvidenceLegacy: false,
           settingsVerificationId: SETTINGS_INPUT.verification.verificationId,
           settingsVerificationVersion: SETTINGS_INPUT.verification.verificationVersion,

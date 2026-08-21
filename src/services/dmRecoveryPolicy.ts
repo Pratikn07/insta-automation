@@ -5,10 +5,13 @@ import type {
   DmRecoveryTriggerKind,
 } from "@prisma/client";
 import type { Origin } from "./originInference.js";
-import { normalizeRecoveryKeyword } from "./recoveryCopyCore.js";
+import { normalizeRecoveryHandle, normalizeRecoveryKeyword } from "./recoveryCopyCore.js";
 import { DM_RECOVERY_TIMING_EXPERIMENT_VERSION } from "./dmRecoveryTimingExperiment.js";
 
-export const RECOVERY_TEMPLATE_VERSION = "v1";
+// v2 = the public reply opens with the recipient's @handle. Bumped so the rows
+// posted before and after the change stay separable in reporting; nothing
+// branches on the value.
+export const RECOVERY_TEMPLATE_VERSION = "v2";
 
 export type RecoverySuppressionReason =
   | "seen"
@@ -44,9 +47,17 @@ export type RecoveryDecision =
   | { kind: "send_settings_fallback" }
   | { kind: "send_no_confirmed_read_reminder" };
 
+/**
+ * `handle` is the recipient's Instagram username. Opening the reply with their
+ * @handle earns a mention notification in their Activity feed, which is
+ * separate from the reply-to-your-comment notification and is the whole point
+ * of tagging. Omitted or unusable handles fall back to the untagged copy — the
+ * reminder is still worth posting without the tag.
+ */
 export function renderRecoveryCopy(
   trigger: "no_confirmed_read" | "settings_blocked",
   keywordSnapshot: string,
+  handle?: string | null,
 ): string {
   let keyword: string;
   try {
@@ -55,9 +66,12 @@ export function renderRecoveryCopy(
     throw new Error("invalid_keyword_snapshot: Snapshot must be a non-empty string");
   }
 
+  const mentioned = normalizeRecoveryHandle(handle);
+  const mention = mentioned ? `@${mentioned} ` : "";
+
   return trigger === "settings_blocked"
-    ? `I couldn’t send your DM 💛 Your message-request settings blocked it. DM @tinysoho “${keyword}”.`
-    : `I sent your guide 💛 Check your DMs/Requests. If you don’t see it, DM @tinysoho “${keyword}”.`;
+    ? `${mention}I couldn’t send your DM 💛 Your message-request settings blocked it. DM @tinysoho “${keyword}”.`
+    : `${mention}I sent your guide 💛 Check your DMs/Requests. If you don’t see it, DM @tinysoho “${keyword}”.`;
 }
 
 export function assignRecoveryCohort(
