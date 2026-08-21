@@ -5,13 +5,13 @@ import {
   resolveFlagExperimentKey,
 } from "./experimentLifecycle.js";
 
-const CUTOVER = "2026-08-21T16:00:00.000Z";
+const CUTOVER = "2026-08-21T12:00:00.000Z";
 
 function context(overrides: Partial<Parameters<typeof resolveExperimentState>[1]> = {}) {
   return {
     recoveryVersion: "read-recovery-v1",
     recoveryStartAt: CUTOVER,
-    now: new Date("2026-08-21T15:59:59.999Z"),
+    now: new Date("2026-08-21T11:59:59.999Z"),
     ...overrides,
   };
 }

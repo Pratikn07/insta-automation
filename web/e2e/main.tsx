@@ -944,7 +944,7 @@ const RECOVERY_SUMMARY = {
     { reason: "The reminder could not be posted", people: 12 },
     { reason: "We could not track it", people: 4 },
   ],
-  endedAt: "2026-08-21T16:00:00.000Z",
+  endedAt: "2026-08-21T12:00:00.000Z",
   conclusion: "This experiment concluded and was replaced by the 2 vs 6 hour test.",
 };
 
@@ -956,7 +956,7 @@ const RECOVERY_TIMING_SUMMARY = {
     { key: "no_reminder", label: "No reminder", people: 30 },
   ],
   notCounted: [],
-  endsAt: "2026-10-02T16:00:00.000Z",
+  endsAt: "2026-10-02T12:00:00.000Z",
   whenItEnds:
     "When the window closes, reminders stop and wait for your decision. Nothing announces it.",
 };
