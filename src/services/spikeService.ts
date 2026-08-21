@@ -40,9 +40,19 @@ export function spikeAttributionWindow(day: string): {
  * Spike info keyed by Pacific analytics day, for the days that qualify. Days
  * absent from the map are normal.
  *
- * One snapshot query per spike day. Spikes are rare by construction (4 across a
- * month of live data), so this stays a handful of queries rather than an N+1
- * over the whole series.
+ * Two queries total, regardless of how many days spiked.
+ *
+ * This used to loop the spikes and issue two queries per spike day, on the
+ * reasoning that "spikes are rare by construction (4 across a month of live
+ * data), so this stays a handful of queries rather than an N+1". That stopped
+ * being true as the series grew: a 90-day lookback now detects 13 spike days,
+ * so the loop was 26 sequential round trips and the single slowest thing behind
+ * /api/insights/follower-daily-adds — ~2.1s locally and most of a ten-second
+ * response in production, where each round trip costs far more.
+ *
+ * The window arithmetic and every ranking decision are unchanged: one query
+ * spans the union of the per-spike windows, then each spike is ranked over
+ * exactly the bounds it would have queried for on its own.
  */
 export async function getSpikesByDay(
   points: FollowerDailyAddsPoint[],
@@ -50,38 +60,54 @@ export async function getSpikesByDay(
   const spikes = detectSpikes(points);
   if (spikes.length === 0) return new Map();
 
+  const windows = spikes.map((spike) => ({ spike, ...spikeAttributionWindow(spike.day) }));
+
+  // Reaches back past the earliest window so the core can find a baseline
+  // reading, exactly as the per-spike query did.
+  const rows = await prisma.reelPerformanceSnapshot.findMany({
+    where: {
+      capturedAt: {
+        gte: new Date(Math.min(...windows.map((w) => w.queryStart.getTime()))),
+        lte: new Date(Math.max(...windows.map((w) => w.windowEndMs))),
+      },
+    },
+    orderBy: { capturedAt: "asc" },
+    select: { mediaId: true, capturedAt: true, reach: true },
+  });
+
+  const allSnapshots: ReelSnapshot[] = rows.map((r) => ({
+    mediaId: r.mediaId,
+    capturedAt: r.capturedAt.getTime(),
+    reach: r.reach,
+  }));
+
+  // Narrow back to each spike's own window before ranking, so a wider fetch
+  // cannot let one spike's reach leak into another's attribution.
+  const ranked = windows
+    .map((w) => {
+      const queryStartMs = w.queryStart.getTime();
+      const snapshots = allSnapshots.filter(
+        (s) => s.capturedAt >= queryStartMs && s.capturedAt <= w.windowEndMs,
+      );
+      return { ...w, ranking: rankCandidates(snapshots, w.windowStartMs, w.windowEndMs) };
+    })
+    .filter((r) => r.ranking.candidates.length > 0);
+
+  if (ranked.length === 0) return new Map();
+
+  const metas = await prisma.reelMeta.findMany({
+    where: {
+      mediaId: {
+        in: [...new Set(ranked.flatMap((r) => r.ranking.candidates.map((c) => c.mediaId)))],
+      },
+    },
+    select: { mediaId: true, caption: true, thumbnailUrl: true, permalink: true, postedAt: true },
+  });
+  const metaById = new Map(metas.map((m) => [m.mediaId, m]));
+
   const out = new Map<string, SpikeInfo>();
 
-  for (const spike of spikes) {
-    const { queryStart, windowStartMs, windowEndMs } = spikeAttributionWindow(spike.day);
-
-    const rows = await prisma.reelPerformanceSnapshot.findMany({
-      where: {
-        capturedAt: {
-          // Reach back past the window so the core can find a baseline reading.
-          gte: queryStart,
-          lte: new Date(windowEndMs),
-        },
-      },
-      orderBy: { capturedAt: "asc" },
-      select: { mediaId: true, capturedAt: true, reach: true },
-    });
-
-    const snapshots: ReelSnapshot[] = rows.map((r) => ({
-      mediaId: r.mediaId,
-      capturedAt: r.capturedAt.getTime(),
-      reach: r.reach,
-    }));
-
-    const ranking = rankCandidates(snapshots, windowStartMs, windowEndMs);
-    if (ranking.candidates.length === 0) continue;
-
-    const metas = await prisma.reelMeta.findMany({
-      where: { mediaId: { in: ranking.candidates.map((c) => c.mediaId) } },
-      select: { mediaId: true, caption: true, thumbnailUrl: true, permalink: true, postedAt: true },
-    });
-    const metaById = new Map(metas.map((m) => [m.mediaId, m]));
-
+  for (const { spike, ranking } of ranked) {
     out.set(spike.day, {
       multiple: spike.multiple,
       net: spike.net,
