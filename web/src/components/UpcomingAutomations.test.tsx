@@ -191,7 +191,9 @@ describe("UpcomingAutomations", () => {
     await user.click(await screen.findByRole("button", { name: /Set up another/ }));
     await user.type(screen.getByLabelText("Keyword"), "sleep");
     await user.type(screen.getByLabelText("Guide"), "Sleep Reset Guide");
-    await user.type(screen.getByLabelText("Public reply"), "Sent!");
+    const publicReply = screen.getByLabelText("Public reply");
+    await user.clear(publicReply);
+    await user.type(publicReply, "Sent!");
     await user.type(screen.getByLabelText("Gate message"), "Follow and reply DONE.");
     await user.click(screen.getByRole("button", { name: "Create setup" }));
 
@@ -225,7 +227,9 @@ describe("UpcomingAutomations", () => {
     await user.click(await screen.findByRole("button", { name: /Set up another/ }));
     await user.type(screen.getByLabelText("Keyword"), "sleep");
     await user.type(screen.getByLabelText("Guide"), "Sleep Reset Guide");
-    await user.type(screen.getByLabelText("Public reply"), "Sent!");
+    const publicReply = screen.getByLabelText("Public reply");
+    await user.clear(publicReply);
+    await user.type(publicReply, "Sent!");
     await user.type(screen.getByLabelText("Gate message"), "Follow and reply DONE.");
     await user.click(screen.getByRole("button", { name: "Create setup" }));
 
