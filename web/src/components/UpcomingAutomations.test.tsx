@@ -127,6 +127,17 @@ describe("UpcomingAutomations", () => {
     expect(screen.getByRole("button", { name: "Create setup" })).toBeDisabled();
   });
 
+  it("starts a new upcoming setup with the approved public reply", async () => {
+    const user = userEvent.setup();
+    renderUpcoming();
+
+    await user.click(await screen.findByRole("button", { name: /Set up another/ }));
+
+    expect(screen.getByLabelText("Public reply")).toHaveValue(
+      "It’s waiting for you 💛 Check your DMs (and Requests)!",
+    );
+  });
+
   it("sends the client-owned id in both the body and the idempotency header", async () => {
     const user = userEvent.setup();
     renderUpcoming();
@@ -136,7 +147,9 @@ describe("UpcomingAutomations", () => {
     // Create new is the default, so picking an existing guide is an explicit choice.
     await user.click(screen.getByRole("button", { name: /Use existing/ }));
     await user.selectOptions(screen.getByLabelText("Guide"), resources[0]!.id);
-    await user.type(screen.getByLabelText("Public reply"), "Sent! Check your DMs.");
+    const publicReply = screen.getByLabelText("Public reply");
+    await user.clear(publicReply);
+    await user.type(publicReply, "Sent! Check your DMs.");
     await user.type(screen.getByLabelText("Gate message"), "Follow and reply DONE.");
     await user.click(screen.getByRole("button", { name: "Create setup" }));
 
@@ -178,7 +191,9 @@ describe("UpcomingAutomations", () => {
     await user.click(await screen.findByRole("button", { name: /Set up another/ }));
     await user.type(screen.getByLabelText("Keyword"), "sleep");
     await user.type(screen.getByLabelText("Guide"), "Sleep Reset Guide");
-    await user.type(screen.getByLabelText("Public reply"), "Sent!");
+    const publicReply = screen.getByLabelText("Public reply");
+    await user.clear(publicReply);
+    await user.type(publicReply, "Sent!");
     await user.type(screen.getByLabelText("Gate message"), "Follow and reply DONE.");
     await user.click(screen.getByRole("button", { name: "Create setup" }));
 
@@ -212,7 +227,9 @@ describe("UpcomingAutomations", () => {
     await user.click(await screen.findByRole("button", { name: /Set up another/ }));
     await user.type(screen.getByLabelText("Keyword"), "sleep");
     await user.type(screen.getByLabelText("Guide"), "Sleep Reset Guide");
-    await user.type(screen.getByLabelText("Public reply"), "Sent!");
+    const publicReply = screen.getByLabelText("Public reply");
+    await user.clear(publicReply);
+    await user.type(publicReply, "Sent!");
     await user.type(screen.getByLabelText("Gate message"), "Follow and reply DONE.");
     await user.click(screen.getByRole("button", { name: "Create setup" }));
 
