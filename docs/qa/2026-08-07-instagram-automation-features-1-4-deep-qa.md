@@ -4,7 +4,7 @@
 **Audited commit:** `e15f0d5230863b0f54462454da614d59f30df72a` (`main`)  
 **Specifications:**
 
-- `docs/superpowers/specs/2026-08-07-instagram-automation-feature-requests-1-3-4-design.md`
+- The Features 1, 3, and 4 product design captured in the audited commit above. It was removed from the working tree after consolidation; current feature disposition is recorded in the [canonical backlog](../feature-requests/2026-08-16-instagram-automation-canonical-backlog.md).
 - `docs/superpowers/specs/2026-08-06-instagram-read-recovery-reminders-design.md` (Feature 2)
 
 **Method:** requirements-to-code trace, static control-flow review, focused logic reproductions, unit/integration suite, TypeScript builds, and frontend lint. No production data was changed and no Meta API send was attempted.
