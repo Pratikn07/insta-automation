@@ -229,7 +229,7 @@ const TIMING_DETAIL: ExperimentDetailView = {
       { key: "no_reminder", label: "No reminder", people: 51 },
     ],
     notCounted: [],
-    endsAt: "2026-10-02T16:00:00.000Z",
+    endsAt: "2026-10-02T12:00:00.000Z",
     whenItEnds: "When the window closes, reminders stop and wait for your decision.",
   },
 };
@@ -434,11 +434,11 @@ describe("ExperimentDetail, scheduled V2", () => {
     const planned: ExperimentDetailView = {
       ...TIMING_DETAIL,
       state: "not_started",
-      blocker: "Scheduled for 21 Aug 2026 at 9:00 AM Pacific.",
+      blocker: "Scheduled for 21 Aug 2026 at 5:00 AM Pacific.",
       summary: {
         kind: "not_started",
         wouldCompare: "A 2-hour reminder versus a 6-hour reminder versus no reminder.",
-        blocker: "Scheduled for 21 Aug 2026 at 9:00 AM Pacific.",
+        blocker: "Scheduled for 21 Aug 2026 at 5:00 AM Pacific.",
       },
     };
     apiRead.mockImplementation((path: string) =>
@@ -449,7 +449,7 @@ describe("ExperimentDetail, scheduled V2", () => {
 
     renderDetail("recovery-reminder-timing-v2");
 
-    expect(await screen.findByText("Scheduled for 21 Aug 2026 at 9:00 AM Pacific.")).toBeInTheDocument();
+    expect(await screen.findByText("Scheduled for 21 Aug 2026 at 5:00 AM Pacific.")).toBeInTheDocument();
     expect(apiRead).not.toHaveBeenCalledWith(
       expect.stringContaining("/recovery-reminders/metrics"),
       expect.anything(),
@@ -466,7 +466,7 @@ describe("ExperimentDetail, concluded", () => {
         kind: "ended",
         arms: RUNNING.summary.kind === "running" ? RUNNING.summary.arms : [],
         notCounted: RUNNING.summary.kind === "running" ? RUNNING.summary.notCounted : [],
-        endedAt: "2026-08-21T16:00:00.000Z",
+        endedAt: "2026-08-21T12:00:00.000Z",
         conclusion: "The result was inconclusive, so no winner was declared.",
       },
     } satisfies ExperimentDetailView);

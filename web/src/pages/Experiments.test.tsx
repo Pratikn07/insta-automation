@@ -71,7 +71,7 @@ const LIST: ExperimentsResponse = {
           { key: "control", label: "No reminder", people: 394 },
         ],
         notCounted: [{ reason: "They opened it themselves", people: 531 }],
-        endedAt: "2026-08-21T16:00:00.000Z",
+        endedAt: "2026-08-21T12:00:00.000Z",
         conclusion: "This experiment concluded and was replaced by the 2 vs 6 hour test.",
       },
     },
@@ -89,7 +89,7 @@ const LIST: ExperimentsResponse = {
           { key: "no_reminder", label: "No reminder", people: 157 },
         ],
         notCounted: [],
-        endsAt: "2026-10-02T16:00:00.000Z",
+        endsAt: "2026-10-02T12:00:00.000Z",
         whenItEnds: "When the window closes, reminders stop and wait for your decision.",
       },
     },
@@ -145,7 +145,7 @@ describe("Experiments list", () => {
     renderPage();
 
     expect(
-      await screen.findByText("2 hours 706 · 6 hours 701 · No reminder 157 · 45 days left"),
+      await screen.findByText("2 hours 706 · 6 hours 701 · No reminder 157 · 44 days left"),
     ).toBeInTheDocument();
   });
 

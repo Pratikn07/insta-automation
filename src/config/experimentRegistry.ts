@@ -97,7 +97,7 @@ export const EXPERIMENT_REGISTRY: readonly ExperimentDefinition[] = [
       "DM_RECOVERY_WESTERN_ONLY",
       "DM_RECOVERY_FAILURE_RATE_PERCENT",
     ],
-    blocker: "Scheduled for 21 Aug 2026 at 9:00 AM Pacific.",
+    blocker: "Scheduled for 21 Aug 2026 at 5:00 AM Pacific.",
   },
   {
     key: "guide-delivery-rollout",

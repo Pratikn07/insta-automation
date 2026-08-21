@@ -21,7 +21,7 @@ function make(rows: Row[]) {
         : key === "recovery-reminder-timing"
           ? "ended"
           : "not_started",
-    legacyExperimentEndedAt: () => "2026-08-21T16:00:00.000Z",
+    legacyExperimentEndedAt: () => "2026-08-21T12:00:00.000Z",
     experimentEndsAt: () => "2026-08-21T21:45:00.000Z",
     postExperimentEnabled: () => false,
   });
@@ -70,12 +70,12 @@ describe("recovery reminder timing summary", () => {
     await summarizer.summarize("recovery-reminder-timing");
 
     expect(groupRecoveryReminders).toHaveBeenCalledWith(
-      new Date("2026-08-21T16:00:00.000Z"),
+      new Date("2026-08-21T12:00:00.000Z"),
     );
   });
 
   it("keeps pre-cutover null-accepted exclusions but rejects post-cutover ones", () => {
-    const cutover = new Date("2026-08-21T16:00:00.000Z");
+    const cutover = new Date("2026-08-21T12:00:00.000Z");
 
     expect(legacyRecoverySummaryWhere(cutover)).toEqual({
       triggerKind: "no_confirmed_read",
@@ -171,7 +171,7 @@ describe("recovery reminder timing summary", () => {
     const summary = await make(ROWS).summarize("recovery-reminder-timing");
     if (summary.kind !== "ended") throw new Error("expected ended");
 
-    expect(summary.endedAt).toBe("2026-08-21T16:00:00.000Z");
+    expect(summary.endedAt).toBe("2026-08-21T12:00:00.000Z");
     expect(summary.conclusion).toMatch(/replaced by the 2 vs 6 hour test/i);
   });
 
@@ -198,8 +198,8 @@ describe("2 vs 6 hour timing summary", () => {
           : key === "recovery-reminder-timing"
             ? "ended"
             : "not_started",
-      legacyExperimentEndedAt: () => "2026-08-21T16:00:00.000Z",
-      experimentEndsAt: () => "2026-10-02T16:00:00.000Z",
+      legacyExperimentEndedAt: () => "2026-08-21T12:00:00.000Z",
+      experimentEndsAt: () => "2026-10-02T12:00:00.000Z",
       postExperimentEnabled: () => false,
     });
 
@@ -211,7 +211,7 @@ describe("2 vs 6 hour timing summary", () => {
         { key: "six_hour", label: "6 hours", people: 1 },
         { key: "no_reminder", label: "No reminder", people: 1 },
       ],
-      endsAt: "2026-10-02T16:00:00.000Z",
+      endsAt: "2026-10-02T12:00:00.000Z",
     });
   });
 
@@ -238,18 +238,18 @@ describe("scheduled recovery cutover", () => {
       listTimingAssignments,
       experimentState: (key: string) =>
         key === "recovery-reminder-timing" ? "running" : "not_started",
-      legacyExperimentEndedAt: () => "2026-08-21T16:00:00.000Z",
-      experimentEndsAt: () => "2026-10-02T16:00:00.000Z",
+      legacyExperimentEndedAt: () => "2026-08-21T12:00:00.000Z",
+      experimentEndsAt: () => "2026-10-02T12:00:00.000Z",
       postExperimentEnabled: () => false,
     });
 
     const v1 = await summarizer.summarize("recovery-reminder-timing");
     const v2 = await summarizer.summarize("recovery-reminder-timing-v2");
 
-    expect(v1).toMatchObject({ kind: "running", endsAt: "2026-08-21T16:00:00.000Z" });
+    expect(v1).toMatchObject({ kind: "running", endsAt: "2026-08-21T12:00:00.000Z" });
     expect(v2).toMatchObject({
       kind: "not_started",
-      blocker: "Scheduled for 21 Aug 2026 at 9:00 AM Pacific.",
+      blocker: "Scheduled for 21 Aug 2026 at 5:00 AM Pacific.",
     });
     expect(listTimingAssignments).not.toHaveBeenCalled();
   });

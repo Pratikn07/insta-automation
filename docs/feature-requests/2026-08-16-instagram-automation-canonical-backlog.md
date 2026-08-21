@@ -120,7 +120,7 @@ The source documents were checked on 2026-08-13 and 2026-08-14 against older com
 
 - `feat/expanded-recovery-audience` is no longer merely in flight; PR #12 is merged into `main`.
 - The cohort funnel layer and Funnels page are merged through PR #13 and should be reused for funnel measurement.
-- `GROW-002` shipped through PR #37; its approved production cutover is 21 August 2026 at 9:00 AM Pacific.
+- `GROW-002` shipped through PR #37; its approved production cutover is 21 August 2026 at 5:00 AM Pacific.
 - `feature/follower-aware-comment-gate` contains a focused plan and partial implementation for `GROW-004`; treat it as in progress but unmerged.
 - `feature/guide-message-delivery` contains an approved and implemented explicit sequence-save slice that is absent from `main`; it is tracked as `REL-006` rather than left only on that branch.
 - `feature/ai-followup-experiment` is a stale, heavily divergent, dirty worktree. Its useful requirements remain inputs to `PARENT-002`; none of its code is an approved merge source.
@@ -370,7 +370,7 @@ The experiment does not prove that an individual public reply caused an Instagra
 
 **Source:** IA-FR-013
 
-**State:** Shipped through PR #37. Production activation is approved for 21 August 2026 at 9:00 AM Pacific, with a maximum end of 2 October 2026 at 9:00 AM Pacific.
+**State:** Shipped through PR #37. Production activation is approved for 21 August 2026 at 5:00 AM Pacific, with a maximum end of 2 October 2026 at 5:00 AM Pacific.
 
 The shipped scope supersedes the earlier candidate below: it uses fixed 45% two-hour,
 45% six-hour, and 10% no-reminder arms, with guide completion within 48 hours as the

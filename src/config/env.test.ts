@@ -195,13 +195,13 @@ describe("env configuration schema for DM recovery", () => {
       ...baseEnv,
       DM_RECOVERY_ENABLED: "true",
       DM_RECOVERY_EXPERIMENT_VERSION: "read-recovery-timing-v2",
-      DM_RECOVERY_EXPERIMENT_START_AT: "2026-08-21T16:00:00.000Z",
+      DM_RECOVERY_EXPERIMENT_START_AT: "2026-08-21T12:00:00.000Z",
       DM_RECOVERY_POST_EXPERIMENT_ENABLED: "false",
     };
 
     it.each([
-      ["28 days", "2026-09-18T16:00:00.000Z"],
-      ["42 days", "2026-10-02T16:00:00.000Z"],
+      ["28 days", "2026-09-18T12:00:00.000Z"],
+      ["42 days", "2026-10-02T12:00:00.000Z"],
     ])("accepts an enrollment window lasting %s", (_label, endAt) => {
       expect(
         envSchema.safeParse({
@@ -212,8 +212,8 @@ describe("env configuration schema for DM recovery", () => {
     });
 
     it.each([
-      ["27 days", "2026-09-17T16:00:00.000Z"],
-      ["43 days", "2026-10-03T16:00:00.000Z"],
+      ["27 days", "2026-09-17T12:00:00.000Z"],
+      ["43 days", "2026-10-03T12:00:00.000Z"],
     ])("rejects an enrollment window lasting %s", (_label, endAt) => {
       expect(
         envSchema.safeParse({
@@ -226,7 +226,7 @@ describe("env configuration schema for DM recovery", () => {
     it("rejects post-experiment assignment", () => {
       const result = envSchema.safeParse({
         ...v2Base,
-        DM_RECOVERY_EXPERIMENT_END_AT: "2026-10-02T16:00:00.000Z",
+        DM_RECOVERY_EXPERIMENT_END_AT: "2026-10-02T12:00:00.000Z",
         DM_RECOVERY_POST_EXPERIMENT_ENABLED: "true",
       });
 
