@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { apiMutation, apiRead } from "@/lib/api";
+import { DEFAULT_PUBLIC_REPLY } from "@/lib/automationCopy";
 import { useOperationId } from "@/lib/useOperationId";
 import { outcomeMessage } from "@/lib/unknownOutcome";
 import type {
@@ -53,7 +54,7 @@ const EMPTY_EDITOR: EditorState = {
   guideMode: "new",
   resourceId: "",
   newGuideName: "",
-  publicReply: "",
+  publicReply: DEFAULT_PUBLIC_REPLY,
   gateMessage: "",
   active: true,
 };
@@ -666,6 +667,7 @@ function UpcomingEditor({
           id="upcoming-public-reply"
           value={value.publicReply}
           maxLength={280}
+          placeholder={DEFAULT_PUBLIC_REPLY}
           onChange={(event) => onChange({ ...value, publicReply: event.target.value })}
         />
       </div>

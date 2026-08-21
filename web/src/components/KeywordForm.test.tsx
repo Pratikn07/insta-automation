@@ -150,4 +150,12 @@ describe("KeywordForm create identity", () => {
 
     expect(bodyOf(callsTo("/keywords")[1]).id).not.toBe(firstKeywordId);
   });
+
+  it("starts a new keyword with the approved public reply", async () => {
+    renderForm();
+
+    expect(
+      await screen.findByDisplayValue("It’s waiting for you 💛 Check your DMs (and Requests)!"),
+    ).toBeInTheDocument();
+  });
 });
