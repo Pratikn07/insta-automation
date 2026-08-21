@@ -20,7 +20,7 @@ It does five things:
 4. Separates product opportunities from correctness fixes, operational decisions, infeasible ideas, and already-completed work.
 5. Keeps one stable entry through the complete lifecycle from candidate to approved, in progress, shipped, declined, or superseded.
 
-The three source audits are retained under `docs/archive/feature-request-sources/` for provenance. They are historical evidence, not active backlogs.
+The three source audits were committed long enough to verify this consolidation and were then removed from the working tree so they cannot be mistaken for active backlogs. Their original contents remain recoverable through Git history.
 
 ## How to use this backlog
 
@@ -57,7 +57,7 @@ Never delete a canonical item merely because work started or shipped. Update its
 
 ### New-idea intake rule
 
-Add a new idea here before or during its first focused discussion. Give it a stable category ID, record its source and date, and state whether it is distinct from or a slice of an existing item. New specs and implementation plans must name that ID. Additional audit documents may be retained under `docs/archive/feature-request-sources/`, but they must not become competing active backlogs.
+Add a new idea here before or during its first focused discussion. Give it a stable category ID, record its source and date, and state whether it is distinct from or a slice of an existing item. New specs and implementation plans must name that ID. If another audit is needed, merge its findings into this file and remove the temporary audit document after verification; do not retain a competing active or archived backlog in the working tree.
 
 ## Verification rules
 
@@ -130,7 +130,7 @@ The source documents were checked on 2026-08-13 and 2026-08-14 against older com
 - The keyword comment handler still sends `keyword.publicReply` without the shared audience-origin policy. `GROW-003` remains open.
 - Repository defaults and the deployment runbook still keep `AI_SEND_ENABLED=false` through shadow verification. Production values must be checked separately before any operational decision.
 - No additional untracked feature register was found in any linked worktree. Later worktree documents were designs, plans, runbooks, or QA artifacts and were mapped to an existing canonical ID unless they represented a distinct feature.
-- The three historical source audits and this canonical file are now tracked on `main`. The source audits remain provenance only.
+- The three historical source audits were committed for traceability, fully mapped here, and then removed from the working tree. Git history retains their provenance without leaving competing feature registers on `main`.
 
 ## Source-to-canonical mapping
 
@@ -2641,13 +2641,13 @@ Revalidate every convention at implementation time.
 
 This canonical backlog consolidates:
 
-- `docs/archive/feature-request-sources/2026-08-13-unstarted-instagram-automation-backlog.md`
-- `docs/archive/feature-request-sources/2026-08-14-unstarted-feature-requests.md`
-- `docs/archive/feature-request-sources/2026-08-14-claude-transcript-unfinished-designs.md`
-- `docs/superpowers/specs/2026-08-07-instagram-automation-feature-requests-1-3-4-design.md`, whose materially shipped work is retained in the delivered/closed sections and whose remaining write decision maps to `REL-005`.
+- The 2026-08-13 unstarted Instagram automation backlog audit.
+- The 2026-08-14 unstarted feature-request audit.
+- The 2026-08-14 Claude-transcript unfinished-design audit.
+- The 2026-08-07 settings-fallback, journey-reconciliation, and historical-recovery design, whose materially shipped work is retained in the delivered/closed sections and whose remaining write decision maps to `REL-005`.
 - The 2026-08-20 audit of every visible local/remote Git ref, linked physical worktree, and branch-only Markdown design or plan.
 - The owner's 2026-08-20 request for history-aware public follower engagement.
 
 All 24 source IDs from the three historical registers map to a canonical item above. The cross-ref/worktree audit added `REL-006`; the owner conversation added `GROW-008`. No additional untracked feature register was found. Recent documents that described implementations, runbooks, QA, or operating decisions were not duplicated as new feature ideas unless they introduced a distinct product behavior.
 
-The source files preserve transcript-audit wording and historical measurements. They were high-precision transcript audits, not a guarantee that every spoken idea before 2026-08-16 was captured. This file controls active intake, lifecycle, prioritization, and de-duplication from 2026-08-20 onward.
+The removed source files remain recoverable in Git commit `de89d3f`; the verified consolidation is recorded in `25fd441`. The source audits were high-precision transcript reviews, not a guarantee that every spoken idea before 2026-08-16 was captured. This file is the only feature-request document in the working tree and controls active intake, lifecycle, prioritization, and de-duplication from 2026-08-20 onward.
