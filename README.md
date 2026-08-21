@@ -4,6 +4,11 @@ Personal Instagram comment-to-DM automation for `@tinysoho`.
 
 **Flow:** user comments a keyword on a reel → bot replies publicly + DMs the gate message → user follows and replies `DONE` → bot delivers a configured sequence (text / image / PDF).
 
+## Product documents
+
+- [Canonical feature backlog](docs/feature-requests/2026-08-16-instagram-automation-canonical-backlog.md) — the single active register for proposed, approved, in-progress, shipped, declined, and superseded features.
+- [Product record](PRODUCT.md) — the behavior and information architecture currently established in the product.
+
 ## Stack
 
 - Node.js + Express (TypeScript)

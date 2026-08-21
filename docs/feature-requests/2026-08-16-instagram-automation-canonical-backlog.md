@@ -1,10 +1,10 @@
 # Instagram Automation — Canonical Feature Backlog
 
-**Status:** Canonical product backlog for discussion and staged design. Nothing in this document is approved for implementation merely because it appears here.
+**Status:** Canonical product portfolio and feature backlog. Nothing in this document is approved for implementation merely because it appears here.
 
-**Canonical as of:** 2026-08-16
+**Canonical as of:** 2026-08-20
 
-**Code baseline checked:** `main` at `3a8ca84` (`Merge PR #13: Funnels — cohort funnel layer and page`)
+**Code baseline checked:** `main` at `2397fce` before the documentation-only consolidation commit, plus every local branch, remote branch, and linked worktree visible on 2026-08-20.
 
 **Account:** `@tinysoho`
 
@@ -12,14 +12,15 @@
 
 Three overlapping feature-request documents were created from different transcript audits. They mixed speculative ideas, near-term requests, recovered designs, operational actions, completed work, and duplicate entries. This document replaces those three as the single active working backlog.
 
-It does four things:
+It does five things:
 
 1. Preserves the useful evidence, options, constraints, and acceptance criteria from every source.
 2. Consolidates duplicates under one canonical ID without losing their original IDs.
 3. Corrects status notes that became stale after the source audits.
 4. Separates product opportunities from correctness fixes, operational decisions, infeasible ideas, and already-completed work.
+5. Keeps one stable entry through the complete lifecycle from candidate to approved, in progress, shipped, declined, or superseded.
 
-The three source audits are retained under `docs/archive/feature-request-sources/` for provenance. They are historical evidence, not active backlogs.
+The three source audits were committed long enough to verify this consolidation and were then removed from the working tree so they cannot be mistaken for active backlogs. Their original contents remain recoverable through Git history.
 
 ## How to use this backlog
 
@@ -35,6 +36,28 @@ For any item selected for work:
 6. Implement on a branch or worktree with appropriate tests and rollout controls.
 
 An entry's recommendation is a starting point, not approval. Change an item to `Approved` only when the owner explicitly approves its focused design.
+
+### Authority and lifecycle
+
+This file is the only active feature register. `PRODUCT.md` describes the product that exists; focused specs and plans describe how one selected feature should work; this file records every proposed feature, its current state, and the links between those artifacts.
+
+Start every item state with one of these lifecycle states, then append a short evidence or activation qualifier where useful:
+
+| State | Meaning |
+|---|---|
+| `Candidate` | The idea is preserved, but its value, scope, or feasibility is not approved. |
+| `Needs decision` | Evidence exists, but an owner choice blocks focused design. |
+| `Approved` | The owner approved a focused design; implementation has not started. |
+| `In progress` | Work exists on a named branch or worktree but is not established on `main`. |
+| `Shipped` | The behavior is on `main`; production activation is recorded separately when relevant. |
+| `Declined` | The owner deliberately chose not to pursue it. |
+| `Superseded` | Another canonical ID or shipped capability replaced it. |
+
+Never delete a canonical item merely because work started or shipped. Update its state and preserve links to the focused design, plan, branch, merge, and operational decision. A branch name or dirty worktree is evidence of activity, not proof that a feature shipped.
+
+### New-idea intake rule
+
+Add a new idea here before or during its first focused discussion. Give it a stable category ID, record its source and date, and state whether it is distinct from or a slice of an existing item. New specs and implementation plans must name that ID. If another audit is needed, merge its findings into this file and remove the temporary audit document after verification; do not retain a competing active or archived backlog in the working tree.
 
 ## Verification rules
 
@@ -93,17 +116,21 @@ The following foundations are already present on `main` and must not be treated 
 
 ## Current-state corrections to the source audits
 
-The source documents were checked on 2026-08-13 and 2026-08-14 against older commits. As of this consolidation:
+The source documents were checked on 2026-08-13 and 2026-08-14 against older commits. The complete Git-ref and physical-worktree audit was repeated on 2026-08-20. As of this consolidation:
 
 - `feat/expanded-recovery-audience` is no longer merely in flight; PR #12 is merged into `main`.
 - The cohort funnel layer and Funnels page are merged through PR #13 and should be reused for funnel measurement.
-- `feature/guide-message-delivery` remains an unmerged worktree/branch and must be coordinated with changes to guide delivery.
+- `GROW-002` shipped through PR #37; its approved production cutover is 21 August 2026 at 9:00 AM Pacific.
+- `feature/follower-aware-comment-gate` contains a focused plan and partial implementation for `GROW-004`; treat it as in progress but unmerged.
+- `feature/guide-message-delivery` contains an approved and implemented explicit sequence-save slice that is absent from `main`; it is tracked as `REL-006` rather than left only on that branch.
+- `feature/ai-followup-experiment` is a stale, heavily divergent, dirty worktree. Its useful requirements remain inputs to `PARENT-002`; none of its code is an approved merge source.
 - The person-lineage endpoint still does not query `DmMessage`, and the frontend still uses the narrow `BOT_KINDS` allowlist. `REL-001` remains open.
 - The old `SpikeCandidates`, `spikeCore`, and `spikeService` path remains present. `REL-002` remains open.
 - No `child_age_months`, `age_asked_at`, public-reply variant service, or keyword-variant model was found. `PARENT-001` and `GROW-001` remain unstarted.
 - The keyword comment handler still sends `keyword.publicReply` without the shared audience-origin policy. `GROW-003` remains open.
 - Repository defaults and the deployment runbook still keep `AI_SEND_ENABLED=false` through shadow verification. Production values must be checked separately before any operational decision.
-- All three source backlogs and this consolidation were initially untracked in the working tree. Commit the canonical document when its contents are approved.
+- No additional untracked feature register was found in any linked worktree. Later worktree documents were designs, plans, runbooks, or QA artifacts and were mapped to an existing canonical ID unless they represented a distinct feature.
+- The three historical source audits were committed for traceability, fully mapped here, and then removed from the working tree. Git history retains their provenance without leaving competing feature registers on `main`.
 
 ## Source-to-canonical mapping
 
@@ -133,6 +160,9 @@ The source documents were checked on 2026-08-13 and 2026-08-14 against older com
 | IA-FR-011 | Shared Business Memory for Assistants | `INFRA-001` |
 | IA-FR-012 | Age-Aware Parent Profile and Next-Resource Loop | Duplicate/earlier framing of FR-1; consolidated into `PARENT-001` |
 | IA-FR-013 | Timely Prospective Recovery Experiment | `GROW-002` |
+| Approved design, 2026-08-07 | Settings-failure fallback, journey deduplication/reconciliation, and historical recovery | Materially shipped before this canonical register; the remaining production reconciliation decision is `REL-005` |
+| Owner request, 2026-08-20 | Context-aware public comment engagement using follower history | `GROW-008` |
+| Branch design, 2026-08-09 | Explicit save behavior in the sequence editor | `REL-006` |
 
 ## Portfolio index
 
@@ -140,40 +170,42 @@ The source documents were checked on 2026-08-13 and 2026-08-14 against older com
 
 | ID | Item | State | Size | Why it matters |
 |---|---|---|---|---|
-| `REL-001` | Complete the person timeline | Confirmed correctness bug | S–M | Successful AI sends and recovery activity can be absent or misleading |
-| `REL-002` | Replace Spike Candidates with recent reach share | Confirmed analytics defect; partial design | M | Current panel drops new Reels and can show the wrong content |
-| `REL-003` | Harden and shadow-verify caregiver-aware AI replies | Shipped shadow foundation; activation-blocking requirements remain | S–M + Ops | Existing drafts need safe timing, a Tiny SOHO voice policy, deterministic checks, and owner review before sending |
-| `REL-004` | Rebuild Conversations as one actionable queue and one person view | Mockups and behavior rules; no spec | M–L | Owner currently scans fragmented object lists instead of people |
-| `REL-005` | Apply or explicitly decline journey reconciliation | Pending production action | Ops | Shipped reconciliation code remains inert without an owner-approved write |
+| `REL-001` | Complete the person timeline | Candidate — confirmed correctness bug | S–M | Successful AI sends and recovery activity can be absent or misleading |
+| `REL-002` | Replace Spike Candidates with recent reach share | Candidate — confirmed analytics defect; partial design | M | Current panel drops new Reels and can show the wrong content |
+| `REL-003` | Harden and shadow-verify caregiver-aware AI replies | Needs decision — shadow foundation shipped; activation remains blocked | S–M + Ops | Existing drafts need safe timing, a Tiny SOHO voice policy, deterministic checks, and owner review before sending |
+| `REL-004` | Rebuild Conversations as one actionable queue and one person view | Candidate — mockups and behavior rules; no spec | M–L | Owner currently scans fragmented object lists instead of people |
+| `REL-005` | Apply or explicitly decline journey reconciliation | Needs decision — pending production action | Ops | Shipped reconciliation code remains inert without an owner-approved write |
+| `REL-006` | Explicit sequence-editor saves | In progress — unmerged branch | Integration | Approved behavior is implemented on a divergent branch but absent from `main` |
 
 ### Growth and funnel experiments
 
 | ID | Item | State | Size | Why it matters |
 |---|---|---|---|---|
-| `GROW-001` | Public-reply follow-ask A/B test | Partial design; measurement rules incomplete | M | Tests the only follow ask visible to every commenter |
-| `GROW-002` | Timely prospective recovery experiment | Data-backed candidate | M–L | Tests whether a reminder within hours recovers fresh intent |
-| `GROW-003` | Shared audience policy on keyword public replies | Measured policy gap | S–M | Existing audience flag covers almost none of the relevant public comments |
-| `GROW-004` | Known-follower gate wording | Parked candidate | S | Removes factually wrong follow language for known followers |
+| `GROW-001` | Public-reply follow-ask A/B test | Candidate — partial design; measurement rules incomplete | M | Tests the only follow ask visible to every commenter |
+| `GROW-002` | Timely prospective recovery experiment | Shipped — activation scheduled for 21 Aug 2026 | M–L | Tests whether a reminder within hours recovers fresh intent |
+| `GROW-003` | Shared audience policy on keyword public replies | Needs decision — measured policy gap | S–M | Existing audience flag covers almost none of the relevant public comments |
+| `GROW-004` | Known-follower gate wording | In progress — unmerged branch | S | Removes factually wrong follow language for known followers |
 | `GROW-005` | Repost and advocacy experiment | Candidate | S experiment; L platform | Tests voluntary sharing after genuine value is delivered |
-| `GROW-006` | Broadcast-channel invitation | Blocked on channel and copy decisions | S | Invites warm guide recipients into an owned recurring audience |
+| `GROW-006` | Broadcast-channel invitation | Needs decision — destination and copy unresolved | S | Invites warm guide recipients into an owned recurring audience |
 | `GROW-007` | Parent ambassador and referral pilot | Candidate | M pilot; L platform | Tests higher-commitment advocacy with observable outcomes |
+| `GROW-008` | Context-aware public comment engagement | Candidate — focused design required | M–L | Uses prior relationship context to make public guide replies feel attentive without exposing private DM facts |
 
 ### Parent value and retention
 
 | ID | Item | State | Size | Why it matters |
 |---|---|---|---|---|
-| `PARENT-001` | Age-aware parent profile and next-resource loop | Approved historical design; zero implementation | L, staged | Only proposal built around repeat value rather than one-off delivery |
-| `PARENT-002` | Engagement Copilot evolution | Shipped safe foundation; expansion unapproved | M–XL | Could reduce silence and owner workload while preserving safety |
+| `PARENT-001` | Age-aware parent profile and next-resource loop | Needs decision — historical approval requires revalidation; unbuilt | L, staged | Only proposal built around repeat value rather than one-off delivery |
+| `PARENT-002` | Engagement Copilot evolution | Candidate — safe foundation shipped; expansion unapproved | M–XL | Could reduce silence and owner workload while preserving safety |
 | `PARENT-003` | Shareable parenting artifacts | Candidate | S experiment; L product | Turns advice into a useful, saveable, naturally shareable result |
-| `PARENT-004` | Product and resource catalog | Deferred candidate | M–L | Could make recommendations reusable and safer if demand is real |
+| `PARENT-004` | Product and resource catalog | Candidate — deferred pending demand | M–L | Could make recommendations reusable and safer if demand is real |
 
 ### Content and audience intelligence
 
 | ID | Item | State | Size | Why it matters |
 |---|---|---|---|---|
-| `INSIGHT-001` | Age/gender demographics and navigation metrics | Candidate; existing permission likely sufficient | S–M | Improves audience and hook understanding |
-| `INSIGHT-002` | Trial Reel tagging and experiments | Candidate; API feasibility unproven | S manual; M–L automated | Establishes comparable creative tests |
-| `INSIGHT-003` | Audience intelligence and profile enrichment | Candidate; privacy and feasibility unproven | Spike first | Must prove a decision changes before external enrichment is justified |
+| `INSIGHT-001` | Age/gender demographics and navigation metrics | Candidate — existing permission likely sufficient | S–M | Improves audience and hook understanding |
+| `INSIGHT-002` | Trial Reel tagging and experiments | Candidate — API feasibility unproven | S manual; M–L automated | Establishes comparable creative tests |
+| `INSIGHT-003` | Audience intelligence and profile enrichment | Candidate — privacy and feasibility unproven | Spike first | Must prove a decision changes before external enrichment is justified |
 | `INSIGHT-004` | Competitor intelligence and guide opportunities | Candidate | Spike first | Tests whether external evidence reveals useful unmet needs |
 | `INSIGHT-005` | Creator and partnership discovery | Candidate | Spike first | Tests whether a curated shortlist creates viable collaborations |
 | `INSIGHT-006` | Historical lifetime content leaders | Candidate | S–M | Adds cumulative truth without inventing historical daily attribution |
@@ -191,11 +223,13 @@ This sequence balances correctness, learning speed, and business value. It is a 
 1. **Protect truth and auditability:** `REL-001`, then `REL-002`.
 2. **Evaluate what already exists:** run `REL-003` shadow verification without enabling sends.
 3. **Test the highest-value retention assumption cheaply:** implement only Slices A and B of `PARENT-001`; measure whether parents answer before building routing.
-4. **Select one concurrent growth experiment:** `GROW-001` for public follow-ask learning or `GROW-002` for fresh-intent recovery. Do not launch both simultaneously if their cohorts or outcomes can interfere.
-5. **Resolve the audience-policy gap:** decide and design `GROW-003`, now that the expanded audience taxonomy is merged.
-6. **Build the queue around observed work:** design `REL-004` only after shadow drafts or approved sends provide real row content.
-7. **Add low-cost insight:** consider `INSIGHT-001`, then manual `INSIGHT-002`.
-8. **Keep speculative platforms behind proofs:** require small manual spikes for advocacy, artifacts, external intelligence, partnerships, catalogs, and custom memory before building generalized systems.
+4. **Finish or deliberately stop active branch work:** rebase and review `REL-006` and `GROW-004` before creating competing implementations.
+5. **Select one concurrent growth experiment:** `GROW-001` for public follow-ask learning or `GROW-002` for fresh-intent recovery. Do not launch both simultaneously if their cohorts or outcomes can interfere.
+6. **Resolve the audience-policy gap:** decide and design `GROW-003`, now that the expanded audience taxonomy is merged.
+7. **Design public-context engagement separately:** resolve the privacy and approval boundary for `GROW-008` before treating it as an extension of private AI replies.
+8. **Build the queue around observed work:** design `REL-004` only after shadow drafts or approved sends provide real row content.
+9. **Add low-cost insight:** consider `INSIGHT-001`, then manual `INSIGHT-002`.
+10. **Keep speculative platforms behind proofs:** require small manual spikes for advocacy, artifacts, external intelligence, partnerships, catalogs, and custom memory before building generalized systems.
 
 ---
 
@@ -205,7 +239,7 @@ This sequence balances correctness, learning speed, and business value. It is a 
 
 **Source:** CT-1
 
-**State:** Product direction selected historically; technical design is partial. Analysis queries, sample calculation, and stop rules remain unresolved.
+**State:** Candidate. Product direction was selected historically, but the technical design is partial and analysis queries, sample calculation, and stop rules remain unresolved.
 
 **Size:** Medium. The copy change is trivial; trustworthy experiment instrumentation is the work.
 
@@ -336,7 +370,12 @@ The experiment does not prove that an individual public reply caused an Instagra
 
 **Source:** IA-FR-013
 
-**State:** Data-backed candidate. Historical and prospective recovery foundations exist, but this timing-and-copy experiment is unapproved.
+**State:** Shipped through PR #37. Production activation is approved for 21 August 2026 at 9:00 AM Pacific, with a maximum end of 2 October 2026 at 9:00 AM Pacific.
+
+The shipped scope supersedes the earlier candidate below: it uses fixed 45% two-hour,
+45% six-hour, and 10% no-reminder arms, with guide completion within 48 hours as the
+primary outcome and no automatic winner rollout. The older 50/50 and single-delay
+proposal is retained below only as historical rationale.
 
 **Size:** Medium–Large because reliable eligibility, control assignment, last-second rechecks, pacing, and ambiguous-send safety matter more than the copy.
 
@@ -427,7 +466,7 @@ Reuse the shipped prospective recovery primitives and merged audience-segment vo
 
 **Source:** FR-3
 
-**State:** Measured policy gap. The expanded audience taxonomy is now merged, resolving the source document's branch-order uncertainty but not the product policy.
+**State:** Needs decision. The policy gap is measured. The expanded audience taxonomy is now merged, resolving the source document's branch-order uncertainty but not the product policy.
 
 **Size:** Small–Medium.
 
@@ -508,7 +547,7 @@ Track suppression volume, private-gate acceptance, reply, guide completion, clas
 
 **Source:** FR-5
 
-**State:** Explicitly parked candidate. Unbuilt.
+**State:** In progress. On `feature/follower-aware-comment-gate`, the focused plan and all three planned implementation commits exist, but the divergent branch has not been rebased, reviewed, or integrated into `main`, and its rollout script has not been authorized with `--write`.
 
 **Size:** Small.
 
@@ -520,21 +559,25 @@ This is factually wrong and impersonal, although historically it affected only a
 
 ### Proposed behavior
 
-When the local `IgUser` record confidently says the commenter is a follower, use alternate gate copy such as:
+The branch plan selected this exact private gate when the latest cached `IgUser.isFollower` value is `true`:
 
-> Welcome back! 💛 Your potty guide is ready—just reply DONE and it's yours.
+> So lovely to see you again 💛 Reply DONE and I’ll send your guide right over.
+
+It also selected this public acknowledgement for newly created automations and an explicit dry-run-first rollout of active stored copy:
+
+> It’s waiting for you 💛 Check your DMs (and Requests)!
 
 Keep the reply step because the person's inbound message is still required to open the messaging window for multi-part delivery.
 
 ### Safety boundary
 
-Do not weaken the live follow recheck at reply time. Cached status selects a polite greeting only; live enforcement remains authoritative. Use the local database lookup and add no new Graph API call to the comment hot path.
+Do not weaken the live follow recheck at reply time. Cached status selects a polite greeting only; live enforcement remains authoritative. The approved branch plan trusts any latest cached `true` regardless of age; `false`, `null`, or lookup failure uses the existing keyword gate. It uses the local database lookup and adds no new Graph API call to the comment hot path.
 
 ### Decisions required
 
-- Approve reusable follower copy and keyword interpolation.
-- Decide how fresh/confident cached follower status must be.
-- Decide whether `unknown` always receives the current generic gate.
+- Revalidate the approved literal copy against the current product voice after rebasing.
+- Decide whether to preserve the branch plan's age-independent cached-`true` rule or add a later freshness policy.
+- Review the dry-run counts before separately authorizing any public-copy database write.
 
 ### Acceptance criteria
 
@@ -543,6 +586,8 @@ Do not weaken the live follow recheck at reply time. Cached status selects a pol
 - Live follow enforcement is unchanged and covered by tests.
 - No additional Meta request occurs in the comment handler.
 - Exact sent gate copy remains auditable.
+- Initial private replies and queued retries use the same selected text.
+- The public-copy rollout defaults to preview, updates only eligible active rows when explicitly authorized, and is idempotent.
 
 ### Priority note
 
@@ -615,7 +660,7 @@ Only the first direction is justified before demand and observability are proven
 
 **Source:** FR-4 and the Circle-invite portion of FR-1
 
-**State:** Blocked on owner inputs. No implementation.
+**State:** Needs decision. Destination, copy, and placement require owner input; no implementation exists.
 
 **Size:** Small once channel, link, placement, and copy are approved.
 
@@ -669,7 +714,7 @@ The invitation is separated here so the core age-question experiment can succeed
 
 **Source:** IA-FR-004
 
-**State:** Candidate only.
+**State:** Candidate. No focused design or implementation exists.
 
 **Size:** Medium manual pilot; Large for codes, rewards, fraud controls, and a portal.
 
@@ -723,13 +768,130 @@ Do not build a ledger or portal until the pilot produces repeated participation 
 
 ---
 
+## GROW-008 — Context-aware public comment engagement
+
+**Source:** Owner request on 2026-08-20. Related to, but deliberately separate from, the private-DM work in `PARENT-002`.
+
+**State:** Candidate. The opportunity is preserved here; no focused design or implementation is approved.
+
+**Size:** Medium for an owner-reviewed first slice; Large for any narrowly allowlisted automatic public sending.
+
+### Opportunity
+
+When a known follower comments to request a guide, recipe, or other resource, respond publicly in a way that acknowledges an existing relationship, invites a genuine conversation, and accurately tells the person what happened in DM. The intended effect is a warmer public thread, visible evidence that Tiny SOHO cares about repeat followers, and more useful organic engagement.
+
+The owner's example—asking how a follower's toddler is doing with sleep—captures the desired continuity. It also exposes the central safety problem: a fact learned in a private DM may be inappropriate to reveal beneath a public Instagram post.
+
+### Why this is a separate feature
+
+`PARENT-002` assembles private conversation context and drafts private replies. A public comment is visible to the commenter, other followers, search and recommendation surfaces, and potentially the child's wider social circle. Public-context selection, privacy classification, copy, pacing, approval, delivery evidence, and ambiguous-send handling therefore need an independent product boundary. Do not silently reuse the private-DM prompt or publish a private summary.
+
+### Product directions
+
+#### A — Generic deterministic relationship copy
+
+Use follower status and the current request only, for example a warm welcome-back line plus the correct DM status. This is the lowest-risk option but does not demonstrate remembered context.
+
+#### B — Context-aware, owner-reviewed public draft — recommended first slice
+
+Retrieve bounded relationship history, label each candidate fact by provenance and public-safety class, draft one response, run deterministic safety checks, and require the owner to edit or approve before posting. This tests whether contextual replies are useful without granting the model a public send primitive.
+
+#### C — Narrow automatic public response
+
+After owner-reviewed evidence passes explicit privacy and quality thresholds, auto-send only an allowlisted class using public-safe facts. This is a later experiment, not the default V2.
+
+### Recommended context and drafting flow
+
+1. Resolve the commenter to one canonical person and confirm the request is eligible.
+2. Retrieve a bounded, newest-first window or reviewed summary of canonical DM and public-thread history. Do not pass an unbounded "entire chat history" to the model.
+3. Classify candidate context by provenance:
+   - **Public-safe:** the same public thread, another public comment by the person, a generic topic the person has explicitly made public, or a fact with explicit consent for public reuse.
+   - **Private-only:** anything learned only in DM, inferred by a model, or not clearly attributable to that person.
+4. Supply the drafter only the request, approved voice rules, delivery status, and public-safe context. Keep private-only facts out of the public prompt.
+5. Produce a structured draft with the acknowledgement, optional low-sensitivity question, DM-status clause, cited context provenance, and safety decision.
+6. Recheck new inbound activity, duplicate/public-reply state, source-comment availability, cooldown, pacing, and actual DM delivery evidence immediately before posting.
+7. Record the exact approved text, context evidence IDs, model/prompt version, owner action, provider result, and later engagement outcome.
+
+### Public copy rules
+
+- Acknowledge the requested guide, recipe, or topic in plain language.
+- Ask at most one optional, low-sensitivity, open question when there is safe public context.
+- Say **"I sent the guide in your DMs"** only after provider-accepted guide delivery is recorded.
+- If only the gate/private reply was accepted and the person still needs to reply, use accurate copy such as **"Check your DMs (and Requests) to continue."**
+- Do not reveal a child's name, exact age, diagnosis, development, sleep or feeding struggle, health information, family circumstances, location, private emotional disclosure, or any other DM-only fact.
+- Do not imply that the owner personally remembered, reviewed, or wrote the reply unless that is true.
+- Use a generic deterministic response when no safe contextual fact exists; absence of context is not an error.
+
+### Smallest useful experiment
+
+Start in shadow or owner-reviewed mode for one or two guide topics and 50–100 eligible comments:
+
+- Preserve the current deterministic public acknowledgement as the control/reference.
+- Generate contextual drafts without automatically posting them.
+- Let the owner approve, edit, replace with generic copy, or dismiss.
+- Record why context was rejected, especially privacy, staleness, awkwardness, factual error, and wrong delivery status.
+- Advance to public posting only for individually approved drafts.
+- Do not start during a `GROW-001` public-copy experiment unless assignment and analysis can isolate both interventions.
+
+### Decisions required before focused design
+
+- Is V2 strictly owner-reviewed, or may any class auto-send after evidence? The recommended first answer is owner-reviewed.
+- Are eligible people known followers only, repeat guide requesters, or any resolved person with history?
+- Which fact provenances are public-safe, and can a person grant or withdraw consent for public reuse?
+- How much recent history is necessary, and when is a summary invalidated?
+- Should the public reply happen on the initial request, only after actual guide delivery, or at another event?
+- What cooldown and lifetime cap prevent repeated personalized public comments from feeling invasive?
+- Which question categories are allowed or prohibited?
+- What owner-review sample, approval rate, edit rate, privacy-rejection rate, and harm threshold permit expansion?
+- Should AI assistance be disclosed in the owner workflow, the public copy, or both?
+
+### Measurement
+
+- Draft approval, edit, generic-replacement, and dismissal rates.
+- Context rejection by reason and provenance.
+- Public reply rate, thread depth, later DM activity, and matching guide completion.
+- Owner time per approved public response.
+- Hidden/deleted comments, negative replies, opt-outs, complaints, blocks, and privacy incidents.
+- Delivery-status accuracy: guide-confirmed, gate-only, failed, or uncertain.
+- Incremental engagement versus an uncontaminated deterministic reference, with denominators and uncertainty.
+
+### Non-negotiable constraints
+
+- Private-only history never appears in a public prompt or public response without explicit, auditable consent for that exact use.
+- Never diagnose medical, developmental, or psychological conditions.
+- Never claim guide delivery before provider-accepted guide delivery evidence exists.
+- A new inbound message or changed delivery state invalidates a stale draft.
+- One event produces at most one public response; ambiguous provider outcomes are never automatically retried.
+- Shared public-contact pacing, cooldowns, capacity limits, opt-outs, and circuit breakers apply.
+- Credentials and the public send primitive remain outside the isolated drafting runtime.
+- Exact text, evidence, approval, send result, and deletion/complaint outcomes remain auditable.
+
+### Design-ready evidence
+
+- The public/private context boundary is expressed as deterministic rules with positive and negative examples.
+- At least 50–100 shadow or owner-reviewed cases establish approval, edits, privacy rejection, and delivery-status accuracy.
+- Current Meta comment and messaging behavior is verified from primary documentation and observed provider responses.
+- The eligible cohort, context bound, timing, copy schema, owner boundary, caps, stop rules, rollback, and monitoring are explicit.
+- `REL-001` can reconstruct the context and send evidence without exposing private data in ordinary public-facing UI.
+
+### Dependencies and conflicts
+
+- `REL-001` for a complete canonical history and public-versus-private audit trail.
+- `PARENT-002` for safe context assembly and owner-review evidence, without reusing its private prompt directly.
+- `GROW-004` for reliable known-follower selection when eligibility depends on follower state.
+- `GROW-003` for the shared audience policy and public-contact decision.
+- Shared idempotent public dispatch, pacing, cooldown, and ambiguous-send controls.
+- `GROW-001` and `GROW-002` can confound engagement and completion outcomes if run on the same cohort.
+
+---
+
 # Reliability and operational correctness
 
 ## REL-001 — Complete the person timeline
 
 **Source:** FR-2a
 
-**State:** Confirmed correctness bug; still present on `main` as of 2026-08-16.
+**State:** Candidate. This is a confirmed correctness bug and was still present on `main` in the 2026-08-20 audit.
 
 **Size:** Small–Medium.
 
@@ -798,7 +960,7 @@ Do this before enabling AI sending and before the full Conversations redesign. `
 
 **Source:** CT-2
 
-**State:** Confirmed analytics defect with a substantially worked design. No implementation found.
+**State:** Candidate. This is a confirmed analytics defect with a substantially worked design; no implementation was found.
 
 **Size:** Medium.
 
@@ -916,7 +1078,7 @@ Re-run snapshot coverage and the historical ranking against current production d
 
 **Source:** FR-7 and the shipped-foundation portion of IA-FR-001
 
-**State:** The shadow-drafting foundation exists and production sending remains disabled. Activation now requires engineering work for reply timing, cold-draft expiry, caregiver-aware voice, deterministic style checks, and complete auditability, followed by owner shadow review.
+**State:** Needs decision. The shadow-drafting foundation is shipped and production sending remains disabled. Activation requires engineering work for reply timing, cold-draft expiry, caregiver-aware voice, deterministic style checks, and complete auditability, followed by owner shadow review.
 
 **Size:** Small–Medium engineering plus operational review.
 
@@ -1125,7 +1287,7 @@ Complete `REL-001` before the first real send. Use shadow findings to design rea
 
 **Sources:** FR-2 and CT-3. CT-3 is fully absorbed here.
 
-**State:** Four historical mockups and worked behavior rules; no approved spec or implementation.
+**State:** Candidate. Four historical mockups and worked behavior rules exist; there is no approved spec or implementation.
 
 **Size:** Medium–Large. Split into two releases.
 
@@ -1243,7 +1405,7 @@ The owner must answer: **Will this admin normally be checked more than once per 
 
 **Source:** “Pending production action” in the near-term backlog.
 
-**State:** Operational action; code shipped but historical data remains unchanged until a reviewed write is run.
+**State:** Needs decision. The code is shipped, but historical data remains unchanged until a reviewed write is approved and run.
 
 **Size:** Operational.
 
@@ -1284,13 +1446,72 @@ Re-run the dry run against current production, review the exact mutation categor
 
 ---
 
+## REL-006 — Explicit sequence-editor saves
+
+**Source:** Approved design and implementation plan dated 2026-08-09 on `feature/guide-message-delivery`.
+
+**State:** In progress. The feature is implemented and tested on the divergent `feature/guide-message-delivery` branch but absent from `main`. Treat this as integration work, not shipped behavior and not a request to implement the feature again from scratch.
+
+**Size:** Integration and current-baseline validation. The original implementation was a focused frontend change with no backend, schema, or API-contract change.
+
+### Goal
+
+Make it obvious and deliberate when authored sequence text is persisted. An author should never need to infer whether a pasted or edited guide message was saved.
+
+### Approved behavior
+
+- Sequence name, internal note, message bodies, and captions remain local drafts until **Save changes** or `Cmd+S`/`Ctrl+S`.
+- Adding, deleting, reordering, and uploading remain immediate structural actions.
+- Status is explicit: **All changes saved**, **Unsaved changes**, **Saving…**, **Couldn't save — retry**, or **Needs attention — message too long**.
+- Leaving through app navigation, browser history, reload, or tab close while dirty or saving produces an unsaved-changes warning.
+- A failed save preserves the local draft for retry.
+- A successful field advances only to the submitted snapshot; newer typing during an in-flight save remains dirty.
+- The shared 1,000 UTF-16-unit Instagram guide-message limit remains authoritative.
+- A multi-request partial success advances successful baselines and retries only failed dirty fields.
+
+### Existing branch evidence
+
+- Approved design: `docs/superpowers/specs/2026-08-09-sequence-editor-explicit-save-design.md` on the branch.
+- Implementation plan: `docs/superpowers/plans/2026-08-09-sequence-editor-explicit-save.md` on the branch.
+- `2a831be` adds the unsaved-navigation guard and data-router support.
+- `4231cb3` adds explicit authored-text saving and focused tests.
+
+The branch also contains extensive unrelated and later work. Do not merge it wholesale merely to obtain these two commits.
+
+### Required integration work
+
+1. Compare the two focused commits and their prerequisite design/plan against current `main` after the interface migrations.
+2. Choose a narrow rebase, cherry-pick, or manual port that preserves current router, editor, and save-status behavior.
+3. Bring the design and implementation plan onto `main` with the integration so future readers can trace the approved behavior.
+4. Re-run the focused editor and navigation tests, full web tests, lint, and a production build with required environment.
+5. Perform visual and interaction QA for clean, dirty, saving, over-limit, failed, partial-success, and leave-confirmation states.
+
+### Acceptance criteria
+
+- Editing or blurring authored text performs no implicit PATCH.
+- Save submits only dirty resource/message fields.
+- Clean, in-flight, blank-name, and over-limit states disable Save appropriately.
+- The keyboard shortcut invokes the same save path.
+- Failed and partial saves preserve exactly the remaining dirty drafts and allow retry.
+- Edits made during an in-flight save remain dirty after the earlier snapshot succeeds.
+- In-app and browser-level navigation are guarded only while dirty or saving.
+- Structural actions retain their immediate behavior.
+- The current `main` route tree and unrelated interface behavior do not regress.
+- The behavior is not marked `Shipped` until the focused integration is established on `main`.
+
+### Dependencies and conflicts
+
+This feature depends on the current sequence editor, save-status component, shared message-length policy, and router architecture. It may conflict with later interface migrations on `main`; resolve those conflicts deliberately instead of reverting newer UI work.
+
+---
+
 # Parent value and retention
 
 ## PARENT-001 — Age-aware parent profile and next-resource loop
 
 **Sources:** FR-1 and IA-FR-012. FR-1 is the controlling detailed version; IA-FR-012's broader options are retained here.
 
-**State:** A historical design was approved on 2026-08-04, but no matching participant fields, age question, parser, candidate routing, or invite evidence was found on `main`. Revalidate the old approval before planning because the surrounding system has changed.
+**State:** Needs decision. A historical design was approved on 2026-08-04, but no matching participant fields, age question, parser, candidate routing, or invite evidence was found on `main`. Revalidate the old approval before planning because the surrounding system has changed.
 
 **Size:** Large. Build and evaluate in slices.
 
@@ -1561,7 +1782,7 @@ Requirements:
 
 **Source:** IA-FR-001
 
-**State:** Safe owner-reviewed foundation is shipped. A more autonomous stale-worktree experiment is not production-ready and is not approved.
+**State:** Candidate. The safe owner-reviewed foundation is shipped; the proposed expansion is unapproved, and a more autonomous stale-worktree experiment is not production-ready.
 
 **Size:** Medium for better prioritization and shadow classification; Extra Large for supervised automation.
 
@@ -1664,7 +1885,7 @@ Let Codex select and send most replies. This carries the highest brand, safety, 
 
 **Source:** IA-FR-003
 
-**State:** Candidate only.
+**State:** Candidate. No focused design or implementation exists.
 
 **Size:** Small static experiment; Large for generalized or AI-generated artifacts.
 
@@ -1723,7 +1944,7 @@ Can launch statically without `PARENT-001`. Age-aware personalization depends on
 
 **Source:** IA-FR-009
 
-**State:** Candidate, historically deferred because demand was not proven.
+**State:** Candidate. It was historically deferred because demand was not proven.
 
 **Size:** Medium–Large.
 
@@ -2234,12 +2455,14 @@ Build structured storage or retrieval only when the brief's size or usage create
 | `REL-002` | Stable Reel snapshots | `INSIGHT-006` lifetime leaders |
 | `REL-003` | Deployment access and owner review | Autonomous Copilot expansion |
 | `REL-004` | `REL-001`; real examples from `REL-003` | Four separate object browsers |
+| `REL-006` | Current sequence editor, router, and message-limit policy | Wholesale merge of the divergent guide-delivery branch |
 | `GROW-001` | Cohort Funnels; stable public-reply policy | Exact per-person follow attribution |
 | `GROW-002` | Recovery primitives, shared pacing and audience policy | Historical cohort figures as causal proof |
 | `GROW-003` | Merged audience-segment vocabulary | Exact geography or ethnicity inference |
 | `GROW-004` | Cached follower state | Live follow enforcement |
 | `GROW-005` | Positive-feedback definition; valid window | `GROW-007` rewarded ambassador program |
 | `GROW-006` | Verified destination/link | Per-user channel-join attribution |
+| `GROW-008` | `REL-001`, public-safe provenance, owner review, shared public dispatch | Publishing private DM facts or reusing a private-reply prompt |
 | `PARENT-001` | Structured resource library; optionally AI drafts | `GROW-006` in the first answer-rate experiment |
 | `PARENT-002` | `REL-001`, `REL-003`, `REL-004` | Broad autonomy as a default |
 | `PARENT-003` | Approved templates; later age-band privacy rules | Mandatory sharing or exact-age exposure |
@@ -2261,6 +2484,7 @@ Build structured storage or retrieval only when the brief's size or usage create
 - Shared contact capacity, cooldowns, and circuit breakers apply across campaigns.
 - Control participants must not receive the treatment through a different path.
 - Analyze by original assignment as well as actual send where appropriate; do not discard suppressed or failed treatment rows.
+- Do not run `GROW-008` contextual public replies against the same primary outcome as `GROW-001` or `GROW-002` unless the design isolates the interventions and available volume supports it.
 
 ---
 
@@ -2273,6 +2497,7 @@ Build structured storage or retrieval only when the brief's size or usage create
 3. `REL-003` AI shadow audit.
 4. `REL-004` unified actionable queue.
 5. `REL-005` journey reconciliation decision.
+6. `REL-006` focused integration of explicit sequence saves.
 
 ## If the goal is more useful parent conversations
 
@@ -2280,15 +2505,17 @@ Build structured storage or retrieval only when the brief's size or usage create
 2. `PARENT-001` Slices A and B only.
 3. `REL-003` owner-reviewed draft baseline.
 4. `PARENT-002` better classification and owner workflow.
-5. `PARENT-003` one static artifact based on a measured need.
+5. `GROW-008` owner-reviewed public-context experiment after the privacy boundary is proven.
+6. `PARENT-003` one static artifact based on a measured need.
 
 ## If the goal is follower and organic-reach learning
 
 1. `GROW-001` public-reply experiment.
 2. `GROW-002` timely recovery experiment, run in a non-confounded period.
-3. `GROW-005` one voluntary repost ask.
-4. `INSIGHT-002` manual Trial Reel experiments.
-5. `GROW-007` manual ambassador pilot only after an observable outcome is selected.
+3. `GROW-008` owner-reviewed contextual public engagement in a non-confounded period.
+4. `GROW-005` one voluntary repost ask.
+5. `INSIGHT-002` manual Trial Reel experiments.
+6. `GROW-007` manual ambassador pilot only after an observable outcome is selected.
 
 ## If the goal is better content strategy
 
@@ -2316,11 +2543,12 @@ These are the highest-leverage unresolved questions. Resolve them only when thei
 3. **Public-reply experiment (`GROW-001`):** approve final control/treatment copy and minimum useful lift.
 4. **Recovery experiment (`GROW-002`):** select delay, eligible audience segments, and exact copy.
 5. **Audience policy (`GROW-003`):** skip only public acknowledgement, suppress all automation, or retain current universal behavior?
-6. **AI operation (`REL-003`):** after shadow review, remain draft-only or authorize owner-approved sending?
-7. **Channel invite (`GROW-006`):** which destination, link, copy, and placement?
-8. **Advocacy (`GROW-005`):** which single action is desired and observable?
-9. **Trial Reels (`INSIGHT-002`):** which primary outcome defines a useful creative test?
-10. **Memory (`INFRA-001`):** which facts deserve owner-approved durable status?
+6. **Public-context V2 (`GROW-008`):** owner-reviewed only for the first slice, and which fact provenances are safe to reuse publicly?
+7. **AI operation (`REL-003`):** after shadow review, remain draft-only or authorize owner-approved sending?
+8. **Channel invite (`GROW-006`):** which destination, link, copy, and placement?
+9. **Advocacy (`GROW-005`):** which single action is desired and observable?
+10. **Trial Reels (`INSIGHT-002`):** which primary outcome defines a useful creative test?
+11. **Memory (`INFRA-001`):** which facts deserve owner-approved durable status?
 
 ---
 
@@ -2418,8 +2646,13 @@ Revalidate every convention at implementation time.
 
 This canonical backlog consolidates:
 
-- `docs/archive/feature-request-sources/2026-08-13-unstarted-instagram-automation-backlog.md`
-- `docs/archive/feature-request-sources/2026-08-14-unstarted-feature-requests.md`
-- `docs/archive/feature-request-sources/2026-08-14-claude-transcript-unfinished-designs.md`
+- The 2026-08-13 unstarted Instagram automation backlog audit.
+- The 2026-08-14 unstarted feature-request audit.
+- The 2026-08-14 Claude-transcript unfinished-design audit.
+- The 2026-08-07 settings-fallback, journey-reconciliation, and historical-recovery design, whose materially shipped work is retained in the delivered/closed sections and whose remaining write decision maps to `REL-005`.
+- The 2026-08-20 audit of every visible local/remote Git ref, linked physical worktree, and branch-only Markdown design or plan.
+- The owner's 2026-08-20 request for history-aware public follower engagement.
 
-The source files preserve transcript-audit wording and historical measurements. This file controls active prioritization and de-duplication.
+All 24 source IDs from the three historical registers map to a canonical item above. The cross-ref/worktree audit added `REL-006`; the owner conversation added `GROW-008`. No additional untracked feature register was found. Recent documents that described implementations, runbooks, QA, or operating decisions were not duplicated as new feature ideas unless they introduced a distinct product behavior.
+
+The removed source files remain recoverable in Git commit `de89d3f`; the verified consolidation is recorded in `25fd441`. The source audits were high-precision transcript reviews, not a guarantee that every spoken idea before 2026-08-16 was captured. This file is the only feature-request document in the working tree and controls active intake, lifecycle, prioritization, and de-duplication from 2026-08-20 onward.
