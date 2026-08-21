@@ -213,6 +213,24 @@ describe("recordInboundMessage", () => {
     });
     expect($transaction).toHaveBeenCalledTimes(2);
   });
+
+  /**
+   * The shape that dropped a real inbound DM on 2026-08-21. The control-row lock
+   * is raw SQL, so Prisma reports the SQLSTATE in the message with no `code` —
+   * and a `code === "P2034"` check treated a retryable race as fatal.
+   */
+  it("retries a raw-query conflict that carries 40001 only in its message", async () => {
+    tx.dmMessage.findUnique.mockResolvedValue(null);
+    $transaction.mockRejectedValueOnce(new Error(
+        "Raw query failed. Code: `40001`. Message: `could not serialize access due to concurrent update`",
+      ));
+
+    await expect(recordInboundMessage(INBOUND)).resolves.toMatchObject({
+      duplicate: false,
+      becameLatest: true,
+    });
+    expect($transaction).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("recordOutboundMessage", () => {

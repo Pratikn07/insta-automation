@@ -6,6 +6,7 @@ import { logger } from "../lib/logger.js";
 import { env } from "../config/env.js";
 import { logEvent } from "./eventLogger.js";
 import { recordRecoveryDatabaseFailure } from "./dmRecoveryHealth.js";
+import { isRetryableConflict } from "../lib/serializationConflict.js";
 import { inferOrigin, type Origin } from "./originInference.js";
 import { ORIGIN_PROMPT_VERSION } from "./originClassifier.js";
 import {
@@ -333,7 +334,7 @@ async function persistNonSendDecision(
   }
 }
 
-const P2034_RETRY_ATTEMPTS = 3;
+const SERIALIZATION_RETRY_ATTEMPTS = 3;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -377,7 +378,9 @@ export async function listDueRecoveryIds(now: Date, limit: number): Promise<stri
 
 /**
  * Claim an eligible waiting recovery row compare-and-set style.
- * Uses a row lock on ig_users in a transaction with retries for serialization conflicts (P2034).
+ * Uses a row lock on ig_users in a transaction, with retries for serialization
+ * conflicts. The lock is raw SQL, so a conflict may arrive as Postgres' native
+ * 40001 rather than Prisma's P2034 — see isRetryableConflict.
  */
 export async function claimRecovery(
   id: string,
@@ -385,7 +388,7 @@ export async function claimRecovery(
   leaseUntil: Date,
 ): Promise<ClaimedRecovery | null> {
   let attempt = 0;
-  while (attempt < P2034_RETRY_ATTEMPTS) {
+  while (attempt < SERIALIZATION_RETRY_ATTEMPTS) {
     attempt++;
     // Buffered until the transaction commits: an event written inside it
     // survives a rollback as a claim that never happened, and the extra
@@ -478,7 +481,7 @@ export async function claimRecovery(
       for (const [kind, payload] of pendingEvents) await logEvent(kind, payload);
       return claimed;
     } catch (err: any) {
-      if (err?.code === "P2034" && attempt < P2034_RETRY_ATTEMPTS) {
+      if (isRetryableConflict(err) && attempt < SERIALIZATION_RETRY_ATTEMPTS) {
         await sleep(20 + Math.random() * 30);
         continue;
       }

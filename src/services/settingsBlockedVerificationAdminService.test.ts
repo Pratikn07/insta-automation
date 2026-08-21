@@ -97,6 +97,16 @@ describe("activateSettingsBlockedVerification", () => {
       activateSettingsBlockedVerification(TARGET.id, "owner@example.com", NOW),
     ).rejects.toMatchObject({ reason: "verification_conflict" });
   });
+
+  it("maps a raw-query 40001 to the same safe conflict code", async () => {
+    $transaction.mockRejectedValue(new Error(
+        "Raw query failed. Code: `40001`. Message: `could not serialize access due to concurrent update`",
+      ));
+
+    await expect(
+      activateSettingsBlockedVerification(TARGET.id, "owner@example.com", NOW),
+    ).rejects.toMatchObject({ reason: "verification_conflict" });
+  });
 });
 
 describe("retireSettingsBlockedVerification", () => {
