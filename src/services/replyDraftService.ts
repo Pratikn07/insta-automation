@@ -1,6 +1,7 @@
 import type { ReplyDraft } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { prisma } from "../lib/prisma.js";
+import { isRetryableConflict } from "../lib/serializationConflict.js";
 import type { DmDraftRequest } from "./codexRuntimeClient.js";
 import { ACTIVE_DRAFT_STATUSES } from "./replyDraftMachine.js";
 import { CURRENT_DM_PROMPT_VERSION } from "./replyDraftPolicy.js";
@@ -142,7 +143,7 @@ export async function queueReplyDraft(input: QueueReplyDraftInput): Promise<Repl
         { isolationLevel: "Serializable" },
       );
     } catch (error) {
-      if (hasPrismaCode(error, "P2034") && attempt < DRAFT_CREATION_TRANSACTION_ATTEMPTS) {
+      if (isRetryableConflict(error) && attempt < DRAFT_CREATION_TRANSACTION_ATTEMPTS) {
         continue;
       }
       if (!isUniqueViolation(error)) throw error;
@@ -513,15 +514,6 @@ class RegenerationBoundaryLostError extends Error {
 
 const REGENERATION_TRANSACTION_ATTEMPTS = 3;
 
-function hasPrismaCode(error: unknown, code: string): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code: unknown }).code === code
-  );
-}
-
 /**
  * Replace one reviewable draft without changing what it replies to or, for a
  * follow-up, which completed guide delivery and send window authorised it.
@@ -797,7 +789,7 @@ export async function regenerateReplyDraft(input: {
         }
         throw new DraftActionError("stale_draft");
       }
-      if (hasPrismaCode(error, "P2034") && attempt < REGENERATION_TRANSACTION_ATTEMPTS) {
+      if (isRetryableConflict(error) && attempt < REGENERATION_TRANSACTION_ATTEMPTS) {
         continue;
       }
       throw error;
