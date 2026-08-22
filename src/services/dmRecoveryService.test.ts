@@ -362,7 +362,7 @@ describe("scheduleAcceptedGateRecovery", () => {
           eligibleAt: new Date("2026-08-06T18:00:00Z"),
           instagramGateMessageId: "mid-1",
           publicReplyText:
-            '@someone I sent your guide 💛 Instagram may have tucked it into your Message Requests \u2014 check there. Still nothing? DM @tinysoho \u201cPROTEIN\u201d and I\u2019ll resend.',
+            '@someone I sent your guide 💛 Instagram may have tucked it into your Message Requests, so check there. Still nothing? DM @tinysoho \u201cPROTEIN\u201d and I\u2019ll resend.',
           templateVersion: "v2",
         }),
         update: {},

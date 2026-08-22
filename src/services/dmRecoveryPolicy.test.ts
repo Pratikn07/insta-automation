@@ -10,7 +10,7 @@ describe("DM recovery policy", () => {
   describe("renderRecoveryCopy", () => {
     it("renders the exact approved copy for no_confirmed_read", () => {
       expect(renderRecoveryCopy("no_confirmed_read", "PROTEIN")).toBe(
-        "I sent your guide 💛 Instagram may have tucked it into your Message Requests — check there. Still nothing? DM @tinysoho “PROTEIN” and I’ll resend.",
+        "I sent your guide 💛 Instagram may have tucked it into your Message Requests, so check there. Still nothing? DM @tinysoho “PROTEIN” and I’ll resend.",
       );
     });
 
@@ -36,7 +36,7 @@ describe("DM recovery policy", () => {
 
     it("opens with the recipient's @handle when one is supplied", () => {
       expect(renderRecoveryCopy("no_confirmed_read", "PROTEIN", "jane.doe_01")).toBe(
-        "@jane.doe_01 I sent your guide 💛 Instagram may have tucked it into your Message Requests — check there. Still nothing? DM @tinysoho “PROTEIN” and I’ll resend.",
+        "@jane.doe_01 I sent your guide 💛 Instagram may have tucked it into your Message Requests, so check there. Still nothing? DM @tinysoho “PROTEIN” and I’ll resend.",
       );
     });
 
@@ -64,7 +64,7 @@ describe("DM recovery policy", () => {
     ])("falls back to untagged copy for %s", (_label, handle) => {
       const copy = renderRecoveryCopy("no_confirmed_read", "PROTEIN", handle);
       expect(copy).toBe(
-        "I sent your guide 💛 Instagram may have tucked it into your Message Requests — check there. Still nothing? DM @tinysoho “PROTEIN” and I’ll resend.",
+        "I sent your guide 💛 Instagram may have tucked it into your Message Requests, so check there. Still nothing? DM @tinysoho “PROTEIN” and I’ll resend.",
       );
       expect(copy).not.toContain("@undefined");
       expect(copy).not.toContain("@null");

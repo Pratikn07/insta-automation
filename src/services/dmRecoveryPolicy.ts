@@ -71,7 +71,7 @@ export function renderRecoveryCopy(
 
   return trigger === "settings_blocked"
     ? `${mention}I couldn’t send your DM 💛 Your message-request settings blocked it. DM @tinysoho “${keyword}”.`
-    : `${mention}I sent your guide 💛 Instagram may have tucked it into your Message Requests — check there. Still nothing? DM @tinysoho “${keyword}” and I’ll resend.`;
+    : `${mention}I sent your guide 💛 Instagram may have tucked it into your Message Requests, so check there. Still nothing? DM @tinysoho “${keyword}” and I’ll resend.`;
 }
 
 export function assignRecoveryCohort(
