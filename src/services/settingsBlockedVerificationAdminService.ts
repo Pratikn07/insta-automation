@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
+import { isRetryableConflict } from "../lib/serializationConflict.js";
 
 export type SettingsBlockedVerificationAdminRejection =
   | "verification_missing"
@@ -51,7 +52,7 @@ function rethrowAdminTransactionError(error: unknown): never {
     typeof error === "object" && error !== null && "code" in error
       ? (error as { code?: unknown }).code
       : null;
-  if (code === "P2002" || code === "P2034") {
+  if (code === "P2002" || isRetryableConflict(error)) {
     throw new SettingsBlockedVerificationAdminError("verification_conflict");
   }
   throw error;

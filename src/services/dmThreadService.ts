@@ -1,6 +1,7 @@
 import type { DmMessageSource, DmMessageType } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
+import { isRetryableConflict } from "../lib/serializationConflict.js";
 import { ACTIVE_DRAFT_STATUSES } from "./replyDraftMachine.js";
 import { compareInboundOrder } from "./dmOrdering.js";
 
@@ -169,12 +170,10 @@ export async function recordInboundMessage(
         { isolationLevel: "Serializable" },
       );
     } catch (err) {
-      const retryable =
-        err !== null &&
-        typeof err === "object" &&
-        "code" in err &&
-        (err as { code?: unknown }).code === "P2034";
-      if (!retryable || attempt === INBOUND_TRANSACTION_ATTEMPTS) throw err;
+      // The control-row lock above is raw SQL, so a conflict arrives as Postgres'
+      // native 40001 rather than Prisma's P2034. Classifying only P2034 here threw
+      // a retryable race as fatal and dropped the inbound DM.
+      if (!isRetryableConflict(err) || attempt === INBOUND_TRANSACTION_ATTEMPTS) throw err;
     }
   }
 

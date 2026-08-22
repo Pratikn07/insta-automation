@@ -180,6 +180,33 @@ describe("scheduleEngagementFollowUp", () => {
     expect(tx.replyDraft.create).toHaveBeenCalledOnce();
   });
 
+  /**
+   * Identical race to the test above; only the error's representation differs.
+   * The scheduling transaction holds a raw row lock, so Postgres' 40001 arrives in
+   * the message with no Prisma `code` — which a `P2034`-only check missed, silently
+   * abandoning the follow-up instead of re-reading.
+   */
+  it("retries the same race when it arrives as a raw-query 40001", async () => {
+    const rawConflict = new Error(
+      "Raw query failed. Code: `40001`. Message: `could not serialize access due to concurrent update`",
+    );
+    $transaction.mockImplementationOnce(async (fn: (client: typeof tx) => unknown) => {
+      await fn(tx);
+      tx.$queryRaw.mockResolvedValue([
+        { id: "thread-1", latestInboundMessageId: "message-new" },
+      ]);
+      throw rawConflict;
+    });
+
+    await expect(scheduleEngagementFollowUp(INPUT)).resolves.toEqual({
+      scheduled: false,
+      draftId: null,
+    });
+
+    expect($transaction).toHaveBeenCalledTimes(2);
+    expect(tx.replyDraft.create).toHaveBeenCalledOnce();
+  });
+
   it("allocates the next thread revision inside the scheduling transaction", async () => {
     tx.replyDraft.aggregate.mockResolvedValue({ _max: { revision: 7 } });
 

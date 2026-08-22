@@ -99,4 +99,78 @@ describe("getSpikesByDay", () => {
     });
     expect([...spikes.keys()]).toEqual(["2026-08-05"]);
   });
+
+  /**
+   * The regression that made /api/insights/follower-daily-adds a ten-second
+   * request: this loaded snapshots and metadata once PER spike day, on the
+   * assumption that spikes stay rare. A 90-day lookback detects 13 of them, so
+   * the loop became 26 sequential round trips.
+   */
+  it("stays at two queries when several days spike", async () => {
+    const days: FollowerDailyAddsPoint[] = [];
+    for (let d = 1; d <= 10; d++) days.push(point(`2026-07-${String(d).padStart(2, "0")}`, 40));
+    days.push(point("2026-07-11", 200)); // spike 1
+    for (let d = 12; d <= 21; d++) days.push(point(`2026-07-${d}`, 40));
+    days.push(point("2026-07-22", 200)); // spike 2
+
+    prisma.reelPerformanceSnapshot.findMany.mockResolvedValueOnce([
+      // reel-A grows inside spike 1's window only.
+      { mediaId: "reel-a", capturedAt: new Date("2026-07-09T20:00:00.000Z"), reach: 100 },
+      { mediaId: "reel-a", capturedAt: new Date("2026-07-12T20:00:00.000Z"), reach: 500 },
+      // reel-B grows inside spike 2's window only.
+      { mediaId: "reel-b", capturedAt: new Date("2026-07-20T20:00:00.000Z"), reach: 100 },
+      { mediaId: "reel-b", capturedAt: new Date("2026-07-23T20:00:00.000Z"), reach: 600 },
+    ] as never);
+    prisma.reelMeta.findMany.mockResolvedValueOnce([
+      { mediaId: "reel-a", caption: "A", thumbnailUrl: null, permalink: null, postedAt: null },
+      { mediaId: "reel-b", caption: "B", thumbnailUrl: null, permalink: null, postedAt: null },
+    ] as never);
+
+    const spikes = await getSpikesByDay(days);
+
+    expect([...spikes.keys()]).toEqual(["2026-07-11", "2026-07-22"]);
+    expect(prisma.reelPerformanceSnapshot.findMany).toHaveBeenCalledOnce();
+    expect(prisma.reelMeta.findMany).toHaveBeenCalledOnce();
+
+    // One query spanning both windows, reaching back for spike 1's baseline.
+    expect(prisma.reelPerformanceSnapshot.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          capturedAt: {
+            gte: new Date("2026-07-08T07:00:00.000Z"),
+            lte: new Date("2026-07-24T06:59:59.999Z"),
+          },
+        },
+      }),
+    );
+  });
+
+  /**
+   * The single query is wider than any one spike's window, so each spike must be
+   * narrowed back to its own bounds before ranking. Without that, one day's reel
+   * would be credited for another day's followers.
+   */
+  it("keeps each spike's attribution inside its own window", async () => {
+    const days: FollowerDailyAddsPoint[] = [];
+    for (let d = 1; d <= 10; d++) days.push(point(`2026-07-${String(d).padStart(2, "0")}`, 40));
+    days.push(point("2026-07-11", 200));
+    for (let d = 12; d <= 21; d++) days.push(point(`2026-07-${d}`, 40));
+    days.push(point("2026-07-22", 200));
+
+    prisma.reelPerformanceSnapshot.findMany.mockResolvedValueOnce([
+      { mediaId: "reel-a", capturedAt: new Date("2026-07-09T20:00:00.000Z"), reach: 100 },
+      { mediaId: "reel-a", capturedAt: new Date("2026-07-12T20:00:00.000Z"), reach: 500 },
+      { mediaId: "reel-b", capturedAt: new Date("2026-07-20T20:00:00.000Z"), reach: 100 },
+      { mediaId: "reel-b", capturedAt: new Date("2026-07-23T20:00:00.000Z"), reach: 600 },
+    ] as never);
+    prisma.reelMeta.findMany.mockResolvedValueOnce([
+      { mediaId: "reel-a", caption: "A", thumbnailUrl: null, permalink: null, postedAt: null },
+      { mediaId: "reel-b", caption: "B", thumbnailUrl: null, permalink: null, postedAt: null },
+    ] as never);
+
+    const spikes = await getSpikesByDay(days);
+
+    expect(spikes.get("2026-07-11")!.candidates.map((c) => c.mediaId)).toEqual(["reel-a"]);
+    expect(spikes.get("2026-07-22")!.candidates.map((c) => c.mediaId)).toEqual(["reel-b"]);
+  });
 });

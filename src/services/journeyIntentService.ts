@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
+import { isRetryableConflict } from "../lib/serializationConflict.js";
 import { lockJourneyIdentity } from "./journeyIdentityLock.js";
 
 /**
@@ -33,26 +34,6 @@ export const JOURNEY_WINDOW_MS = 48 * 60 * 60 * 1000;
 const SERIALIZATION_RETRY_ATTEMPTS = 10;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-/**
- * Did this failure mean "another transaction got there first, try again"?
- *
- * Prisma normalises a serialization failure to `P2034` for its own query builder,
- * but a `$queryRaw` surfaces Postgres' native `40001` unchanged — and the
- * `SELECT ... FOR UPDATE` below is raw. Matching only `P2034` let a genuine race
- * escape as a hard failure, which under a burst of concurrent comments meant the
- * caller could not tell whether a gate had been sent.
- *
- * `40P01` (deadlock_detected) is included for the same reason: it is retryable and
- * arrives by the same path.
- */
-function isRetryableConflict(err: unknown): boolean {
-  const code = (err as { code?: string })?.code;
-  if (code === "P2034" || code === "40001" || code === "40P01") return true;
-  // A raw-query failure carries the SQLSTATE in its message rather than `code`.
-  const message = (err as { message?: string })?.message ?? "";
-  return message.includes("40001") || message.includes("could not serialize access");
-}
 
 /**
  * What resolution decided, and therefore what the caller may send.

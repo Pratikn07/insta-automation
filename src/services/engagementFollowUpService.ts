@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma.js";
+import { isRetryableConflict } from "../lib/serializationConflict.js";
 import { ACTIVE_DRAFT_STATUSES } from "./replyDraftMachine.js";
 import {
   computeFollowUpSchedule,
@@ -108,7 +109,7 @@ export async function scheduleEngagementFollowUp(
         { isolationLevel: "Serializable" },
       );
     } catch (error) {
-      if (hasPrismaCode(error, "P2034") && attempt < SCHEDULING_TRANSACTION_ATTEMPTS) {
+      if (isRetryableConflict(error) && attempt < SCHEDULING_TRANSACTION_ATTEMPTS) {
         continue;
       }
       if (!hasPrismaCode(error, "P2002")) throw error;

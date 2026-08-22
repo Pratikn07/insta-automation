@@ -485,6 +485,19 @@ describe("regenerateReplyDraft", () => {
     expect(sql.filter((value) => value.includes("FOR UPDATE OF draft"))).toHaveLength(2);
   });
 
+  it("retries a raw-query conflict that carries no Prisma code", async () => {
+    const rawFailure = new Error(
+        "Raw query failed. Code: `40001`. Message: `could not serialize access due to concurrent update`",
+      );
+    $transaction.mockImplementationOnce(async (fn: (client: typeof tx) => unknown) => {
+      await fn(tx);
+      throw rawFailure;
+    });
+
+    await expect(regenerateReplyDraft(INPUT)).resolves.toMatchObject({ id: "draft-4" });
+    expect($transaction).toHaveBeenCalledTimes(2);
+  });
+
   it("bounds repeated P2034 retries", async () => {
     const serializationFailure = Object.assign(new Error("serialization failure"), { code: "P2034" });
     $transaction.mockRejectedValue(serializationFailure);
