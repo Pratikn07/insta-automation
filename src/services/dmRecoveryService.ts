@@ -235,7 +235,11 @@ export async function scheduleAcceptedGateRecovery(
   const insideWindow = acceptedInsideConfiguredWindow(input.acceptedAt);
   const inMarket =
     !flags.bool("DM_RECOVERY_WESTERN_ONLY") || audience.origin !== "south_asian";
-  const publicReplyText = renderRecoveryCopy("no_confirmed_read", input.keywordSnapshot);
+  const publicReplyText = renderRecoveryCopy(
+    "no_confirmed_read",
+    input.keywordSnapshot,
+    audience.handle,
+  );
 
   let status: DmRecoveryStatus;
   let cohort: "treatment" | "control" | "not_applicable";
@@ -346,7 +350,11 @@ export async function scheduleSettingsBlockedRecovery(
 
   // An exact webhook/retry replay must preserve the evidence captured on the
   // original row even if the registry version was retired afterwards.
-  const publicReplyText = renderRecoveryCopy("settings_blocked", input.keywordSnapshot);
+  const publicReplyText = renderRecoveryCopy(
+    "settings_blocked",
+    input.keywordSnapshot,
+    await readRecoveryHandle(input.igUserId),
+  );
 
   const createData = {
     conversationId: input.conversationId,
@@ -410,7 +418,13 @@ export async function scheduleTrackingUnavailableRecovery(
   input: TrackingUnavailableRecoveryInput,
 ): Promise<{ id: string; status: "tracking_unavailable" }> {
   const commentId = requireCommentOrigin(input.commentId);
-  const publicReplyText = renderRecoveryCopy("no_confirmed_read", input.keywordSnapshot);
+  // Terminal at creation, so this text is never posted. Rendered with the handle
+  // anyway so the stored row matches what a sending row would have carried.
+  const publicReplyText = renderRecoveryCopy(
+    "no_confirmed_read",
+    input.keywordSnapshot,
+    await readRecoveryHandle(input.igUserId),
+  );
 
   const createData = {
     conversationId: input.conversationId,
@@ -718,7 +732,7 @@ export async function recordRecoveryInbound(
  */
 async function readAudienceOriginSnapshot(
   igUserId: string,
-): Promise<{ origin: string | null; confidence: string | null }> {
+): Promise<{ origin: string | null; confidence: string | null; handle: string | null }> {
   try {
     const person = await prisma.igUser.findUnique({
       where: { id: igUserId },
@@ -733,14 +747,41 @@ async function readAudienceOriginSnapshot(
     // Same resolver the send-time check uses, so the snapshot cannot disagree
     // with the decision for reasons other than elapsed time.
     const resolved = resolveAudienceOrigin(person);
-    return { origin: resolved.origin, confidence: resolved.confidence };
+    // The handle rides along on the row this query already reads — the public
+    // reply's @mention needs it, and a second round trip would buy nothing.
+    return {
+      origin: resolved.origin,
+      confidence: resolved.confidence,
+      handle: person?.username ?? null,
+    };
   } catch {
     recordRecoveryDatabaseFailure();
     logger.error(
       { errorCode: "audience_origin_snapshot_failed", igUserId },
       "Could not snapshot audience origin; recording the reminder without it",
     );
-    return { origin: null, confidence: null };
+    return { origin: null, confidence: null, handle: null };
+  }
+}
+
+/**
+ * Handle-only read for the paths that do not snapshot audience origin. Failure
+ * is never fatal: a missing handle costs the @mention, not the reminder.
+ */
+async function readRecoveryHandle(igUserId: string): Promise<string | null> {
+  try {
+    const person = await prisma.igUser.findUnique({
+      where: { id: igUserId },
+      select: { username: true },
+    });
+    return person?.username ?? null;
+  } catch {
+    recordRecoveryDatabaseFailure();
+    logger.error(
+      { errorCode: "recovery_handle_read_failed", igUserId },
+      "Could not read handle for the public reply; posting it untagged",
+    );
+    return null;
   }
 }
 

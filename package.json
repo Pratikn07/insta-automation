@@ -20,7 +20,8 @@
     "check:guide-delivery-bypasses": "node scripts/check-guide-delivery-bypasses.mjs",
     "funnel": "tsx scripts/funnel-report.ts",
     "recovery:select-expanded": "tsx scripts/select-expanded-historical-recovery.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "redact:legacy-provider-bodies": "tsx scripts/redact-legacy-provider-bodies.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",

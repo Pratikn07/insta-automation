@@ -10,7 +10,7 @@ describe("DM recovery policy", () => {
   describe("renderRecoveryCopy", () => {
     it("renders the exact approved copy for no_confirmed_read", () => {
       expect(renderRecoveryCopy("no_confirmed_read", "PROTEIN")).toBe(
-        "I sent your guide 💛 Check your DMs/Requests. If you don’t see it, DM @tinysoho “PROTEIN”.",
+        "I sent your guide 💛 Instagram may have tucked it into your Message Requests — check there. Still nothing? DM @tinysoho “PROTEIN” and I’ll resend.",
       );
     });
 
@@ -21,7 +21,8 @@ describe("DM recovery policy", () => {
     });
 
     it.each([
-      ["no_confirmed_read", "  sleep ", "DM @tinysoho “SLEEP”."],
+      // No trailing period here: this copy continues "… and I’ll resend."
+      ["no_confirmed_read", "  sleep ", "DM @tinysoho “SLEEP”"],
       ["settings_blocked", "Protein", "DM @tinysoho “PROTEIN”."],
     ] as const)("normalizes %s copy to an uppercase keyword", (trigger, keyword, expectedTail) => {
       expect(renderRecoveryCopy(trigger, keyword)).toContain(expectedTail);
@@ -31,6 +32,49 @@ describe("DM recovery policy", () => {
       expect(() => renderRecoveryCopy("no_confirmed_read", "")).toThrow(
         "invalid_keyword_snapshot",
       );
+    });
+
+    it("opens with the recipient's @handle when one is supplied", () => {
+      expect(renderRecoveryCopy("no_confirmed_read", "PROTEIN", "jane.doe_01")).toBe(
+        "@jane.doe_01 I sent your guide 💛 Instagram may have tucked it into your Message Requests — check there. Still nothing? DM @tinysoho “PROTEIN” and I’ll resend.",
+      );
+    });
+
+    it("tags the settings_blocked copy too", () => {
+      expect(renderRecoveryCopy("settings_blocked", "SLEEP", "jane.doe_01")).toBe(
+        "@jane.doe_01 I couldn’t send your DM 💛 Your message-request settings blocked it. DM @tinysoho “SLEEP”.",
+      );
+    });
+
+    it("does not double the sigil on a handle already carrying one", () => {
+      expect(renderRecoveryCopy("no_confirmed_read", "PROTEIN", "@jane")).toContain("@jane I sent");
+    });
+
+    // A bad handle cannot fail at the provider — Instagram parses mentions out
+    // of plain text, so it would post literally under the owner's own name.
+    it.each([
+      ["null", null],
+      ["undefined", undefined],
+      ["empty", ""],
+      ["whitespace", "   "],
+      ["a bare sigil", "@"],
+      ["an internal space", "jane doe"],
+      ["an invalid character", "jane$doe"],
+      ["over 30 characters", "a".repeat(31)],
+    ])("falls back to untagged copy for %s", (_label, handle) => {
+      const copy = renderRecoveryCopy("no_confirmed_read", "PROTEIN", handle);
+      expect(copy).toBe(
+        "I sent your guide 💛 Instagram may have tucked it into your Message Requests — check there. Still nothing? DM @tinysoho “PROTEIN” and I’ll resend.",
+      );
+      expect(copy).not.toContain("@undefined");
+      expect(copy).not.toContain("@null");
+    });
+
+    it("accepts a handle at exactly the 30-character limit", () => {
+      const handle = "a".repeat(30);
+      expect(
+        renderRecoveryCopy("no_confirmed_read", "PROTEIN", handle).startsWith(`@${handle} `),
+      ).toBe(true);
     });
   });
 
