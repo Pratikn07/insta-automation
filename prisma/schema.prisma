@@ -78,6 +78,7 @@ model Resource {
   coverSuggestions    ResourceCoverSuggestion[]
   coverVersions       ResourceCoverVersion[]
   coverOrphans        GuideCoverOrphan[]
+  guideAccessAttempts GuideAccessAttempt[]
 
   @@index([theme, ageMinMonths, ageMaxMonths])
   @@map("resources")
@@ -225,6 +226,7 @@ model ResourceCoverVersion {
   category   PresentationCategory     @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   suggestion ResourceCoverSuggestion? @relation(fields: [suggestionId], references: [id], onDelete: SetNull)
   orphans    GuideCoverOrphan[]
+  guideAccessAttempts GuideAccessAttempt[]
 
   @@unique([resourceId, revision])
   @@index([categoryId])
@@ -370,6 +372,7 @@ model Conversation {
   journeyTriggers    JourneyTrigger[]
   recoveryCandidates RecoveryCandidate[]
   guideDeliveries    GuideDelivery[]
+  guideAccessAttempts GuideAccessAttempt[]
 
   @@index([igUserId, state])
   @@index([state, createdAt])
@@ -892,6 +895,95 @@ enum GuideDeliveryFailureDisposition {
   permanent
 
   @@map("guide_delivery_failure_disposition")
+}
+
+enum GuideAccessAttemptState {
+  awaiting_request
+  checking_follow
+  awaiting_follow
+  delivering
+  delivered
+  needs_review
+  expired
+
+  @@map("guide_access_attempt_state")
+}
+
+enum GuideFollowResult {
+  follower
+  non_follower
+  unknown
+
+  @@map("guide_follow_result")
+}
+
+enum GuideCoverExposure {
+  not_shown
+  accepted
+  uncertain
+  failed
+
+  @@map("guide_cover_exposure")
+}
+
+enum GuideActionTokenAction {
+  request_guide
+  check_follow
+
+  @@map("guide_action_token_action")
+}
+
+enum GuideActionTokenStatus {
+  active
+  consumed
+  expired
+  cancelled
+
+  @@map("guide_action_token_status")
+}
+
+model GuideAccessAttempt {
+  id                       String                  @id @db.Uuid
+  conversationId           String                  @map("conversation_id") @db.Uuid
+  resourceId               String                  @map("resource_id") @db.Uuid
+  coverVersionId           String?                 @map("cover_version_id") @db.Uuid
+  state                    GuideAccessAttemptState @default(awaiting_request)
+  lastFollowResult         GuideFollowResult       @default(unknown) @map("last_follow_result")
+  lastFollowCheckedAt      DateTime?               @map("last_follow_checked_at") @db.Timestamptz(3)
+  followCheckCount         Int                     @default(0) @map("follow_check_count")
+  followResponseCount      Int                     @default(0) @map("follow_response_count")
+  coverExposure            GuideCoverExposure      @default(not_shown) @map("cover_exposure")
+  coverProviderMessageId   String?                 @map("cover_provider_message_id")
+  messagingWindowExpiresAt DateTime                @map("messaging_window_expires_at") @db.Timestamptz(3)
+  createdAt                DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                DateTime                @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  conversation Conversation          @relation(fields: [conversationId], references: [id], onDelete: Restrict)
+  resource     Resource              @relation(fields: [resourceId], references: [id], onDelete: Restrict)
+  coverVersion ResourceCoverVersion? @relation(fields: [coverVersionId], references: [id], onDelete: Restrict)
+  actionTokens GuideActionToken[]
+
+  @@index([conversationId])
+  @@index([resourceId])
+  @@index([coverVersionId])
+  // The one-active-attempt and expiration indexes are partial and hand-authored in SQL.
+  @@map("guide_access_attempt")
+}
+
+model GuideActionToken {
+  id        String                 @id @db.Uuid
+  attemptId String                 @map("attempt_id") @db.Uuid
+  action    GuideActionTokenAction
+  status    GuideActionTokenStatus @default(active)
+  expiresAt DateTime               @map("expires_at") @db.Timestamptz(3)
+  consumedAt DateTime?             @map("consumed_at") @db.Timestamptz(3)
+  createdAt DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  attempt GuideAccessAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+
+  @@index([attemptId, status])
+  // The active-token expiry index is partial and hand-authored in SQL.
+  @@map("guide_action_token")
 }
 
 model GuideDelivery {
