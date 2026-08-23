@@ -111,6 +111,8 @@ export async function rememberUsername(
  *
  * Never throws — on failure we record a stub (so we don't hammer the API) and
  * return nulls, so callers fall back to the numeric id and a neutral follow state.
+ * This is display enrichment only: its cached/error fallback is never authorization
+ * evidence. Strict guide authorization must use `resolveFollowStatusFresh`.
  */
 export async function resolveUsername(igUserId: string): Promise<IgUserLite> {
   try {
