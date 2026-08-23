@@ -1,11 +1,50 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 const ARTIFACTS = "../docs/qa/artifacts/2026-08-22-creator-cover-console";
 const APPROVED_ALTERNATIVE_DESCRIPTION =
   "Blush TinySoho sleep guide cover with a moonlit house illustration.";
 
-function expectedMutationLog(paths: string[]) {
-  return JSON.stringify({ mutations: paths });
+interface CapturedMutation {
+  method: string;
+  path: string;
+  idempotencyKey: string | null;
+  body: Record<string, unknown> | null;
+}
+
+const nonLocalRequests = new WeakMap<Page, string[]>();
+
+test.beforeEach(async ({ page }) => {
+  const blocked: string[] = [];
+  nonLocalRequests.set(page, blocked);
+  await page.route("**/*", async (route) => {
+    const requestUrl = new URL(route.request().url());
+    if (["localhost", "127.0.0.1", "::1"].includes(requestUrl.hostname)) {
+      await route.continue();
+      return;
+    }
+    blocked.push(`${route.request().method()} ${requestUrl.href}`);
+    await route.abort("blockedbyclient");
+  });
+});
+
+test.afterEach(async ({ page }) => {
+  expect(nonLocalRequests.get(page) ?? []).toEqual([]);
+});
+
+async function mutationReceipt(log: Locator, count: number): Promise<CapturedMutation[]> {
+  await expect
+    .poll(async () => {
+      const value = JSON.parse((await log.textContent()) ?? "{}") as {
+        mutations?: CapturedMutation[];
+      };
+      return value.mutations?.length;
+    })
+    .toBe(count);
+  return (
+    JSON.parse((await log.textContent()) ?? "{}") as {
+      mutations: CapturedMutation[];
+    }
+  ).mutations;
 }
 
 test("authors and publishes a responsive guide cover without touching messages", async ({
@@ -61,6 +100,12 @@ test("authors and publishes a responsive guide cover without touching messages",
   expect(
     await preview.locator("text").nth(2).evaluate((text) => getComputedStyle(text).fontFamily),
   ).toContain("Source Serif 4");
+  expect(
+    await preview.locator("text").nth(0).evaluate((text) => getComputedStyle(text).fontFamily),
+  ).toContain("Inter");
+  expect(
+    await preview.locator("text").nth(3).evaluate((text) => getComputedStyle(text).fontFamily),
+  ).toContain("Inter");
 
   const artifactFolder = testInfo.project.name === "mobile" ? "mobile" : "desktop";
   await preview.screenshot({
@@ -71,43 +116,53 @@ test("authors and publishes a responsive guide cover without touching messages",
   await expect(panel.getByRole("button", { name: "Approve and publish" })).toBeDisabled();
 
   const mutationLog = page.getByTestId("guide-cover-mutation-log");
-  await expect(mutationLog).toHaveText(
-    expectedMutationLog(["POST /resources/resource-1/cover-suggestions"]),
-  );
+  const [suggestionMutation] = await mutationReceipt(mutationLog, 1);
+  expect(suggestionMutation).toMatchObject({
+    method: "POST",
+    path: "/resources/resource-1/cover-suggestions",
+    idempotencyKey: expect.any(String),
+    body: {
+      id: expect.any(String),
+      selectedCategoryId: "10000000-0000-4000-8000-000000000002",
+    },
+  });
+  expect(suggestionMutation?.body?.id).toBe(suggestionMutation?.idempotencyKey);
 
   await panel.getByRole("button", { name: "Save cover draft" }).click();
   await expect(panel.getByText("Draft saved")).toBeVisible();
-  await expect(mutationLog).toHaveText(
-    expectedMutationLog([
-      "POST /resources/resource-1/cover-suggestions",
-      "POST /resources/resource-1/cover-versions",
-    ]),
-  );
+  const [, saveMutation] = await mutationReceipt(mutationLog, 2);
+  expect(saveMutation).toMatchObject({
+    method: "POST",
+    path: "/resources/resource-1/cover-versions",
+    idempotencyKey: expect.any(String),
+    body: {
+      id: expect.any(String),
+      categoryId: "10000000-0000-4000-8000-000000000001",
+      suggestionId: suggestionMutation?.body?.id,
+      copy: { closingLine: "Prepared for a gentler bedtime tonight." },
+    },
+  });
+  expect(saveMutation?.body?.id).toBe(saveMutation?.idempotencyKey);
+  const savedCoverId = String(saveMutation?.body?.id);
 
   const publish = panel.getByRole("button", { name: "Approve and publish" });
   await expect(publish).toBeEnabled();
   await publish.click();
   await expect(panel.getByText("Published", { exact: true })).toBeVisible();
-  await expect
-    .poll(async () => {
-      const value = JSON.parse((await mutationLog.textContent()) ?? "{}") as {
-        mutations?: string[];
-      };
-      return value.mutations?.length;
-    })
-    .toBe(4);
-  const mutationPaths = (
-    JSON.parse((await mutationLog.textContent()) ?? "{}") as { mutations: string[] }
-  ).mutations;
-  expect(mutationPaths.slice(0, 2)).toEqual([
-    "POST /resources/resource-1/cover-suggestions",
-    "POST /resources/resource-1/cover-versions",
-  ]);
-  expect(mutationPaths[2]).toMatch(
-    /^POST \/resources\/resource-1\/cover-versions\/[0-9a-f-]+\/approve$/u,
-  );
-  expect(mutationPaths[3]).toBe(mutationPaths[2]?.replace(/\/approve$/u, "/publish"));
-  expect(mutationPaths.some((path) => path.includes("/messages"))).toBe(false);
+  const mutations = await mutationReceipt(mutationLog, 4);
+  expect(mutations[2]).toEqual({
+    method: "POST",
+    path: `/resources/resource-1/cover-versions/${savedCoverId}/approve`,
+    idempotencyKey: null,
+    body: { expectedRevision: 1 },
+  });
+  expect(mutations[3]).toEqual({
+    method: "POST",
+    path: `/resources/resource-1/cover-versions/${savedCoverId}/publish`,
+    idempotencyKey: null,
+    body: { expectedRevision: 1 },
+  });
+  expect(mutations.some(({ path }) => path.includes("/messages"))).toBe(false);
 
   expect(
     await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
@@ -118,5 +173,53 @@ test("authors and publishes a responsive guide cover without touching messages",
   await page.screenshot({
     path: `${ARTIFACTS}/${artifactFolder}/creator-console-published.png`,
     fullPage: true,
+  });
+});
+
+test("mock cover API rejects publication until the saved revision is approved", async ({
+  page,
+}) => {
+  await page.goto("/e2e/index.html?scenario=guide-cover-authoring");
+
+  const outcome = await page.evaluate(async () => {
+    const coverId = "30000000-0000-4000-8000-000000000099";
+    const create = await fetch("/api/resources/resource-1/cover-versions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": coverId,
+      },
+      body: JSON.stringify({
+        id: coverId,
+        categoryId: "10000000-0000-4000-8000-000000000001",
+        suggestionId: null,
+        copy: {
+          headline: "Bedtime can feel softer",
+          supportingLine: "A calmer bedtime, one small shift at a time.",
+          closingLine: "Prepared for calmer evenings.",
+          alternativeDescription:
+            "Blush TinySoho sleep guide cover with a moonlit house illustration.",
+        },
+      }),
+    });
+    const publish = await fetch(
+      `/api/resources/resource-1/cover-versions/${coverId}/publish`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ expectedRevision: 1 }),
+      },
+    );
+    return {
+      createStatus: create.status,
+      publishStatus: publish.status,
+      publishBody: await publish.json(),
+    };
+  });
+
+  expect(outcome).toEqual({
+    createStatus: 201,
+    publishStatus: 409,
+    publishBody: { error: "cover_not_approved" },
   });
 });

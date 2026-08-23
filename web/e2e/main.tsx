@@ -1161,6 +1161,14 @@ const EDITOR_RESOURCE = {
   keywords: [{ id: "keyword-1", keyword: "SLEEP" }],
 };
 
+const EDITOR_ACTIVITY_IMAGE = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400" viewBox="0 0 600 400">
+    <rect width="600" height="400" fill="#EBE8DF"/>
+    <text x="300" y="215" text-anchor="middle" fill="#66665F" font-family="Arial, sans-serif" font-size="48">Activity one</text>
+  </svg>`,
+)}`;
+const EDITOR_PRINTABLE_PDF = "data:application/pdf,PDF";
+
 const EDITOR_MESSAGES = [
   {
     id: "message-1",
@@ -1176,7 +1184,7 @@ const EDITOR_MESSAGES = [
     order: 1,
     type: "image" as const,
     body: "Activity one: the sorting basket.",
-    mediaUrl: "https://placehold.co/600x400/EBE8DF/66665F?text=Activity+one",
+    mediaUrl: EDITOR_ACTIVITY_IMAGE,
   },
   {
     id: "message-3",
@@ -1184,7 +1192,7 @@ const EDITOR_MESSAGES = [
     order: 2,
     type: "pdf" as const,
     body: null,
-    mediaUrl: "https://placehold.co/600x400/EBE8DF/66665F?text=Printable",
+    mediaUrl: EDITOR_PRINTABLE_PDF,
   },
 ];
 
@@ -1234,7 +1242,12 @@ const GUIDE_COVER_SUGGESTED_COPY = {
 };
 
 let guideCoverVersion: Record<string, unknown> | null = null;
-const guideCoverMutations: string[] = [];
+const guideCoverMutations: Array<{
+  method: string;
+  path: string;
+  idempotencyKey: string | null;
+  body: unknown;
+}> = [];
 
 function guideCoverPresentation() {
   if (!guideCoverVersion) return { presentation: null, coverVersions: [] };
@@ -1319,8 +1332,18 @@ function installFetchStub(): void {
       });
     }
 
+    const idempotencyKey = new Headers(init?.headers).get("idempotency-key");
+    let requestBody: unknown = null;
+    if (typeof init?.body === "string") {
+      try {
+        requestBody = JSON.parse(init.body);
+      } catch {
+        requestBody = init.body;
+      }
+    }
+
     if (activeScenario() === "guide-cover-authoring" && method !== "GET") {
-      guideCoverMutations.push(`${method} ${path}`);
+      guideCoverMutations.push({ method, path, idempotencyKey, body: requestBody });
       capture(JSON.stringify({ mutations: guideCoverMutations }));
     }
 
@@ -1375,9 +1398,13 @@ function installFetchStub(): void {
       method === "POST" &&
       activeScenario() === "guide-cover-authoring"
     ) {
+      const body = requestBody as { id?: unknown; selectedCategoryId?: unknown } | null;
+      if (!body || typeof body.id !== "string" || body.id !== idempotencyKey) {
+        return json({ error: "idempotency_key_mismatch" }, 400);
+      }
       return json({
         replayed: false,
-        suggestion: { id: "40000000-0000-4000-8000-000000000001" },
+        suggestion: { id: body.id },
         draft: {
           categoryId: GUIDE_COVER_CATEGORIES[0].id,
           templateKey: GUIDE_COVER_CATEGORIES[0].templateKey,
@@ -1392,12 +1419,15 @@ function installFetchStub(): void {
       method === "POST" &&
       activeScenario() === "guide-cover-authoring"
     ) {
-      const body = JSON.parse(String(init?.body)) as {
+      const body = requestBody as {
         id: string;
         categoryId: string;
         suggestionId: string | null;
         copy: typeof GUIDE_COVER_SUGGESTED_COPY;
       };
+      if (!body || typeof body.id !== "string" || body.id !== idempotencyKey) {
+        return json({ error: "idempotency_key_mismatch" }, 400);
+      }
       const category = GUIDE_COVER_CATEGORIES.find(
         (candidate) => candidate.id === body.categoryId,
       )!;
@@ -1436,6 +1466,10 @@ function installFetchStub(): void {
     if (guideCoverLifecycle && method === "POST" && guideCoverVersion) {
       const [, coverId, action] = guideCoverLifecycle;
       if (coverId !== guideCoverVersion.id) return json({ error: "not_found" }, 404);
+      const body = requestBody as { expectedRevision?: unknown } | null;
+      if (!body || body.expectedRevision !== guideCoverVersion.revision) {
+        return json({ error: "cover_revision_conflict" }, 409);
+      }
       if (action === "approve") {
         guideCoverVersion = {
           ...guideCoverVersion,
@@ -1445,6 +1479,9 @@ function installFetchStub(): void {
           updatedAt: "2026-08-22T12:05:00.000Z",
         };
         return json({ ok: true, outcome: "approved" });
+      }
+      if (guideCoverVersion.status !== "approved") {
+        return json({ error: "cover_not_approved" }, 409);
       }
       guideCoverVersion = {
         ...guideCoverVersion,
