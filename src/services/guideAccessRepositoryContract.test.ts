@@ -174,10 +174,10 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
     expect(left.attempt.id).toBe(right.attempt.id);
     expect(left.attempt).toMatchObject(input);
     expect(right.attempt).toMatchObject(input);
-    // Both racers resolved the same snapshot, and the fixture cover is a draft, so the
-    // correct answer is "no sendable cover" rather than the draft's id.
-    expect(left.attempt.coverVersionId).toBe(right.attempt.coverVersionId);
-    expect(left.cover).toEqual(right.cover);
+    // Deliberately no cover assertions here: the fixture cover is a draft, so both
+    // sides are null and any comparison would pass without proving anything. The real
+    // concurrent-snapshot proof publishes first — see "resolves exactly one cover
+    // snapshot across two concurrent creators".
     await expect(
       firstClient.guideAccessAttempt.count({ where: { conversationId: fixture.conversationId } }),
     ).resolves.toBe(1);
@@ -537,7 +537,11 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
     });
 
     expect(created.attempt.coverVersionId).toBe(fixture.coverVersionId);
-    expect(created.cover).toEqual({ versionId: fixture.coverVersionId, dmStoragePath });
+    expect(created.cover).toEqual({
+      versionId: fixture.coverVersionId,
+      resourceId: fixture.resourceId,
+      dmStoragePath,
+    });
   });
 
   // The predicate also filters on render status, content hash and DM path. Those cannot
@@ -545,19 +549,33 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
   // unrepresentable — which is a stronger guarantee than the predicate. Proven here so
   // the redundancy is on record rather than assumed.
   it.each([
-    { label: "an unrendered publish", data: { renderStatus: "not_rendered" as const } },
-    { label: "a publish with no DM path", data: { dmStoragePath: null } },
-    { label: "a publish with no content hash", data: { contentHash: null } },
-  ])("the database itself refuses $label", async ({ data }) => {
+    {
+      label: "an unrendered publish",
+      data: { renderStatus: "not_rendered" as const },
+      constraint: "resource_cover_version_published_check",
+    },
+    {
+      label: "a publish with no DM path",
+      data: { dmStoragePath: null },
+      constraint: "resource_cover_version_published_check",
+    },
+    {
+      label: "a publish with no content hash",
+      data: { contentHash: null },
+      constraint: "resource_cover_version_published_check",
+    },
+  ])("the database itself refuses $label", async ({ data, constraint }) => {
     const fixture = await createFixture();
     await publishFixtureCover(fixture);
 
+    // Naming the constraint matters: a bare `rejects.toThrow()` would also be satisfied
+    // by an unrelated Prisma error and would stop proving the schema is what forbids this.
     await expect(
       firstClient.resourceCoverVersion.update({
         where: { id: fixture.coverVersionId },
         data,
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(new RegExp(constraint));
   });
 
   it("keeps the original snapshot when a newer cover publishes mid-attempt", async () => {
@@ -609,6 +627,7 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
     expect(replay.attempt.coverVersionId).toBe(fixture.coverVersionId);
     expect(replay.cover).toEqual({
       versionId: fixture.coverVersionId,
+      resourceId: fixture.resourceId,
       dmStoragePath: originalPath,
     });
   });

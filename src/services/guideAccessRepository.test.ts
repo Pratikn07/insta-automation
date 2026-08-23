@@ -73,8 +73,8 @@ function harness(input: {
   activeToken?: GuideActionToken | null;
   attemptUpdateCount?: number;
   tokenUpdateCount?: number;
-  publishedCover?: { id: string; dmStoragePath: string | null } | null;
-  coverById?: { id: string; dmStoragePath: string | null } | null;
+  publishedCover?: { id: string; resourceId: string; dmStoragePath: string | null } | null;
+  coverById?: { id: string; resourceId: string; dmStoragePath: string | null } | null;
 } = {}) {
   const locks: string[] = [];
   const createdAttempt = attempt();
@@ -95,13 +95,11 @@ function harness(input: {
       updateMany: vi.fn(async () => ({ count: input.attemptUpdateCount ?? 1 })),
     },
     resourceCoverVersion: {
-      findFirst: vi.fn(async (request?: { where?: Record<string, unknown> }) => {
-        // Two distinct reads share this model: the published lookup on create, and the
-        // by-id resolve on replay. Distinguished by whether the caller pinned an id.
-        const byId = typeof request?.where?.id === "string";
-        if (byId) return input.coverById ?? null;
-        return input.publishedCover ?? null;
-      }),
+      // The two reads are now distinguished by METHOD, not by inspecting the where
+      // clause: `findFirst` is the published lookup on create, `findUnique` is the
+      // by-id resolve on replay. No heuristic to get wrong.
+      findFirst: vi.fn(async () => input.publishedCover ?? null),
+      findUnique: vi.fn(async () => input.coverById ?? null),
     },
     guideActionToken: {
       findUnique: vi.fn(async () => input.tokenIdentity ?? { attemptId: ATTEMPT_ID }),
@@ -134,7 +132,11 @@ describe("guide access repository", () => {
     const { senderId: _, ...originalRecord } = original;
     const test = harness({
       activeAttempt: original,
-      coverById: { id: COVER_ID, dmStoragePath: "guide-covers/original/dm.png" },
+      coverById: {
+        id: COVER_ID,
+        resourceId: RESOURCE_ID,
+        dmStoragePath: "guide-covers/original/dm.png",
+      },
     });
 
     await expect(
@@ -146,9 +148,16 @@ describe("guide access repository", () => {
     ).resolves.toEqual({
       kind: "loaded",
       attempt: originalRecord,
-      // Resolved from the loaded attempt's own snapshot id, not from the resourceId
-      // passed in above — which is deliberately a different guide here.
-      cover: { versionId: COVER_ID, dmStoragePath: "guide-covers/original/dm.png" },
+      // Resolved from the loaded attempt's own snapshot id, not from the `resourceId`
+      // passed in above — which is a DIFFERENT guide here. That divergence is a hazard,
+      // not a feature: a consumer that took the guide from the argument and the cover
+      // from here would pair one guide's cover with another's messages. The snapshot
+      // therefore carries its own `resourceId` so the mismatch is visible.
+      cover: {
+        versionId: COVER_ID,
+        resourceId: RESOURCE_ID,
+        dmStoragePath: "guide-covers/original/dm.png",
+      },
     });
     expect(test.tx.guideAccessAttempt.create).not.toHaveBeenCalled();
   });
@@ -682,13 +691,17 @@ describe("cover snapshot on attempt creation", () => {
     const test = harness({
       activeAttempt: null,
       lockedAttempt: null,
-      publishedCover: { id: COVER_ID, dmStoragePath: DM_PATH },
+      publishedCover: { id: COVER_ID, resourceId: RESOURCE_ID, dmStoragePath: DM_PATH },
     });
 
     const result = await test.repository.createOrLoadAttempt(createInput());
 
     expect(result.kind).toBe("created");
-    expect(result.cover).toEqual({ versionId: COVER_ID, dmStoragePath: DM_PATH });
+    expect(result.cover).toEqual({
+      versionId: COVER_ID,
+      resourceId: RESOURCE_ID,
+      dmStoragePath: DM_PATH,
+    });
     expect(test.tx.guideAccessAttempt.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ coverVersionId: COVER_ID }),
@@ -717,7 +730,7 @@ describe("cover snapshot on attempt creation", () => {
     const test = harness({
       activeAttempt: null,
       lockedAttempt: null,
-      publishedCover: { id: COVER_ID, dmStoragePath: DM_PATH },
+      publishedCover: { id: COVER_ID, resourceId: RESOURCE_ID, dmStoragePath: DM_PATH },
     });
 
     await test.repository.createOrLoadAttempt(createInput());
@@ -744,21 +757,29 @@ describe("cover snapshot on attempt creation", () => {
       activeAttempt: original,
       lockedAttempt: original,
       // A newer cover has since been published. It must not win.
-      publishedCover: { id: "99999999-9999-4999-8999-999999999999", dmStoragePath: "new.png" },
-      coverById: { id: COVER_ID, dmStoragePath: DM_PATH },
+      publishedCover: {
+        id: "99999999-9999-4999-8999-999999999999",
+        resourceId: RESOURCE_ID,
+        dmStoragePath: "new.png",
+      },
+      coverById: { id: COVER_ID, resourceId: RESOURCE_ID, dmStoragePath: DM_PATH },
     });
 
     const result = await test.repository.createOrLoadAttempt(createInput());
 
     expect(result.kind).toBe("loaded");
     expect(result.attempt.coverVersionId).toBe(COVER_ID);
-    expect(result.cover).toEqual({ versionId: COVER_ID, dmStoragePath: DM_PATH });
+    expect(result.cover).toEqual({
+      versionId: COVER_ID,
+      resourceId: RESOURCE_ID,
+      dmStoragePath: DM_PATH,
+    });
     // Resolved by id only. A fresh published lookup would let a later publication
     // silently change what an in-flight attempt will send.
-    const calls = test.tx.resourceCoverVersion.findFirst.mock.calls;
-    expect(calls).toHaveLength(1);
-    expect(calls[0]![0]).toEqual(
-      expect.objectContaining({ where: expect.objectContaining({ id: COVER_ID }) }),
+    expect(test.tx.resourceCoverVersion.findFirst).not.toHaveBeenCalled();
+    expect(test.tx.resourceCoverVersion.findUnique).toHaveBeenCalledTimes(1);
+    expect(test.tx.resourceCoverVersion.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: COVER_ID } }),
     );
     expect(test.tx.guideAccessAttempt.create).not.toHaveBeenCalled();
   });
@@ -768,7 +789,7 @@ describe("cover snapshot on attempt creation", () => {
     const test = harness({
       activeAttempt: original,
       lockedAttempt: original,
-      publishedCover: { id: COVER_ID, dmStoragePath: DM_PATH },
+      publishedCover: { id: COVER_ID, resourceId: RESOURCE_ID, dmStoragePath: DM_PATH },
     });
 
     const result = await test.repository.createOrLoadAttempt(createInput());
@@ -776,6 +797,7 @@ describe("cover snapshot on attempt creation", () => {
     expect(result.cover).toBeNull();
     // No id to resolve, and no published lookup allowed.
     expect(test.tx.resourceCoverVersion.findFirst).not.toHaveBeenCalled();
+    expect(test.tx.resourceCoverVersion.findUnique).not.toHaveBeenCalled();
   });
 
   it("treats a snapshot whose row lost its DM path as no cover", async () => {
@@ -783,7 +805,7 @@ describe("cover snapshot on attempt creation", () => {
     const test = harness({
       activeAttempt: original,
       lockedAttempt: original,
-      coverById: { id: COVER_ID, dmStoragePath: null },
+      coverById: { id: COVER_ID, resourceId: RESOURCE_ID, dmStoragePath: null },
     });
 
     const result = await test.repository.createOrLoadAttempt(createInput());

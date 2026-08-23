@@ -45,6 +45,15 @@ export type CreateGuideAccessAttemptInput = {
  */
 export type GuideAccessCoverSnapshot = {
   versionId: string;
+  /**
+   * The guide this cover actually belongs to, carried explicitly.
+   *
+   * On replay the snapshot is resolved from the attempt's stored id, which can differ
+   * from the `resourceId` a caller passes in — an owner repointing `keyword.resourceId`
+   * mid-attempt is enough. Without this field a consumer could prepend one guide's cover
+   * to another guide's messages and never notice. A consumer must reconcile it.
+   */
+  resourceId: string;
   dmStoragePath: string;
 };
 
@@ -188,17 +197,20 @@ export interface GuideAccessRepository {
   ): Promise<ReserveGuideFollowResponseResult>;
 }
 
-
 /**
  * A snapshot is only usable when the row still carries a DM path. Keeping the id on the
  * attempt while returning a null snapshot preserves owner evidence about which cover was
  * chosen, without ever handing the sender something it cannot send.
  */
 function toSnapshot(
-  row: { id: string; dmStoragePath: string | null } | null,
+  row: { id: string; resourceId: string; dmStoragePath: string | null } | null,
 ): GuideAccessCoverSnapshot | null {
   if (!row || row.dmStoragePath === null) return null;
-  return { versionId: row.id, dmStoragePath: row.dmStoragePath };
+  return {
+    versionId: row.id,
+    resourceId: row.resourceId,
+    dmStoragePath: row.dmStoragePath,
+  };
 }
 
 async function resolveSnapshotById(
@@ -206,9 +218,9 @@ async function resolveSnapshotById(
   coverVersionId: string | null,
 ): Promise<GuideAccessCoverSnapshot | null> {
   if (coverVersionId === null) return null;
-  const row = await tx.resourceCoverVersion.findFirst({
+  const row = await tx.resourceCoverVersion.findUnique({
     where: { id: coverVersionId },
-    select: { id: true, dmStoragePath: true },
+    select: { id: true, resourceId: true, dmStoragePath: true },
   });
   return toSnapshot(row);
 }
@@ -402,7 +414,7 @@ export function createGuideAccessRepository(
         // One explicit lookup, in this transaction, catalog/row reads only — no Storage.
         const published = await tx.resourceCoverVersion.findFirst({
           where: publishedCoverWhere(input.resourceId),
-          select: { id: true, dmStoragePath: true },
+          select: { id: true, resourceId: true, dmStoragePath: true },
         });
         const created = await tx.guideAccessAttempt.create({
           data: {

@@ -1,4 +1,5 @@
 import type {
+  Prisma,
   PrismaClient,
   ResourceCoverVersion,
   ResourcePresentation,
@@ -119,7 +120,9 @@ function isExactDraftReplay(
  * `resource_cover_version_one_published_key` permits one published row per resource, so
  * a `findFirst` on this predicate is deterministic rather than arbitrary.
  */
-export function publishedCoverWhere(resourceId: string) {
+export function publishedCoverWhere(
+  resourceId: string,
+): Prisma.ResourceCoverVersionWhereInput {
   return {
     resourceId,
     status: "published",
