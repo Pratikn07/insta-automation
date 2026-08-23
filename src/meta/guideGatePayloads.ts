@@ -1,4 +1,9 @@
 import { z } from "zod";
+import {
+  guideAccessCopy,
+  guideAccessOpening,
+  guideAccessWaitingTitle,
+} from "../services/guideAccessCopy.js";
 
 export const GUIDE_GATE_CAPABILITY_CASES = [
   "private_text",
@@ -104,10 +109,6 @@ function actionPayload(token: string): string {
   return `ts:guide:${token}`;
 }
 
-function openingText(name: string): string {
-  return `Got it 💛 I've got the ${name} you asked for. Want me to send it here?`;
-}
-
 function quickReply(token: string): QuickReply {
   return {
     content_type: "text",
@@ -129,7 +130,7 @@ export function buildGuideGateCapabilityPayload(
   rawInput: unknown,
 ): GuideGateCapabilityPayload {
   const input = parseGuideGateCapabilityInput(rawInput);
-  const text = openingText(input.guideName);
+  const text = guideAccessOpening(input.guideName);
 
   switch (input.case) {
     case "private_text":
@@ -170,9 +171,8 @@ export function buildGuideGateCapabilityPayload(
         recipient: { id: input.recipientId },
         messaging_type: "RESPONSE",
         message: genericMessage({
-          title: `Your ${input.guideName} is waiting ✨`,
-          subtitle:
-            "Follow @tinysoho for more ideas like this, then tap I'm following and I'll send it over.",
+          title: guideAccessWaitingTitle(input.guideName),
+          subtitle: guideAccessCopy.nonFollowerGate,
           image_url: input.coverUrl,
           default_action: { type: "web_url", url: input.profileUrl },
           buttons: [
