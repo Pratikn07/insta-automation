@@ -1,4 +1,8 @@
-import type { GuideAccessAttempt, GuideAccessAttemptState } from "@prisma/client";
+import type {
+  GuideAccessAttempt,
+  GuideAccessAttemptState,
+  GuideFollowResult,
+} from "@prisma/client";
 import { logger } from "../lib/logger.js";
 import { prisma } from "../lib/prisma.js";
 import { publicMediaUrl } from "../lib/supabase.js";
@@ -230,6 +234,7 @@ export function createGuideAccessActionService(
     candidateStates: ReviewableAttemptState | readonly ReviewableAttemptState[],
     errorCode: string,
     checkedAt?: Date,
+    followResult?: GuideFollowResult,
   ): Promise<ReviewCheckpoint> {
     const candidates = [
       ...new Set(
@@ -248,6 +253,7 @@ export function createGuideAccessActionService(
       try {
         const result = await dependencies.repository.markNeedsReview({
           attemptId,
+          ...(followResult ? { followResult } : {}),
           expectedState,
           ...(checkedAt ? { checkedAt } : {}),
         });
@@ -294,6 +300,12 @@ export function createGuideAccessActionService(
     attemptId: string,
     expectedState: Exclude<GuideAccessAttemptState, "delivered" | "expired">,
     send: () => Promise<MetaSendResult>,
+    /**
+     * The follow answer already in hand, if any. Passed so an uncertain SEND does not get
+     * recorded as an uncertain CHECK: only the latter may be re-entered, and conflating
+     * them let a parent be sent the same follow gate twice.
+     */
+    followResult?: GuideFollowResult,
   ): Promise<"sent" | "definite_failure" | "needs_review"> {
     try {
       const receipt = await send();
@@ -308,6 +320,8 @@ export function createGuideAccessActionService(
         attemptId,
         expectedState,
         "provider_outcome_uncertain",
+        undefined,
+        followResult,
       );
     }
     return "needs_review";
@@ -588,6 +602,7 @@ export function createGuideAccessActionService(
           "checking_follow",
           "follow_response_reservation_failed",
           checkedAt,
+          "non_follower",
         );
         return review.outcome;
       }
@@ -602,6 +617,7 @@ export function createGuideAccessActionService(
             "checking_follow",
             "follow_response_limit_reached",
             checkedAt,
+            "non_follower",
           );
           return review.outcome;
         }
@@ -622,6 +638,7 @@ export function createGuideAccessActionService(
           "checking_follow",
           "cover_exposure_uncertain",
           checkedAt,
+          "non_follower",
         );
         return review.outcome;
       }
@@ -646,7 +663,15 @@ export function createGuideAccessActionService(
         });
     }
 
-    const sendResult = await sendAfterFence(context.attempt.id, "checking_follow", send);
+    // `"non_follower"` is the answer the check actually gave. Without it an uncertain gate
+    // send parks the attempt as though we had never found out, which `isRetryableReview`
+    // treats as re-checkable — and the parent's next message sends the gate a second time.
+    const sendResult = await sendAfterFence(
+      context.attempt.id,
+      "checking_follow",
+      send,
+      "non_follower",
+    );
     if (sendResult === "needs_review") return "access_attempt_needs_review";
 
     let awaiting;
@@ -663,6 +688,7 @@ export function createGuideAccessActionService(
         ["checking_follow", "awaiting_follow"],
         "awaiting_follow_checkpoint_failed",
         checkedAt,
+        "non_follower",
       );
       return review.outcome;
     }

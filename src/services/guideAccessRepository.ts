@@ -4,6 +4,7 @@ import {
   type GuideAccessAttemptState,
   type GuideActionToken,
   type GuideActionTokenAction,
+  type GuideFollowResult,
   type Prisma,
   type PrismaClient,
 } from "@prisma/client";
@@ -155,6 +156,16 @@ export type MarkGuideAccessNeedsReviewInput = {
   attemptId: string;
   expectedState: Exclude<GuideAccessAttemptState, "delivered" | "expired">;
   checkedAt?: Date;
+  /**
+   * The follow answer this review already holds, when there is one.
+   *
+   * Omitting it leaves `lastFollowResult` as it was — which for a review reached from
+   * `checking_follow` means `unknown`, i.e. "we never found out". That is TRUE when the
+   * provider could not answer, and FALSE when the check answered and the SEND was the
+   * uncertain part. `isRetryableReview` keys on exactly this field, so recording an
+   * answer we did have is what stops a gate from being sent to a parent twice.
+   */
+  followResult?: GuideFollowResult;
 };
 
 export type MarkGuideAccessExpiredInput = {
@@ -845,6 +856,7 @@ export function createGuideAccessRepository(
         const data = {
           state: "needs_review" as const,
           ...(input.checkedAt ? { lastFollowCheckedAt: input.checkedAt } : {}),
+          ...(input.followResult ? { lastFollowResult: input.followResult } : {}),
         };
         const updated = await tx.guideAccessAttempt.updateMany({
           where: { id: input.attemptId, state: input.expectedState },

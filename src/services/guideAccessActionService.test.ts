@@ -299,7 +299,10 @@ function createHarness(input: {
       loseAcknowledgement("markDelivering");
       return { kind: "transitioned", attempt: { ...current } } as const;
     }),
-    markNeedsReview: vi.fn(async (request: { expectedState: GuideAccessAttempt["state"] }) => {
+    markNeedsReview: vi.fn(async (request: {
+      expectedState: GuideAccessAttempt["state"];
+      followResult?: GuideAccessAttempt["lastFollowResult"];
+    }) => {
       order.push("mark:needs_review");
       fail("markNeedsReview");
       const forced = input.markNeedsReviewResults?.shift();
@@ -307,7 +310,11 @@ function createHarness(input: {
       if (current.state !== request.expectedState) {
         return { kind: "state_conflict", actualState: current.state } as const;
       }
-      current = { ...current, state: "needs_review" };
+      current = {
+        ...current,
+        state: "needs_review",
+        ...(request.followResult ? { lastFollowResult: request.followResult } : {}),
+      };
       loseAcknowledgement("markNeedsReview");
       return { kind: "transitioned", attempt: { ...current } } as const;
     }),
@@ -986,8 +993,15 @@ describe("provider error boundary", () => {
     expect(test.repository.markNeedsReview).toHaveBeenCalledWith({
       attemptId: ATTEMPT_ID,
       expectedState: "checking_follow",
+      // The check answered; only the send was uncertain. Recording that is what keeps the
+      // review terminal — see "an uncertain gate send is never repeated", which covers the
+      // path this test does not: a fresh inbound rather than a replayed token.
+      followResult: "non_follower",
     });
-    expect(test.attempt().state).toBe("needs_review");
+    expect(test.attempt()).toMatchObject({
+      state: "needs_review",
+      lastFollowResult: "non_follower",
+    });
   });
 
   it("treats a receipt without a provider id as uncertain and never starts the guide", async () => {
@@ -2306,5 +2320,85 @@ describe("gate cover respects the rollout fence", () => {
     // fault whether or not this send would have carried the image.
     expect(test.recordCoverMetric).toHaveBeenCalledWith("omitted_mismatch");
     expect(test.sendCover).not.toHaveBeenCalled();
+  });
+});
+
+// Review round 2, Critical. A duplicate gate DM to a real parent.
+//
+// An uncertain gate send parks the attempt in `needs_review` from `checking_follow`, and
+// `markNeedsReview` writes only the state — it never persists the follow result. So the
+// attempt keeps `lastFollowResult: "unknown"` even though the check WAS definite, which
+// makes `isRetryableReview` true. The parent's next ordinary DM then re-enters, finds
+// `followResponseCount` still 0, picks the `gate` branch again, and sends a second gate
+// that Meta may well have already delivered. Bounded at three by MAX_FOLLOW_CHECKS.
+//
+// This is also a regression against V1, where an uncertain gate reply is parked as
+// `send_uncertain` and never retried automatically.
+describe("an uncertain gate send is never repeated", () => {
+  function directRequest(
+    test: ReturnType<typeof createHarness>,
+    inboundId = "70000000-0000-4000-8000-000000000070",
+  ) {
+    return test.service.startDirectDmGuideRequest(
+      {
+        id: CONVERSATION_ID,
+        igUserId: SENDER_ID,
+        resourceId: RESOURCE_ID,
+        guideName: "toddler sleep guide",
+      },
+      { id: inboundId, threadId: THREAD_ID, eventAt: EVENT_AT },
+    );
+  }
+
+  it("does not send a second gate after the first one's outcome was uncertain", async () => {
+    const test = createHarness({
+      initialAttempt: attempt({ state: "awaiting_request" }),
+      freshResults: [live(false), live(false)],
+      // Acknowledged with no message id: Meta may or may not have delivered it.
+      sendGate: async () => ({ messageId: null }),
+    });
+
+    await expect(request(test)).resolves.toBe("access_attempt_needs_review");
+    expect(test.sendFollowerGate).toHaveBeenCalledTimes(1);
+
+    // The parent's next ordinary message. Nothing here is authorization; the question is
+    // only whether the gate goes out a second time.
+    await directRequest(test);
+
+    expect(test.sendFollowerGate).toHaveBeenCalledTimes(1);
+  });
+
+  it("records the definite follow answer on the review, so re-entry is refused", async () => {
+    const test = createHarness({
+      initialAttempt: attempt({ state: "awaiting_request" }),
+      freshResults: [live(false)],
+      sendGate: async () => ({ messageId: null }),
+    });
+
+    await request(test);
+
+    // The check said non-follower. Parking that as `unknown` claims we never found out,
+    // which is what made the review re-enterable.
+    expect(test.attempt()).toMatchObject({
+      state: "needs_review",
+      lastFollowResult: "non_follower",
+    });
+  });
+
+  it("still re-checks a review that followed an UNAVAILABLE check", async () => {
+    // The intended retryable case, unchanged: nothing gate-like reached the parent, so
+    // their next message must be able to try again.
+    const test = createHarness({
+      initialAttempt: attempt({
+        state: "needs_review",
+        lastFollowResult: "unknown",
+        followResponseCount: 0,
+      }),
+      freshResults: [live(false)],
+    });
+
+    await expect(directRequest(test)).resolves.toBe("follow_not_confirmed");
+
+    expect(test.sendFollowerGate).toHaveBeenCalledTimes(1);
   });
 });
