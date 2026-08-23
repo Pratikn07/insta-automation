@@ -4,7 +4,11 @@ import {
   buildGuideCoverPreview,
   createBrowserGuideCoverMetrics,
 } from "./guideCoverPreview";
-import type { GuideCoverCopy, PresentationCategory } from "./types";
+import type {
+  GuideCoverCopy,
+  GuideCoverPreviewStatus,
+  PresentationCategory,
+} from "./types";
 
 type PreviewAvailability = "loading" | "ready" | "unavailable";
 
@@ -27,12 +31,14 @@ export interface GuideCoverPreviewProps {
   category: PresentationCategory;
   copy: GuideCoverCopy;
   editionNumber: number;
+  onStatusChange?: (status: GuideCoverPreviewStatus) => void;
 }
 
 export function GuideCoverPreview({
   category,
   copy,
   editionNumber,
+  onStatusChange,
 }: GuideCoverPreviewProps) {
   const [availability, setAvailability] = useState<PreviewAvailability>(() => (
     typeof document !== "undefined" && document.fonts ? "loading" : "unavailable"
@@ -63,6 +69,19 @@ export function GuideCoverPreview({
     const metrics = createBrowserGuideCoverMetrics();
     return metrics ? buildGuideCoverPreview({ category, copy, editionNumber }, metrics) : null;
   }, [availability, category, copy, editionNumber]);
+
+  const status: GuideCoverPreviewStatus =
+    availability === "loading"
+      ? "loading"
+      : availability === "unavailable" || !result
+        ? "unavailable"
+        : result.ok
+          ? "ready"
+          : "invalid";
+
+  useEffect(() => {
+    onStatusChange?.(status);
+  }, [onStatusChange, status]);
 
   if (availability === "loading") {
     return (

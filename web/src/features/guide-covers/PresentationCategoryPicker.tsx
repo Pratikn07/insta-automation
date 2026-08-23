@@ -14,6 +14,7 @@ import type { PresentationCategory } from "./types";
 export interface PresentationCategoryPickerProps {
   categories: PresentationCategory[];
   onSelect: (categoryId: string) => void;
+  disabled?: boolean;
 }
 
 interface CategoryCreateResponse {
@@ -59,6 +60,7 @@ function statusLabel(status: PresentationCategory["designStatus"]): string {
 export function PresentationCategoryPicker({
   categories,
   onSelect,
+  disabled = false,
 }: PresentationCategoryPickerProps) {
   const [query, setQuery] = useState("");
   const [showAddForm, setShowAddForm] = useState(false);
@@ -78,7 +80,8 @@ export function PresentationCategoryPicker({
     form.name.trim().length > 0 &&
     form.collectionLabel.trim().length > 0 &&
     form.kicker.trim().length > 0 &&
-    !isSaving;
+    !isSaving &&
+    !disabled;
 
   async function createCategory() {
     if (!canCreate) return;
@@ -123,6 +126,7 @@ export function PresentationCategoryPicker({
       <Command label="Presentation category" className="overflow-hidden rounded-lg border bg-card">
         <div className="border-b px-3 py-2">
           <Command.Input
+            disabled={disabled}
             value={query}
             onValueChange={setQuery}
             placeholder="Search categories"
@@ -135,15 +139,16 @@ export function PresentationCategoryPicker({
           </Command.Empty>
           {visibleCategories.map((category) => {
             const isReady = category.designStatus === "ready";
+            const unavailable = disabled || !isReady;
             const label = statusLabel(category.designStatus);
             return (
               <Command.Item
                 key={category.id}
                 value={`${category.name} ${category.collectionLabel} ${label}`}
-                disabled={!isReady}
-                aria-disabled={!isReady}
+                disabled={unavailable}
+                aria-disabled={unavailable}
                 onSelect={() => {
-                  if (isReady) onSelect(category.id);
+                  if (!unavailable) onSelect(category.id);
                 }}
                 className="flex items-center gap-2 rounded-md px-3 py-2 text-sm data-[selected=true]:bg-muted data-[disabled=true]:cursor-not-allowed data-[disabled=true]:opacity-60"
               >
@@ -161,6 +166,7 @@ export function PresentationCategoryPicker({
         type="button"
         variant="outline"
         size="sm"
+        disabled={disabled}
         aria-expanded={showAddForm}
         aria-controls="presentation-category-add-form"
         onClick={() => {
@@ -190,6 +196,7 @@ export function PresentationCategoryPicker({
               value={form.name}
               onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
               maxLength={64}
+              disabled={disabled}
               required
             />
           </CategoryField>
@@ -201,6 +208,7 @@ export function PresentationCategoryPicker({
                 setForm((current) => ({ ...current, collectionLabel: event.target.value }))
               }
               maxLength={16}
+              disabled={disabled}
               required
             />
           </CategoryField>
@@ -210,6 +218,7 @@ export function PresentationCategoryPicker({
               value={form.kicker}
               onChange={(event) => setForm((current) => ({ ...current, kicker: event.target.value }))}
               maxLength={32}
+              disabled={disabled}
               required
             />
           </CategoryField>
@@ -217,6 +226,7 @@ export function PresentationCategoryPicker({
             <Select
               id="presentation-category-visual-family"
               value={form.basedOnCategorySlug}
+              disabled={disabled}
               onChange={(event) =>
                 setForm((current) => ({
                   ...current,

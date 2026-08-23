@@ -67,6 +67,10 @@ export interface ResourcePresentationResponse {
   coverVersions: ResourceCoverVersion[];
 }
 
+export interface PresentationCategoriesResponse {
+  categories: PresentationCategory[];
+}
+
 /** Copy fields editable by a creator; category-owned kicker/label are excluded. */
 export interface GuideCoverCopy {
   headline: string;
@@ -74,6 +78,24 @@ export interface GuideCoverCopy {
   closingLine: string;
   alternativeDescription: string;
 }
+
+export interface GuideCoverSuggestionResponse {
+  replayed: boolean;
+  suggestion: { id: string };
+  draft: GuideCoverCopy & {
+    categoryId: string;
+    templateKey: string;
+    paletteKey: string;
+    illustrationKey: string;
+  };
+}
+
+export interface GuideCoverDraftResponse {
+  cover: ResourceCoverVersion;
+  replayed?: boolean;
+}
+
+export type GuideCoverPreviewStatus = "loading" | "ready" | "invalid" | "unavailable";
 
 export type GuideCoverEditorPhase = "not_configured" | "draft" | "approved" | "published";
 
