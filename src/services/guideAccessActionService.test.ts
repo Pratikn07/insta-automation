@@ -2046,6 +2046,12 @@ describe("gate cover exposure", () => {
 
     expect(test.sendCover).not.toHaveBeenCalled();
     expect(test.sendFollowerGate).toHaveBeenCalledTimes(1);
+    // Assert the reason, so this cannot pass merely because the feature is absent.
+    expect(test.logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ errorCode: "cover_resource_mismatch" }),
+      expect.any(String),
+    );
+    expect(test.repository.claimCoverExposure).not.toHaveBeenCalled();
   });
 });
 
@@ -2091,17 +2097,30 @@ describe("cover exposure feeds the durable plan", () => {
     );
   });
 
+  it("suppresses the cover after an UNCERTAIN gate exposure", async () => {
+    const test = followerHarness("uncertain");
+
+    await request(test);
+
+    // Meta may well have accepted the uncertain send, and the spec forbids ever repeating
+    // it automatically. An uncertain gate is also re-enterable, because the review keeps
+    // `lastFollowResult: "unknown"` — so without this the parent's next reply plus a fresh
+    // `true` would deliver a SECOND copy of an image they may already hold.
+    expect(test.startGuideDelivery).toHaveBeenCalledWith(
+      expect.objectContaining({ coverAlreadyShown: true }),
+    );
+  });
+
   it.each([
     { coverExposure: "not_shown" as const },
     { coverExposure: "failed" as const },
-    { coverExposure: "uncertain" as const },
-  ])("does not mark it shown for $coverExposure", async ({ coverExposure }) => {
+  ])("still owes the cover for $coverExposure", async ({ coverExposure }) => {
     const test = followerHarness(coverExposure);
 
     await request(test);
 
-    // `failed` provably never arrived, and `uncertain` is the owner's problem — neither
-    // is evidence the parent saw it, so neither suppresses the planner's cover.
+    // `failed` provably never arrived, so the cover is still owed. `not_shown` was never
+    // attempted. Only a send that MIGHT have landed suppresses.
     expect(test.startGuideDelivery).toHaveBeenCalledWith(
       expect.not.objectContaining({ coverAlreadyShown: true }),
     );

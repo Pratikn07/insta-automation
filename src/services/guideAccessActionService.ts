@@ -465,6 +465,19 @@ export function createGuideAccessActionService(
       return "none";
     }
 
+    // Resolved BEFORE the claim. The claim is one-shot, so a throwing URL resolver would
+    // otherwise burn it and settle `failed` for a send that was never attempted.
+    let mediaUrl: string;
+    try {
+      mediaUrl = dependencies.coverMediaUrl(snapshot.dmStoragePath);
+    } catch {
+      dependencies.logger.error(
+        { errorCode: "cover_media_url_failed", attemptId: context.attempt.id },
+        "Guide cover URL could not be resolved",
+      );
+      return "none";
+    }
+
     const claim = await dependencies.repository.claimCoverExposure({
       attemptId: context.attempt.id,
     });
@@ -473,7 +486,7 @@ export function createGuideAccessActionService(
     try {
       const receipt = await dependencies.sendCover({
         recipientId: context.senderId,
-        mediaUrl: dependencies.coverMediaUrl(snapshot.dmStoragePath),
+        mediaUrl,
       });
       if (!receipt.messageId) return "needs_review";
       await dependencies.repository.settleCoverExposure({
@@ -625,12 +638,19 @@ export function createGuideAccessActionService(
     const thread = await loadThreadId({ ...context, attempt: delivering.attempt });
     if (!thread.ok) return "access_attempt_needs_review";
 
-    // The one and only producer of `coverAlreadyShown`. `accepted` is the sole exposure
-    // that counts as the parent having seen the cover: `failed` provably never arrived,
-    // and `uncertain` belongs to owner review. Getting this wrong sends a second copy of
-    // an image the parent already has.
+    // The one and only producer of `coverAlreadyShown`. It means "do not send this cover
+    // again", so it must be true for any exposure that MIGHT have reached the parent:
+    //
+    //   accepted  — provably arrived.
+    //   uncertain — Meta may well have accepted it. The spec forbids ever repeating this
+    //               one automatically, and an uncertain gate is re-enterable (the review
+    //               keeps `lastFollowResult: "unknown"`), so a later follow-confirm would
+    //               otherwise send a second image.
+    //   failed    — provably never arrived, so the cover is still owed.
     const cover = await deliverableCover(delivering.attempt);
-    const coverAlreadyShown = delivering.attempt.coverExposure === "accepted";
+    const coverAlreadyShown =
+      delivering.attempt.coverExposure === "accepted" ||
+      delivering.attempt.coverExposure === "uncertain";
 
     let deliveryResult: GuideDeliveryResult;
     try {
