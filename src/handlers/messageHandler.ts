@@ -35,6 +35,85 @@ import {
 } from "../services/campaignHealthObservation.js";
 import { env, guideDeliveryCohortIgUserIds } from "../config/env.js";
 import { routeGuideAction } from "./guideActionRouter.js";
+import { guideFollowGateV2Selector } from "../services/guideFollowGateV2Rollout.js";
+import { startDirectDmGuideRequest } from "../services/guideAccessActionService.js";
+import { guideAccessMetrics } from "../services/guideAccessMetrics.js";
+
+// Outcome-to-aggregate mapping for the direct-DM strict path. Kept next to its
+// only call site because the same service outcome means a different stage here
+// than it does for a comment opening. Absent keys did no new work and must not
+// enter a denominator.
+const DIRECT_STRICT_METRIC = new Map<
+  string,
+  { stage: "action" | "fresh_check" | "delivery" | "needs_review"; outcome: string }
+>([
+  ["guide_delivery_started", { stage: "delivery", outcome: "planned" }],
+  ["follow_confirmed", { stage: "fresh_check", outcome: "follower" }],
+  ["follow_not_confirmed", { stage: "fresh_check", outcome: "non_follower" }],
+  ["follow_check_unavailable", { stage: "fresh_check", outcome: "unavailable" }],
+  ["access_attempt_needs_review", { stage: "needs_review", outcome: "marked" }],
+  ["action_replayed", { stage: "action", outcome: "replayed" }],
+  ["action_expired", { stage: "action", outcome: "expired" }],
+]);
+
+/**
+ * One ownership decision per call site, failing closed to V1 so a flag-read
+ * problem can never strand a parent between the two paths.
+ */
+function strictGateOwnerFor(igUserId: string, resourceId: string): "v1" | "v2" {
+  try {
+    return guideFollowGateV2Selector.owner({ igUserId, resourceId });
+  } catch {
+    logger.warn(
+      { errorCode: "strict_gate_owner_unavailable", igUserId },
+      "Strict gate ownership unavailable — using V1",
+    );
+    return "v1";
+  }
+}
+
+/**
+ * The single V2 entry point for an inbound DM. Shared by the keyword branch and
+ * the reply-to-opening branch so the two can never diverge on what authorizes a
+ * send. A fault here never falls through to V1: doing so would send a second
+ * message for one inbound, and would authorize it on cached evidence.
+ */
+async function runStrictGuideRequest(input: {
+  conversationId: string;
+  senderId: string;
+  resourceId: string;
+  guideName: string;
+  redelivery: boolean;
+  inboundMessageId: string;
+  threadId: string | null;
+  observedAt: Date;
+}): Promise<void> {
+  try {
+    const outcome = await startDirectDmGuideRequest(
+      {
+        id: input.conversationId,
+        igUserId: input.senderId,
+        resourceId: input.resourceId,
+        guideName: input.guideName,
+        deliveryTriggerKind: input.redelivery ? "explicit_redelivery" : "inbound_reply",
+        ...(input.redelivery ? { redeliveryIntro: REDELIVERY_INTRO } : {}),
+      },
+      {
+        // The internal DmMessage UUID, never Meta's provider mid.
+        id: input.inboundMessageId,
+        threadId: input.threadId,
+        eventAt: input.observedAt,
+      },
+    );
+    const measured = DIRECT_STRICT_METRIC.get(outcome);
+    if (measured) await guideAccessMetrics.record(measured);
+  } catch (err) {
+    logger.error(
+      { ...graphFailureMetadata(err), conversationId: input.conversationId },
+      "Strict guide request failed",
+    );
+  }
+}
 
 // Kept only as an analytics hint now — it is NO LONGER the trigger. Any reply to
 // an open gate delivers the guide (people say "Hi"/"Followed"/"Yes", not "Done").
@@ -479,6 +558,25 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     // there; it stays only for non-followers/unknowns, where it's the one
     // leverage moment for the follow ask.
     const alreadyCompleted = await hasCompletedKeyword(senderId, keyword.id);
+
+    // ---- Strict follower gate V2 --------------------------------------------
+    // Both of the V1 conditions below are disqualified evidence: `isFollower` is
+    // a cached Graph value, and `alreadyCompleted` authorizes a redelivery on the
+    // strength of a past send. The strict path replaces both with a live check.
+    if (strictGateOwnerFor(senderId, keyword.resource.id) === "v2") {
+      await runStrictGuideRequest({
+        conversationId: convo.id,
+        senderId,
+        resourceId: keyword.resource.id,
+        guideName: keyword.resource.name,
+        redelivery: alreadyCompleted,
+        inboundMessageId: inbound.messageId,
+        threadId: inbound.threadId,
+        observedAt,
+      });
+      return;
+    }
+
     if (profile.isFollower === true || alreadyCompleted) {
       try {
         await deliverOwnedGuide({
@@ -555,6 +653,29 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     recoveredInactiveGate = convo !== null;
   }
   if (convo) {
+    // ---- Strict follower gate V2 --------------------------------------------
+    // With rich controls off — the only mode available until the capability rows
+    // are `supported` — the strict opening is text ("Want me to send it here?"),
+    // so the parent's answer arrives here as an ordinary reply, not a quick
+    // reply. `openConversationIn` already creates the conversation as
+    // awaiting_done with a null gatedAt, and `findActiveAwaitingDone` accepts
+    // that, so without this fence V1 would authorize the reply on cached follow
+    // state — including its documented rule that an unreadable null falls through
+    // to delivery. The strict gate forbids exactly that.
+    if (strictGateOwnerFor(senderId, convo.keyword.resource.id) === "v2") {
+      await runStrictGuideRequest({
+        conversationId: convo.id,
+        senderId,
+        resourceId: convo.keyword.resource.id,
+        guideName: convo.keyword.resource.name,
+        redelivery: await hasCompletedKeyword(senderId, convo.keywordId),
+        inboundMessageId: inbound.messageId,
+        threadId: inbound.threadId,
+        observedAt,
+      });
+      return;
+    }
+
     // Duplicate guard: the user already completed this keyword (e.g. commented
     // "sleep" on two reels → two open gates). The old behavior closed the gate
     // silently — an unlock instruction followed by nothing, for our most engaged

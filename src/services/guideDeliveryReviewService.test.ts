@@ -484,3 +484,32 @@ describeWithDatabase("guide delivery owner review PostgreSQL contract", () => {
     ).rejects.toEqual(expectReviewError("delivery_state_changed"));
   });
 });
+
+// Task 7 decision, pinned so a later reader does not "fix" it.
+//
+// The spec requires a fresh live `true` for every new automated guide send,
+// "including an explicit redelivery" — where explicit means the PARENT asked
+// again. That path runs through the direct-DM keyword branch and is gated there.
+//
+// Owner review is a different thing: it is the human escape hatch that exists
+// precisely because the ledger refuses to auto-retry an uncertain provider
+// outcome. The delivery it retries was already authorized by a fresh check when
+// it started, and the operator is making an explicit-risk decision. Gating that
+// click on a live Graph call would let a Meta outage strand a stuck delivery,
+// inverting the hatch's purpose.
+describe("owner review authorization boundary", () => {
+  it("performs no follow check and cannot start a new delivery", async () => {
+    const source = await import("node:fs/promises").then((fs) =>
+      fs.readFile(new URL("./guideDeliveryReviewService.ts", import.meta.url), "utf8"),
+    );
+
+    for (const disqualified of [
+      "resolveFollowStatusFresh",
+      "getFollowState",
+      "isFollower",
+      "deliverGuideForTrigger",
+    ]) {
+      expect(source).not.toContain(disqualified);
+    }
+  });
+});

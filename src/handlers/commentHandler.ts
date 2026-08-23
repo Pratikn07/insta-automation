@@ -28,12 +28,23 @@ import {
   settingsBlockedVerificationRejectionReason,
 } from "../services/settingsBlockedVerificationService.js";
 import { bindUpcomingAutomationFromComment } from "../services/upcomingAutomationCommentBinding.js";
+import { guideFollowGateV2Selector } from "../services/guideFollowGateV2Rollout.js";
+import { startCommentGuideRequest } from "../services/guideAccessActionService.js";
+import { guideAccessMetrics } from "../services/guideAccessMetrics.js";
 
 /**
  * Human-readable scope for a media-attached keyword, from the webhook's
  * media_product_type. Logged on keyword_matched, so historical "reel" values
  * stay comparable: REELS still reads "reel".
  */
+// Only a real opening attempt is measured. "Already sent" means this journey
+// produced no new outbound message, so counting it would inflate the denominator.
+const OPENING_METRIC_OUTCOME = new Map<string, "accepted" | "failed" | "uncertain">([
+  ["guide_opening_sent", "accepted"],
+  ["guide_opening_failed", "failed"],
+  ["access_attempt_needs_review", "uncertain"],
+]);
+
 function mediaScopeLabel(productType: string | undefined): string {
   if (productType === "REELS") return "reel";
   if (productType === "FEED") return "carousel";
@@ -252,6 +263,44 @@ export async function handleComment(comment: CommentValue): Promise<void> {
       commentId: comment.id,
       disposition: journey.disposition,
     });
+    return;
+  }
+
+  // ---- Strict follower gate V2 ---------------------------------------------
+  // Ownership is decided exactly once, from the sender and the guide only, and
+  // fails closed to V1 so a flag-read problem can never strand a parent. Placed
+  // after the claim, the journey merge, and the one-gate-per-journey guard, so
+  // the strict path inherits all three rather than reimplementing them.
+  let strictGateOwner: "v1" | "v2" = "v1";
+  try {
+    strictGateOwner = guideFollowGateV2Selector.owner({
+      igUserId: senderId,
+      resourceId: keyword.resourceId,
+    });
+  } catch {
+    log.warn({ igUserId: senderId }, "Strict gate ownership unavailable — using V1");
+  }
+
+  if (strictGateOwner === "v2") {
+    try {
+      const outcome = await startCommentGuideRequest({
+        conversationId: convo.id,
+        igUserId: senderId,
+        resourceId: keyword.resourceId,
+        commentId: comment.id,
+        // The comment webhook carries no timestamp, so arrival time is the best
+        // available — the same basis `enqueueGate` uses for `commentAt`.
+        observedAt: new Date(),
+      });
+      const measured = OPENING_METRIC_OUTCOME.get(outcome);
+      if (measured) {
+        await guideAccessMetrics.record({ stage: "opening", outcome: measured });
+      }
+    } catch (error) {
+      // A strict-path fault must not fail the webhook or fall through to V1:
+      // falling through would send a second message for one comment.
+      log.error(describeGraphError(error), "Strict guide opening failed");
+    }
     return;
   }
 

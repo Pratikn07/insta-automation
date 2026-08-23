@@ -1,8 +1,21 @@
 import type { GuideAccessAttempt, GuideActionToken } from "@prisma/client";
 import { AxiosError } from "axios";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { guideAccessCopy } from "./guideAccessCopy.js";
+import { guideAccessCopy, guideAccessOpening } from "./guideAccessCopy.js";
 import { createGuideAccessActionService } from "./guideAccessActionService.js";
+import type { GuideActionCapabilities } from "../meta/sendGuideAction.js";
+
+const TEXT_ONLY: GuideActionCapabilities = {
+  privateQuickReply: false,
+  dmGenericGate: false,
+  dmQuickReply: false,
+};
+const RICH: GuideActionCapabilities = {
+  privateQuickReply: true,
+  dmGenericGate: true,
+  dmQuickReply: true,
+};
+const COMMENT_ID = "comment-4001";
 
 const ATTEMPT_ID = "10000000-0000-4000-8000-000000000001";
 const CONVERSATION_ID = "20000000-0000-4000-8000-000000000002";
@@ -130,9 +143,22 @@ function createHarness(input: {
     | { kind: "attempt_not_found" }
     | { kind: "state_conflict"; actualState: GuideAccessAttempt["state"] }
   >;
+  sendInitialPrivateReply?: (input: {
+    commentId: string;
+    guideName: string;
+    actionToken: string;
+    capabilities: GuideActionCapabilities;
+  }) => Promise<{ messageId: string | null }>;
+  richCapabilities?: GuideActionCapabilities;
+  issueTokenResults?: Array<
+    | { kind: "attempt_not_found" }
+    | { kind: "attempt_expired" }
+    | { kind: "state_conflict"; actualState: GuideAccessAttempt["state"] }
+  >;
 }) {
   let current = input.initialAttempt ?? attempt();
   let nextToken = 0;
+  let requestTokenIssued = false;
   const followTokens = [FOLLOW_TOKEN_1, FOLLOW_TOKEN_2, FOLLOW_TOKEN_3];
   const consumed = new Set<string>();
   const directClaims = new Set<string>();
@@ -260,8 +286,20 @@ function createHarness(input: {
       loseAcknowledgement("markNeedsReview");
       return { kind: "transitioned", attempt: { ...current } } as const;
     }),
-    issueToken: vi.fn(async () => {
-      order.push("issue:check_follow");
+    issueToken: vi.fn(async (request: { action: "request_guide" | "check_follow" }) => {
+      order.push(`issue:${request.action}`);
+      const forced = input.issueTokenResults?.shift();
+      if (forced) return forced;
+      if (request.action === "request_guide") {
+        // A journey issues one opening token. A repeat comment must observe the
+        // existing token rather than mint a second private reply.
+        const kind = requestTokenIssued ? "replayed" : "issued";
+        requestTokenIssued = true;
+        return {
+          kind,
+          token: actionToken(REQUEST_TOKEN_ID, "request_guide"),
+        } as const;
+      }
       const id = followTokens[nextToken++]!;
       return { kind: "issued", token: actionToken(id, "check_follow") } as const;
     }),
@@ -322,6 +360,18 @@ function createHarness(input: {
       ? input.sendFollowLag(message)
       : { messageId: "lag-mid" };
   });
+  const sendInitialPrivateReply = vi.fn(async (message: {
+    commentId: string;
+    guideName: string;
+    actionToken: string;
+    capabilities: GuideActionCapabilities;
+  }) => {
+    order.push("external:opening");
+    return input.sendInitialPrivateReply
+      ? input.sendInitialPrivateReply(message)
+      : { messageId: "opening-mid" };
+  });
+  const richCapabilities = vi.fn(() => input.richCapabilities ?? TEXT_ONLY);
   const loadGuideName = vi.fn(
     input.loadGuideName ?? (async () => "toddler sleep guide"),
   );
@@ -338,6 +388,8 @@ function createHarness(input: {
     sendFollowerGate,
     sendText,
     sendFollowLag,
+    sendInitialPrivateReply,
+    richCapabilities,
     loadGuideName,
     loadThreadId,
     findAttemptIdByToken,
@@ -354,6 +406,8 @@ function createHarness(input: {
     sendFollowerGate,
     sendText,
     sendFollowLag,
+    sendInitialPrivateReply,
+    richCapabilities,
     loadGuideName,
     loadThreadId,
     cancelledTokens,
@@ -1291,5 +1345,181 @@ describe("ambiguous repository acknowledgements", () => {
     expect(operatorEvidence).not.toContain("private transition acknowledgement");
     expect(operatorEvidence).not.toContain(REQUEST_TOKEN_ID);
     expect(operatorEvidence).not.toContain(INBOUND_ID);
+  });
+});
+
+// Task 7: the comment path opens the journey and never authorizes. The fresh
+// check belongs to the parent's later action, so nothing here may read follow
+// state, and Meta's one-private-reply-per-comment rule is the hard constraint.
+describe("comment guide request", () => {
+  function comment(
+    test: ReturnType<typeof createHarness>,
+    overrides: { commentId?: string; windowExpiresAt?: Date } = {},
+  ) {
+    return test.service.startCommentGuideRequest({
+      conversationId: CONVERSATION_ID,
+      igUserId: SENDER_ID,
+      resourceId: RESOURCE_ID,
+      commentId: overrides.commentId ?? COMMENT_ID,
+      observedAt: EVENT_AT,
+      ...(overrides.windowExpiresAt
+        ? { messagingWindowExpiresAt: overrides.windowExpiresAt }
+        : {}),
+    });
+  }
+
+  it("issues one request_guide token and sends exactly one opening", async () => {
+    const test = createHarness({});
+
+    await expect(comment(test)).resolves.toBe("guide_opening_sent");
+
+    expect(test.repository.issueToken).toHaveBeenCalledTimes(1);
+    expect(test.repository.issueToken).toHaveBeenCalledWith(
+      expect.objectContaining({ attemptId: ATTEMPT_ID, action: "request_guide" }),
+    );
+    expect(test.sendInitialPrivateReply).toHaveBeenCalledTimes(1);
+    expect(test.sendInitialPrivateReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        commentId: COMMENT_ID,
+        guideName: "toddler sleep guide",
+        actionToken: REQUEST_TOKEN_ID,
+      }),
+    );
+    expect(test.order).toEqual([
+      "issue:request_guide",
+      "external:opening",
+    ]);
+  });
+
+  it("never reads follow state while opening the journey", async () => {
+    const test = createHarness({});
+
+    await comment(test);
+
+    expect(test.resolveFresh).not.toHaveBeenCalled();
+    expect(test.startGuideDelivery).not.toHaveBeenCalled();
+    expect(test.sendFollowerGate).not.toHaveBeenCalled();
+    expect(test.sendFollowLag).not.toHaveBeenCalled();
+  });
+
+  it("opening copy is identical for a cached follower and a cached non-follower", async () => {
+    const asFollower = createHarness({ initialAttempt: attempt({ lastFollowResult: "follower" }) });
+    const asNonFollower = createHarness({
+      initialAttempt: attempt({ lastFollowResult: "non_follower" }),
+    });
+
+    await comment(asFollower);
+    await comment(asNonFollower);
+
+    expect(asFollower.sendInitialPrivateReply.mock.calls[0]?.[0]?.guideName).toBe(
+      asNonFollower.sendInitialPrivateReply.mock.calls[0]?.[0]?.guideName,
+    );
+    expect(guideAccessOpening("toddler sleep guide")).toContain("toddler sleep guide");
+  });
+
+  it("a repeat comment on the same journey sends no second private reply", async () => {
+    const test = createHarness({});
+
+    await expect(comment(test)).resolves.toBe("guide_opening_sent");
+    await expect(comment(test, { commentId: "comment-4002" })).resolves.toBe(
+      "guide_opening_already_sent",
+    );
+
+    expect(test.sendInitialPrivateReply).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes text-only capabilities when the rich gate is off", async () => {
+    const test = createHarness({ richCapabilities: TEXT_ONLY });
+
+    await comment(test);
+
+    expect(test.sendInitialPrivateReply).toHaveBeenCalledWith(
+      expect.objectContaining({ capabilities: TEXT_ONLY }),
+    );
+  });
+
+  it("passes rich capabilities only when the rich gate is on", async () => {
+    const test = createHarness({ richCapabilities: RICH });
+
+    await comment(test);
+
+    expect(test.sendInitialPrivateReply).toHaveBeenCalledWith(
+      expect.objectContaining({ capabilities: RICH }),
+    );
+  });
+
+  it("a rejected opening never attempts a second private reply", async () => {
+    const rejection = new AxiosError("rich private reply unsupported");
+    const test = createHarness({
+      richCapabilities: RICH,
+      sendInitialPrivateReply: async () => {
+        throw rejection;
+      },
+    });
+
+    await expect(comment(test)).resolves.toBe("access_attempt_needs_review");
+
+    expect(test.sendInitialPrivateReply).toHaveBeenCalledTimes(1);
+    expect(test.sendText).not.toHaveBeenCalled();
+  });
+
+  it("sends nothing when the messaging window is already closed", async () => {
+    const test = createHarness({});
+
+    await expect(
+      comment(test, { windowExpiresAt: new Date(NOW.getTime() - 1) }),
+    ).resolves.toBe("action_expired");
+
+    expect(test.repository.createOrLoadAttempt).not.toHaveBeenCalled();
+    expect(test.repository.issueToken).not.toHaveBeenCalled();
+    expect(test.sendInitialPrivateReply).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { state: "checking_follow" as const, want: "action_replayed" },
+    { state: "awaiting_follow" as const, want: "action_replayed" },
+    { state: "delivering" as const, want: "guide_delivery_already_started" },
+    { state: "delivered" as const, want: "guide_delivery_already_started" },
+    { state: "needs_review" as const, want: "access_attempt_needs_review" },
+    { state: "expired" as const, want: "action_expired" },
+  ])("sends no opening for an attempt already in $state", async ({ state, want }) => {
+    const test = createHarness({ initialAttempt: attempt({ state }) });
+
+    await expect(comment(test)).resolves.toBe(want);
+
+    expect(test.sendInitialPrivateReply).not.toHaveBeenCalled();
+    expect(test.repository.issueToken).not.toHaveBeenCalled();
+  });
+
+  it("records a definitely rejected opening without leaking comment id, token, or copy", async () => {
+    const rejected = new AxiosError(
+      "private payload",
+      "ERR_BAD_REQUEST",
+      undefined,
+      undefined,
+      {
+        status: 400,
+        statusText: "Bad Request",
+        headers: {},
+        config: { headers: {} } as never,
+        data: { error: { code: 100, fbtrace_id: "safe_trace_opening" } },
+      },
+    );
+    const test = createHarness({
+      sendInitialPrivateReply: async () => {
+        throw rejected;
+      },
+    });
+
+    await expect(comment(test)).resolves.toBe("guide_opening_failed");
+
+    // A definite rejection never reached the parent, so the attempt stays
+    // openable rather than being escalated as an ambiguous send.
+    expect(test.attempt().state).toBe("awaiting_request");
+    expect(test.logger.error).toHaveBeenCalled();
+    const evidence = JSON.stringify(test.logger.error.mock.calls);
+    expect(evidence).not.toContain(COMMENT_ID);
+    expect(evidence).not.toContain(REQUEST_TOKEN_ID);
+    expect(evidence).not.toContain("toddler sleep guide");
   });
 });

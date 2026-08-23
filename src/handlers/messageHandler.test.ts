@@ -30,6 +30,9 @@ const deliverGuideForTrigger = vi.fn();
 const sendTrackedText = vi.fn();
 const resolveUsername = vi.fn();
 const routeGuideAction = vi.fn();
+const gateOwner = vi.fn();
+const startDirectDmGuideRequest = vi.fn();
+const recordGuideAccessMetric = vi.fn();
 const logEvent = vi.fn();
 const SAFE_UNKNOWN = {
   category: "unknown_error",
@@ -77,6 +80,13 @@ vi.mock("../services/guideDeliveryService.js", () => ({ deliverGuideForTrigger }
 vi.mock("../services/dmDeliveryService.js", () => ({ sendTrackedText }));
 vi.mock("../services/igUserService.js", () => ({ resolveUsername }));
 vi.mock("./guideActionRouter.js", () => ({ routeGuideAction }));
+vi.mock("../services/guideFollowGateV2Rollout.js", () => ({
+  guideFollowGateV2Selector: { owner: gateOwner },
+}));
+vi.mock("../services/guideAccessActionService.js", () => ({ startDirectDmGuideRequest }));
+vi.mock("../services/guideAccessMetrics.js", () => ({
+  guideAccessMetrics: { record: recordGuideAccessMetric },
+}));
 vi.mock("../services/eventLogger.js", () => ({
   logEvent,
   describeGraphError,
@@ -167,6 +177,9 @@ beforeEach(() => {
     sendTrackedText,
     resolveUsername,
     routeGuideAction,
+    gateOwner,
+    startDirectDmGuideRequest,
+    recordGuideAccessMetric,
     logEvent,
     describeGraphError,
   ]) {
@@ -199,6 +212,10 @@ beforeEach(() => {
   logEvent.mockResolvedValue(undefined);
   sendTrackedText.mockResolvedValue({ messageId: "mid-out" });
   sendSequence.mockResolvedValue(undefined);
+  // Default-off: every pre-existing expectation is the V1 path.
+  gateOwner.mockReturnValue("v1");
+  startDirectDmGuideRequest.mockResolvedValue("guide_delivery_started");
+  recordGuideAccessMetric.mockResolvedValue("recorded");
   guideDeliveryOwner.mockReturnValue("legacy");
   deliverGuideForTrigger.mockResolvedValue("completed");
   queueReplyDraft.mockResolvedValue({ id: "draft-1" });
@@ -1371,5 +1388,249 @@ describe("handleMessage journey resolution is bookkeeping, not a gate", () => {
 
     const matched = logEvent.mock.calls.find(([kind]) => kind === "keyword_matched");
     expect(matched?.[1]).toMatchObject({ journeyDisposition: "reused_active", source: "dm" });
+  });
+});
+
+// Task 7: the strict gate replaces cached-follow authorization on the direct-DM
+// keyword and redelivery paths. Cached `profile.isFollower` and a prior
+// completion must both stop being able to authorize a send.
+describe("strict follower gate v2 — direct DM and redelivery", () => {
+  const V2_KEYWORD = {
+    ...keywordFixture,
+    resource: { ...keywordFixture.resource, name: "toddler sleep guide" },
+  };
+
+  beforeEach(() => {
+    findKeywordInMessage.mockResolvedValue(V2_KEYWORD);
+  });
+
+  it("keeps V1 instant delivery for a cached follower when the switch is off", async () => {
+    resolveUsername.mockResolvedValue({ isFollower: true, username: "p", name: "P" });
+
+    await handleMessage(inbound("SLEEP"));
+
+    expect(startDirectDmGuideRequest).not.toHaveBeenCalled();
+    expect(recordGuideAccessMetric).not.toHaveBeenCalled();
+    expect(sendSequence).toHaveBeenCalledTimes(1);
+  });
+
+  it("a cached follower cannot authorize a send once the strict gate owns the journey", async () => {
+    gateOwner.mockReturnValue("v2");
+    resolveUsername.mockResolvedValue({ isFollower: true, username: "p", name: "P" });
+
+    await handleMessage(inbound("SLEEP"));
+
+    expect(startDirectDmGuideRequest).toHaveBeenCalledTimes(1);
+    expect(deliverGuideForTrigger).not.toHaveBeenCalled();
+    expect(sendSequence).not.toHaveBeenCalled();
+  });
+
+  it("passes the internal message id and no cached follow evidence", async () => {
+    gateOwner.mockReturnValue("v2");
+    resolveUsername.mockResolvedValue({ isFollower: true, username: "p", name: "P" });
+
+    await handleMessage(inbound("SLEEP"));
+
+    const [conversation, inboundArg] = startDirectDmGuideRequest.mock.calls[0]!;
+    expect(conversation).toMatchObject({
+      id: "convo-1",
+      igUserId: "ig-user-1",
+      resourceId: "resource-1",
+      guideName: "toddler sleep guide",
+      deliveryTriggerKind: "inbound_reply",
+    });
+    expect(JSON.stringify(conversation)).not.toContain("isFollower");
+    // The internal DmMessage UUID, never Meta's provider mid.
+    expect(inboundArg).toMatchObject({ id: "message-1", threadId: "thread-1" });
+    expect(inboundArg.id).not.toBe("mid-1");
+  });
+
+  it("a completed guide re-request goes through the strict gate, not straight to delivery", async () => {
+    gateOwner.mockReturnValue("v2");
+    hasCompletedKeyword.mockResolvedValue(true);
+    resolveUsername.mockResolvedValue({ isFollower: null, username: "p", name: "P" });
+
+    await handleMessage(inbound("SLEEP"));
+
+    expect(startDirectDmGuideRequest).toHaveBeenCalledTimes(1);
+    expect(startDirectDmGuideRequest.mock.calls[0]![0]).toMatchObject({
+      deliveryTriggerKind: "explicit_redelivery",
+    });
+    expect(deliverGuideForTrigger).not.toHaveBeenCalled();
+    expect(sendSequence).not.toHaveBeenCalled();
+  });
+
+  it("sends no V1 gate text to a cached non-follower on the strict path", async () => {
+    gateOwner.mockReturnValue("v2");
+    resolveUsername.mockResolvedValue({ isFollower: false, username: "p", name: "P" });
+
+    await handleMessage(inbound("SLEEP"));
+
+    expect(startDirectDmGuideRequest).toHaveBeenCalledTimes(1);
+    expect(sendTrackedText).not.toHaveBeenCalled();
+    expect(markGated).not.toHaveBeenCalled();
+  });
+
+  it("decides ownership once, from the sender and the guide only", async () => {
+    gateOwner.mockReturnValue("v2");
+
+    await handleMessage(inbound("SLEEP"));
+
+    expect(gateOwner).toHaveBeenCalledTimes(1);
+    expect(gateOwner).toHaveBeenCalledWith({
+      igUserId: "ig-user-1",
+      resourceId: "resource-1",
+    });
+  });
+
+  it.each([
+    { outcome: "guide_delivery_started", stage: "delivery", want: "planned" },
+    { outcome: "follow_confirmed", stage: "fresh_check", want: "follower" },
+    { outcome: "follow_not_confirmed", stage: "fresh_check", want: "non_follower" },
+    { outcome: "follow_check_unavailable", stage: "fresh_check", want: "unavailable" },
+    { outcome: "access_attempt_needs_review", stage: "needs_review", want: "marked" },
+    { outcome: "action_replayed", stage: "action", want: "replayed" },
+    { outcome: "action_expired", stage: "action", want: "expired" },
+  ])("records $outcome as $stage/$want", async ({ outcome, stage, want }) => {
+    gateOwner.mockReturnValue("v2");
+    startDirectDmGuideRequest.mockResolvedValue(outcome);
+
+    await handleMessage(inbound("SLEEP"));
+
+    expect(recordGuideAccessMetric).toHaveBeenCalledWith({ stage, outcome: want });
+  });
+
+  it("records no metric when the strict path did no new work", async () => {
+    gateOwner.mockReturnValue("v2");
+    startDirectDmGuideRequest.mockResolvedValue("guide_delivery_already_started");
+
+    await handleMessage(inbound("SLEEP"));
+
+    expect(recordGuideAccessMetric).not.toHaveBeenCalled();
+  });
+
+  it("falls back to V1 when ownership cannot be decided", async () => {
+    gateOwner.mockImplementation(() => {
+      throw new Error("flag read failed");
+    });
+    resolveUsername.mockResolvedValue({ isFollower: true, username: "p", name: "P" });
+
+    await handleMessage(inbound("SLEEP"));
+
+    expect(startDirectDmGuideRequest).not.toHaveBeenCalled();
+    expect(sendSequence).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a strict-path fault non-fatal and does not fall through to V1", async () => {
+    gateOwner.mockReturnValue("v2");
+    resolveUsername.mockResolvedValue({ isFollower: true, username: "p", name: "P" });
+    startDirectDmGuideRequest.mockRejectedValue(new Error("strict path exploded"));
+
+    await expect(handleMessage(inbound("SLEEP"))).resolves.toBeUndefined();
+
+    expect(deliverGuideForTrigger).not.toHaveBeenCalled();
+    expect(sendSequence).not.toHaveBeenCalled();
+  });
+});
+
+// Task 7, second entry point. With rich controls off — the only mode available
+// until the capability rows are `supported` — the opening is TEXT: "Want me to
+// send it here?". The parent answers "yes", which is not a keyword and not DONE,
+// so it lands on the open-gate branch. `openConversationIn` already creates the
+// conversation as awaiting_done with a null gatedAt, and findActiveAwaitingDone
+// accepts that, so V1 would authorize the reply on cached follow state — and V1
+// deliberately lets an unreadable null fall through to delivery. The strict gate
+// forbids exactly that, so this branch needs the same ownership fence.
+describe("strict follower gate v2 — reply to an open strict opening", () => {
+  const OPEN_CONVO = {
+    id: "convo-open-1",
+    keywordId: "keyword-1",
+    keyword: {
+      keyword: "SLEEP",
+      resource: {
+        id: "resource-1",
+        name: "toddler sleep guide",
+        messages: [{ id: "m1", order: 0, type: "text", body: "guide" }],
+      },
+    },
+  };
+
+  beforeEach(() => {
+    findKeywordInMessage.mockResolvedValue(null);
+    findActiveAwaitingDone.mockResolvedValue(OPEN_CONVO);
+  });
+
+  it("routes a plain yes through the strict gate instead of V1", async () => {
+    gateOwner.mockReturnValue("v2");
+    resolveUsername.mockResolvedValue({ isFollower: true, username: "p", name: "P" });
+
+    await handleMessage(inbound("yes"));
+
+    expect(startDirectDmGuideRequest).toHaveBeenCalledTimes(1);
+    expect(startDirectDmGuideRequest.mock.calls[0]![0]).toMatchObject({
+      id: "convo-open-1",
+      igUserId: "ig-user-1",
+      resourceId: "resource-1",
+      guideName: "toddler sleep guide",
+    });
+    expect(deliverGuideForTrigger).not.toHaveBeenCalled();
+    expect(sendSequence).not.toHaveBeenCalled();
+  });
+
+  it("never lets an unreadable follow flag fall through to delivery", async () => {
+    gateOwner.mockReturnValue("v2");
+    // V1 treats null as "cannot gate what we cannot measure" and delivers.
+    resolveUsername.mockResolvedValue({ isFollower: null, username: "p", name: "P" });
+
+    await handleMessage(inbound("yes"));
+
+    expect(startDirectDmGuideRequest).toHaveBeenCalledTimes(1);
+    expect(deliverGuideForTrigger).not.toHaveBeenCalled();
+    expect(sendSequence).not.toHaveBeenCalled();
+  });
+
+  it("sends no V1 follow-gate text to a cached non-follower", async () => {
+    gateOwner.mockReturnValue("v2");
+    resolveUsername.mockResolvedValue({ isFollower: false, username: "p", name: "P" });
+
+    await handleMessage(inbound("yes"));
+
+    expect(startDirectDmGuideRequest).toHaveBeenCalledTimes(1);
+    expect(sendTrackedText).not.toHaveBeenCalled();
+    expect(markGated).not.toHaveBeenCalled();
+  });
+
+  it("routes an already-completed keyword through the strict gate, not V1 redelivery", async () => {
+    gateOwner.mockReturnValue("v2");
+    hasCompletedKeyword.mockResolvedValue(true);
+
+    await handleMessage(inbound("yes"));
+
+    expect(startDirectDmGuideRequest).toHaveBeenCalledTimes(1);
+    expect(startDirectDmGuideRequest.mock.calls[0]![0]).toMatchObject({
+      deliveryTriggerKind: "explicit_redelivery",
+    });
+    expect(deliverGuideForTrigger).not.toHaveBeenCalled();
+    expect(sendSequence).not.toHaveBeenCalled();
+  });
+
+  it("decides ownership from the conversation's own guide", async () => {
+    gateOwner.mockReturnValue("v2");
+
+    await handleMessage(inbound("yes"));
+
+    expect(gateOwner).toHaveBeenCalledWith({
+      igUserId: "ig-user-1",
+      resourceId: "resource-1",
+    });
+  });
+
+  it("keeps the V1 open-gate path intact when the switch is off", async () => {
+    resolveUsername.mockResolvedValue({ isFollower: true, username: "p", name: "P" });
+
+    await handleMessage(inbound("yes"));
+
+    expect(startDirectDmGuideRequest).not.toHaveBeenCalled();
+    expect(sendSequence).toHaveBeenCalledTimes(1);
   });
 });

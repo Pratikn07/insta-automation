@@ -4,6 +4,8 @@ import { prisma } from "../lib/prisma.js";
 import {
   sendGuideFollowerGate,
   sendGuideFollowLag,
+  sendGuideInitialPrivateReply,
+  type GuideActionCapabilities,
 } from "../meta/sendGuideAction.js";
 import type { MetaSendResult } from "../types/meta.js";
 import { sendTrackedText } from "./dmDeliveryService.js";
@@ -21,6 +23,7 @@ import {
   type DeliverGuideForTriggerInput,
   type GuideDeliveryResult,
 } from "./guideDeliveryService.js";
+import { guideRichGateEnabled } from "./guideFollowGateV2Rollout.js";
 
 const STANDARD_DM_WINDOW_MS = 24 * 60 * 60 * 1_000;
 const ACTION_TOKEN_TTL_MS = 10 * 60 * 1_000;
@@ -34,7 +37,24 @@ export type GuideAccessActionOutcome =
   | "follow_check_unavailable"
   | "guide_delivery_started"
   | "guide_delivery_already_started"
-  | "access_attempt_needs_review";
+  | "access_attempt_needs_review"
+  | "guide_opening_sent"
+  | "guide_opening_already_sent"
+  | "guide_opening_failed";
+
+/**
+ * A comment opens a journey; it never authorizes one. Meta allows a single
+ * private reply per comment, so this request carries the comment id only as a
+ * send target — never as authorization evidence, and never as a token.
+ */
+export type CommentGuideRequest = {
+  conversationId: string;
+  igUserId: string;
+  resourceId: string;
+  commentId: string;
+  observedAt: Date;
+  messagingWindowExpiresAt?: Date;
+};
 
 export type DirectDmGuideConversation = {
   id: string;
@@ -72,6 +92,17 @@ export type GuideAccessActionDependencies = {
     recipientId: string;
     actionToken: string;
   }): Promise<MetaSendResult>;
+  sendInitialPrivateReply(input: {
+    commentId: string;
+    guideName: string;
+    actionToken: string;
+    capabilities: GuideActionCapabilities;
+  }): Promise<MetaSendResult>;
+  /**
+   * Read per outbound action so an operator stop takes effect immediately. Rich
+   * controls stay off until the reviewed capability rows say otherwise.
+   */
+  richCapabilities(): GuideActionCapabilities;
   loadGuideName(resourceId: string): Promise<string>;
   loadThreadId(inboundMessageId: string): Promise<string | null>;
   findAttemptIdByToken(tokenId: string): Promise<string | null>;
@@ -731,10 +762,103 @@ export function createGuideAccessActionService(
     }
   }
 
+  async function startCommentGuideRequest(
+    input: CommentGuideRequest,
+  ): Promise<GuideAccessActionOutcome> {
+    const now = dependencies.now();
+    const windowExpiresAt =
+      input.messagingWindowExpiresAt ??
+      new Date(input.observedAt.getTime() + STANDARD_DM_WINDOW_MS);
+
+    // The repository accepts any window and cannot reject an already-closed one
+    // (deferred at Task 3), so the caller owns that check. Opening into a closed
+    // window would spend the single private reply Meta allows for this comment
+    // on a message the parent can never act on.
+    if (windowExpiresAt.getTime() <= now.getTime()) return "action_expired";
+
+    let created;
+    try {
+      created = await dependencies.repository.createOrLoadAttempt({
+        conversationId: input.conversationId,
+        resourceId: input.resourceId,
+        coverVersionId: null,
+        messagingWindowExpiresAt: windowExpiresAt,
+        now,
+      });
+    } catch {
+      dependencies.logger.error(
+        { errorCode: "comment_attempt_create_failed" },
+        "Guide access comment attempt creation failed",
+      );
+      return "access_attempt_needs_review";
+    }
+
+    const attempt = created.attempt;
+    // Any other state means this journey already moved past its opening. The
+    // parent's own action owns every later transition.
+    if (attempt.state !== "awaiting_request") return outcomeForState(attempt.state);
+
+    let guideName: string;
+    try {
+      guideName = await dependencies.loadGuideName(attempt.resourceId);
+    } catch {
+      dependencies.logger.error(
+        { errorCode: "comment_guide_context_load_failed", attemptId: attempt.id },
+        "Guide access comment context load failed",
+      );
+      return "access_attempt_needs_review";
+    }
+
+    let issued;
+    try {
+      issued = await dependencies.repository.issueToken({
+        attemptId: attempt.id,
+        action: "request_guide",
+        now,
+        expiresAt: tokenExpiry(now, windowExpiresAt, dependencies.actionTokenTtlMs),
+      });
+    } catch {
+      dependencies.logger.error(
+        { errorCode: "comment_request_token_issue_failed", attemptId: attempt.id },
+        "Guide access comment token issue failed",
+      );
+      return "access_attempt_needs_review";
+    }
+
+    if (issued.kind === "attempt_not_found" || issued.kind === "attempt_expired") {
+      return "action_expired";
+    }
+    if (issued.kind === "state_conflict") return outcomeForState(issued.actualState);
+    // A replayed token means this journey already owns an opening. A second
+    // comment must not produce a second private reply.
+    if (issued.kind === "replayed") return "guide_opening_already_sent";
+
+    const capabilities = dependencies.richCapabilities();
+    const disposition = await sendAfterFence(attempt.id, "awaiting_request", () =>
+      dependencies.sendInitialPrivateReply({
+        commentId: input.commentId,
+        guideName,
+        actionToken: issued.token.id,
+        capabilities,
+      }),
+    );
+    if (disposition === "sent") return "guide_opening_sent";
+    if (disposition === "needs_review") return "access_attempt_needs_review";
+
+    // Definitely not delivered. The attempt stays openable rather than being
+    // escalated as ambiguous, and no second private reply is attempted.
+    dependencies.logger.error(
+      { errorCode: "comment_opening_send_failed", attemptId: attempt.id },
+      "Guide access comment opening failed",
+    );
+    return "guide_opening_failed";
+  }
+
   return {
     requestGuideFromAction,
     checkFollowFromAction,
     startDirectDmGuideRequest,
+    startCommentGuideRequest,
   };
 }
 
@@ -753,6 +877,13 @@ const defaultService = createGuideAccessActionService({
       source: "keyword_automation",
     }),
   sendFollowLag: sendGuideFollowLag,
+  sendInitialPrivateReply: sendGuideInitialPrivateReply,
+  // The switch is the operator's assertion that the reviewed capability rows are
+  // `supported`; it is read per action so a stop applies to the next opening.
+  richCapabilities: () =>
+    guideRichGateEnabled()
+      ? { privateQuickReply: true, dmGenericGate: true, dmQuickReply: true }
+      : { privateQuickReply: false, dmGenericGate: false, dmQuickReply: false },
   async loadGuideName(resourceId) {
     const resource = await prisma.resource.findUnique({
       where: { id: resourceId },
@@ -783,3 +914,4 @@ const defaultService = createGuideAccessActionService({
 export const requestGuideFromAction = defaultService.requestGuideFromAction;
 export const checkFollowFromAction = defaultService.checkFollowFromAction;
 export const startDirectDmGuideRequest = defaultService.startDirectDmGuideRequest;
+export const startCommentGuideRequest = defaultService.startCommentGuideRequest;
