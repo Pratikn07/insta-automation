@@ -374,9 +374,35 @@ WHERE created_at >= now() - interval '7 days'
 GROUP BY 1, 2 ORDER BY 3 DESC;
 ```
 
-An attempt stuck in `delivering` is released lazily by the parent's next inbound
-message, not by a sweeper — there is no background job that expires one. Until then
-that conversation is treated as mid-flight and the parent's next request is refused.
+### Releasing a stuck attempt
+
+Every fault in this flow parks the attempt in `needs_review`, which is an **active**
+state: it blocks the parent's next request for the rest of their messaging window, and
+nothing automatic clears it. There is no sweeper. Before the release action below, the
+only escape was the parent messaging again *after* their window lapsed — so a parent who
+gave up stayed blocked, with nothing on any screen to show it.
+
+Find the conversation with the attempt query above, then:
+
+```bash
+curl -X POST "$API/api/guide-deliveries/access/<conversationId>/release"   -H 'Content-Type: application/json'   -d '{"acknowledgeDuplicateRisk": true}'
+```
+
+The acknowledgement is required and is not a formality. Releasing authorizes nothing —
+a new attempt must earn its own live follow confirmation — but the parent may be sent
+something they already received, which is exactly the judgement this system gives to a
+human rather than to a retry loop. The release is audited as
+`guide_access_owner_action` with the actor and the state it released from.
+
+It refuses a `delivering` attempt with `409 access_attempt_delivering`. Expiring one
+would leave the conversation with nothing active, so the parent's next message would
+open a new attempt and send a **second** guide while the first was still in flight.
+Cancel the delivery through the owner review instead; that releases its attempt
+correctly.
+
+An attempt stuck in `delivering` is otherwise released lazily by the parent's next
+inbound message, not by a sweeper. Until then that conversation is treated as
+mid-flight and the parent's next request is refused.
 If a completion could not settle its attempt, the log carries
 `access_attempt_settle_failed` or `access_attempt_settle_refused`; the latter means
 the active attempt was not the one that delivery belonged to and was correctly left

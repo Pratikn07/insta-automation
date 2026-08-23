@@ -101,6 +101,7 @@ function harness(input: {
       findFirst: vi.fn(async () => input.publishedCover ?? null),
       findUnique: vi.fn(async () => input.coverById ?? null),
     },
+    eventLog: { create: vi.fn(async () => ({ id: "event-1" })) },
     guideActionToken: {
       findUnique: vi.fn(async () => input.tokenIdentity ?? { attemptId: ATTEMPT_ID }),
       findFirst: vi.fn(async () => input.activeToken ?? null),
@@ -891,6 +892,81 @@ describe("settleAttemptForConversation", () => {
         expectedWindowExpiresAt: WINDOW_EXPIRES_AT,
       }),
     ).resolves.toBe("already_settled");
+
+    expect(test.tx.guideAccessAttempt.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+// Review round 2, Important. Every fault in this design routes to `needs_review`, and
+// nothing could clear one: `markExpired` had no production caller, no route read
+// `guide_access_attempt`, and the only escape was the parent messaging again AFTER their
+// 24h window lapsed. A parent who gave up stayed blocked, invisibly.
+describe("releaseAttemptForConversation", () => {
+  it("expires a stuck attempt so the parent can start over", async () => {
+    const test = harness({
+      activeAttempt: attempt({ state: "needs_review", lastFollowResult: "non_follower" }),
+      lockedAttempt: attempt({ state: "needs_review", lastFollowResult: "non_follower" }),
+    });
+
+    await expect(
+      test.repository.releaseAttemptForConversation({
+        conversationId: CONVERSATION_ID,
+        actor: "owner@example.com",
+        now: NOW,
+      }),
+    ).resolves.toBe("released");
+
+    expect(test.tx.guideAccessAttempt.updateMany).toHaveBeenCalledWith({
+      where: { id: ATTEMPT_ID, state: "needs_review" },
+      data: { state: "expired" },
+    });
+    // Audited in the same transaction, and carrying no sender id, copy, or URL.
+    expect(test.tx.eventLog.create).toHaveBeenCalledWith({
+      data: {
+        kind: "guide_access_owner_action",
+        payload: {
+          actor: "owner@example.com",
+          action: "release_attempt",
+          conversationId: CONVERSATION_ID,
+          attemptId: ATTEMPT_ID,
+          releasedFrom: "needs_review",
+          at: NOW.toISOString(),
+        },
+      },
+    });
+  });
+
+  it("refuses to release an attempt that is mid-delivery", async () => {
+    const test = harness({
+      activeAttempt: attempt({ state: "delivering", lastFollowResult: "follower" }),
+      lockedAttempt: attempt({ state: "delivering", lastFollowResult: "follower" }),
+    });
+
+    // Expiring a `delivering` attempt is precisely the duplicate-guide hazard the cancel
+    // path had: it leaves nothing active, so the parent's next message opens a new attempt
+    // and sends a second guide while the first is still in flight. A stuck delivery is
+    // resolved through the delivery review, which releases its own attempt correctly.
+    await expect(
+      test.repository.releaseAttemptForConversation({
+        conversationId: CONVERSATION_ID,
+        actor: "owner@example.com",
+        now: NOW,
+      }),
+    ).resolves.toBe("delivering");
+
+    expect(test.tx.guideAccessAttempt.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("reports nothing to release when no attempt is active", async () => {
+    const test = harness({ activeAttempt: null });
+
+    await expect(
+      test.repository.releaseAttemptForConversation({
+        conversationId: CONVERSATION_ID,
+        actor: "owner@example.com",
+        now: NOW,
+      }),
+    ).resolves.toBe("not_found");
 
     expect(test.tx.guideAccessAttempt.updateMany).not.toHaveBeenCalled();
   });

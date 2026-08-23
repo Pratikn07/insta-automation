@@ -8,8 +8,12 @@ const reviewMocks = vi.hoisted(() => ({
   retryUncertainUnit: vi.fn(),
   cancelGuideDelivery: vi.fn(),
 }));
+const releaseAttemptForConversation = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/guideDeliveryReviewService.js", () => reviewMocks);
+vi.mock("../services/guideAccessRepository.js", () => ({
+  guideAccessRepository: { releaseAttemptForConversation },
+}));
 
 const { guideDeliveriesRouter } = await import("./guideDeliveries.routes.js");
 
@@ -39,6 +43,7 @@ beforeEach(() => {
   reviewMocks.confirmUnitDelivered.mockResolvedValue({ status: "accepted" });
   reviewMocks.retryUncertainUnit.mockResolvedValue({ status: "processing_started" });
   reviewMocks.cancelGuideDelivery.mockResolvedValue({ status: "accepted" });
+  releaseAttemptForConversation.mockReset().mockResolvedValue("released");
 });
 
 describe("guide delivery owner routes", () => {
@@ -131,5 +136,57 @@ describe("guide delivery owner routes", () => {
 
     expect(response.body).toEqual({ error: "owner_auth_required" });
     expect(reviewMocks.cancelGuideDelivery).not.toHaveBeenCalled();
+  });
+});
+
+// Review round 2, Important. The one remedy for an attempt nobody else can clear.
+describe("POST /api/guide-deliveries/access/:conversationId/release", () => {
+  const CONVERSATION = "90000000-0000-4000-8000-000000000009";
+  const base = `/api/guide-deliveries/access/${CONVERSATION}/release`;
+
+  it("releases a stuck attempt once the operator acknowledges the duplicate risk", async () => {
+    releaseAttemptForConversation.mockResolvedValue("released");
+
+    await request(makeApp()).post(base).send({ acknowledgeDuplicateRisk: true }).expect(204);
+
+    expect(releaseAttemptForConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: CONVERSATION, actor: OWNER }),
+    );
+  });
+
+  it("refuses without the acknowledgement, because the parent may already have received it", async () => {
+    await request(makeApp())
+      .post(base)
+      .send({})
+      .expect(400, { error: "duplicate_risk_acknowledgement_required" });
+
+    expect(releaseAttemptForConversation).not.toHaveBeenCalled();
+  });
+
+  it("refuses to release an attempt that is mid-delivery", async () => {
+    releaseAttemptForConversation.mockResolvedValue("delivering");
+
+    await request(makeApp())
+      .post(base)
+      .send({ acknowledgeDuplicateRisk: true })
+      .expect(409, { error: "access_attempt_delivering" });
+  });
+
+  it("reports nothing to release when no attempt is active", async () => {
+    releaseAttemptForConversation.mockResolvedValue("not_found");
+
+    await request(makeApp())
+      .post(base)
+      .send({ acknowledgeDuplicateRisk: true })
+      .expect(404, { error: "access_attempt_not_found" });
+  });
+
+  it("rejects a non-uuid conversation before touching the database", async () => {
+    await request(makeApp())
+      .post("/api/guide-deliveries/access/not-a-uuid/release")
+      .send({ acknowledgeDuplicateRisk: true })
+      .expect(404, { error: "access_attempt_not_found" });
+
+    expect(releaseAttemptForConversation).not.toHaveBeenCalled();
   });
 });

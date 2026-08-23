@@ -237,6 +237,27 @@ export interface GuideAccessRepository {
      */
     expectedWindowExpiresAt: Date;
   }): Promise<"settled" | "already_settled" | "not_found" | "window_mismatch">;
+  /**
+   * Operator remedy for an attempt nobody else can clear.
+   *
+   * Every fault in this flow routes to `needs_review`, which is an ACTIVE state: it blocks
+   * the parent's next request for the rest of their messaging window, and no automatic path
+   * clears it. This is the one action that does.
+   *
+   * Refuses `delivering` on purpose. Expiring a mid-delivery attempt leaves the
+   * conversation with nothing active, so the parent's next message opens a new attempt and
+   * sends a SECOND guide while the first is still in flight — the exact hazard the cancel
+   * path had. A stuck delivery is resolved through the delivery review instead.
+   *
+   * Releasing authorizes nothing: a new attempt must earn its own live follow confirmation.
+   * It can, however, mean a parent is sent something they may already have received, which
+   * is why the route above it demands an explicit acknowledgement.
+   */
+  releaseAttemptForConversation(input: {
+    conversationId: string;
+    actor: string;
+    now: Date;
+  }): Promise<"released" | "not_found" | "delivering">;
   settleCoverExposure(input: SettleCoverExposureInput): Promise<void>;
   findCoverSnapshot(coverVersionId: string): Promise<GuideAccessCoverSnapshot | null>;
 }
@@ -952,6 +973,45 @@ export function createGuideAccessRepository(
           data: { state: input.outcome },
         });
         return updated.count === 1 ? ("settled" as const) : ("already_settled" as const);
+      });
+    },
+
+    async releaseAttemptForConversation(input) {
+      requireValidDate(input.now, "guide access release time");
+      return database.$transaction(async (tx) => {
+        if (!(await lockConversation(tx, input.conversationId))) return "not_found" as const;
+        const active = await tx.guideAccessAttempt.findFirst({
+          where: {
+            conversationId: input.conversationId,
+            state: { in: [...ACTIVE_ATTEMPT_STATES] },
+          },
+          orderBy: { createdAt: "desc" },
+          select: { id: true, state: true },
+        });
+        if (!active) return "not_found" as const;
+        if (active.state === "delivering") return "delivering" as const;
+        const updated = await tx.guideAccessAttempt.updateMany({
+          where: { id: active.id, state: active.state },
+          data: { state: "expired" },
+        });
+        if (updated.count !== 1) return "not_found" as const;
+        // Audited in the same transaction as the release. A human deliberately unblocked a
+        // parent who may already have received something; that has to be on the record.
+        // Conversation-scoped like every other guide event payload — no sender id, no copy.
+        await tx.eventLog.create({
+          data: {
+            kind: "guide_access_owner_action",
+            payload: {
+              actor: input.actor,
+              action: "release_attempt",
+              conversationId: input.conversationId,
+              attemptId: active.id,
+              releasedFrom: active.state,
+              at: input.now.toISOString(),
+            },
+          },
+        });
+        return "released" as const;
       });
     },
 
