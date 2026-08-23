@@ -936,6 +936,46 @@ describe("releaseAttemptForConversation", () => {
     });
   });
 
+  it("refuses to release an attempt that already had a delivery, not just one mid-flight", async () => {
+    // `delivering` alone is not the hazard. `handleFollower` moves an attempt
+    // `delivering -> needs_review` when the durable delivery fails to start, and the delivery
+    // row survives with an uncertain unit the owner-review retry can still fire. Releasing
+    // that attempt frees the conversation, so the parent's next message opens a new attempt
+    // and `deliverGuideForTrigger` — which dedupes only on (triggerKind, triggerId) — builds
+    // a SECOND full guide. `lastFollowResult: "follower"` is exactly "this attempt reached
+    // delivering", so it is the handle. The remedy is cancelling the delivery, which releases
+    // its own attempt correctly.
+    const test = harness({
+      activeAttempt: attempt({ state: "needs_review", lastFollowResult: "follower" }),
+      lockedAttempt: attempt({ state: "needs_review", lastFollowResult: "follower" }),
+    });
+
+    await expect(
+      test.repository.releaseAttemptForConversation({
+        conversationId: CONVERSATION_ID,
+        actor: "owner@example.com",
+        now: NOW,
+      }),
+    ).resolves.toBe("delivering");
+
+    expect(test.tx.guideAccessAttempt.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("still releases a review that never got as far as a delivery", async () => {
+    const test = harness({
+      activeAttempt: attempt({ state: "needs_review", lastFollowResult: "non_follower" }),
+      lockedAttempt: attempt({ state: "needs_review", lastFollowResult: "non_follower" }),
+    });
+
+    await expect(
+      test.repository.releaseAttemptForConversation({
+        conversationId: CONVERSATION_ID,
+        actor: "owner@example.com",
+        now: NOW,
+      }),
+    ).resolves.toBe("released");
+  });
+
   it("refuses to release an attempt that is mid-delivery", async () => {
     const test = harness({
       activeAttempt: attempt({ state: "delivering", lastFollowResult: "follower" }),

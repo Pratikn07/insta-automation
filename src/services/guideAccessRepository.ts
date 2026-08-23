@@ -244,10 +244,12 @@ export interface GuideAccessRepository {
    * the parent's next request for the rest of their messaging window, and no automatic path
    * clears it. This is the one action that does.
    *
-   * Refuses `delivering` on purpose. Expiring a mid-delivery attempt leaves the
-   * conversation with nothing active, so the parent's next message opens a new attempt and
-   * sends a SECOND guide while the first is still in flight — the exact hazard the cancel
-   * path had. A stuck delivery is resolved through the delivery review instead.
+   * Refuses any attempt that has, or has had, a delivery — `delivering`, and also any
+   * attempt holding `lastFollowResult: "follower"`, which is only reachable by having been
+   * `delivering`. Expiring one leaves the conversation with nothing active, so the parent's
+   * next message opens a new attempt and sends a SECOND guide while a unit of the first is
+   * still retryable — the exact hazard the cancel path had. A stuck delivery is resolved
+   * through the delivery review instead, which releases its own attempt correctly.
    *
    * Releasing authorizes nothing: a new attempt must earn its own live follow confirmation.
    * It can, however, mean a parent is sent something they may already have received, which
@@ -986,10 +988,20 @@ export function createGuideAccessRepository(
             state: { in: [...ACTIVE_ATTEMPT_STATES] },
           },
           orderBy: { createdAt: "desc" },
-          select: { id: true, state: true },
+          select: { id: true, state: true, lastFollowResult: true },
         });
         if (!active) return "not_found" as const;
-        if (active.state === "delivering") return "delivering" as const;
+        // `delivering` is the obvious case. `lastFollowResult: "follower"` is the one that
+        // hides: an attempt only earns that by reaching `delivering`, and `handleFollower`
+        // moves it BACK to `needs_review` when the durable delivery fails to start — leaving
+        // a delivery row the owner-review retry can still fire. Releasing that frees the
+        // conversation, so the parent's next message opens a new attempt and produces a
+        // second full guide, since `deliverGuideForTrigger` dedupes only on the trigger.
+        // Reported as `delivering` because the remedy is the same: cancel the delivery,
+        // which releases its own attempt correctly.
+        if (active.state === "delivering" || active.lastFollowResult === "follower") {
+          return "delivering" as const;
+        }
         const updated = await tx.guideAccessAttempt.updateMany({
           where: { id: active.id, state: active.state },
           data: { state: "expired" },

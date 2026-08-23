@@ -764,10 +764,12 @@ export function createGuideAccessActionService(
     // again", so it must be true for any exposure that MIGHT have reached the parent:
     //
     //   accepted  — provably arrived.
-    //   uncertain — Meta may well have accepted it. The spec forbids ever repeating this
-    //               one automatically, and an uncertain gate is re-enterable (the review
-    //               keeps `lastFollowResult: "unknown"`), so a later follow-confirm would
-    //               otherwise send a second image.
+    //   uncertain — Meta may well have accepted it, and the spec forbids ever repeating
+    //               this one automatically. Load-bearing here specifically because an
+    //               uncertain COVER exposure deliberately leaves its review re-enterable
+    //               (`cover_exposure_uncertain` records no follow answer, so the parent can
+    //               still receive the gate instructions the cover branch returned before
+    //               sending). Without this flag that recovery would carry a second image.
     //   failed    — provably never arrived, so the cover is still owed.
     const cover = await deliverableCover(delivering.attempt);
     const coverAlreadyShown =

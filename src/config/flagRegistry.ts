@@ -118,15 +118,15 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
   },
   {
     key: "GUIDE_COVER_DELIVERY_ENABLED",
-    name: "Guide cover in delivery",
+    name: "Guide cover image",
     group: "outbound",
     kind: "boolean",
     doesWhat:
-      "Includes the published cover image as the first part of a guide that is sent.",
+      "Sends the published cover image to a parent: as the first part of a delivered guide, AND on its own when someone who is not following yet is asked to follow.",
     affectsWho:
-      "Only guides explicitly selected for the cover pilot, or a share of new requests once a percentage is set.",
+      "Only guides explicitly selected for the cover pilot, or a share of new requests once a percentage is set. Both cover moments are governed together — there is no way to enable one without the other.",
     ifOff:
-      "The guide is sent exactly as before, without its cover. Follower checks are unaffected.",
+      "No cover image reaches anyone. Guides are sent exactly as before and the follow request is text only. Follower checks are unaffected either way.",
     pageMayEnable: false,
     pageMayStop: true,
   },

@@ -418,17 +418,19 @@ Find the conversation with the attempt query above, then:
 curl -X POST "$API/api/guide-deliveries/access/<conversationId>/release"   -H 'Content-Type: application/json'   -d '{"acknowledgeDuplicateRisk": true}'
 ```
 
+It refuses any attempt that has, or has had, a delivery — with `409
+access_attempt_delivering`. That covers `delivering`, and also a `needs_review` attempt
+holding a confirmed follow, which is only reachable by having BEEN `delivering`: the durable
+delivery can fail to start and move the attempt back, leaving a delivery row whose uncertain
+unit the owner review can still fire. Releasing that would free the conversation and let the
+parent's next message build a second full guide. Cancel the delivery instead; that releases
+its own attempt correctly.
+
 The acknowledgement is required and is not a formality. Releasing authorizes nothing —
 a new attempt must earn its own live follow confirmation — but the parent may be sent
 something they already received, which is exactly the judgement this system gives to a
 human rather than to a retry loop. The release is audited as
 `guide_access_owner_action` with the actor and the state it released from.
-
-It refuses a `delivering` attempt with `409 access_attempt_delivering`. Expiring one
-would leave the conversation with nothing active, so the parent's next message would
-open a new attempt and send a **second** guide while the first was still in flight.
-Cancel the delivery through the owner review instead; that releases its attempt
-correctly.
 
 An attempt stuck in `delivering` is otherwise released lazily by the parent's next
 inbound message, not by a sweeper. Until then that conversation is treated as
