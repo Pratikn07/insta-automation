@@ -5,7 +5,11 @@ export const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_KEY,
   auth: { persistSession: false },
 });
 
+export function serverMediaBucket() {
+  return supabase.storage.from(env.SUPABASE_BUCKET);
+}
+
 export function publicMediaUrl(path: string): string {
-  const { data } = supabase.storage.from(env.SUPABASE_BUCKET).getPublicUrl(path);
+  const { data } = serverMediaBucket().getPublicUrl(path);
   return data.publicUrl;
 }
