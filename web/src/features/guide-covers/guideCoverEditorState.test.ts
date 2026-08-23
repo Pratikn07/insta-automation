@@ -28,6 +28,18 @@ const category: PresentationCategory = {
   updatedAt: "2026-08-22T12:00:00.000Z",
 };
 
+const inactiveCategory: PresentationCategory = {
+  ...category,
+  id: "10000000-0000-4000-8000-000000000009",
+  slug: "archive",
+  name: "Archive",
+  collectionLabel: "ARCHIVE",
+  defaultKicker: "A TINY WIN FROM BEFORE",
+  designStatus: "inactive",
+  nextEditionNumber: 2,
+  sortOrder: null,
+};
+
 const cover = (overrides: Partial<ResourceCoverVersion>): ResourceCoverVersion => ({
   id: "30000000-0000-4000-8000-000000000001",
   resourceId: "20000000-0000-4000-8000-000000000001",
@@ -144,6 +156,34 @@ describe("deriveGuideCoverEditorState", () => {
       phase: "published",
       workingCover: { revision: 5 },
       previewEditionNumber: 17,
+    });
+  });
+
+  it("honors the embedded current category when it is inactive and absent from the active list", () => {
+    const withInactivePublished = response({
+      presentation: {
+        resourceId: "20000000-0000-4000-8000-000000000001",
+        categoryId: inactiveCategory.id,
+        editionNumber: 9,
+        category: inactiveCategory,
+        createdAt: "2026-08-22T12:00:00.000Z",
+        updatedAt: "2026-08-22T12:00:00.000Z",
+      },
+      coverVersions: [
+        cover({
+          revision: 8,
+          status: "published",
+          categoryId: inactiveCategory.id,
+          editionNumber: 9,
+        }),
+      ],
+    });
+
+    expect(deriveGuideCoverEditorState(withInactivePublished, [category])).toMatchObject({
+      phase: "published",
+      selectedCategory: inactiveCategory,
+      workingCover: { revision: 8, categoryId: inactiveCategory.id },
+      previewEditionNumber: 9,
     });
   });
 

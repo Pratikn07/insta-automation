@@ -137,4 +137,43 @@ describe("presentation category API", () => {
       .send({ designStatus: "ready" })
       .expect(400, { error: "category_ready_requires_code_review" });
   });
+
+  it("persists normalized collection label and kicker fields for a needs-review category", async () => {
+    findUnique.mockResolvedValue({
+      id: CATEGORY_ID,
+      collectionLabel: "OLD",
+      defaultKicker: "OLD KICKER",
+      designStatus: "needs_review",
+    });
+    update.mockResolvedValue({
+      id: CATEGORY_ID,
+      collectionLabel: "TRAVEL",
+      defaultKicker: "A LITTLE WIN OUTSIDE",
+      designStatus: "needs_review",
+    });
+
+    const response = await request(app())
+      .patch(`/api/presentation-categories/${CATEGORY_ID}`)
+      .send({
+        collectionLabel: " travel ",
+        defaultKicker: " a little win outside ",
+      })
+      .expect(200);
+
+    expect(response.body.category).toEqual({
+      id: CATEGORY_ID,
+      collectionLabel: "TRAVEL",
+      defaultKicker: "A LITTLE WIN OUTSIDE",
+      designStatus: "needs_review",
+    });
+    expect(update).toHaveBeenCalledWith({
+      where: { id: CATEGORY_ID },
+      data: expect.objectContaining({
+        collectionLabel: "TRAVEL",
+        defaultKicker: "A LITTLE WIN OUTSIDE",
+        updatedBy: "creator@tinysoho.com",
+      }),
+    });
+    expect(update.mock.calls[0]?.[0].data).not.toHaveProperty("kicker");
+  });
 });

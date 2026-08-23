@@ -262,6 +262,18 @@ resourceCoversRouter.post("/:resourceId/cover-versions", async (req, res) => {
     where: { id: parsed.data.categoryId, designStatus: "ready" },
   });
   if (!category) return res.status(409).json({ error: "presentation_category_not_ready" });
+  const suggestionId = parsed.data.suggestionId ?? null;
+  if (suggestionId !== null) {
+    const suggestion = await prisma.resourceCoverSuggestion.findFirst({
+      where: {
+        id: suggestionId,
+        resourceId: req.params.resourceId,
+        suggestedCategoryId: parsed.data.categoryId,
+      },
+      select: { id: true },
+    });
+    if (!suggestion) return res.status(409).json({ error: "cover_suggestion_mismatch" });
+  }
 
   const presentation = await covers.createOrLoadPresentation({
     resourceId: req.params.resourceId,
@@ -275,7 +287,7 @@ resourceCoversRouter.post("/:resourceId/cover-versions", async (req, res) => {
     templateKey: category.templateKey,
     paletteKey: category.paletteKey,
     illustrationKey: category.illustrationKey,
-    suggestionId: parsed.data.suggestionId ?? null,
+    suggestionId,
     copy: {
       ...(parsed.data.copy as GuideCoverDraft),
       kicker: category.defaultKicker,

@@ -15,6 +15,7 @@ const findCategory = vi.fn();
 const findPresentation = vi.fn();
 const findCovers = vi.fn();
 const findCover = vi.fn();
+const findSuggestion = vi.fn();
 const updatePresentation = vi.fn();
 const countPublished = vi.fn();
 
@@ -48,6 +49,7 @@ vi.mock("../lib/prisma.js", () => ({
       findUnique: findCover,
       count: countPublished,
     },
+    resourceCoverSuggestion: { findFirst: findSuggestion },
   },
 }));
 
@@ -55,7 +57,9 @@ const { resourceCoversRouter } = await import("./resourceCovers.routes.js");
 
 const RESOURCE_ID = "20000000-0000-4000-8000-000000000001";
 const CATEGORY_ID = "10000000-0000-4000-8000-000000000001";
+const SECOND_CATEGORY_ID = "10000000-0000-4000-8000-000000000002";
 const COVER_ID = "30000000-0000-4000-8000-000000000001";
+const SUGGESTION_ID = "40000000-0000-4000-8000-000000000001";
 
 function app() {
   const value = express();
@@ -100,6 +104,7 @@ beforeEach(() => {
     categoryId: CATEGORY_ID,
     status: "draft",
   });
+  findSuggestion.mockResolvedValue(null);
   updatePresentation.mockResolvedValue({ count: 1 });
   findPublished.mockResolvedValue(null);
   move.mockResolvedValue({ ok: true, outcome: "moved", editionNumber: 4 });
@@ -270,6 +275,104 @@ describe("resource cover API", () => {
         collectionLabel: category.collectionLabel,
       },
     });
+  });
+
+  it("rejects a draft suggestion that belongs to another resource before mutating presentation state", async () => {
+    createOrLoadDraft.mockResolvedValue({
+      ok: true,
+      replayed: false,
+      value: { id: COVER_ID, revision: 1, status: "draft" },
+    });
+
+    await request(app())
+      .post(`/api/resources/${RESOURCE_ID}/cover-versions`)
+      .set("idempotency-key", COVER_ID)
+      .send({
+        id: COVER_ID,
+        categoryId: CATEGORY_ID,
+        suggestionId: SUGGESTION_ID,
+        copy,
+      })
+      .expect(409, { error: "cover_suggestion_mismatch" });
+
+    expect(findSuggestion).toHaveBeenCalledWith({
+      where: {
+        id: SUGGESTION_ID,
+        resourceId: RESOURCE_ID,
+        suggestedCategoryId: CATEGORY_ID,
+      },
+      select: { id: true },
+    });
+    expect(createOrLoadPresentation).not.toHaveBeenCalled();
+    expect(createOrLoadDraft).not.toHaveBeenCalled();
+  });
+
+  it("rejects a draft suggestion for a different category before mutating presentation state", async () => {
+    findCategory.mockResolvedValue({ ...category, id: SECOND_CATEGORY_ID });
+    createOrLoadDraft.mockResolvedValue({
+      ok: true,
+      replayed: false,
+      value: { id: COVER_ID, revision: 1, status: "draft" },
+    });
+
+    await request(app())
+      .post(`/api/resources/${RESOURCE_ID}/cover-versions`)
+      .set("idempotency-key", COVER_ID)
+      .send({
+        id: COVER_ID,
+        categoryId: SECOND_CATEGORY_ID,
+        suggestionId: SUGGESTION_ID,
+        copy,
+      })
+      .expect(409, { error: "cover_suggestion_mismatch" });
+
+    expect(findSuggestion).toHaveBeenCalledWith({
+      where: {
+        id: SUGGESTION_ID,
+        resourceId: RESOURCE_ID,
+        suggestedCategoryId: SECOND_CATEGORY_ID,
+      },
+      select: { id: true },
+    });
+    expect(createOrLoadPresentation).not.toHaveBeenCalled();
+    expect(createOrLoadDraft).not.toHaveBeenCalled();
+  });
+
+  it("creates a draft when the suggestion provenance matches the requested resource and category", async () => {
+    findSuggestion.mockResolvedValue({ id: SUGGESTION_ID });
+    createOrLoadDraft.mockResolvedValue({
+      ok: true,
+      replayed: false,
+      value: { id: COVER_ID, revision: 1, status: "draft", suggestionId: SUGGESTION_ID },
+    });
+
+    const response = await request(app())
+      .post(`/api/resources/${RESOURCE_ID}/cover-versions`)
+      .set("idempotency-key", COVER_ID)
+      .send({
+        id: COVER_ID,
+        categoryId: CATEGORY_ID,
+        suggestionId: SUGGESTION_ID,
+        copy,
+      })
+      .expect(201);
+
+    expect(response.body.cover).toMatchObject({ id: COVER_ID, suggestionId: SUGGESTION_ID });
+    expect(findSuggestion).toHaveBeenCalledWith({
+      where: {
+        id: SUGGESTION_ID,
+        resourceId: RESOURCE_ID,
+        suggestedCategoryId: CATEGORY_ID,
+      },
+      select: { id: true },
+    });
+    expect(createOrLoadDraft).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resourceId: RESOURCE_ID,
+        categoryId: CATEGORY_ID,
+        suggestionId: SUGGESTION_ID,
+      }),
+    );
   });
 
   it("maps a stale draft save to the stable revision-conflict response", async () => {

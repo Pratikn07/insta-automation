@@ -11,8 +11,14 @@ export function deriveGuideCoverEditorState(
   response: ResourcePresentationResponse,
   categories: PresentationCategory[],
 ): DerivedGuideCoverEditorState {
+  const currentCategory =
+    response.presentation &&
+    response.presentation.category?.id === response.presentation.categoryId
+      ? response.presentation.category
+      : null;
   const selectedCategory =
-    categories.find((category) => category.id === response.presentation?.categoryId) ?? null;
+    categories.find((category) => category.id === response.presentation?.categoryId) ??
+    currentCategory;
   const workingCover =
     response.coverVersions.find((cover) => cover.status === "draft" || cover.status === "approved") ??
     response.coverVersions.find((cover) => cover.status === "published") ??

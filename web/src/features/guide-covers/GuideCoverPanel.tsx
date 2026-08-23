@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -145,8 +145,15 @@ function GuideCoverEditor({
   presentation,
   refetchPresentation,
 }: GuideCoverEditorProps) {
+  const editorCategories = useMemo(() => {
+    const currentCategory = presentation.presentation?.category;
+    if (!currentCategory || categories.some((category) => category.id === currentCategory.id)) {
+      return categories;
+    }
+    return [currentCategory, ...categories];
+  }, [categories, presentation.presentation?.category]);
   const [editor, setEditor] = useState<GuideCoverEditorModel>(() =>
-    createInitialGuideCoverEditor(resourceId, categories, presentation),
+    createInitialGuideCoverEditor(resourceId, editorCategories, presentation),
   );
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -157,7 +164,7 @@ function GuideCoverEditor({
     useOperationId();
 
   const selectedCategory =
-    categories.find((category) => category.id === editor.categoryId) ?? null;
+    editorCategories.find((category) => category.id === editor.categoryId) ?? null;
   const copyIsValid = validateGuideCoverDraft(editor.copy).ok;
   const isDirty =
     !editor.savedCopy ||
@@ -260,7 +267,7 @@ function GuideCoverEditor({
           }),
         },
       );
-      const suggestedCategory = categories.find(
+      const suggestedCategory = editorCategories.find(
         (category) => category.id === response.draft.categoryId,
       );
       if (!suggestedCategory) {
@@ -316,11 +323,11 @@ function GuideCoverEditor({
       </div>
 
       <PresentationCategoryPicker
-        categories={categories}
+        categories={editorCategories}
         disabled={editorBusy}
         onSelect={(categoryId) => {
           if (editorBusy) return;
-          const category = categories.find((candidate) => candidate.id === categoryId);
+          const category = editorCategories.find((candidate) => candidate.id === categoryId);
           if (!category) return;
           setEditor((current) =>
             current

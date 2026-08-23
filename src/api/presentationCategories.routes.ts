@@ -130,7 +130,7 @@ presentationCategoriesRouter.patch("/:id", async (req, res) => {
     return res.status(409).json({ error: "ready_category_is_code_owned" });
   }
 
-  let normalizedText: { kicker?: string; collectionLabel?: string } = {};
+  let normalizedText: { defaultKicker?: string; collectionLabel?: string } = {};
   if (parsed.data.defaultKicker !== undefined || parsed.data.collectionLabel !== undefined) {
     const text = validateGuideCoverCategoryText({
       kicker: parsed.data.defaultKicker ?? existing.defaultKicker,
@@ -138,7 +138,7 @@ presentationCategoriesRouter.patch("/:id", async (req, res) => {
     });
     if (!text.ok) return res.status(422).json({ error: text.error.code, field: text.error.field });
     normalizedText = {
-      kicker: text.value.kicker,
+      defaultKicker: text.value.kicker,
       collectionLabel: text.value.collectionLabel,
     };
   }

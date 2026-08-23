@@ -70,6 +70,18 @@ const secondCategory: PresentationCategory = {
   sortOrder: 2,
 };
 
+const inactiveCategory: PresentationCategory = {
+  ...category,
+  id: "10000000-0000-4000-8000-000000000009",
+  slug: "archive",
+  name: "Archive",
+  collectionLabel: "ARCHIVE",
+  defaultKicker: "A TINY WIN FROM BEFORE",
+  designStatus: "inactive",
+  nextEditionNumber: 3,
+  sortOrder: null,
+};
+
 const defaultCopy = {
   headline: "Bedtime can feel softer",
   supportingLine: "A calmer bedtime, one small shift at a time.",
@@ -126,6 +138,22 @@ function presentationWithCover(
       resourceId: RESOURCE_ID,
       categoryId: CATEGORY_ID,
       editionNumber: null,
+      createdAt: "2026-08-22T12:00:00.000Z",
+      updatedAt: "2026-08-22T12:00:00.000Z",
+    },
+    coverVersions: [workingCover],
+  });
+}
+
+function presentationWithInactiveCurrent(
+  workingCover = cover({ categoryId: inactiveCategory.id }),
+): ResourcePresentationResponse {
+  return presentation({
+    presentation: {
+      resourceId: RESOURCE_ID,
+      categoryId: inactiveCategory.id,
+      editionNumber: workingCover.editionNumber,
+      category: inactiveCategory,
       createdAt: "2026-08-22T12:00:00.000Z",
       updatedAt: "2026-08-22T12:00:00.000Z",
     },
@@ -1001,6 +1029,36 @@ describe("GuideCoverPanel approval and publication", () => {
 
     expect(await screen.findByText("Needs visual review")).toBeVisible();
     expect(screen.getByRole("button", { name: "Approve and publish" })).toBeDisabled();
+  });
+
+  it("displays the inactive current category from presentation state without falling back to an unrelated ready category", async () => {
+    installSuccessfulReads(
+      presentationWithInactiveCurrent(
+        cover({
+          status: "draft",
+          categoryId: inactiveCategory.id,
+          kicker: inactiveCategory.defaultKicker,
+          collectionLabel: inactiveCategory.collectionLabel,
+          headline: "Historical draft headline",
+        }),
+      ),
+      [category],
+    );
+    const user = userEvent.setup();
+
+    renderPanel();
+
+    const inactiveOption = await screen.findByRole("option", { name: /Archive.*Inactive/i });
+    expect(inactiveOption).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByText("A TINY WIN FROM BEFORE")).toBeVisible();
+    expect(screen.getByText("ARCHIVE")).toBeVisible();
+    expect(screen.getByLabelText("Cover headline")).toHaveValue("Historical draft headline");
+    expect(screen.getByRole("button", { name: "Approve and publish" })).toBeDisabled();
+
+    await user.type(screen.getByLabelText("Cover headline"), " updated");
+
+    expect(screen.getByRole("button", { name: "Save cover draft" })).toBeDisabled();
+    expect(screen.queryByText("A TINY WIN FOR TONIGHT")).not.toBeInTheDocument();
   });
 
   it("disables publication when exact preview validation fails", async () => {
