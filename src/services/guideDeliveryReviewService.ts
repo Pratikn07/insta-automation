@@ -439,10 +439,22 @@ export function createGuideDeliveryReviewService(dependencies: ReviewDependencie
         // Releasing does not weaken the gate. A parent who asks again opens a fresh
         // attempt that must earn its own live `meta_live` follow confirmation; cancelling
         // authorizes nothing, it just stops pretending a finished attempt is in flight.
-        // Fenced on `delivering` so a stale cancel cannot move an attempt that already
-        // settled, and no new action token is invented.
+        //
+        // Fenced on the window as well as the state, because `delivering` alone does not
+        // say WHICH attempt. A stale delivery sitting in the review backlog can outlive
+        // its own attempt: the window lapses, the parent messages again, the old attempt
+        // is force-expired and a new one opens and reaches `delivering` under a live
+        // delivery. Cancelling the stale one would then expire the LIVE attempt, leaving
+        // the conversation with nothing active — so the parent's next message opens a
+        // third attempt and sends a third guide while the second is still in flight.
+        // A delivery copies its attempt's `messagingWindowExpiresAt` verbatim into
+        // `sendWindowExpiresAt`, so this is an exact identity handle. No new token.
         await tx.guideAccessAttempt.updateMany({
-          where: { conversationId: delivery.conversationId, state: "delivering" },
+          where: {
+            conversationId: delivery.conversationId,
+            state: "delivering",
+            messagingWindowExpiresAt: delivery.sendWindowExpiresAt,
+          },
           data: { state: "expired" },
         });
         await writeOwnerAction(tx, delivery, {

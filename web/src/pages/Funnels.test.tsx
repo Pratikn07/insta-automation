@@ -19,12 +19,29 @@ function rate(numerator: number, denominator: number, pct: number | null) {
 }
 
 const COVER_RATES = {
-  included: rate(20, 100, 20),
-  accepted: rate(17, 20, 85),
-  failed: rate(2, 20, 10),
-  uncertain: rate(1, 20, 5),
-  duplicateSuppressed: rate(4, 100, 4),
-  mispaired: rate(0, 100, 0),
+  gate: {
+    accepted: rate(17, 20, 85),
+    failed: rate(2, 20, 10),
+    uncertain: rate(1, 20, 5),
+  },
+  delivery: {
+    included: rate(20, 100, 20),
+    duplicateSuppressed: rate(4, 100, 4),
+    mispaired: rate(0, 100, 0),
+  },
+};
+
+const EMPTY_COVER_RATES = {
+  gate: {
+    accepted: rate(0, 0, null),
+    failed: rate(0, 0, null),
+    uncertain: rate(0, 0, null),
+  },
+  delivery: {
+    included: rate(0, 0, null),
+    duplicateSuppressed: rate(0, 0, null),
+    mispaired: rate(0, 0, null),
+  },
 };
 
 const FUNNEL = {
@@ -103,14 +120,7 @@ describe("Funnels cover panel", () => {
       cover: {
         key: "guide-access-v2",
         window: FUNNEL.window,
-        coverRates: {
-          included: rate(0, 0, null),
-          accepted: rate(0, 0, null),
-          failed: rate(0, 0, null),
-          uncertain: rate(0, 0, null),
-          duplicateSuppressed: rate(0, 0, null),
-          mispaired: rate(0, 0, null),
-        },
+        coverRates: EMPTY_COVER_RATES,
       },
     });
     renderPage();
@@ -128,7 +138,10 @@ describe("Funnels cover panel", () => {
       cover: {
         key: "guide-access-v2",
         window: FUNNEL.window,
-        coverRates: { ...COVER_RATES, mispaired: rate(3, 100, 3) },
+        coverRates: {
+          ...COVER_RATES,
+          delivery: { ...COVER_RATES.delivery, mispaired: rate(3, 100, 3) },
+        },
       },
     });
     renderPage();
@@ -153,6 +166,32 @@ describe("Funnels cover panel", () => {
     // The cover panel is secondary. Its failure must not take the page's main funnel down.
     await waitFor(() => expect(screen.getByText("74.8%")).toBeInTheDocument());
     expect(screen.getByText(/cover numbers could not be loaded/i)).toBeInTheDocument();
+  });
+
+  it("reports gate exposure separately from delivery inclusion", async () => {
+    // The two are different populations. Rendering them as one group is what let a share of
+    // gate exposures be divided by a count of delivery-plan selections.
+    respond();
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText(/in the follow gate/i)).toBeInTheDocument());
+    expect(screen.getByText(/in the guide delivery/i)).toBeInTheDocument();
+    expect(screen.getByText("85%")).toBeInTheDocument();
+    expect(screen.getByText("20%")).toBeInTheDocument();
+  });
+
+  it("says the numbers are unavailable when the API does not serve them yet", async () => {
+    // The web bundle deploys before the API here, so a 200 without `coverRates` is the
+    // normal ordering. react-query will not retry a success, so a skeleton would sit
+    // forever and claim to still be loading.
+    respond({ cover: { key: "guide-access-v2", window: FUNNEL.window } });
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByText(/does not report cover numbers yet/i)).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/no cover has been considered yet/i)).not.toBeInTheDocument();
+    expect(document.querySelectorAll("[data-slot=\"skeleton\"]")).toHaveLength(0);
   });
 
   it("never asks the API for a parent identifier alongside the cover shares", async () => {

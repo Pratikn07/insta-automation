@@ -159,6 +159,7 @@ function createHarness(input: {
   coverSnapshot?: { versionId: string; resourceId: string; dmStoragePath: string } | null;
   exposureAlready?: "accepted" | "uncertain" | "failed";
   sendCover?: () => Promise<{ messageId: string | null }>;
+  coverDecision?: "include" | "omit";
   issueTokenResults?: Array<
     | { kind: "attempt_not_found" }
     | { kind: "attempt_expired" }
@@ -426,6 +427,7 @@ function createHarness(input: {
   });
   const coverMediaUrl = vi.fn((path: string) => `https://cdn.example.test/${path}`);
   const recordCoverMetric = vi.fn(async () => undefined);
+  const coverDecision = vi.fn(() => input.coverDecision ?? ("include" as "include" | "omit"));
   const loadGuideName = vi.fn(
     input.loadGuideName ?? (async () => "toddler sleep guide"),
   );
@@ -446,6 +448,7 @@ function createHarness(input: {
     richCapabilities,
     sendCover,
     coverMediaUrl,
+    coverDecision,
     recordCoverMetric,
     loadGuideName,
     loadThreadId,
@@ -467,6 +470,7 @@ function createHarness(input: {
     richCapabilities,
     sendCover,
     coverMediaUrl,
+    coverDecision,
     recordCoverMetric,
     loadGuideName,
     loadThreadId,
@@ -2221,5 +2225,86 @@ describe("cover exposure measurement", () => {
     await request(test);
 
     expect(test.recordCoverMetric).not.toHaveBeenCalled();
+  });
+});
+
+// Review round 2, Critical. The gate sends its cover image DIRECTLY to a non-follower, and
+// it never consulted the cover rollout switch. So publishing a cover in the creator console
+// put an image in front of a real parent with `GUIDE_COVER_DELIVERY_ENABLED=false` — through
+// a console-enableable switch whose own description promises it does not message parents.
+describe("gate cover respects the rollout fence", () => {
+  const FENCED_COVER = {
+    versionId: "c0000000-0000-4000-8000-00000000000c",
+    resourceId: RESOURCE_ID,
+    dmStoragePath: "guide-cover/fenced/dm.png",
+  };
+
+  function fencedHarness(over: Parameters<typeof createHarness>[0] = {}) {
+    return createHarness({
+      initialAttempt: attempt({ coverVersionId: FENCED_COVER.versionId }),
+      freshResults: [live(false)],
+      coverSnapshot: FENCED_COVER,
+      ...over,
+    });
+  }
+
+  it("sends no cover image while the cover rollout is closed", async () => {
+    const test = fencedHarness({ coverDecision: "omit" });
+
+    await expect(request(test)).resolves.toBe("follow_not_confirmed");
+
+    expect(test.sendCover).not.toHaveBeenCalled();
+    // Not even a URL is resolved for an image nobody will receive.
+    expect(test.coverMediaUrl).not.toHaveBeenCalled();
+    // The gate itself still goes out. Withholding the image is not withholding the gate.
+    expect(test.sendFollowerGate).toHaveBeenCalledTimes(1);
+    expect(test.recordCoverMetric).toHaveBeenCalledWith("omitted_not_selected");
+  });
+
+  it("leaves the exposure unclaimed so a later opened rollout can still send it", async () => {
+    const test = fencedHarness({ coverDecision: "omit" });
+
+    await request(test);
+
+    // Claiming would settle the attempt's exposure and permanently suppress a cover the
+    // parent never saw.
+    expect(test.attempt().coverExposure).toBe("not_shown");
+    expect(test.order).not.toContain("claim:cover_exposure");
+  });
+
+  it("sends the cover when the rollout selects this guide", async () => {
+    const test = fencedHarness({ coverDecision: "include" });
+
+    await request(test);
+
+    expect(test.sendCover).toHaveBeenCalledTimes(1);
+    expect(test.recordCoverMetric).toHaveBeenCalledWith("accepted");
+  });
+
+  it("counts a gate cover the provider acknowledged without a message id", async () => {
+    // Previously this returned `needs_review` without recording anything, so the one class
+    // the runbook tells an operator to watch was the class that went uncounted.
+    const test = fencedHarness({
+      coverDecision: "include",
+      sendCover: async () => ({ messageId: null }),
+    });
+
+    await request(test);
+
+    expect(test.recordCoverMetric).toHaveBeenCalledWith("uncertain");
+  });
+
+  it("reports a mispaired cover even while the rollout is closed", async () => {
+    const test = fencedHarness({
+      coverDecision: "omit",
+      coverSnapshot: { ...FENCED_COVER, resourceId: "99999999-9999-4999-8999-999999999999" },
+    });
+
+    await request(test);
+
+    // Integrity before policy, same ordering as the delivery side. A pairing fault is a
+    // fault whether or not this send would have carried the image.
+    expect(test.recordCoverMetric).toHaveBeenCalledWith("omitted_mismatch");
+    expect(test.sendCover).not.toHaveBeenCalled();
   });
 });

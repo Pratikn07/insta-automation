@@ -525,7 +525,11 @@ describe("owner review authorization boundary", () => {
 // next request for the rest of the messaging window. Round 1 caught that the first fix
 // picked `needs_review`, which is ALSO active — the block survived the fix.
 describeWithDatabase("cancel releases the guide access attempt", () => {
-  async function attemptFor(fixture: DeliveryFixture, state: "delivering" | "needs_review") {
+  async function attemptFor(
+    fixture: DeliveryFixture,
+    state: "delivering" | "needs_review",
+    windowExpiresAt: Date = new Date(NOW.getTime() + 60 * 60 * 1_000),
+  ) {
     const attemptId = randomUUID();
     await prisma.guideAccessAttempt.create({
       data: {
@@ -538,7 +542,7 @@ describeWithDatabase("cancel releases the guide access attempt", () => {
         // so this is not a fixture convenience — it is the only row the schema allows.
         lastFollowResult: "follower",
         createdAt: NOW,
-        messagingWindowExpiresAt: new Date(NOW.getTime() + 60 * 60 * 1_000),
+        messagingWindowExpiresAt: windowExpiresAt,
       },
     });
     return attemptId;
@@ -581,6 +585,28 @@ describeWithDatabase("cancel releases the guide access attempt", () => {
     // already decided — including one an earlier cancel produced.
     const attempt = await prisma.guideAccessAttempt.findUniqueOrThrow({ where: { id: attemptId } });
     expect(attempt.state).toBe("needs_review");
+  });
+
+  it("refuses to expire an attempt from a different messaging window", async () => {
+    // Review round 2. `state: "delivering"` does not identify WHICH attempt. Reachable
+    // sequence: D1 lands in review, its window lapses, the parent messages a day later so
+    // the old attempt is force-expired and A2 opens, A2 reaches `delivering` under a new
+    // delivery D2 that is actively sending. An operator working the review backlog cancels
+    // the stale D1 — and this update would expire A2, leaving the conversation with no
+    // active attempt, so the parent's next message opens A3 and sends a THIRD guide while
+    // D2 is still in flight.
+    const fixture = await createDelivery();
+    const newerWindow = new Date(NOW.getTime() + 48 * 60 * 60 * 1_000);
+    const attemptId = await attemptFor(fixture, "delivering", newerWindow);
+    const service = createGuideDeliveryReviewService({ database: prisma });
+
+    await expect(
+      service.cancelGuideDelivery({ deliveryId: fixture.deliveryId, actor: OWNER, now: NOW }),
+    ).resolves.toEqual({ status: "accepted" });
+
+    // The cancel still happened; it simply did not touch an attempt it does not own.
+    const attempt = await prisma.guideAccessAttempt.findUniqueOrThrow({ where: { id: attemptId } });
+    expect(attempt.state).toBe("delivering");
   });
 
   it("does not invent an attempt for a delivery that never had one", async () => {

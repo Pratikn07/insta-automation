@@ -15,17 +15,24 @@ export const GUIDE_ACCESS_OUTCOMES = {
   gate: ["shown", "profile_action_offered"],
   recheck: ["attempted", "confirmed", "not_confirmed", "unavailable"],
   delivery: ["planned", "completed", "failed", "needs_review"],
-  // Cover outcomes. `selected` counts a cover actually put into a plan, so it is the
-  // denominator for `accepted`/`failed`/`uncertain`. The three `omitted_*` outcomes are
-  // kept apart because they mean very different things operationally: duplicate
-  // suppression working, the rollout fence holding, and a snapshot paired with the wrong
-  // guide. Together with `selected` they partition every delivery that had a cover to
-  // consider, so the funnel adds up and a pairing bug cannot hide inside a routine one.
-  cover: [
+  // TWO cover stages, not one, because there are two cover paths and they measure
+  // different things. Folding them together let a rate divide one path's numerator by the
+  // other path's denominator — a panel that could read "accepted 100%" and "failed 100%"
+  // simultaneously, or report that nothing had been considered while real parents were
+  // receiving cover images through the gate.
+  //
+  // `cover_gate`: the cover the follow gate sends DIRECTLY to a non-follower. Exposure is
+  // attempted immediately, so the three send outcomes are what this path produces; the two
+  // `omitted_*` are decisions taken before any send.
+  cover_gate: ["accepted", "failed", "uncertain", "omitted_not_selected", "omitted_mismatch"],
+  // `cover_delivery`: the cover prepended as the first UNIT of a ledger delivery. This
+  // path records only its plan-time decision. The four outcomes partition every delivery
+  // that had a cover to consider, so that funnel adds up and a pairing bug cannot hide
+  // inside a routine rollout omission. The unit's own send outcome is not recorded here —
+  // it is the delivery ledger's business, and inventing a cover exposure for it would put
+  // two different events under one name again.
+  cover_delivery: [
     "selected",
-    "accepted",
-    "failed",
-    "uncertain",
     "omitted_already_shown",
     "omitted_not_selected",
     "omitted_mismatch",
@@ -95,6 +102,22 @@ export function createGuideAccessMetrics(dependencies: {
 /** Shared recorder for parent-flow integration. */
 export const guideAccessMetrics = createGuideAccessMetrics({ writeEvent: logEvent });
 
+/**
+ * Typed entry point. `record` takes `unknown` because it validates hostile input at the
+ * boundary, which also means a mistyped stage or an outcome from the wrong stage compiles
+ * fine and fails silently at runtime — the whole `cover` stage was renamed underneath its
+ * call sites without a single compiler error. Prefer this wherever the stage is a literal.
+ */
+export function recordGuideAccessMetric<Stage extends GuideAccessMetricStage>(
+  stage: Stage,
+  outcome: (typeof GUIDE_ACCESS_OUTCOMES)[Stage][number],
+  latencyMs?: number,
+): Promise<MetricRecordResult> {
+  return guideAccessMetrics.record(
+    latencyMs === undefined ? { stage, outcome } : { stage, outcome, latencyMs },
+  );
+}
+
 export interface GuideAccessMetricsDb {
   $queryRawUnsafe<T = unknown>(query: string, ...values: unknown[]): Promise<T>;
 }
@@ -133,20 +156,27 @@ type GuideAccessCountMatrix = {
 /**
  * Cover shares, computed here rather than in the page.
  *
- * Two denominators, because they answer different questions. `included`,
- * `duplicateSuppressed` and `mispaired` are shares of every delivery that HAD a cover to
- * consider — the four cover omission-or-selection outcomes partition that pool, so the
- * three read against each other. `accepted`, `failed` and `uncertain` are shares of
- * `selected` only: a cover that never entered a plan cannot have been accepted or refused
- * by the provider, and putting it in the denominator would understate every send outcome.
+ * Grouped by path, and never mixed. Each group's denominator is drawn only from its own
+ * stage, so no share can be a ratio between two populations that never overlap:
+ *
+ * - `gate` is denominated by the exposures the gate actually ATTEMPTED
+ *   (`accepted + failed + uncertain`). The rollout omissions are excluded on purpose: an
+ *   exposure the fence withheld was never attempted, and counting it would understate every
+ *   send outcome. The three shares are mutually exclusive, so they sum to 100.
+ * - `delivery` is denominated by every delivery that HAD a cover to consider (all four of
+ *   that stage's outcomes), which is the pool an inclusion share is meaningfully a share of.
  */
 export interface GuideCoverRates {
-  included: GuardedRate;
-  accepted: GuardedRate;
-  failed: GuardedRate;
-  uncertain: GuardedRate;
-  duplicateSuppressed: GuardedRate;
-  mispaired: GuardedRate;
+  gate: {
+    accepted: GuardedRate;
+    failed: GuardedRate;
+    uncertain: GuardedRate;
+  };
+  delivery: {
+    included: GuardedRate;
+    duplicateSuppressed: GuardedRate;
+    mispaired: GuardedRate;
+  };
 }
 
 export interface GuideAccessMetricsResult {
@@ -334,28 +364,38 @@ export async function runGuideAccessMetrics(
     window: { from: window.from.toISOString(), to: window.to.toISOString() },
     counts,
     latenciesMs,
-    coverRates: coverRates(counts.cover),
+    coverRates: coverRates(counts),
     totalEvents,
     ownerReviewEvents: counts.needs_review.marked,
   };
 }
 
-function coverRates(cover: GuideAccessCountMatrix["cover"]): GuideCoverRates {
-  // Every delivery that reached the cover decision landed in exactly one of these four.
-  const considered =
-    cover.selected +
-    cover.omitted_already_shown +
-    cover.omitted_not_selected +
-    cover.omitted_mismatch;
+function coverRates(counts: GuideAccessCountMatrix): GuideCoverRates {
+  const gate = counts.cover_gate;
+  const delivery = counts.cover_delivery;
   const rate = (numerator: number, denominator: number): GuardedRate =>
     guardedRate(numerator, denominator, GUIDE_FOLLOW_MIN_SAMPLE);
 
+  // Exposures the gate actually reached the provider with. Omissions are excluded: they
+  // were decided before any send, so they belong to no send-outcome denominator.
+  const attempted = gate.accepted + gate.failed + gate.uncertain;
+  // Every delivery that reached the cover decision landed in exactly one of these four.
+  const considered =
+    delivery.selected +
+    delivery.omitted_already_shown +
+    delivery.omitted_not_selected +
+    delivery.omitted_mismatch;
+
   return {
-    included: rate(cover.selected, considered),
-    duplicateSuppressed: rate(cover.omitted_already_shown, considered),
-    mispaired: rate(cover.omitted_mismatch, considered),
-    accepted: rate(cover.accepted, cover.selected),
-    failed: rate(cover.failed, cover.selected),
-    uncertain: rate(cover.uncertain, cover.selected),
+    gate: {
+      accepted: rate(gate.accepted, attempted),
+      failed: rate(gate.failed, attempted),
+      uncertain: rate(gate.uncertain, attempted),
+    },
+    delivery: {
+      included: rate(delivery.selected, considered),
+      duplicateSuppressed: rate(delivery.omitted_already_shown, considered),
+      mispaired: rate(delivery.omitted_mismatch, considered),
+    },
   };
 }

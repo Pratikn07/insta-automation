@@ -27,6 +27,10 @@ import { DropOffTable } from "@/components/funnels/DropOffTable";
 // Every percentage here is computed server-side by summarizeGuideFollow, the
 // same function the CLI uses. If this page and `npm run funnel` ever disagree,
 // the bug is in the rendering, not the arithmetic.
+//
+// The cover panel is the exception to the CLI half of that: its shares come from
+// runGuideAccessMetrics, which `npm run funnel` does not report. Still computed
+// server-side, so the page does no arithmetic — but there is no CLI cross-check.
 
 const WINDOW_PRESETS = [
   { label: "30 days", days: 30 },
@@ -142,27 +146,35 @@ export function Funnels() {
         rates={coverQ.data?.coverRates}
         isLoading={coverQ.isLoading}
         isError={coverQ.isError}
+        isAbsent={coverQ.data !== undefined && coverQ.data.coverRates === undefined}
       />
     </div>
   );
 }
 
 /**
- * Cover delivery shares.
+ * Cover shares.
  *
- * Its own error and empty states, because the rollout ships OFF: an empty panel is the
- * normal state for every deployment until someone turns the switch on. Rendering "0%" six
- * times would read as a feature that is failing rather than one that has not started, and
- * an operator acting on that would be acting on nothing.
+ * Two groups, never merged. The follow gate sends a cover directly to a non-follower and
+ * produces a send result; the delivery planner records a plan-time decision and produces no
+ * send result at all. Rendering them together is what let a share of one be divided by a
+ * count of the other, so the panel could read "accepted 100%" and "failed 100%" at once.
+ *
+ * Its own loading, error, unavailable and empty states, because the rollout ships OFF: an
+ * empty panel is the normal state for every deployment until someone sets the switch, and
+ * zeroes everywhere would read as a feature that is failing rather than one that has not
+ * started.
  */
 function CoverPanel({
   rates,
   isLoading,
   isError,
+  isAbsent,
 }: {
   rates: GuideCoverRates | undefined;
   isLoading: boolean;
   isError: boolean;
+  isAbsent: boolean;
 }) {
   if (isError) {
     return (
@@ -175,6 +187,20 @@ function CoverPanel({
       </section>
     );
   }
+  // A 200 that simply lacks the field. The console deploys ahead of the API here, so this
+  // is the expected ordering — and react-query will not retry a success, so sitting in a
+  // skeleton would be a permanent silent claim to still be loading.
+  if (isAbsent) {
+    return (
+      <section className="border-t-line border-t pt-8">
+        <SectionHead
+          eyebrow="Guide cover"
+          title="This API does not report cover numbers yet"
+          blurb="The console is ahead of the server. Nothing is wrong with the funnel above; deploy the API to see cover shares."
+        />
+      </section>
+    );
+  }
   if (isLoading || !rates) {
     return (
       <section className="border-t-line border-t pt-8">
@@ -183,17 +209,18 @@ function CoverPanel({
     );
   }
 
-  const considered = rates.included.denominator;
+  const attempted = rates.gate.accepted.denominator;
+  const considered = rates.delivery.included.denominator;
 
   return (
     <section className="border-t-line border-t pt-8">
       <SectionHead
         eyebrow="Guide cover"
         title="How often the cover reaches a parent"
-        blurb="Inclusion is a share of every delivery that had a cover to consider. The three send outcomes are shares of the covers that actually entered a plan, which is a smaller pool — a cover never put into a plan cannot have been refused by Instagram."
+        blurb="Two paths, kept apart. The follow gate sends the cover straight to someone who is not following yet, so its numbers are send results. The guide delivery decides at plan time whether to prepend the cover, so its number is an inclusion share. A ratio between the two would not be a percentage of anything."
       />
 
-      {considered === 0 ? (
+      {attempted === 0 && considered === 0 ? (
         <p className="max-w-[64ch] text-sm text-muted-foreground">
           No cover has been considered yet in this window. The cover rollout ships off and
           selects nobody until a guide is allowlisted or a share is set, so this is what a
@@ -201,11 +228,12 @@ function CoverPanel({
         </p>
       ) : (
         <>
-          {rates.mispaired.numerator > 0 ? (
+          {rates.delivery.mispaired.numerator > 0 ? (
             <Caveat className="mb-6">
               <b className="font-medium">
-                {rates.mispaired.numerator.toLocaleString()} cover
-                {rates.mispaired.numerator === 1 ? "" : "s"} belonged to a different guide.
+                {rates.delivery.mispaired.numerator.toLocaleString()} cover
+                {rates.delivery.mispaired.numerator === 1 ? "" : "s"} belonged to a different
+                guide.
               </b>{" "}
               Those deliveries went out without an image, which is the safe outcome, but the
               pairing itself is wrong — a snapshot on the access attempt points at another
@@ -213,23 +241,53 @@ function CoverPanel({
             </Caveat>
           ) : null}
 
-          <div className="grid gap-8 md:grid-cols-[1.15fr_1fr] md:gap-14">
+          <div className="grid gap-8 md:grid-cols-2 md:gap-14">
             <div>
-              <p className="label-caps">Deliveries carrying a cover</p>
-              <GuardedNumber
-                className="mt-3"
-                rate={rates.included}
-                unit="of the deliveries that had one to consider"
-                size="hero"
-              />
+              <p className="label-caps">In the follow gate</p>
+              {attempted === 0 ? (
+                <p className="mt-3 max-w-[40ch] text-sm text-muted-foreground">
+                  The gate has not attempted a cover in this window.
+                </p>
+              ) : (
+                <>
+                  <GuardedNumber
+                    className="mt-3"
+                    rate={rates.gate.accepted}
+                    unit="of the covers the gate tried to send"
+                    size="kpi"
+                  />
+                  <dl className="mt-4 flex flex-col">
+                    <CoverKpi label="Send uncertain" rate={rates.gate.uncertain} />
+                    <CoverKpi label="Send failed" rate={rates.gate.failed} />
+                  </dl>
+                </>
+              )}
             </div>
 
-            <dl className="flex flex-col">
-              <CoverKpi label="Cover accepted by Instagram" rate={rates.accepted} />
-              <CoverKpi label="Cover send uncertain" rate={rates.uncertain} />
-              <CoverKpi label="Cover send failed" rate={rates.failed} />
-              <CoverKpi label="Already seen in the gate" rate={rates.duplicateSuppressed} />
-            </dl>
+            <div>
+              <p className="label-caps">In the guide delivery</p>
+              {considered === 0 ? (
+                <p className="mt-3 max-w-[40ch] text-sm text-muted-foreground">
+                  No delivery has had a cover to consider in this window.
+                </p>
+              ) : (
+                <>
+                  <GuardedNumber
+                    className="mt-3"
+                    rate={rates.delivery.included}
+                    unit="of the deliveries that had one to consider"
+                    size="kpi"
+                  />
+                  <dl className="mt-4 flex flex-col">
+                    <CoverKpi
+                      label="Already seen in the gate"
+                      rate={rates.delivery.duplicateSuppressed}
+                    />
+                    <CoverKpi label="Belonged to another guide" rate={rates.delivery.mispaired} />
+                  </dl>
+                </>
+              )}
+            </div>
           </div>
         </>
       )}

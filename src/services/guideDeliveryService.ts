@@ -2,7 +2,7 @@ import type { DmMessageSource } from "@prisma/client";
 import { env } from "../config/env.js";
 import { publicMediaUrl } from "../lib/supabase.js";
 import { guideCoverDeliverySelector } from "./guideCoverDeliveryRollout.js";
-import { guideAccessMetrics } from "./guideAccessMetrics.js";
+import { recordGuideAccessMetric } from "./guideAccessMetrics.js";
 import { logger } from "../lib/logger.js";
 import { prisma } from "../lib/prisma.js";
 import type { MetaSendResult } from "../types/meta.js";
@@ -629,7 +629,7 @@ const defaultService = createGuideDeliveryService({
   coverMediaUrl: publicMediaUrl,
   coverDecision: (decision) => guideCoverDeliverySelector.decide(decision),
   recordCoverMetric: async (outcome) => {
-    await guideAccessMetrics.record({ stage: "cover", outcome });
+    await recordGuideAccessMetric("cover_delivery", outcome);
   },
   recordCoverMismatch: (details) => logEvent("guide_cover_resource_mismatch", details),
   sleep,

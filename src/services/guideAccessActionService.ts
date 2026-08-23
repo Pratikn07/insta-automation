@@ -25,7 +25,8 @@ import {
   type GuideDeliveryResult,
 } from "./guideDeliveryService.js";
 import { guideRichGateEnabled } from "./guideFollowGateV2Rollout.js";
-import { guideAccessMetrics } from "./guideAccessMetrics.js";
+import { recordGuideAccessMetric } from "./guideAccessMetrics.js";
+import { guideCoverDeliverySelector } from "./guideCoverDeliveryRollout.js";
 
 const STANDARD_DM_WINDOW_MS = 24 * 60 * 60 * 1_000;
 const ACTION_TOKEN_TTL_MS = 10 * 60 * 1_000;
@@ -129,7 +130,19 @@ export type GuideAccessActionDependencies = {
   /** Resolves an immutable storage path to a public URL. No network work. */
   coverMediaUrl(path: string): string;
   /** Aggregate-only. Never receives an identifier, token, URL, or copy. */
-  recordCoverMetric(outcome: "accepted" | "failed" | "uncertain"): Promise<void>;
+  recordCoverMetric(
+    outcome:
+      | "accepted"
+      | "failed"
+      | "uncertain"
+      | "omitted_not_selected"
+      | "omitted_mismatch",
+  ): Promise<void>;
+  /**
+   * Whether this attempt's gate may include its cover image. Governs the image only —
+   * never follower authorization and never whether the gate itself is sent.
+   */
+  coverDecision(input: { resourceId: string; triggerId: string }): "include" | "omit";
   loadGuideName(resourceId: string): Promise<string>;
   loadThreadId(inboundMessageId: string): Promise<string | null>;
   findAttemptIdByToken(tokenId: string): Promise<string | null>;
@@ -445,7 +458,12 @@ export function createGuideAccessActionService(
 
   /** Measurement must never be able to fail a parent-facing operation. */
   async function recordCover(
-    outcome: "accepted" | "failed" | "uncertain",
+    outcome:
+      | "accepted"
+      | "failed"
+      | "uncertain"
+      | "omitted_not_selected"
+      | "omitted_mismatch",
   ): Promise<void> {
     try {
       await dependencies.recordCoverMetric(outcome);
@@ -471,11 +489,30 @@ export function createGuideAccessActionService(
       return "none";
     }
     if (!snapshot) return "none";
+    // Integrity before policy, matching `eligibleCover` on the delivery side: a snapshot
+    // paired with a different guide is a fault regardless of whether the rollout would
+    // have sent it, and checking the fence first would silence the signal for the whole
+    // pre-rollout period.
     if (snapshot.resourceId !== context.attempt.resourceId) {
       dependencies.logger.error(
         { errorCode: "cover_resource_mismatch", attemptId: context.attempt.id },
         "Guide cover belongs to a different guide",
       );
+      await recordCover("omitted_mismatch");
+      return "none";
+    }
+
+    // The rollout fence. This path sends the image DIRECTLY to a non-follower, so without
+    // it publishing a cover in the creator console was enough to put an image in front of
+    // a real parent while every delivery-side switch was off. Consulted before the claim
+    // so a withheld cover stays `not_shown` and remains sendable if the rollout opens.
+    if (
+      dependencies.coverDecision({
+        resourceId: context.attempt.resourceId,
+        triggerId: context.attempt.id,
+      }) !== "include"
+    ) {
+      await recordCover("omitted_not_selected");
       return "none";
     }
 
@@ -502,7 +539,13 @@ export function createGuideAccessActionService(
         recipientId: context.senderId,
         mediaUrl,
       });
-      if (!receipt.messageId) return "needs_review";
+      // Acknowledged with no message id: the image may or may not have arrived. Counted,
+      // because this is precisely the class the runbook tells an operator to watch, and it
+      // used to return without recording anything.
+      if (!receipt.messageId) {
+        await recordCover("uncertain");
+        return "needs_review";
+      }
       await dependencies.repository.settleCoverExposure({
         attemptId: context.attempt.id,
         exposure: "accepted",
@@ -1123,8 +1166,9 @@ const defaultService = createGuideAccessActionService({
       source: "keyword_automation",
     }),
   coverMediaUrl: publicMediaUrl,
+  coverDecision: (decision) => guideCoverDeliverySelector.decide(decision),
   recordCoverMetric: async (outcome) => {
-    await guideAccessMetrics.record({ stage: "cover", outcome });
+    await recordGuideAccessMetric("cover_gate", outcome);
   },
   // The switch is the operator's assertion that the reviewed capability rows are
   // `supported`; it is read per action so a stop applies to the next opening.

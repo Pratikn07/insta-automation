@@ -36,13 +36,15 @@ describe("guide access safe event recording", () => {
     ["delivery", "failed"],
     ["delivery", "needs_review"],
     ["needs_review", "marked"],
-    ["cover", "selected"],
-    ["cover", "accepted"],
-    ["cover", "failed"],
-    ["cover", "uncertain"],
-    ["cover", "omitted_already_shown"],
-    ["cover", "omitted_not_selected"],
-    ["cover", "omitted_mismatch"],
+    ["cover_gate", "accepted"],
+    ["cover_gate", "failed"],
+    ["cover_gate", "uncertain"],
+    ["cover_gate", "omitted_not_selected"],
+    ["cover_gate", "omitted_mismatch"],
+    ["cover_delivery", "selected"],
+    ["cover_delivery", "omitted_already_shown"],
+    ["cover_delivery", "omitted_not_selected"],
+    ["cover_delivery", "omitted_mismatch"],
   ] as const)("records the allowlisted %s/%s aggregate outcome", async (stage, outcome) => {
     const writeEvent = vi.fn().mockResolvedValue(undefined);
     const metrics = createGuideAccessMetrics({ writeEvent });
@@ -211,80 +213,102 @@ describe("guide access aggregate funnel metrics", () => {
   });
 });
 
-// Parent-delivery Task 7. Percentages are computed here, not in the page, so the dashboard
-// and `npm run funnel` cannot disagree about the arithmetic.
+// Parent-delivery Task 7, review round 2. There are exactly two cover recorders and they
+// write DISJOINT halves of what used to be one `cover` stage: the follow gate sends a cover
+// directly and records only the exposure result, while the delivery planner records only
+// its plan-time decision and never records an exposure at all. Dividing one by the other
+// produced a panel that could read "accepted 100%" and "failed 100%" at once, or claim
+// nothing had been considered while real parents were receiving images. Two stages now, so
+// the two funnels cannot be divided by each other.
 describe("guide cover rates", () => {
-  function coverRows(counts: Record<string, number>) {
-    return Object.entries(counts).map(([outcome, count]) => ({
-      stage: "cover",
-      outcome,
-      count: BigInt(count),
-      latencySamples: 0n,
-      averageLatencyMs: null,
-      p50LatencyMs: null,
-      p95LatencyMs: null,
-      maxLatencyMs: null,
-    }));
+  function rows(counts: Record<string, Record<string, number>>) {
+    return Object.entries(counts).flatMap(([stage, outcomes]) =>
+      Object.entries(outcomes).map(([outcome, count]) => ({
+        stage,
+        outcome,
+        count: BigInt(count),
+        latencySamples: 0n,
+        averageLatencyMs: null,
+        p50LatencyMs: null,
+        p95LatencyMs: null,
+        maxLatencyMs: null,
+      })),
+    );
   }
 
-  async function run(counts: Record<string, number>) {
-    const query = vi.fn().mockResolvedValue(coverRows(counts));
+  async function run(counts: Record<string, Record<string, number>>) {
+    const query = vi.fn().mockResolvedValue(rows(counts));
     return runGuideAccessMetrics({ $queryRawUnsafe: query } as GuideAccessMetricsDb, {
       from: FROM,
       to: TO,
     });
   }
 
-  it("rates exposure against the covers that actually entered a plan", async () => {
+  it("rates gate exposure against the exposures the gate actually attempted", async () => {
     const result = await run({
-      selected: 20,
-      accepted: 17,
-      failed: 2,
-      uncertain: 1,
-      omitted_already_shown: 4,
-      omitted_not_selected: 70,
-      omitted_mismatch: 6,
+      cover_gate: { accepted: 17, failed: 2, uncertain: 1, omitted_not_selected: 80 },
+      cover_delivery: { selected: 6 },
     });
 
-    // `selected` is the denominator for exposure: a cover that was never put into a plan
-    // cannot have been accepted or refused by the provider.
-    expect(result.coverRates.accepted).toEqual({
+    // 17 + 2 + 1. The rollout omissions are NOT in this denominator: an exposure the fence
+    // withheld was never attempted, so counting it would understate every send outcome.
+    expect(result.coverRates.gate.accepted).toEqual({
       numerator: 17,
       denominator: 20,
       pct: 85,
       belowMinSample: false,
     });
-    expect(result.coverRates.failed).toMatchObject({ denominator: 20, pct: 10 });
-    expect(result.coverRates.uncertain).toMatchObject({ denominator: 20, pct: 5 });
+    expect(result.coverRates.gate.failed).toMatchObject({ denominator: 20, pct: 10 });
+    expect(result.coverRates.gate.uncertain).toMatchObject({ denominator: 20, pct: 5 });
   });
 
-  it("rates inclusion against every delivery that had a cover to consider", async () => {
+  it("never divides a gate exposure by a delivery-plan selection", async () => {
+    // The exact shape that produced 233%: eight gate failures against six plan selections.
     const result = await run({
-      selected: 20,
-      accepted: 20,
-      failed: 0,
-      uncertain: 0,
-      omitted_already_shown: 4,
-      omitted_not_selected: 70,
-      omitted_mismatch: 6,
+      cover_gate: { accepted: 30, failed: 8, uncertain: 2 },
+      cover_delivery: { selected: 6, omitted_not_selected: 94 },
     });
 
-    // 20 + 4 + 70 + 6. The four outcomes partition the pool, so this denominator is the
-    // whole of it and the shares below can be read against each other.
-    expect(result.coverRates.included).toMatchObject({ numerator: 20, denominator: 100, pct: 20 });
-    expect(result.coverRates.duplicateSuppressed).toMatchObject({
-      numerator: 4,
-      denominator: 100,
-      pct: 4,
+    expect(result.coverRates.gate.accepted).toMatchObject({ denominator: 40, pct: 75 });
+    expect(result.coverRates.gate.failed).toMatchObject({ denominator: 40, pct: 20 });
+    expect(result.coverRates.gate.uncertain).toMatchObject({ denominator: 40, pct: 5 });
+    // The three gate shares are mutually exclusive, so they sum to 100 and no clamp fires.
+    const sum =
+      (result.coverRates.gate.accepted.pct ?? 0) +
+      (result.coverRates.gate.failed.pct ?? 0) +
+      (result.coverRates.gate.uncertain.pct ?? 0);
+    expect(sum).toBe(100);
+    expect(result.coverRates.delivery.included).toMatchObject({ denominator: 100, pct: 6 });
+  });
+
+  it("reports gate activity even when no delivery plan ever selected a cover", async () => {
+    // Previously this rendered "no cover has been considered yet" while 30 parents had
+    // received a cover image in the gate.
+    const result = await run({ cover_gate: { accepted: 28, failed: 1, uncertain: 1 } });
+
+    expect(result.coverRates.gate.accepted).toMatchObject({ denominator: 30, pct: 93.3 });
+    expect(result.coverRates.delivery.included).toMatchObject({ denominator: 0, pct: null });
+  });
+
+  it("rates delivery inclusion against every delivery that had a cover to consider", async () => {
+    const result = await run({
+      cover_delivery: {
+        selected: 20,
+        omitted_already_shown: 4,
+        omitted_not_selected: 70,
+        omitted_mismatch: 6,
+      },
     });
-    expect(result.coverRates.mispaired).toMatchObject({ numerator: 6, denominator: 100, pct: 6 });
+
+    expect(result.coverRates.delivery.included).toMatchObject({ numerator: 20, denominator: 100, pct: 20 });
+    expect(result.coverRates.delivery.duplicateSuppressed).toMatchObject({ numerator: 4, pct: 4 });
+    expect(result.coverRates.delivery.mispaired).toMatchObject({ numerator: 6, pct: 6 });
   });
 
   it("withholds a percentage the sample cannot support", async () => {
-    const result = await run({ selected: 3, accepted: 2, failed: 1, uncertain: 0 });
+    const result = await run({ cover_gate: { accepted: 2, failed: 1 } });
 
-    // A rate over three sends is an invitation to a decision the sample cannot carry.
-    expect(result.coverRates.accepted).toEqual({
+    expect(result.coverRates.gate.accepted).toEqual({
       numerator: 2,
       denominator: 3,
       pct: null,
@@ -295,7 +319,13 @@ describe("guide cover rates", () => {
   it("reports nothing measured rather than zero when no cover was considered", async () => {
     const result = await run({});
 
-    expect(result.coverRates.included).toEqual({
+    expect(result.coverRates.delivery.included).toEqual({
+      numerator: 0,
+      denominator: 0,
+      pct: null,
+      belowMinSample: true,
+    });
+    expect(result.coverRates.gate.accepted).toEqual({
       numerator: 0,
       denominator: 0,
       pct: null,
@@ -305,10 +335,10 @@ describe("guide cover rates", () => {
 
   it("does not accumulate a duplicated stage row into an inflated count", async () => {
     const query = vi.fn().mockResolvedValue([
-      ...coverRows({ selected: 10, accepted: 10 }),
+      ...rows({ cover_gate: { accepted: 10, failed: 0, uncertain: 0 } }),
       // A replayed exposure is fenced by `claimCoverExposure`, so this row should not
-      // exist. If it ever does, the reader must not double it into a 200% acceptance rate.
-      ...coverRows({ accepted: 10 }),
+      // exist. If it ever does, the reader must not double it.
+      ...rows({ cover_gate: { accepted: 10 } }),
     ]);
 
     const result = await runGuideAccessMetrics(
@@ -316,8 +346,10 @@ describe("guide cover rates", () => {
       { from: FROM, to: TO },
     );
 
-    expect(result.counts.cover.accepted).toBe(10);
-    expect(result.coverRates.accepted.pct).toBe(100);
+    // Asserted on the COUNT, not on the percentage. `guardedRate` clamps the numerator to
+    // the denominator, so a doubled 20/10 and a correct 10/10 both render 100% — a pct
+    // assertion here can never fail and would only read like a second guard.
+    expect(result.counts.cover_gate.accepted).toBe(10);
   });
 });
 
@@ -388,8 +420,11 @@ describeWithDatabase("aggregate SQL against PostgreSQL", () => {
       });
       expect(dropped).toEqual([]);
       expect(result.totalEvents).toBe(pairs.length);
-      // And the derived rates really are computed off rows that survived the filter.
-      expect(result.coverRates.included.denominator).toBe(4);
+      // And the derived rates really are computed off rows that survived the filter, with
+      // each group's denominator drawn only from its own stage: four delivery outcomes and
+      // three attempted gate exposures, one row each.
+      expect(result.coverRates.delivery.included.denominator).toBe(4);
+      expect(result.coverRates.gate.accepted.denominator).toBe(3);
     } finally {
       await prisma.eventLog.deleteMany({ where: { kind: "guide_access_v2_metric" } });
     }

@@ -1146,12 +1146,16 @@ const GUIDE_COVER_METRICS = {
   key: "guide-access-v2" as const,
   window: { from: "2026-07-18", to: "2026-08-16" },
   coverRates: {
-    included: coverRate(84, 471),
-    accepted: coverRate(79, 84),
-    failed: coverRate(3, 84),
-    uncertain: coverRate(2, 84),
-    duplicateSuppressed: coverRate(31, 471),
-    mispaired: coverRate(0, 471),
+    gate: {
+      accepted: coverRate(79, 84),
+      failed: coverRate(3, 84),
+      uncertain: coverRate(2, 84),
+    },
+    delivery: {
+      included: coverRate(112, 471),
+      duplicateSuppressed: coverRate(31, 471),
+      mispaired: coverRate(0, 471),
+    },
   },
 };
 

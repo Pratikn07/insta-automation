@@ -217,9 +217,18 @@ before covers existed — only the image is withheld. The migration adds one enu
 value (`generated_cover` on `guide_delivery_unit_origin`) and nothing else; it is
 additive and inert while disabled.
 
-The fence lives in `eligibleCover` (`src/services/guideDeliveryService.ts`), which is
-consulted once, before the plan is compiled. It governs cover inclusion **only** —
-never follower authorization, never which service owns the guide send.
+There are **two** cover paths and each has its own fence. Both govern the image only —
+never follower authorization, and never whether the gate or the guide is sent.
+
+- `eligibleCover` (`src/services/guideDeliveryService.ts`) fences the cover prepended as
+  the first unit of a ledger delivery. Consulted once, before the plan is compiled.
+- `exposeCoverForGate` (`src/services/guideAccessActionService.ts`) fences the cover the
+  follow gate sends **directly** to a non-follower. This one shipped unfenced: publishing
+  a cover in the creator console was enough to put an image in front of a real parent
+  while every delivery-side switch was off. Both now consult the same selector.
+
+A withheld cover is left `not_shown` rather than claimed, so opening the rollout later
+still sends it.
 
 ### Safe initial configuration
 
@@ -268,22 +277,42 @@ key. Lowering the percentage in the UI does nothing. The stop is the boolean.
 ### Inspect
 
 The Funnels page has a **Guide cover** panel. Every percentage there is computed
-server-side in `runGuideAccessMetrics`, so the page and the CLI cannot disagree about
-the arithmetic. An empty panel reading "no cover has been considered yet" is the
-expected state before the pilot starts — it is not a failure.
+server-side in `runGuideAccessMetrics`, so the page cannot disagree with the API about
+the arithmetic. `npm run funnel` does **not** report cover numbers; there is no CLI
+cross-check for this panel yet.
 
-Four outcomes partition every delivery that reached the cover decision, so they add
-up to the whole pool:
+An empty panel reading "no cover has been considered yet" is the expected state before
+the pilot starts — it is not a failure. A panel saying the API "does not report cover
+numbers yet" means the console is deployed ahead of the API, which is the normal
+ordering here.
 
-- `selected` — the cover went into the plan. Denominator for the send outcomes below.
+The two paths are measured as two separate stages, and their numbers must never be
+divided by each other. They were one stage briefly, which let a share of gate
+exposures be divided by a count of delivery-plan selections; the panel could then read
+"accepted 100%" and "failed 100%" at the same time, or report that nothing had been
+considered while parents were receiving images.
+
+`cover_gate` — the gate's direct send. Denominated by the exposures actually attempted
+(`accepted + failed + uncertain`), so those three sum to 100%:
+
+- `accepted` — the provider took the image.
+- `failed` — a definite refusal.
+- `uncertain` — no message id, or a transport failure. May or may not have arrived.
+- `omitted_not_selected` — the rollout fence held. Not in any send denominator.
+- `omitted_mismatch` — see "Reconcile" below.
+
+`cover_delivery` — the plan-time decision for a ledger delivery. These four partition
+every delivery that had a cover to consider, so they add up to the whole pool:
+
+- `selected` — the cover went into the plan.
 - `omitted_already_shown` — the parent already accepted this cover during the gate.
   Duplicate suppression working.
 - `omitted_not_selected` — the rollout fence held. Expected to be almost everything
   during a pilot.
-- `omitted_mismatch` — the snapshot on the access attempt pointed at a *different*
-  guide's cover. See "Reconcile" below.
+- `omitted_mismatch` — the snapshot pointed at a *different* guide's cover.
 
-Then, of `selected`: `accepted`, `failed`, `uncertain`.
+This path records **no** send outcome: whether the cover unit reached the parent is the
+delivery ledger's business, and the review surface is where an operator sees it.
 
 Aggregate rows only. Every payload is validated by a `.strict()` schema against a
 closed stage/outcome vocabulary, so a parent identifier, a URL, or a copy string
@@ -291,12 +320,12 @@ cannot reach this surface even by mistake — privacy here is a schema constrain
 a convention. To read the raw rows:
 
 ```sql
-SELECT payload->>'outcome' AS outcome, count(*)
+SELECT payload->>'stage' AS stage, payload->>'outcome' AS outcome, count(*)
 FROM event_log
 WHERE kind = 'guide_access_v2_metric'
-  AND payload->>'stage' = 'cover'
+  AND payload->>'stage' IN ('cover_gate', 'cover_delivery')
   AND created_at >= now() - interval '7 days'
-GROUP BY 1 ORDER BY 2 DESC;
+GROUP BY 1, 2 ORDER BY 3 DESC;
 ```
 
 A mispairing also writes its own operator-visible event, which does carry the ids
