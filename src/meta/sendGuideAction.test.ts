@@ -121,7 +121,7 @@ describe("sendGuideFollowerGate", () => {
 
     const text =
       "Your toddler sleep guide is waiting ✨\n\n" +
-      "Follow @tinysoho for more ideas like this, then reply YES and I'll send it over.\n\n" +
+      "Follow @tinysoho for more ideas like this, then reply DONE and I'll send it over.\n\n" +
       "Visit profile: https://www.instagram.com/tinysoho/";
     expect(sendMetaMessage).toHaveBeenCalledOnce();
     expect(sendMetaMessage).toHaveBeenCalledWith(
@@ -134,7 +134,7 @@ describe("sendGuideFollowerGate", () => {
 describe("sendGuideFollowLag", () => {
   it("keeps the replacement token at the sender boundary while capability is text-only", async () => {
     const text =
-      "Almost there 💛 Instagram may take a moment to update. Check that you're following @tinysoho, wait a little, then reply YES once more.";
+      "Almost there 💛 Instagram may take a moment to update. Check that you're following @tinysoho, wait a little, then reply DONE once more.";
 
     await sendGuideFollowLag({
       recipientId: RECIPIENT_ID,
@@ -190,11 +190,17 @@ describe("sendGuideFollowLag", () => {
 
 // Fix round 3. Text mode is the ONLY mode available while every capability row is
 // `not_verified`, yet all three text branches told the parent to "tap" a control
-// that does not exist there, and the opening never asked for the short `YES` the
-// spec's fallback requires ("send the same copy as text. The fallback asks for a
-// short YES ... DONE is not required"). Rich copy is unchanged.
+// that does not exist there, and the opening never asked for a short reply at all.
+// Rich copy is unchanged.
+//
+// The two asks are deliberately different words, per the owner decision recorded in
+// `guideAccessCopy.ts`: confirming a follow asks for DONE, matching the gate already
+// live on the original path; the opening asks for YES, because it answers "want me to
+// send it here?". Asserted separately so a change to one cannot silently pass as the
+// other.
 describe("text-mode copy references no controls", () => {
-  const REPLY_ASK = /reply YES/i;
+  const OPENING_ASK = /reply YES/i;
+  const FOLLOW_ASK = /reply DONE/i;
 
   async function sentText(): Promise<string> {
     const [payload] = sendMetaMessage.mock.calls[0]!;
@@ -209,7 +215,7 @@ describe("text-mode copy references no controls", () => {
     });
 
     const text = await sentText();
-    expect(text).toMatch(REPLY_ASK);
+    expect(text).toMatch(OPENING_ASK);
     expect(text).not.toMatch(/\btap\b/i);
     // Still the same opening copy, per the spec's "send the same copy as text".
     expect(text).toContain("I've got the toddler sleep guide you asked for");
@@ -224,7 +230,7 @@ describe("text-mode copy references no controls", () => {
     });
 
     const text = await sentText();
-    expect(text).toMatch(REPLY_ASK);
+    expect(text).toMatch(FOLLOW_ASK);
     expect(text).not.toMatch(/\btap\b/i);
     expect(text).toContain("Follow @tinysoho");
     expect(text).toContain(GUIDE_PROFILE_URL);
@@ -237,7 +243,7 @@ describe("text-mode copy references no controls", () => {
     });
 
     const text = await sentText();
-    expect(text).toMatch(REPLY_ASK);
+    expect(text).toMatch(FOLLOW_ASK);
     expect(text).not.toMatch(/\btap\b/i);
     expect(text).toContain("Instagram may take a moment to update");
   });
@@ -251,7 +257,9 @@ describe("text-mode copy references no controls", () => {
     });
 
     const text = await sentText();
-    expect(text).not.toMatch(REPLY_ASK);
+    // Neither word: with a real control there is nothing for the parent to type.
+    expect(text).not.toMatch(OPENING_ASK);
+    expect(text).not.toMatch(FOLLOW_ASK);
     expect(text).toBe(OPENING);
   });
 });

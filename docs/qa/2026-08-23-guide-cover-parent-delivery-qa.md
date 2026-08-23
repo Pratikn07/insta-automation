@@ -2,7 +2,7 @@
 
 ## Commit Under Test
 
-`cb51159` on `codex/follower-button-flow`, 63 commits ahead of `main`.
+`64b67d6` on `codex/follower-button-flow`, 65 commits ahead of `main`.
 
 This report covers the last of five plans in the guide-cover release train:
 
@@ -83,7 +83,7 @@ to get wrong under pressure. `guideAccessActionService` wires `startGuideDeliver
 
 ## Automated verification
 
-All executed against commit `cb51159` on 2026-08-23.
+All executed against commit `64b67d6` on 2026-08-23.
 
 | Gate | Result |
 | --- | --- |
@@ -311,8 +311,15 @@ a resource's conversations. The release action expires an attempt but does not d
 inspect, reconcile and rollback procedures but names no numeric abort thresholds for a
 controlled run. Those are a human decision.
 
-**Parent-facing copy has not had a human review.** The gate and cover copy in this
-branch was written by an agent and goes to real parents.
+**Parent-facing copy is partly reviewed.** All of it was agent-written. The owner
+reviewed it on 2026-08-23 and made one change: the text-mode follow confirmation now asks
+for `DONE` rather than `YES`, matching the gate copy already live on the original path,
+because reels and pinned comments already tell people to reply DONE. The opening keeps
+`YES` because it answers "Want me to send it here?" rather than "have you followed?".
+Neither word is required — the router accepts any genuine reply. The spec's earlier
+blanket `YES` was updated rather than left to contradict the code. The remaining strings
+(the unavailable line, the follow-lag wording, the card titles, and the three button
+labels) have not been changed.
 
 **No attempt sweeper.** An attempt stuck in `delivering` is released lazily by the
 parent's next inbound message; `markExpired` has zero production callers (verified by
@@ -342,10 +349,10 @@ authorized or run, so there is no evidence at all about real delivery behaviour,
 the capability spike's own live-run task remains unexecuted. It is **not**
 `LEGACY REMOVAL AUTHORIZED`.
 
-Three things a human must decide before Task 8 begins: the numeric abort thresholds for
-the controlled run, whether the parent-facing copy is acceptable to send to real parents,
-and whether the attempt release action needs a screen before the pilot rather than a curl.
-All three are named above rather than assumed.
+Two things a human must still decide before Task 8 begins: the numeric abort thresholds
+for the controlled run, and whether the attempt release action needs a screen before the
+pilot rather than a curl. Parent-facing copy was reviewed on 2026-08-23 and the one change
+the owner asked for is in.
 
 The capability spike's own Task 5 also remains unexecuted. It requires explicit owner
 authorization, a controlled recipient, fresh controlled comment IDs, and an approved test

@@ -187,7 +187,7 @@ type FreshFollowResult =
 
 **Interfaces:**
 
-- Comment flow creates/loads an attempt and sends the neutral opening once; rich action only when proven, otherwise text asks for `YES`/any genuine reply.
+- Comment flow creates/loads an attempt and sends the neutral opening once; rich action only when proven, otherwise text asks for `YES` on the opening and `DONE` when confirming a follow (owner decision 2026-08-23) — either way any genuine reply is accepted.
 - Direct-DM keyword flow creates/loads attempt and immediately performs fresh verification.
 - Explicit redelivery/review retry must obtain fresh true before `deliverGuideForTrigger`.
 

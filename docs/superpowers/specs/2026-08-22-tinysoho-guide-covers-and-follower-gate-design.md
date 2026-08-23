@@ -517,8 +517,13 @@ Detailed behavior:
    **Yes, send it**. Tapping it must produce a normal action/inbound webhook that
    opens the valid standard messaging window.
 4. If the rich private-reply payload is unsupported, send the same copy as text.
-   The fallback asks for a short `YES`, but the router accepts any genuine reply
-   to the current access attempt. `DONE` is not required.
+   The fallback asks for a short reply, and the word depends on the question:
+   the opening asks for `YES` ("Want me to send it here?"), while confirming a
+   follow asks for `DONE`, matching the gate copy already live on the original
+   path. **Owner decision, 2026-08-23**, replacing this section's earlier
+   blanket `YES`: reels and pinned comments already tell people to reply DONE,
+   and two words for one action is worse than either word alone. Neither word is
+   required — the router accepts any genuine reply to the current access attempt.
 5. After that inbound, call the live-only verifier defined below and use its
    fresh `is_user_follow_business` result. Do not authorize from
    `resolveUsername`, `getFollowState`, or a historical `IgUser.isFollower`
