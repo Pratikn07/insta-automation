@@ -76,7 +76,7 @@
 
 **Files:**
 
-- Modify: `src/types/meta.ts`
+- Inspect: `src/types/meta.ts` (the existing type already contains the documented quick-reply and postback fields)
 - Modify: `src/handlers/webhookRouter.test.ts`
 - Modify: `src/handlers/messageHandler.test.ts`
 - Modify: `src/handlers/postbackHandler.test.ts`

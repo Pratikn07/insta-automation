@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { MessagingEntry } from "../types/meta.js";
+import {
+  GUIDE_ACTION_PAYLOAD,
+  GUIDE_ACTION_TIMESTAMP,
+  guideQuickReplyEvent,
+} from "../test/fixtures/metaGuideGateEvents.js";
 
 // --- mocks -------------------------------------------------------------------
 const recordInboundMessage = vi.fn();
@@ -314,6 +319,29 @@ describe("handleMessage — inbound capture", () => {
     expect(recordInboundMessage).toHaveBeenCalledWith(
       expect.objectContaining({ instagramTimestamp: new Date(1785895200000) }),
     );
+  });
+
+  it("captures a provider-shaped quick reply as text plus quick-reply recovery evidence", async () => {
+    const entry = guideQuickReplyEvent();
+
+    await handleMessage(entry);
+
+    expect(recordInboundMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        igUserId: "controlled-recipient",
+        instagramMessageId: "controlled-quick-reply-mid",
+        text: "Yes, send it",
+        messageType: "text",
+        instagramTimestamp: new Date(GUIDE_ACTION_TIMESTAMP),
+      }),
+    );
+    expect(recordRecoveryInbound).toHaveBeenCalledWith({
+      igUserId: "controlled-recipient",
+      eventAt: new Date(GUIDE_ACTION_TIMESTAMP),
+      receivedAt: expect.any(Date),
+      kind: "quick_reply",
+    });
+    expect(JSON.stringify(logEvent.mock.calls)).not.toContain(GUIDE_ACTION_PAYLOAD);
   });
 
   it("continues handling when the profile lookup fails", async () => {

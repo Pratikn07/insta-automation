@@ -12,7 +12,7 @@ export async function handlePostback(entry: MessagingEntry): Promise<void> {
 
   if (!postback.mid) {
     logger.info(
-      { senderId: entry.sender?.id, payload: postback.payload },
+      { senderId: entry.sender?.id },
       "Postback webhook entry missing mid — acknowledged without exact message correlation",
     );
     return;

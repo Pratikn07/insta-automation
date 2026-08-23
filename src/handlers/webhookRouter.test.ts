@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WebhookPayload } from "../types/meta.js";
+import {
+  guidePostbackEvent,
+  guideQuickReplyEvent,
+} from "../test/fixtures/metaGuideGateEvents.js";
 
 const handleComment = vi.fn();
 const handleMessage = vi.fn();
@@ -138,14 +142,18 @@ describe("routeMessagingEntry single dispatch", () => {
   });
 
   it("prioritizes quick_reply inside message as a message event", async () => {
-    const entry = {
-      sender: { id: "user-1" },
-      recipient: { id: "bot-1" },
-      timestamp: 1785895200000,
-      message: { mid: "in-1", text: "DONE", quick_reply: { payload: "DONE_PAYLOAD" } },
-    };
+    const entry = guideQuickReplyEvent();
     await routeMessagingEntry(entry);
-    expect(handleMessage).toHaveBeenCalledOnce();
+    expect(handleMessage).toHaveBeenCalledWith(entry);
     expect(handlePostback).not.toHaveBeenCalled();
+  });
+
+  it("routes a generic-template postback with sender identity to the postback handler", async () => {
+    const entry = guidePostbackEvent();
+
+    await routeMessagingEntry(entry);
+
+    expect(handlePostback).toHaveBeenCalledWith(entry);
+    expect(handleMessage).not.toHaveBeenCalled();
   });
 });
