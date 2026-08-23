@@ -115,7 +115,14 @@ difference is measurable with data this app already collects** — see §2.3.
 
 ## Part 2 — The measurement problem, stated honestly
 
-### 2.1 There is no Search Console for Instagram
+### 2.1 There is no query data for Instagram's OWN search
+
+> **Superseded in part, 2026-08-23.** This section originally read "There is no Search
+> Console for Instagram." That was true when written and is now false for the *Google*
+> half: Search Console **platform properties** shipped 2026-07-07 and went global
+> 2026-07-29, giving query-level data for Instagram content on Google Search. See
+> **Part 2F**. What remains true, and is what this section is really about, is that
+> Meta gives nothing for Instagram's own in-app search.
 
 Meta exposes **no query-level data whatsoever**. There is no impressions-by-query, no
 average-position, no click-through-rate, no "which search term brought this viewer." Nothing
@@ -138,7 +145,7 @@ Say so plainly in the UI wherever an SEO figure appears.
 | Follower vs non-follower reach | **Probably, account level** | `reach` with a `follow_type` breakdown — **requires validation** |
 | Sends and saves per reach | **Yes, today** | `shares`, `saved`, `reach` already stored per reel |
 | Watch time and retention | **Yes, today** | `ig_reels_avg_watch_time`, `reels_skip_rate` already stored |
-| Whether we appear in Google | **Partially** | Manual/sampled SERP checks. We do not own the domain, so Search Console is unavailable |
+| Whether we appear in Google | **Yes — query level** | Search Console platform properties, since 2026-07. Clicks, impressions, CTR, average position and the actual queries. See Part 2F |
 | Whether we are recommendation-eligible | **Yes, manually** | Account Status in the app. No API |
 
 ### 2.3 The proposed primary proxy: **Late Discovery Share**
@@ -474,6 +481,91 @@ still open; that condition must suppress stamping entirely.
 Raise as its own correctness item. It is not SEO work — it is measurement integrity that
 everything else in this document depends on.
 
+---
+
+## Part 2F — Search Console platform properties
+
+**This supersedes two claims made earlier in this document.** Both were correct when
+written; both are now wrong, because the feature did not exist.
+
+### What shipped
+
+Google introduced **platform properties**, a Search Console property type covering
+**Instagram, TikTok, X and YouTube**, on **2026-07-07**, global from **2026-07-29**.
+
+The mechanically new part: **a platform property is verified by authorising the account,
+not by proving you control a domain.** That is what makes it available to an account with
+no website, which is precisely our situation. Google re-checks ownership periodically, and
+an expired authorisation must be re-verified.
+
+### What it reports
+
+| | |
+|---|---|
+| Metrics | Clicks, impressions, CTR, **average position** |
+| Dimensions | **Search queries**, top-performing content |
+| Reports | Performance, Insights, Achievements |
+| Surfaces | Filterable across Google Search, Discover, Google News |
+| Default window | 28 days |
+| Latency | A few days of collection before first data |
+
+**This is real query-level data — the exact thing Part 2 calls unobtainable.** For the
+Google half, it now is obtainable.
+
+### What it does not do, in Google's own words
+
+> "Platform properties only show how your content performs on Google Search. They don't
+> track visibility within the platform itself."
+
+So it answers **none** of these:
+
+- How anyone found a reel *inside* Instagram. Meta still exposes nothing.
+- Anything about Explore, the Reels feed, or in-app search ranking.
+- Anything about reach or views as Instagram counts them.
+
+**Late Discovery Share therefore remains the only proxy for in-app discovery.** The two
+measurements are complementary, not redundant — which is the useful part, below.
+
+### It is not a ranking lever
+
+Connecting a platform property does not change indexing, eligibility, distribution or
+ranking. It is a reporting surface over data that already existed. Nor can it affect how
+Instagram ranks the account in-app: separate company, separate system, read-only
+authorisation. Anyone claiming otherwise is selling something.
+
+### Instagram's Google-indexing eligibility, for reference
+
+Public professional account, owner 18+, posts published from 2020-01-01 onward. Stories
+and Highlights are not indexed. `@tinysoho` satisfies all of these — confirmed in the
+Part 2D audit.
+
+### The genuinely interesting consequence
+
+Search Console reports per URL. `ReelMeta.permalink` already stores each reel's canonical
+URL. **So Google-driven clicks can be joined to our own reels by permalink**, which turns
+Late Discovery Share from an undifferentiated proxy into something partly decomposable:
+a reel whose tail is rising *and* whose Search Console clicks are rising is being found on
+Google; a reel whose tail is rising with flat Search Console clicks is being found inside
+Instagram. That is a materially better answer than either source gives alone, and it needs
+no new Meta permissions.
+
+**Requires validation before anything is built on it:**
+
+- **Whether the Search Console API exposes platform properties at all.** Google's
+  announcement does not say, and the API's `siteUrl` model is domain-shaped. Assume manual
+  CSV export until a real API response proves otherwise; do not design a sync worker
+  against an endpoint nobody has confirmed exists.
+- Whether reel permalinks in Search Console match `ReelMeta.permalink` exactly, or carry
+  tracking suffixes or a redirect form that would break a naive join.
+- What history the property exposes on first connection — probably little, which is the
+  whole argument for connecting immediately.
+
+### Revised priority
+
+Moves from Phase 7 to **Phase 0**. Five minutes, free, cannot hurt the account, and **the
+data is not backfilled** — so delay costs history permanently. It is now the highest
+value-per-minute action in this document.
+
 ## Part 3 — Implementation in this app
 
 ### 3.1 Terminology guard (read before writing any code)
@@ -737,7 +829,11 @@ parent?" is a better creative brief than any keyword list in this document.
 4. Rewrite the Name field to carry the primary cluster.
 5. Rewrite the bio: what / for whom / one CTA.
 6. Confirm category and location.
-7. Record dated screenshots of all six.
+7. **Connect the Instagram account as a Search Console platform property.** Five minutes,
+   free, and the only query-level data this account can obtain from anywhere. Collection
+   starts on connection and is not backfilled, so every day unconnected is history
+   permanently lost. See Part 2F.
+8. Record dated screenshots of all seven.
 
 **Phase 1 — Know what to optimize for (week 1–2, no code)**
 8. Harvest Instagram autocomplete for 8–10 seed topics.
@@ -772,9 +868,12 @@ parent?" is a better creative brief than any keyword list in this document.
 26. Run 8–12 weeks. Read nothing early.
 27. Decide: adopt, adjust, or abandon — and record which.
 
-**Phase 7 — The external channel (ongoing, low priority)**
-28. Monthly sampled Google SERP checks for priority terms.
-29. Reassess if and only if external discovery shows any measurable signal.
+**Phase 7 — The external channel (ongoing)**
+28. ~~Monthly sampled Google SERP checks for priority terms.~~ **Superseded** — replaced by
+    the Search Console platform property connected in Phase 0, which reports the real
+    queries rather than a sampled guess.
+29. Once ~28 days of Search Console history exist, review top queries and feed them into
+    the term register alongside the autocomplete pass.
 
 ---
 
@@ -791,7 +890,9 @@ parent?" is a better creative brief than any keyword list in this document.
 - No API to edit a published caption. Optimization is pre-publish; remediation is manual.
 - `alt_text` is publish-only and images-only; this account publishes in-app, so alt text is a manual step.
 - `ig_hashtag_search`: 30 unique hashtags per 7 days. Never a live lookup.
-- No Search Console for a domain we do not own.
+- ~~No Search Console for a domain we do not own.~~ **No longer true** — platform
+  properties verify by authorising the account, not by proving domain control. Still
+  true that this covers Google Search only, never Instagram's in-app search.
 
 **Product risks:**
 - **Over-optimized captions read like spam** to the parents who are the actual audience. The
