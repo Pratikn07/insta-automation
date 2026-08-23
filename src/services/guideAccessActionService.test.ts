@@ -16,6 +16,8 @@ const RICH: GuideActionCapabilities = {
   dmQuickReply: true,
 };
 const COMMENT_ID = "comment-4001";
+// Mirrors MAX_FOLLOW_CHECKS in guideAccessRepository.ts.
+const MAX_FOLLOW_CHECKS = 3;
 
 const ATTEMPT_ID = "10000000-0000-4000-8000-000000000001";
 const CONVERSATION_ID = "20000000-0000-4000-8000-000000000002";
@@ -226,6 +228,13 @@ function createHarness(input: {
         !retryableReview
       ) {
         return { kind: "state_conflict", actualState: current.state } as const;
+      }
+      // The real fence also bounds the window and the check count. Without these
+      // the retry-bound test would prove only that the service handles a stubbed
+      // return value rather than that the bound actually fires.
+      if (current.messagingWindowExpiresAt <= NOW) return { kind: "expired" } as const;
+      if (current.followCheckCount >= MAX_FOLLOW_CHECKS) {
+        return { kind: "check_limit_reached" } as const;
       }
       current = {
         ...current,
@@ -1544,7 +1553,7 @@ describe("comment guide request", () => {
 // definitive follow answer must stay retryable, bounded by MAX_FOLLOW_CHECKS. A
 // review reached WITH one (the lag limit) stays terminal on purpose.
 describe("retry after an inconclusive review", () => {
-  function direct(test: ReturnType<typeof createHarness>, inboundId = DIRECT_INBOUND_ID) {
+  function direct(test: ReturnType<typeof createHarness>, inboundId: string = DIRECT_INBOUND_ID) {
     return test.service.startDirectDmGuideRequest(
       {
         id: CONVERSATION_ID,
@@ -1609,29 +1618,74 @@ describe("retry after an inconclusive review", () => {
   });
 
   it("stops retrying once the bounded check limit is reached", async () => {
+    // Drives the real bound through the harness fence rather than stubbing the
+    // return value: three checks are already spent, so no Graph call may happen.
     const test = createHarness({
-      initialAttempt: attempt({ state: "needs_review", lastFollowResult: "unknown" }),
-      consumeResults: [],
+      initialAttempt: attempt({
+        state: "needs_review",
+        lastFollowResult: "unknown",
+        followCheckCount: MAX_FOLLOW_CHECKS,
+      }),
     });
-    test.repository.claimDirectInbound.mockResolvedValueOnce({
-      kind: "check_limit_reached",
-    } as never);
 
     await expect(direct(test)).resolves.toBe("access_attempt_needs_review");
 
     expect(test.resolveFresh).not.toHaveBeenCalled();
+    expect(test.startGuideDelivery).not.toHaveBeenCalled();
   });
 
-  it("a duplicate retry webhook re-checks only once", async () => {
+  it("two distinct retry webhooks re-check only once", async () => {
+    // Distinct inbound ids on purpose. Reusing one id would exit at the earlier
+    // replay guard and never exercise the new fence at all.
     const test = createHarness({
       initialAttempt: attempt({ state: "needs_review", lastFollowResult: "unknown" }),
       freshResults: [live(true)],
     });
 
-    await direct(test);
-    await expect(direct(test)).resolves.toBe("action_replayed");
+    await expect(direct(test, DIRECT_INBOUND_ID)).resolves.toBe("guide_delivery_started");
+    // The second webhook is a genuinely different message, so it passes the replay
+    // guard and reaches the state check — which now reads `delivered`.
+    await expect(direct(test, INBOUND_ID)).resolves.toBe("guide_delivery_already_started");
 
+    expect(test.repository.claimDirectInbound).toHaveBeenCalledTimes(1);
     expect(test.resolveFresh).toHaveBeenCalledTimes(1);
     expect(test.startGuideDelivery).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the gentle lag copy and its budget once a follow was already asked for", async () => {
+    // An awaiting_follow attempt whose lag send came back uncertain lands in
+    // needs_review with lastFollowResult still "unknown". Its retry must not be
+    // treated as a first contact: that would send the initial gate copy and skip
+    // reserveFollowResponse, escaping the two-response limit.
+    const test = createHarness({
+      initialAttempt: attempt({
+        state: "needs_review",
+        lastFollowResult: "unknown",
+        followResponseCount: 1,
+      }),
+      freshResults: [live(false)],
+    });
+
+    await expect(direct(test)).resolves.toBe("follow_not_confirmed");
+
+    expect(test.sendFollowLag).toHaveBeenCalledTimes(1);
+    expect(test.sendFollowerGate).not.toHaveBeenCalled();
+    expect(test.repository.reserveFollowResponse).toHaveBeenCalledTimes(1);
+  });
+
+  it("still sends the first-contact gate when no follow was asked for yet", async () => {
+    const test = createHarness({
+      initialAttempt: attempt({
+        state: "needs_review",
+        lastFollowResult: "unknown",
+        followResponseCount: 0,
+      }),
+      freshResults: [live(false)],
+    });
+
+    await expect(direct(test)).resolves.toBe("follow_not_confirmed");
+
+    expect(test.sendFollowerGate).toHaveBeenCalledTimes(1);
+    expect(test.sendFollowLag).not.toHaveBeenCalled();
   });
 });

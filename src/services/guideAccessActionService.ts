@@ -759,7 +759,16 @@ export function createGuideAccessActionService(
         triggerId: inbound.id,
         threadLookupId: inbound.id,
         triggeredAt: inbound.eventAt,
-        falseResponse: attempt.state === "awaiting_follow" ? "lag" : "gate",
+        // A retryable review can descend from `awaiting_follow`: the parent tapped
+        // "I'm following", `consumeToken` reset the result to unknown, and the lag
+        // send came back uncertain. Treating that retry as first contact would send
+        // the initial gate copy AND skip `reserveFollowResponse`, escaping the
+        // two-response limit. `followResponseCount` is the durable record that a
+        // follow was already asked for.
+        falseResponse:
+          attempt.state === "awaiting_follow" || attempt.followResponseCount > 0
+            ? "lag"
+            : "gate",
         guideName: conversation.guideName,
         threadId: inbound.threadId,
         ...(conversation.redeliveryIntro

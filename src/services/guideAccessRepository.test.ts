@@ -543,3 +543,104 @@ describe("guide access repository", () => {
     expect(test.tx.guideAccessAttempt.updateMany).toHaveBeenCalledOnce();
   });
 });
+
+// Fix round 2. The retryable-review fence had no repository-level test — the
+// service suite proved it only through a hand-written fake. These drive the real
+// predicate.
+describe("retryable review fence in claimDirectInbound", () => {
+  it("admits a review that never obtained a definitive follow answer", async () => {
+    const test = harness({
+      lockedToken: null,
+      lockedAttempt: attempt({ state: "needs_review", lastFollowResult: "unknown" }),
+    });
+
+    await expect(
+      test.repository.claimDirectInbound({
+        attemptId: ATTEMPT_ID,
+        inboundMessageId: TOKEN_ID,
+        now: NOW,
+      }),
+    ).resolves.toMatchObject({ kind: "consumed" });
+
+    // The discriminator must be pinned in the predicate, so a concurrent writer
+    // that supplies a definitive answer cannot have its terminal review reopened.
+    expect(test.tx.guideAccessAttempt.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: ATTEMPT_ID,
+        state: "needs_review",
+        lastFollowResult: "unknown",
+        followCheckCount: { lt: 3 },
+        messagingWindowExpiresAt: { gt: NOW },
+      },
+      data: {
+        state: "checking_follow",
+        lastFollowResult: "unknown",
+        lastFollowCheckedAt: null,
+        followCheckCount: { increment: 1 },
+      },
+    });
+  });
+
+  it.each([
+    { lastFollowResult: "non_follower" as const },
+    { lastFollowResult: "follower" as const },
+  ])(
+    "refuses a review that already holds a $lastFollowResult answer",
+    async ({ lastFollowResult }) => {
+      const test = harness({
+        lockedToken: null,
+        lockedAttempt: attempt({ state: "needs_review", lastFollowResult }),
+      });
+
+      await expect(
+        test.repository.claimDirectInbound({
+          attemptId: ATTEMPT_ID,
+          inboundMessageId: TOKEN_ID,
+          now: NOW,
+        }),
+      ).resolves.toEqual({ kind: "state_conflict", actualState: "needs_review" });
+
+      expect(test.tx.guideAccessAttempt.updateMany).not.toHaveBeenCalled();
+    },
+  );
+
+  it("still bounds an admitted review by the follow-check limit", async () => {
+    const test = harness({
+      lockedToken: null,
+      lockedAttempt: attempt({
+        state: "needs_review",
+        lastFollowResult: "unknown",
+        followCheckCount: 3,
+      }),
+    });
+
+    await expect(
+      test.repository.claimDirectInbound({
+        attemptId: ATTEMPT_ID,
+        inboundMessageId: TOKEN_ID,
+        now: NOW,
+      }),
+    ).resolves.toEqual({ kind: "check_limit_reached" });
+
+    expect(test.tx.guideAccessAttempt.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("expires an admitted review whose messaging window already closed", async () => {
+    const test = harness({
+      lockedToken: null,
+      lockedAttempt: attempt({
+        state: "needs_review",
+        lastFollowResult: "unknown",
+        messagingWindowExpiresAt: new Date(NOW.getTime() - 1),
+      }),
+    });
+
+    await expect(
+      test.repository.claimDirectInbound({
+        attemptId: ATTEMPT_ID,
+        inboundMessageId: TOKEN_ID,
+        now: NOW,
+      }),
+    ).resolves.toEqual({ kind: "expired" });
+  });
+});
