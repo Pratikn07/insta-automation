@@ -159,7 +159,33 @@ export interface GuideAccessMetricsResult {
   ownerReviewEvents: number;
 }
 
-const AGGREGATE_SQL = `
+/**
+ * The reader's allowlist, DERIVED from the writer's vocabulary rather than restated.
+ *
+ * This clause used to be a hand-written literal listing every stage. It fell out of sync
+ * the moment a stage was added: `cover` events were written, validated, and stored, and
+ * then silently discarded here, so every cover count read zero. Nothing failed — the SQL
+ * was valid and the tests mocked it. Generating the predicate makes drift impossible
+ * instead of merely detectable.
+ */
+const SQL_TOKEN = /^[a-z_]+$/;
+
+const VOCABULARY_PREDICATE = Object.entries(GUIDE_ACCESS_OUTCOMES)
+  .map(([stage, outcomes]) => {
+    // These are compile-time constants, never user input, but this clause is interpolated
+    // into SQL: refuse anything that is not a bare identifier rather than quote it.
+    for (const token of [stage, ...(outcomes as readonly string[])]) {
+      if (!SQL_TOKEN.test(token)) {
+        throw new Error(`unsafe guide access metric token: ${token}`);
+      }
+    }
+    const list = (outcomes as readonly string[]).map((outcome) => `'${outcome}'`).join(", ");
+    return `(payload->>'stage' = '${stage}' AND payload->>'outcome' IN (${list}))`;
+  })
+  .join("\n      OR ");
+
+/** Exported so a test can assert the generated allowlist against the vocabulary. */
+export const GUIDE_ACCESS_AGGREGATE_SQL = `
 WITH safe_events AS (
   SELECT
     payload->>'stage' AS stage,
@@ -176,13 +202,7 @@ WITH safe_events AS (
     AND created_at < $2::timestamptz
     AND payload->>'version' = '1'
     AND (
-      (payload->>'stage' = 'opening' AND payload->>'outcome' IN ('accepted', 'failed', 'uncertain'))
-      OR (payload->>'stage' = 'action' AND payload->>'outcome' IN ('received', 'replayed', 'expired', 'unsupported'))
-      OR (payload->>'stage' = 'fresh_check' AND payload->>'outcome' IN ('follower', 'non_follower', 'unavailable'))
-      OR (payload->>'stage' = 'gate' AND payload->>'outcome' IN ('shown', 'profile_action_offered'))
-      OR (payload->>'stage' = 'recheck' AND payload->>'outcome' IN ('attempted', 'confirmed', 'not_confirmed', 'unavailable'))
-      OR (payload->>'stage' = 'delivery' AND payload->>'outcome' IN ('planned', 'completed', 'failed', 'needs_review'))
-      OR (payload->>'stage' = 'needs_review' AND payload->>'outcome' = 'marked')
+      ${VOCABULARY_PREDICATE}
     )
 ),
 counts AS (
@@ -214,6 +234,8 @@ FROM counts
 JOIN latencies USING (stage)
 ORDER BY counts.stage, counts.outcome
 `.trim();
+
+const AGGREGATE_SQL = GUIDE_ACCESS_AGGREGATE_SQL;
 
 function emptyCounts(): GuideAccessCountMatrix {
   return Object.fromEntries(

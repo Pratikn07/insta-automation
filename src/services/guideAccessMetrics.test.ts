@@ -1,10 +1,15 @@
-import { describe, expect, it, vi } from "vitest";
+import { PrismaClient } from "@prisma/client";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  GUIDE_ACCESS_AGGREGATE_SQL,
+  GUIDE_ACCESS_OUTCOMES,
   createGuideAccessMetrics,
   runGuideAccessMetrics,
   type GuideAccessMetricsDb,
 } from "./guideAccessMetrics.js";
 
+const databaseUrl = process.env.MIGRATION_TEST_DATABASE_URL;
+const describeWithDatabase = databaseUrl ? describe.sequential : describe.skip;
 const FROM = new Date("2026-08-01T00:00:00.000Z");
 const TO = new Date("2026-08-08T00:00:00.000Z");
 
@@ -313,5 +318,80 @@ describe("guide cover rates", () => {
 
     expect(result.counts.cover.accepted).toBe(10);
     expect(result.coverRates.accepted.pct).toBe(100);
+  });
+});
+
+// Parent-delivery Task 7, self-review. The aggregate SQL carries a SECOND copy of the
+// stage/outcome vocabulary as a hand-written WHERE clause. Every test above mocks
+// `$queryRawUnsafe`, so they fed the reader fabricated rows and never once exercised that
+// filter — which is how the `cover` stage came to be recorded by the writer and discarded
+// by the query, reading zero forever. These two tests close that gap from both sides.
+describe("aggregate SQL vocabulary", () => {
+  it("admits every stage the writer is allowed to record", () => {
+    const missing = Object.keys(GUIDE_ACCESS_OUTCOMES).filter(
+      (stage) => !GUIDE_ACCESS_AGGREGATE_SQL.includes(`'${stage}'`),
+    );
+
+    expect(missing).toEqual([]);
+  });
+
+  it("admits every outcome the writer is allowed to record", () => {
+    const missing = Object.entries(GUIDE_ACCESS_OUTCOMES).flatMap(([stage, outcomes]) =>
+      (outcomes as readonly string[])
+        .filter((outcome) => !GUIDE_ACCESS_AGGREGATE_SQL.includes(`'${outcome}'`))
+        .map((outcome) => `${stage}/${outcome}`),
+    );
+
+    expect(missing).toEqual([]);
+  });
+});
+
+// The test that would have caught it. Every test above this point mocks the query, so none
+// of them can tell a valid SQL string from a correct one. This one writes a real event per
+// (stage, outcome) in the vocabulary and reads it back through the real SQL.
+describeWithDatabase("aggregate SQL against PostgreSQL", () => {
+  let prisma: PrismaClient;
+
+  beforeAll(() => {
+    expect(process.env.DATABASE_URL).toBe(databaseUrl);
+    expect(process.env.MIGRATION_TEST_DATABASE_DISPOSABLE).toBe("true");
+    prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+  });
+
+  afterAll(async () => {
+    await prisma?.$disconnect();
+  });
+
+  it("returns every stage and outcome the writer is allowed to record", async () => {
+    const pairs = Object.entries(GUIDE_ACCESS_OUTCOMES).flatMap(([stage, outcomes]) =>
+      (outcomes as readonly string[]).map((outcome) => ({ stage, outcome })),
+    );
+    const marker = new Date("2026-08-23T06:00:00.000Z");
+    await prisma.eventLog.deleteMany({ where: { kind: "guide_access_v2_metric" } });
+    await prisma.eventLog.createMany({
+      data: pairs.map(({ stage, outcome }) => ({
+        kind: "guide_access_v2_metric",
+        payload: { version: 1, stage, outcome, latencyMs: 100 },
+        createdAt: marker,
+      })),
+    });
+
+    try {
+      const result = await runGuideAccessMetrics(prisma, {
+        from: new Date(marker.getTime() - 1_000),
+        to: new Date(marker.getTime() + 1_000),
+      });
+
+      const dropped = pairs.filter(({ stage, outcome }) => {
+        const counts = result.counts[stage as keyof typeof result.counts] as Record<string, number>;
+        return counts[outcome] !== 1;
+      });
+      expect(dropped).toEqual([]);
+      expect(result.totalEvents).toBe(pairs.length);
+      // And the derived rates really are computed off rows that survived the filter.
+      expect(result.coverRates.included.denominator).toBe(4);
+    } finally {
+      await prisma.eventLog.deleteMany({ where: { kind: "guide_access_v2_metric" } });
+    }
   });
 });
