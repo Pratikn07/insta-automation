@@ -26,7 +26,6 @@ describe("guide access safe event recording", () => {
     ["fresh_check", "non_follower"],
     ["fresh_check", "unavailable"],
     ["gate", "shown"],
-    ["gate", "profile_action_offered"],
     ["recheck", "attempted"],
     ["recheck", "confirmed"],
     ["recheck", "not_confirmed"],
@@ -137,7 +136,7 @@ describe("guide access aggregate funnel metrics", () => {
         opening: { accepted: 0, failed: 0, uncertain: 0 },
         action: { received: 0, replayed: 0, expired: 0, unsupported: 0 },
         fresh_check: { follower: 3, non_follower: 0, unavailable: 0 },
-        gate: { shown: 0, profile_action_offered: 0 },
+        gate: { shown: 0 },
         recheck: { attempted: 0, confirmed: 0, not_confirmed: 0, unavailable: 0 },
         delivery: { planned: 0, completed: 2, failed: 0, needs_review: 0 },
         needs_review: { marked: 0 },
@@ -428,5 +427,38 @@ describeWithDatabase("aggregate SQL against PostgreSQL", () => {
     } finally {
       await prisma.eventLog.deleteMany({ where: { kind: "guide_access_v2_metric" } });
     }
+  });
+});
+
+// The structural fix, not another instance. `cover` was admitted by the SQL and dropped by
+// the reader; `gate` and `recheck` were admitted by BOTH and never written by anything. All
+// three read zero forever, on a page an operator uses to decide whether to widen a rollout,
+// and a zero is indistinguishable from "the pilot has not started". A declared outcome with
+// no writer is not measurement, it is furniture.
+describe("every declared stage has a production writer", () => {
+  it("finds a non-test source file that records each stage", async () => {
+    const { readdir, readFile } = await import("node:fs/promises");
+    const roots = ["src/services", "src/handlers", "src/api", "src/meta"];
+    const sources: string[] = [];
+    for (const root of roots) {
+      const entries = await readdir(root, { recursive: true, withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
+        if (entry.name.includes(".test.")) continue;
+        sources.push(await readFile(`${entry.parentPath ?? root}/${entry.name}`, "utf8"));
+      }
+    }
+    const corpus = sources.join("\n");
+
+    // Matched on the two forms that actually RECORD, not on the bare string: `"gate"`
+    // also appears as a `falseResponse` value, which would have passed this test while the
+    // stage stayed unwritten.
+    const unwritten = Object.keys(GUIDE_ACCESS_OUTCOMES).filter(
+      (stage) =>
+        !corpus.includes(`stage: "${stage}"`) &&
+        !corpus.includes(`recordGuideAccessMetric("${stage}"`),
+    );
+
+    expect(unwritten).toEqual([]);
   });
 });

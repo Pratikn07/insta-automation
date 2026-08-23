@@ -91,6 +91,19 @@ test.describe("visual QA artifacts", () => {
   test("funnels", async ({ page }, testInfo) => {
     await open(page, "funnels");
     await expect(page.getByRole("heading").first()).toBeVisible();
+    // The cover panel resolves on its OWN query, after the cohort funnel. `fullPage`
+    // measures the document height once, so without this wait the panel's numbers landed
+    // below the measured height and the mobile artifact ended mid-blurb — capturing the
+    // heading of the one surface the screenshot exists to check, and none of its content.
+    // Any of the panel's four terminal states will do; what must not happen is capturing
+    // while it is still growing.
+    await expect(
+      page
+        .getByText(
+          /in the follow gate|no cover has been considered|does not report cover numbers|could not be loaded/i,
+        )
+        .first(),
+    ).toBeVisible();
     await capture(page, testInfo.project.name, "funnels");
   });
 

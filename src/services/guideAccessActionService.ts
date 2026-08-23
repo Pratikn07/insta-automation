@@ -147,6 +147,20 @@ export type GuideAccessActionDependencies = {
    * never follower authorization and never whether the gate itself is sent.
    */
   coverDecision(input: { resourceId: string; triggerId: string }): "include" | "omit";
+  /**
+   * The three counters below are recorded HERE rather than by the callers, because only
+   * this layer knows which kind of check ran. `context.falseResponse` is `"lag"` exactly
+   * when the parent has already been asked to follow, which is the definition of a
+   * recheck; a caller sees the same outcome value either way and cannot tell them apart.
+   * That is why recheck outcomes used to be folded into `fresh_check`.
+   *
+   * All three are aggregate-only and must never fail a parent action.
+   */
+  recordFreshCheck(outcome: "follower" | "non_follower" | "unavailable"): Promise<void>;
+  recordRecheck(
+    outcome: "attempted" | "confirmed" | "not_confirmed" | "unavailable",
+  ): Promise<void>;
+  recordGateShown(): Promise<void>;
   loadGuideName(resourceId: string): Promise<string>;
   loadThreadId(inboundMessageId: string): Promise<string | null>;
   findAttemptIdByToken(tokenId: string): Promise<string | null>;
@@ -673,6 +687,16 @@ export function createGuideAccessActionService(
       "non_follower",
     );
     if (sendResult === "needs_review") return "access_attempt_needs_review";
+    // Only a provably delivered GATE counts as shown. An uncertain send is excluded because
+    // it would inflate the denominator of every downstream gate conversion, and the lag
+    // nudge is excluded because it is not the gate — the parent has already seen that.
+    if (sendResult === "sent" && context.falseResponse === "gate") {
+      try {
+        await dependencies.recordGateShown();
+      } catch {
+        // Aggregate counter only.
+      }
+    }
 
     let awaiting;
     try {
@@ -797,10 +821,36 @@ export function createGuideAccessActionService(
     return "guide_delivery_started";
   }
 
+  /** Measurement must never fail a parent action. */
+  async function countCheck(
+    isRecheck: boolean,
+    fresh: "follower" | "non_follower" | "unavailable",
+    again: "confirmed" | "not_confirmed" | "unavailable",
+  ): Promise<void> {
+    try {
+      if (isRecheck) await dependencies.recordRecheck(again);
+      else await dependencies.recordFreshCheck(fresh);
+    } catch {
+      // An aggregate counter is not worth losing an authorization outcome over.
+    }
+  }
+
   async function authorizeClaimed(
     context: AuthorizationContext,
   ): Promise<GuideAccessActionOutcome> {
     let fresh: FreshFollowResult | null = null;
+    // `"lag"` means this parent has already been asked to follow, so the check about to
+    // run is a RE-check. Recorded as its own stage: "still not following after telling us
+    // they had" is a different fact from "was not following when they asked", and the
+    // funnel could not separate them while both counted as `fresh_check`.
+    const isRecheck = context.falseResponse === "lag";
+    if (isRecheck) {
+      try {
+        await dependencies.recordRecheck("attempted");
+      } catch {
+        // Denominator only. Never worth failing an authorization for.
+      }
+    }
     try {
       fresh = await dependencies.resolveFollowStatusFresh(context.senderId);
     } catch {
@@ -809,11 +859,14 @@ export function createGuideAccessActionService(
     }
 
     if (fresh?.source === "meta_live" && fresh.isFollower === true) {
+      await countCheck(isRecheck, "follower", "confirmed");
       return handleFollower(context, fresh.checkedAt);
     }
     if (fresh?.source === "meta_live" && fresh.isFollower === false) {
+      await countCheck(isRecheck, "non_follower", "not_confirmed");
       return handleNonFollower(context, fresh.checkedAt);
     }
+    await countCheck(isRecheck, "unavailable", "unavailable");
     return handleUnavailable(context, fresh?.checkedAt ?? dependencies.now());
   }
 
@@ -1195,6 +1248,15 @@ const defaultService = createGuideAccessActionService({
   coverDecision: (decision) => guideCoverDeliverySelector.decide(decision),
   recordCoverMetric: async (outcome) => {
     await recordGuideAccessMetric("cover_gate", outcome);
+  },
+  recordFreshCheck: async (outcome) => {
+    await recordGuideAccessMetric("fresh_check", outcome);
+  },
+  recordRecheck: async (outcome) => {
+    await recordGuideAccessMetric("recheck", outcome);
+  },
+  recordGateShown: async () => {
+    await recordGuideAccessMetric("gate", "shown");
   },
   // The switch is the operator's assertion that the reviewed capability rows are
   // `supported`; it is read per action so a stop applies to the next opening.

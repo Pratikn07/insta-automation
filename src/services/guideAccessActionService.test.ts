@@ -435,6 +435,9 @@ function createHarness(input: {
   const coverMediaUrl = vi.fn((path: string) => `https://cdn.example.test/${path}`);
   const recordCoverMetric = vi.fn(async () => undefined);
   const coverDecision = vi.fn(() => input.coverDecision ?? ("include" as "include" | "omit"));
+  const recordFreshCheck = vi.fn(async () => undefined);
+  const recordRecheck = vi.fn(async () => undefined);
+  const recordGateShown = vi.fn(async () => undefined);
   const loadGuideName = vi.fn(
     input.loadGuideName ?? (async () => "toddler sleep guide"),
   );
@@ -457,6 +460,9 @@ function createHarness(input: {
     coverMediaUrl,
     coverDecision,
     recordCoverMetric,
+    recordFreshCheck,
+    recordRecheck,
+    recordGateShown,
     loadGuideName,
     loadThreadId,
     findAttemptIdByToken,
@@ -479,6 +485,9 @@ function createHarness(input: {
     coverMediaUrl,
     coverDecision,
     recordCoverMetric,
+    recordFreshCheck,
+    recordRecheck,
+    recordGateShown,
     loadGuideName,
     loadThreadId,
     cancelledTokens,
@@ -2400,5 +2409,109 @@ describe("an uncertain gate send is never repeated", () => {
     await expect(directRequest(test)).resolves.toBe("follow_not_confirmed");
 
     expect(test.sendFollowerGate).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The `gate` and `recheck` metric stages were declared in the vocabulary, admitted by the
+// aggregate SQL, and written by NOTHING. Both read zero forever on the page an operator uses
+// to decide whether to widen the rollout — and a zero there is indistinguishable from "the
+// pilot has not started". `recheck` mattered most: its outcomes were folded into
+// `fresh_check`, so the funnel could not separate "failed the first follow check" from
+// "still not following after telling us they had", which is the whole point of a follow gate.
+describe("follow-check and gate measurement", () => {
+  it("counts a first-time check as a fresh check, never as a recheck", async () => {
+    const test = createHarness({ freshResults: [live(true)] });
+
+    await request(test);
+
+    expect(test.recordFreshCheck).toHaveBeenCalledWith("follower");
+    expect(test.recordRecheck).not.toHaveBeenCalled();
+  });
+
+  it("counts a check after the parent says they followed as a recheck", async () => {
+    const test = createHarness({
+      initialAttempt: attempt({ state: "awaiting_follow", lastFollowResult: "non_follower" }),
+      freshResults: [live(true)],
+    });
+
+    await check(test, FOLLOW_TOKEN_1);
+
+    // `attempted` is the denominator; the outcome partitions it. Both are recorded so the
+    // funnel still has a denominator if an outcome write is dropped.
+    expect(test.recordRecheck).toHaveBeenCalledWith("attempted");
+    expect(test.recordRecheck).toHaveBeenCalledWith("confirmed");
+    // Not also counted as a first check, or the two would double-count each other.
+    expect(test.recordFreshCheck).not.toHaveBeenCalled();
+  });
+
+  it("distinguishes a failed recheck from a failed first check", async () => {
+    const first = createHarness({ freshResults: [live(false)] });
+    await request(first);
+    expect(first.recordFreshCheck).toHaveBeenCalledWith("non_follower");
+
+    const again = createHarness({
+      initialAttempt: attempt({ state: "awaiting_follow", lastFollowResult: "non_follower" }),
+      freshResults: [live(false)],
+    });
+    await check(again, FOLLOW_TOKEN_1);
+
+    // The number that actually matters: they told us they followed and Instagram disagrees.
+    expect(again.recordRecheck).toHaveBeenCalledWith("not_confirmed");
+    expect(again.recordFreshCheck).not.toHaveBeenCalled();
+  });
+
+  it("counts an unavailable check under whichever check ran", async () => {
+    const first = createHarness({ freshResults: [unavailable] });
+    await request(first);
+    expect(first.recordFreshCheck).toHaveBeenCalledWith("unavailable");
+
+    const again = createHarness({
+      initialAttempt: attempt({ state: "awaiting_follow", lastFollowResult: "non_follower" }),
+      freshResults: [unavailable],
+    });
+    await check(again, FOLLOW_TOKEN_1);
+    expect(again.recordRecheck).toHaveBeenCalledWith("unavailable");
+  });
+
+  it("counts the gate only once it was actually sent", async () => {
+    const test = createHarness({ freshResults: [live(false)] });
+
+    await request(test);
+
+    expect(test.sendFollowerGate).toHaveBeenCalledTimes(1);
+    expect(test.recordGateShown).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not count a gate whose send outcome was uncertain", async () => {
+    const test = createHarness({
+      freshResults: [live(false)],
+      sendGate: async () => ({ messageId: null }),
+    });
+
+    await request(test);
+
+    // Meta may or may not have delivered it. Counting it as shown would inflate the
+    // denominator of every downstream gate conversion.
+    expect(test.recordGateShown).not.toHaveBeenCalled();
+  });
+
+  it("does not count the follow-lag nudge as a gate", async () => {
+    const test = createHarness({
+      initialAttempt: attempt({ state: "awaiting_follow", lastFollowResult: "non_follower" }),
+      freshResults: [live(false)],
+    });
+
+    await check(test, FOLLOW_TOKEN_1);
+
+    expect(test.sendFollowLag).toHaveBeenCalledTimes(1);
+    expect(test.recordGateShown).not.toHaveBeenCalled();
+  });
+
+  it("never fails a parent action because a counter failed", async () => {
+    const test = createHarness({ freshResults: [live(false)] });
+    test.recordFreshCheck.mockRejectedValue(new Error("metrics down"));
+    test.recordGateShown.mockRejectedValue(new Error("metrics down"));
+
+    await expect(request(test)).resolves.toBe("follow_not_confirmed");
   });
 });

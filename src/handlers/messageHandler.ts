@@ -45,16 +45,14 @@ import { guideAccessMetrics } from "../services/guideAccessMetrics.js";
 // enter a denominator.
 const DIRECT_STRICT_METRIC = new Map<
   string,
-  { stage: "action" | "fresh_check" | "delivery" | "needs_review"; outcome: string }
+  { stage: "action" | "delivery" | "needs_review"; outcome: string }
 >([
   ["guide_delivery_started", { stage: "delivery", outcome: "planned" }],
-  // Currently unreachable: `handleFollower` returns `guide_delivery_started`, not
-  // this. Kept because it is a declared outcome and the mapping would be correct
-  // if a future path returns it — but do not read its presence as evidence that a
-  // confirmed follow is measured separately today.
-  ["follow_confirmed", { stage: "fresh_check", outcome: "follower" }],
-  ["follow_not_confirmed", { stage: "fresh_check", outcome: "non_follower" }],
-  ["follow_check_unavailable", { stage: "fresh_check", outcome: "unavailable" }],
+  // The follow-check outcomes are NOT mapped here. They are recorded inside
+  // `guideAccessActionService`, which is the only layer that knows whether the check was
+  // a first check or a re-check after the parent said they had followed — an outcome value
+  // alone cannot distinguish those, which is why they used to be conflated. Mapping them
+  // here as well would double-count every check.
   ["access_attempt_needs_review", { stage: "needs_review", outcome: "marked" }],
   ["action_replayed", { stage: "action", outcome: "replayed" }],
   ["action_expired", { stage: "action", outcome: "expired" }],

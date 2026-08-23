@@ -1485,9 +1485,6 @@ describe("strict follower gate v2 — direct DM and redelivery", () => {
 
   it.each([
     { outcome: "guide_delivery_started", stage: "delivery", want: "planned" },
-    { outcome: "follow_confirmed", stage: "fresh_check", want: "follower" },
-    { outcome: "follow_not_confirmed", stage: "fresh_check", want: "non_follower" },
-    { outcome: "follow_check_unavailable", stage: "fresh_check", want: "unavailable" },
     { outcome: "access_attempt_needs_review", stage: "needs_review", want: "marked" },
     { outcome: "action_replayed", stage: "action", want: "replayed" },
     { outcome: "action_expired", stage: "action", want: "expired" },
@@ -1499,6 +1496,22 @@ describe("strict follower gate v2 — direct DM and redelivery", () => {
 
     expect(recordGuideAccessMetric).toHaveBeenCalledWith({ stage, outcome: want });
   });
+
+  it.each(["follow_confirmed", "follow_not_confirmed", "follow_check_unavailable"])(
+    "does not record %s here, because only the service knows which check ran",
+    async (outcome) => {
+      gateOwner.mockReturnValue("v2");
+      startDirectDmGuideRequest.mockResolvedValue(outcome);
+
+      await handleMessage(inbound("SLEEP"));
+
+      // These three used to be mapped to `fresh_check` here. The outcome value alone cannot
+      // say whether the check was a first check or a re-check after the parent said they had
+      // followed, so mapping it here both conflated the two and — now that the service
+      // records them properly — would double-count every check.
+      expect(recordGuideAccessMetric).not.toHaveBeenCalled();
+    },
+  );
 
   it("records no metric when the strict path did no new work", async () => {
     gateOwner.mockReturnValue("v2");

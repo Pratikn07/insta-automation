@@ -12,7 +12,12 @@ export const GUIDE_ACCESS_OUTCOMES = {
   opening: ["accepted", "failed", "uncertain"],
   action: ["received", "replayed", "expired", "unsupported"],
   fresh_check: ["follower", "non_follower", "unavailable"],
-  gate: ["shown", "profile_action_offered"],
+  // `shown` only. `profile_action_offered` was declared here and could never be written:
+  // the follower gate is unconditionally plain text (`sendFollowerGate` is wired with no
+  // capabilities), so no code path can offer a profile control. Declaring an outcome
+  // nothing can produce is the same camouflage as a stage nothing reads — a permanent zero
+  // that looks like a finding. It comes back when the capability spike proves the control.
+  gate: ["shown"],
   recheck: ["attempted", "confirmed", "not_confirmed", "unavailable"],
   delivery: ["planned", "completed", "failed", "needs_review"],
   // TWO cover stages, not one, because there are two cover paths and they measure

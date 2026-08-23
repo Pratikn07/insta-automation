@@ -21,10 +21,26 @@ The strict-access endpoint returns stable, zero-filled `counts` and
 | `opening` | `accepted`, `failed`, `uncertain` |
 | `action` | `received`, `replayed`, `expired`, `unsupported` |
 | `fresh_check` | `follower`, `non_follower`, `unavailable` |
-| `gate` | `shown`, `profile_action_offered` |
+| `gate` | `shown` |
 | `recheck` | `attempted`, `confirmed`, `not_confirmed`, `unavailable` |
+| `cover_gate` | `accepted`, `failed`, `uncertain`, `omitted_not_selected`, `omitted_mismatch` |
+| `cover_delivery` | `selected`, `omitted_already_shown`, `omitted_not_selected`, `omitted_mismatch` |
 | `delivery` | `planned`, `completed`, `failed`, `needs_review` |
 | `needs_review` | `marked` |
+
+`fresh_check` and `recheck` are the same measurement taken at two different moments, and
+keeping them apart is the point. `fresh_check` is the follow check when a parent first
+asks. `recheck` is the check after they have already been shown the gate and told us they
+followed — so `recheck.not_confirmed` means "they say they followed and Instagram
+disagrees", which is the number a follow gate lives or dies by. Both used to be recorded
+as `fresh_check`, which made that number unreadable.
+
+`recheck.attempted` is the denominator for the other three.
+
+Every stage in this table has a production writer, asserted by a test. A declared stage
+that nothing writes reads as a permanent zero, which is indistinguishable from "this has
+not started yet" — `cover`, `gate` and `recheck` were all in that state at some point
+during the guide-cover work.
 
 Each latency summary contains `samples`, rounded `average`, `p50`, `p95`, and
 `max` milliseconds. Missing samples return zero plus `null` latency values. The
