@@ -274,6 +274,44 @@ bottom band is dominated by relatable and confessional posts. **This is an
 observation about 16 captions, not a measurement**, and it is recorded here only
 because it is the hypothesis `SEO-007` should be pre-registered against.
 
+---
+
+## Part 2C — Term register v1, from counted demand
+
+Measured 2026-08-23 across every keyword ever configured, counting the conversations each one
+actually opened. This is the cluster set and priority order for `SEO-002`; the phrasings still
+have to come from Instagram autocomplete.
+
+| Cluster | Guide requests | Share | Keywords carrying it |
+|---|---:|---:|---|
+| **Sleep** | 2,949 | **37.2%** | SLEEP, BEDTIME, WEAN, PACIFIER, OVERTIRED |
+| **Recipes & meal prep** | 1,970 | **24.9%** | RECIPE, WAFFLE, MUFFIN, MEALPREP, FREEZER, DINNER, LUNCH, BREAKFAST, FANCY |
+| **Nutrition** | 1,857 | **23.4%** | PROTEIN, FIBER, FRUIT, GREEN, GUMMIES, PEAR, EGG, CHICKEN |
+| **Potty** | 772 | 9.7% | POTTY, POOP |
+| **Play & learning** | 224 | 2.8% | PLAY, DOUGH, CARDBOARD, BOX, PUZZLE, BOOK |
+| **Mealtime behaviour** | 138 | 1.7% | PICKY, CALM, CAR |
+
+**Read the top three together.** Food — recipes, nutrition and mealtime behaviour combined — is
+**50.0%** of all demand. Sleep is a single coherent topic at 37.2%. Those two account for 87%
+of every guide request this account has ever served, and they are what the profile should say.
+
+**Three observations, none of them yet decisions:**
+
+1. **`SLEEP` is the single largest keyword ever run (2,825 requests) and has been inactive
+   since 2026-08-10.** `BEDTIME` was attached to a post on 2026-08-22 and pulled 44 requests
+   within a day, which suggests a deliberate migration from a global keyword to post-scoped
+   ones rather than a lapse. Worth confirming, because 37% of demand sits behind it.
+2. **`PICKY` has only 21 requests**, despite picky eating being the most-searched toddler-food
+   topic off-platform. The account's own food demand is concentrated in *recipes and specific
+   nutrients*, not in the picky-eating framing. Optimise for what the data says, not for what
+   the category is famous for.
+3. **Play & learning is 2.8% of demand** but a meaningful share of posting effort. Not an
+   argument to stop — it may serve reach rather than conversion — but it should not compete for
+   space in a 30-character name field.
+
+**Still required before this register is complete:** the autocomplete pass for phrasing. The
+table gives clusters and priority; it does not give the words parents type.
+
 ## Part 3 — Implementation in this app
 
 ### 3.1 Terminology guard (read before writing any code)
@@ -344,16 +382,35 @@ eligible to be recommended.
 
 Build the keyword list *before* any tooling. It is a spreadsheet exercise first.
 
-Sources, in order of value:
-1. **Instagram autocomplete.** Type seed terms in the app's search bar; the suggestions are
-   literally what people search. Free, real, and platform-native.
-2. **The account's own DM corpus.** `DmMessage` holds real parent language — the phrases they
-   actually use. Nobody else's keyword tool has this. **This is the highest-signal source and
-   it is already in our database.**
-3. Comment text on top-performing reels.
-4. Google keyword data for the same topics — the vocabularies overlap heavily.
-5. `ig_hashtag_search` for competitor/top-media sampling — **but note the hard limit of 30
+**Correction, measured 2026-08-23.** An earlier draft of this document claimed the account's
+own `DmMessage` corpus was "the highest-signal source" for parent phrasing. **That is wrong,
+and acting on it would have wasted a week.** The funnel is a gate: a parent comments a keyword,
+receives a DM, and replies `DONE`. They never write prose. Measured:
+
+| Corpus | Rows | Median usefulness |
+|---|---|---|
+| Inbound DMs with text | 2,666 | **Average length 6 characters.** 2,278 are literally `DONE`; only 49 exceed 40 characters |
+| Comments with text (`event_log.comment_received`) | 11,076 | **Average length 13 characters.** 8,273 are under 15 chars — people type only the keyword |
+
+Bigram mining across both returned almost nothing: `potty training` (9), `fullness cues` (8),
+and a 105-count artefact that turned out to be our own recovery copy echoing back. **There is
+no internal free-text corpus worth mining.** Do not build tooling for one.
+
+What we have instead is better for clustering and worse for phrasing: **revealed topic demand
+at scale**, from ~7,900 real parents who commented to request a guide. That is not estimated
+search volume from a third-party tool; it is counted intent. It tells us *which topics*, not
+*which words*.
+
+So the sources, corrected and in order of value:
+1. **Our own keyword demand table** (below). Counted intent from ~7,900 parents. Use it to set
+   the clusters and their priority.
+2. **Instagram autocomplete.** Type each cluster into the app's search bar; the suggestions are
+   literally what people search. This is where *phrasing* comes from, and it is manual —
+   roughly 30 minutes, once.
+3. Google keyword data for the same topics — the vocabularies overlap heavily.
+4. `ig_hashtag_search` for competitor/top-media sampling — **but note the hard limit of 30
    unique hashtags per rolling 7 days.** Cache aggressively; this cannot be a live UI lookup.
+5. ~~The DM corpus~~ — measured empty, see above.
 
 Then capture a **baseline** on the existing catalog before changing anything: median LDS,
 sends/reach, saves/reach, non-follower reach share. Without a pre-period there is no way to
