@@ -6,6 +6,45 @@ The first funnel is **guide → follow**. More are already latent in the schema
 (historical recovery, DM recovery reminders, public recovery dispatch, AI reply
 drafts, per-reel capture) and should be added as *definitions*, not as new pages.
 
+The strict follower-gate rollout also exposes an aggregate operational lens at
+`GET /api/funnels/guide-access-metrics?from=YYYY-MM-DD&to=YYYY-MM-DD`. It uses
+the same default 30-day window and 365-day maximum as the cohort funnel, but it
+is deliberately not a parent drop-off list.
+
+## Strict guide-access metrics
+
+The strict-access endpoint returns stable, zero-filled `counts` and
+`latenciesMs` fields for these stages:
+
+| Stage | Allowlisted outcomes |
+| --- | --- |
+| `opening` | `accepted`, `failed`, `uncertain` |
+| `action` | `received`, `replayed`, `expired`, `unsupported` |
+| `fresh_check` | `follower`, `non_follower`, `unavailable` |
+| `gate` | `shown`, `profile_action_offered` |
+| `recheck` | `attempted`, `confirmed`, `not_confirmed`, `unavailable` |
+| `delivery` | `planned`, `completed`, `failed`, `needs_review` |
+| `needs_review` | `marked` |
+
+Each latency summary contains `samples`, rounded `average`, `p50`, `p95`, and
+`max` milliseconds. Missing samples return zero plus `null` latency values. The
+response also includes `totalEvents` and `ownerReviewEvents`.
+
+The underlying `guide_access_v2_metric` event is aggregate-safe by construction.
+Its payload contains only `version`, an allowlisted `stage`, an allowlisted
+`outcome`, and an optional bounded latency. It rejects extra fields. Never add
+Instagram account IDs, usernames, guide/resource IDs or titles, action tokens,
+DM copy, URLs, provider payloads, or raw errors. Parent investigation belongs in
+the durable access-attempt review surface, not in this aggregate endpoint.
+
+The rollout fence is allowlist-first. `GUIDE_FOLLOW_GATE_V2_ENABLED` and
+`GUIDE_RICH_GATE_ENABLED` default off and cannot be enabled from the console;
+the console may stop them. Even when strict access is enabled in the deployed
+environment, an empty `GUIDE_FOLLOW_GATE_V2_COHORT_IG_USER_IDS` and empty
+`GUIDE_FOLLOW_GATE_V2_RESOURCE_IDS` select nobody. An exact match in either list
+enters the controlled pilot. There is intentionally no percentage assignment in
+this phase.
+
 ## The two rules
 
 **Cohort, not event counts.** A funnel picks the set of conversations that

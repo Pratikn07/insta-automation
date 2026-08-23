@@ -87,6 +87,48 @@ describe("GET /api/funnels/:key", () => {
   });
 });
 
+describe("GET /api/funnels/guide-access-metrics", () => {
+  it("returns only aggregate strict-gate counts and latencies", async () => {
+    queryRawUnsafe.mockResolvedValueOnce([
+      {
+        stage: "opening",
+        outcome: "accepted",
+        count: 4n,
+        latencySamples: 2n,
+        averageLatencyMs: 101.2,
+        p50LatencyMs: 95.1,
+        p95LatencyMs: 118.9,
+        maxLatencyMs: 120,
+      },
+    ]);
+
+    const res = await request(makeApp())
+      .get("/api/funnels/guide-access-metrics")
+      .query({ from: "2026-08-01", to: "2026-08-08" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      key: "guide-access-v2",
+      counts: { opening: { accepted: 4 } },
+      latenciesMs: {
+        opening: { samples: 2, average: 101, p50: 95, p95: 119, max: 120 },
+      },
+      totalEvents: 4,
+    });
+    expect(JSON.stringify(res.body)).not.toMatch(/sender|username|token|copy|url|resource/i);
+  });
+
+  it("applies the same bounded date-window validation", async () => {
+    const res = await request(makeApp())
+      .get("/api/funnels/guide-access-metrics")
+      .query({ from: "not-a-date" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("bad_window");
+    expect(queryRawUnsafe).not.toHaveBeenCalled();
+  });
+});
+
 describe("GET /api/funnels/:key caching", () => {
   it("serves a repeat read of the same window without re-running the cohort query", async () => {
     const app = makeApp();

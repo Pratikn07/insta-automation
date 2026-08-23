@@ -88,6 +88,34 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
     experimentKey: "guide-delivery-rollout",
   },
   {
+    key: "GUIDE_FOLLOW_GATE_V2_ENABLED",
+    name: "Strict guide access",
+    group: "outbound",
+    kind: "boolean",
+    doesWhat:
+      "Uses a fresh Instagram follow check before a new guide or repeat guide can be sent.",
+    affectsWho:
+      "Only new actions from the controlled accounts or guides selected for the pilot.",
+    ifOff:
+      "New actions stay on the existing guide-request path. In-progress evidence remains available.",
+    pageMayEnable: false,
+    pageMayStop: true,
+  },
+  {
+    key: "GUIDE_RICH_GATE_ENABLED",
+    name: "Rich guide actions",
+    group: "outbound",
+    kind: "boolean",
+    doesWhat:
+      "Uses the verified Instagram action controls for requesting a guide and checking a follow.",
+    affectsWho:
+      "Parents already selected for the controlled strict-access path on supported Instagram clients.",
+    ifOff:
+      "Guide access uses the reviewed text fallback and never assumes a rich control is supported.",
+    pageMayEnable: false,
+    pageMayStop: true,
+  },
+  {
     key: "GUIDE_DELIVERY_ROLLOUT_PERCENT",
     // Not "Guide delivery rollout" — that is the name of the experiment this
     // belongs to, and the switch row then read "Guide delivery rollout · part of

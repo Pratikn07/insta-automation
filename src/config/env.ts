@@ -24,6 +24,19 @@ export function guideDeliveryCohortIgUserIds(value: string): ReadonlySet<string>
   );
 }
 
+/**
+ * Exact identifiers used by the strict-guide pilot. They stay as an unlogged
+ * source string in configuration and become a set only at the rollout fence.
+ */
+export function guideFollowGateV2Ids(value: string): ReadonlySet<string> {
+  return new Set(
+    value
+      .split(",")
+      .map((id) => id.trim())
+      .filter((id) => id.length > 0),
+  );
+}
+
 export const envSchema = z.object({
   PORT: z.coerce.number().default(3000),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
@@ -147,6 +160,13 @@ export const envSchema = z.object({
   // Creator-only cover drafting and publication. It never changes an existing
   // published cover when off; it only closes the authoring mutation surface.
   GUIDE_COVER_AUTHORING_ENABLED: booleanFlag(false),
+  // Parent-facing guide access is separately fenced from creator authoring.
+  // Both switches default off. The strict flow additionally requires an exact
+  // controlled account or resource match, so an empty pilot list reaches nobody.
+  GUIDE_FOLLOW_GATE_V2_ENABLED: booleanFlag(false),
+  GUIDE_RICH_GATE_ENABLED: booleanFlag(false),
+  GUIDE_FOLLOW_GATE_V2_COHORT_IG_USER_IDS: z.string().default(""),
+  GUIDE_FOLLOW_GATE_V2_RESOURCE_IDS: z.string().default(""),
   GUIDE_COVER_ORPHAN_BATCH: z.coerce.number().int().min(1).max(50).default(10),
   GUIDE_COVER_ORPHAN_INTERVAL_MS: z.coerce
     .number()

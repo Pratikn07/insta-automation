@@ -21,6 +21,18 @@ function envFlagKeys(): string[] {
 }
 
 describe("flag registry coverage", () => {
+  it.each(["GUIDE_FOLLOW_GATE_V2_ENABLED", "GUIDE_RICH_GATE_ENABLED"])(
+    "registers %s as an operator-stoppable outbound flag that the page cannot enable",
+    (key) => {
+      expect(flagDefinition(key)).toMatchObject({
+        group: "outbound",
+        kind: "boolean",
+        pageMayEnable: false,
+        pageMayStop: true,
+      });
+    },
+  );
+
   it("registers guide cover authoring as a reversible assistive feature", () => {
     expect(flagDefinition("GUIDE_COVER_AUTHORING_ENABLED")).toMatchObject({
       group: "assistive",

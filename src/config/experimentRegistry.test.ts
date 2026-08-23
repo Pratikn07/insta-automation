@@ -133,6 +133,10 @@ describe("experiment registry", () => {
     const owned = new Set(EXPERIMENT_REGISTRY.flatMap((e) => e.ownedFlagKeys));
     const standalone = FLAG_REGISTRY.filter((f) => !owned.has(f.key)).map((f) => f.key);
     expect(standalone).toEqual([
+      // These are safety switches, not an invitation to compare strict access
+      // against an ungated arm that violates the approved product rule.
+      "GUIDE_FOLLOW_GATE_V2_ENABLED",
+      "GUIDE_RICH_GATE_ENABLED",
       "AI_SEND_ENABLED",
       "UPCOMING_AUTOMATIONS_ENABLED",
       "DM_RECOVERY_HISTORICAL_ENABLED",
