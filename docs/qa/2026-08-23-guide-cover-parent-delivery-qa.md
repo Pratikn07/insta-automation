@@ -2,7 +2,8 @@
 
 ## Commit Under Test
 
-`64b67d6` on `codex/follower-button-flow`, 65 commits ahead of `main`.
+`06122e5` on `codex/follower-button-flow` — the last commit that changes code.
+This report and any later documentation commits sit on top of it.
 
 This report covers the last of five plans in the guide-cover release train:
 
@@ -83,12 +84,12 @@ to get wrong under pressure. `guideAccessActionService` wires `startGuideDeliver
 
 ## Automated verification
 
-All executed against commit `64b67d6` on 2026-08-23.
+All executed against commit `06122e5` on 2026-08-23.
 
 | Gate | Result |
 | --- | --- |
-| Backend suite | **3366 passed / 215 files / 0 skipped** |
-| Web suite | **939 passed / 73 files** |
+| Backend suite | **3378 passed / 215 files / 0 skipped** |
+| Web suite | **940 passed / 73 files** |
 | Playwright E2E | **120 passed** (desktop + mobile) |
 | Backend typecheck | clean |
 | Web typecheck | clean |
@@ -98,11 +99,15 @@ All executed against commit `64b67d6` on 2026-08-23.
 | `scripts/check-guide-delivery-bypasses.mjs` | `guide_delivery_bypass_check_passed` |
 | `prisma migrate deploy` on a pristine database | all migrations applied, in order |
 
-One flake observed: `src/api/aiDrafts.routes.test.ts > "does not let an audit write
-failure create an unhandled owner retry"` failed once while three full suite runs
-were executing concurrently on this machine. It passes in isolation (53/53) and in a
-clean full run. The test mocks Prisma entirely, so it is not database contention.
-Recorded rather than buried; not reproduced.
+**One load-sensitive flake, unresolved and stated plainly.** Across roughly a dozen full
+runs, a single test failed twice. The one occurrence I captured was
+`src/api/aiDrafts.routes.test.ts > "does not let an audit write failure create an unhandled
+owner retry"`. That file passes 53/53 eight times out of eight in isolation, and the suite
+total is stable at 3378 every run, so no test is conditionally skipped. It mocks Prisma
+entirely, so it is not database contention; the likely mechanism is a `mockRejectedValueOnce`
+consumed by a floating promise under CPU pressure. It is in a file this branch does not touch
+and I could not reproduce it deterministically, so it is **not fixed** — recorded here so it
+is not mistaken for a new failure during rollout.
 
 ### Verification the unit tests could not do
 
@@ -116,7 +121,8 @@ correctly dropped.
 ## Defects found and fixed during this pass
 
 Two independent adversarial reviews were run against the branch, plus execution-based
-verification. Between them they found **five Critical** defects. Each was found by review
+verification. Three rounds of review found **six Critical** defects between them, the last
+of which was introduced by the fix for the third. Each was found by review
 or by execution, never by reading the code and feeling satisfied. Every fix was
 mutation-verified: the production change was broken deliberately and the test suite had to
 fail.
@@ -249,6 +255,28 @@ writer, matched on the two forms that actually record rather than on the bare st
 the stage stayed dead. Verified end-to-end afterwards: all 29 declared (stage, outcome)
 pairs survive the real SQL against real PostgreSQL, and a hostile outcome is still dropped.
 
+**Three more Criticals-and-Importants from a third review round, on the commits the earlier
+rounds had not seen.** The most serious was self-inflicted: stopping the duplicate follow gate
+meant recording the definite follow answer on a review, which makes it terminal, and I applied
+that to EVERY review in the non-follower branch — including three where nothing that tells a
+parent what to do had reached them. The worst hands a parent a cover image with no
+instructions and then refuses them for the rest of their 24-hour window, because
+`exposeCoverForGate` returns before the gate copy is sent. It was latent only behind the flag
+this branch exists to ship. The rule is now stated where the reader will look for it: pass the
+answer only when something that tells the parent what to do provably reached them.
+
+Two coverage gaps behind it, each of which had let a mutation pass the entire suite: the
+single `lastFollowResult` write the whole fix rests on had no repository test, because the
+action-service harness re-implements that write in its own fake; and `handleUnavailable`'s
+requirement to record NO answer was covered by a test that hand-built the resulting state
+instead of driving the code that produces it. Inverting that invariant would have wedged every
+parent whose live check was unavailable, and it was green.
+
+The release action also refused too little. Its own stated reason was that freeing a
+delivery-bearing attempt lets the parent's next message send a second guide — and that hazard
+survives one state transition the guard did not cover, because `handleFollower` moves an
+attempt back to `needs_review` when the durable delivery fails to start.
+
 ### Test and tooling hygiene
 
 - `guideCoverMigrationContract.test.ts` wrote fixed UUIDs with no cleanup, so against a
@@ -360,13 +388,14 @@ until the window lapses.
 
 **READY FOR CONTROLLED ROLLOUT**
 
-Every automated pre-production gate passes: 3366 backend tests with zero skips against
-a disposable database, 939 web tests, 120 E2E, both typechecks, both builds, lint, the
+Every automated pre-production gate passes: 3378 backend tests with zero skips against
+a disposable database, 940 web tests, 120 E2E, both typechecks, both builds, lint, the
 bypass detector, and a full migration deploy onto a pristine database.
 
-That verdict is only meaningful because of what the reviews found. Five Critical defects
-reached this branch, and all five were in the same place: **at a boundary the tests
-mocked.** The SQL was mocked, so the reader was never wired to the writer. The two cover
+That verdict is only meaningful because of what the reviews found. Six Critical defects
+reached this branch. Five were in the same place — **at a boundary the tests mocked** — and
+the sixth was created by the fix for one of them, which is its own lesson: a correctness fix
+applied uniformly across five call sites was right at two of them and harmful at three. The SQL was mocked, so the reader was never wired to the writer. The two cover
 recorders were mocked, so their vocabularies were never reconciled. The API response shape
 was mocked, so its absence was never handled. Everything inside those mocks was correct.
 That is the pattern to watch for in the next feature, not just the eleven instances fixed
