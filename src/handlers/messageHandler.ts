@@ -34,6 +34,85 @@ import {
   recordInboundCampaignHealthSignals,
 } from "../services/campaignHealthObservation.js";
 import { env, guideDeliveryCohortIgUserIds } from "../config/env.js";
+import { routeGuideAction } from "./guideActionRouter.js";
+import { guideFollowGateV2Selector } from "../services/guideFollowGateV2Rollout.js";
+import { startDirectDmGuideRequest } from "../services/guideAccessActionService.js";
+import { recordGuideAccessMetric } from "../services/guideAccessMetrics.js";
+
+/**
+ * The only outcomes this branch still measures itself.
+ *
+ * Everything else moved into `guideAccessActionService`, because this map could only ever
+ * see the direct-DM branch: a parent who taps a control reaches the same outcomes through
+ * `routeGuideAction`, which never consulted this and so recorded nothing at all. The
+ * follow checks, the review marking and the delivery start are all recorded at the point
+ * they happen now, which covers every entry path instead of one.
+ *
+ * A token replay or expiry, though, is genuinely about THIS inbound message rather than
+ * about the attempt, so it stays here.
+ */
+async function recordDirectStrictOutcome(outcome: string): Promise<void> {
+  if (outcome === "action_replayed") await recordGuideAccessMetric("action", "replayed");
+  if (outcome === "action_expired") await recordGuideAccessMetric("action", "expired");
+}
+
+/**
+ * One ownership decision per call site, failing closed to V1 so a flag-read
+ * problem can never strand a parent between the two paths.
+ */
+function strictGateOwnerFor(igUserId: string, resourceId: string): "v1" | "v2" {
+  try {
+    return guideFollowGateV2Selector.owner({ igUserId, resourceId });
+  } catch {
+    logger.warn(
+      { errorCode: "strict_gate_owner_unavailable", igUserId },
+      "Strict gate ownership unavailable — using V1",
+    );
+    return "v1";
+  }
+}
+
+/**
+ * The single V2 entry point for an inbound DM. Shared by the keyword branch and
+ * the reply-to-opening branch so the two can never diverge on what authorizes a
+ * send. A fault here never falls through to V1: doing so would send a second
+ * message for one inbound, and would authorize it on cached evidence.
+ */
+async function runStrictGuideRequest(input: {
+  conversationId: string;
+  senderId: string;
+  resourceId: string;
+  guideName: string;
+  redelivery: boolean;
+  inboundMessageId: string;
+  threadId: string | null;
+  observedAt: Date;
+}): Promise<void> {
+  try {
+    const outcome = await startDirectDmGuideRequest(
+      {
+        id: input.conversationId,
+        igUserId: input.senderId,
+        resourceId: input.resourceId,
+        guideName: input.guideName,
+        deliveryTriggerKind: input.redelivery ? "explicit_redelivery" : "inbound_reply",
+        ...(input.redelivery ? { redeliveryIntro: REDELIVERY_INTRO } : {}),
+      },
+      {
+        // The internal DmMessage UUID, never Meta's provider mid.
+        id: input.inboundMessageId,
+        threadId: input.threadId,
+        eventAt: input.observedAt,
+      },
+    );
+    await recordDirectStrictOutcome(outcome);
+  } catch (err) {
+    logger.error(
+      { ...graphFailureMetadata(err), conversationId: input.conversationId },
+      "Strict guide request failed",
+    );
+  }
+}
 
 // Kept only as an analytics hint now — it is NO LONGER the trigger. Any reply to
 // an open gate delivers the guide (people say "Hi"/"Followed"/"Yes", not "Done").
@@ -336,7 +415,7 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
   }
 
   // Record recovery inbound evidence for any newly captured inbound message (even if delayed)
-  const recoveryKind = msg.quick_reply?.payload
+  const recoveryKind = msg.quick_reply
     ? "quick_reply"
     : msg.attachments?.length
       ? "attachment"
@@ -361,6 +440,30 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     at: observedAt,
     kind: "inbound",
   });
+
+  // A quick-reply token is durable action intent even when a later ordinary DM
+  // reached the thread first. Route it after capture/evidence but before the
+  // latest-message guard; the action service owns sender, expiry, state, and
+  // replay validation. Its visible title must never enter free-text automation.
+  if (msg.quick_reply) {
+    const routed = await routeGuideAction({
+      payload: msg.quick_reply.payload,
+      senderId,
+      inboundMessageId: inbound.messageId,
+      eventAt: observedAt,
+    });
+    // Returning either way is deliberate: falling through would let the reply's visible
+    // title reach keyword matching as if the parent had typed it. But a payload this router
+    // does not recognise was being dropped in total silence, which would make any future
+    // quick reply added elsewhere in the product vanish here with no trace. Say so.
+    if (routed.kind === "ignored") {
+      logger.warn(
+        { errorCode: "quick_reply_payload_unrouted", senderId, mid: msg.mid },
+        "Quick reply payload matched no guide action and was not routed anywhere else",
+      );
+    }
+    return;
+  }
 
   if (!inbound.becameLatest) {
     logger.debug(
@@ -464,6 +567,25 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     // there; it stays only for non-followers/unknowns, where it's the one
     // leverage moment for the follow ask.
     const alreadyCompleted = await hasCompletedKeyword(senderId, keyword.id);
+
+    // ---- Strict follower gate V2 --------------------------------------------
+    // Both of the V1 conditions below are disqualified evidence: `isFollower` is
+    // a cached Graph value, and `alreadyCompleted` authorizes a redelivery on the
+    // strength of a past send. The strict path replaces both with a live check.
+    if (strictGateOwnerFor(senderId, keyword.resource.id) === "v2") {
+      await runStrictGuideRequest({
+        conversationId: convo.id,
+        senderId,
+        resourceId: keyword.resource.id,
+        guideName: keyword.resource.name,
+        redelivery: alreadyCompleted,
+        inboundMessageId: inbound.messageId,
+        threadId: inbound.threadId,
+        observedAt,
+      });
+      return;
+    }
+
     if (profile.isFollower === true || alreadyCompleted) {
       try {
         await deliverOwnedGuide({
@@ -540,6 +662,29 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     recoveredInactiveGate = convo !== null;
   }
   if (convo) {
+    // ---- Strict follower gate V2 --------------------------------------------
+    // With rich controls off — the only mode available until the capability rows
+    // are `supported` — the strict opening is text ("Want me to send it here?"),
+    // so the parent's answer arrives here as an ordinary reply, not a quick
+    // reply. `openConversationIn` already creates the conversation as
+    // awaiting_done with a null gatedAt, and `findActiveAwaitingDone` accepts
+    // that, so without this fence V1 would authorize the reply on cached follow
+    // state — including its documented rule that an unreadable null falls through
+    // to delivery. The strict gate forbids exactly that.
+    if (strictGateOwnerFor(senderId, convo.keyword.resource.id) === "v2") {
+      await runStrictGuideRequest({
+        conversationId: convo.id,
+        senderId,
+        resourceId: convo.keyword.resource.id,
+        guideName: convo.keyword.resource.name,
+        redelivery: await hasCompletedKeyword(senderId, convo.keywordId),
+        inboundMessageId: inbound.messageId,
+        threadId: inbound.threadId,
+        observedAt,
+      });
+      return;
+    }
+
     // Duplicate guard: the user already completed this keyword (e.g. commented
     // "sleep" on two reels → two open gates). The old behavior closed the gate
     // silently — an unlock instruction followed by nothing, for our most engaged

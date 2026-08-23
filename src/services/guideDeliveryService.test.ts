@@ -310,6 +310,10 @@ function harness(options: HarnessOptions = {}) {
   });
   const sleep = vi.fn(async () => undefined);
   const logger = { error: vi.fn(), warn: vi.fn() };
+  const coverMediaUrl = vi.fn((path: string) => `https://cdn.example.test/${path}`);
+  const recordCoverMismatch = vi.fn(async () => undefined);
+  const coverDecision = vi.fn(() => "include" as "include" | "omit");
+  const recordCoverMetric = vi.fn(async () => undefined);
 
   function service() {
     return createGuideDeliveryService({
@@ -318,6 +322,10 @@ function harness(options: HarnessOptions = {}) {
       sendText,
       sendMedia,
       finalizeGuideDelivery,
+      coverMediaUrl,
+      coverDecision,
+      recordCoverMetric,
+      recordCoverMismatch,
       sleep,
       now: () => now,
       logger,
@@ -334,6 +342,10 @@ function harness(options: HarnessOptions = {}) {
     sendText,
     sendMedia,
     finalizeGuideDelivery,
+    coverMediaUrl,
+    coverDecision,
+    recordCoverMetric,
+    recordCoverMismatch,
     sleep,
     logger,
     order,
@@ -702,5 +714,211 @@ describe("deliverGuideForTrigger", () => {
       traceId: "safe_trace_1",
       transportCode: null,
     });
+  });
+});
+
+// Parent-delivery Task 3, service side. The cover joins the SAME durable plan, so it
+// must share one claim and one checkpoint sequence with the authored guide. It also has
+// to be proven to belong to the guide being compiled — Task 2's snapshot carries its own
+// resourceId precisely so this layer can refuse a mismatch.
+describe("generated cover in the durable plan", () => {
+  const COVER = {
+    versionId: "70000000-0000-4000-8000-000000000007",
+    resourceId: input.resourceId,
+    dmStoragePath: "guide-cover/sleep/dm.png",
+  };
+
+  it("sends the cover first, through the same claim and checkpoints as the guide", async () => {
+    const test = harness({
+      messages: [{ id: "first", order: 0, type: "text", body: "One", mediaUrl: null }],
+    });
+
+    await expect(test.service()({ ...input, cover: COVER })).resolves.toBe("completed");
+
+    expect(test.coverMediaUrl).toHaveBeenCalledWith(COVER.dmStoragePath);
+    expect(test.sendMedia).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "image",
+        url: `https://cdn.example.test/${COVER.dmStoragePath}`,
+      }),
+    );
+    // One claim for both, and the cover's send precedes the authored text.
+    expect(test.repository.claimById).toHaveBeenCalledTimes(1);
+    expect(test.order.filter((step) => step.startsWith("provider:"))).toEqual([
+      "provider:media",
+      "provider:text",
+    ]);
+  });
+
+  it("refuses a cover belonging to a different guide and still delivers the guide", async () => {
+    const test = harness({
+      messages: [{ id: "first", order: 0, type: "text", body: "One", mediaUrl: null }],
+    });
+
+    await expect(
+      test.service()({
+        ...input,
+        cover: { ...COVER, resourceId: "99999999-9999-4999-8999-999999999999" },
+      }),
+    ).resolves.toBe("completed");
+
+    // Never prepend one guide's cover to another guide's messages.
+    expect(test.sendMedia).not.toHaveBeenCalled();
+    expect(test.sendText).toHaveBeenCalledTimes(1);
+    expect(test.logger.warn).toHaveBeenCalled();
+    // A log line alone is not a surface anyone reads; the drop must be recorded.
+    expect(test.recordCoverMismatch).toHaveBeenCalledWith({
+      deliveryResourceId: input.resourceId,
+      coverResourceId: "99999999-9999-4999-8999-999999999999",
+      coverVersionId: COVER.versionId,
+    });
+  });
+
+  it("omits the cover when the parent already saw it in the gate", async () => {
+    const test = harness({
+      messages: [{ id: "first", order: 0, type: "text", body: "One", mediaUrl: null }],
+    });
+
+    await expect(
+      test.service()({ ...input, cover: COVER, coverAlreadyShown: true }),
+    ).resolves.toBe("completed");
+
+    expect(test.sendMedia).not.toHaveBeenCalled();
+    expect(test.coverMediaUrl).not.toHaveBeenCalled();
+  });
+
+  it("sends nothing at all when a later authored unit fails preflight", async () => {
+    const test = harness({
+      messages: [
+        { id: "first", order: 0, type: "text", body: "Valid", mediaUrl: null },
+        { id: "later", order: 1, type: "image", body: null, mediaUrl: "" },
+      ],
+    });
+
+    await expect(test.service()({ ...input, cover: COVER })).resolves.toBe("preflight_failed");
+
+    // The cover must not escape ahead of a plan that was rejected as a whole.
+    expect(test.sendMedia).not.toHaveBeenCalled();
+    expect(test.sendText).not.toHaveBeenCalled();
+    expect(test.repository.claimById).not.toHaveBeenCalled();
+  });
+});
+
+// Parent-delivery Task 6. The rollout fence sits at one call site, before the plan is
+// compiled. It governs cover inclusion ONLY.
+describe("cover delivery rollout fence", () => {
+  const COVER = {
+    versionId: "70000000-0000-4000-8000-000000000007",
+    resourceId: input.resourceId,
+    dmStoragePath: "guide-cover/sleep/dm.png",
+  };
+
+  it("omits the cover but still delivers the guide when unselected", async () => {
+    const test = harness({
+      messages: [{ id: "first", order: 0, type: "text", body: "One", mediaUrl: null }],
+    });
+    test.coverDecision.mockReturnValue("omit");
+
+    await expect(test.service()({ ...input, cover: COVER })).resolves.toBe("completed");
+
+    // Turning cover delivery off must never withhold an authorized guide.
+    expect(test.sendMedia).not.toHaveBeenCalled();
+    expect(test.sendText).toHaveBeenCalledTimes(1);
+    expect(test.coverMediaUrl).not.toHaveBeenCalled();
+  });
+
+  it("consults the fence once, with the guide and the trigger", async () => {
+    const test = harness({
+      messages: [{ id: "first", order: 0, type: "text", body: "One", mediaUrl: null }],
+    });
+
+    await test.service()({ ...input, cover: COVER });
+
+    expect(test.coverDecision).toHaveBeenCalledTimes(1);
+    expect(test.coverDecision).toHaveBeenCalledWith({
+      resourceId: input.resourceId,
+      triggerId: input.triggerId,
+    });
+  });
+
+  it("never consults the fence when there is no cover to include", async () => {
+    const test = harness({
+      messages: [{ id: "first", order: 0, type: "text", body: "One", mediaUrl: null }],
+    });
+
+    await test.service()(input);
+
+    expect(test.coverDecision).not.toHaveBeenCalled();
+  });
+});
+
+// Parent-delivery Task 7. The three omit/include reasons are counted separately because
+// they mean different things to an operator: suppression working, the fence holding, or a
+// cover genuinely going out.
+describe("cover delivery measurement", () => {
+  const COVER = {
+    versionId: "70000000-0000-4000-8000-000000000007",
+    resourceId: input.resourceId,
+    dmStoragePath: "guide-cover/sleep/dm.png",
+  };
+  const oneStep = [{ id: "first", order: 0, type: "text" as const, body: "One", mediaUrl: null }];
+
+  it("counts a cover that goes into the plan", async () => {
+    const test = harness({ messages: oneStep });
+
+    await test.service()({ ...input, cover: COVER });
+
+    expect(test.recordCoverMetric).toHaveBeenCalledWith("selected");
+  });
+
+  it("counts duplicate suppression separately from the rollout fence", async () => {
+    const suppressed = harness({ messages: oneStep });
+    await suppressed.service()({ ...input, cover: COVER, coverAlreadyShown: true });
+    expect(suppressed.recordCoverMetric).toHaveBeenCalledWith("omitted_already_shown");
+
+    const fenced = harness({ messages: oneStep });
+    fenced.coverDecision.mockReturnValue("omit");
+    await fenced.service()({ ...input, cover: COVER });
+    expect(fenced.recordCoverMetric).toHaveBeenCalledWith("omitted_not_selected");
+  });
+
+  it("still reports a mismatched cover while the rollout fence is closed", async () => {
+    // Review round 1. A cover paired with the wrong guide is a data-integrity fault, not a
+    // rollout decision. Checking the fence first meant the signal was dead for the entire
+    // pre-rollout period — which is every deployment that exists today.
+    const test = harness({ messages: oneStep });
+    test.coverDecision.mockReturnValue("omit");
+
+    await expect(
+      test.service()({
+        ...input,
+        cover: { ...COVER, resourceId: "99999999-9999-4999-8999-999999999999" },
+      }),
+    ).resolves.toBe("completed");
+
+    expect(test.recordCoverMismatch).toHaveBeenCalledWith({
+      deliveryResourceId: input.resourceId,
+      coverResourceId: "99999999-9999-4999-8999-999999999999",
+      coverVersionId: COVER.versionId,
+    });
+    // Counted as its own outcome. Folding it into `omitted_not_selected` would make a
+    // pairing bug read as a routine rollout omission in the funnel.
+    expect(test.recordCoverMetric).toHaveBeenCalledWith("omitted_mismatch");
+    expect(test.recordCoverMetric).not.toHaveBeenCalledWith("omitted_not_selected");
+  });
+
+  it("never lets a failed counter break a delivery", async () => {
+    const test = harness({ messages: oneStep });
+    test.recordCoverMetric.mockRejectedValue(new Error("metrics down"));
+
+    await expect(test.service()({ ...input, cover: COVER })).resolves.toBe("completed");
+  });
+
+  it("counts nothing when there was no cover at all", async () => {
+    const test = harness({ messages: oneStep });
+
+    await test.service()(input);
+
+    expect(test.recordCoverMetric).not.toHaveBeenCalled();
   });
 });

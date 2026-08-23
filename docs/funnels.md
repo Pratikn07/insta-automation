@@ -6,6 +6,78 @@ The first funnel is **guide → follow**. More are already latent in the schema
 (historical recovery, DM recovery reminders, public recovery dispatch, AI reply
 drafts, per-reel capture) and should be added as *definitions*, not as new pages.
 
+The strict follower-gate rollout also exposes an aggregate operational lens at
+`GET /api/funnels/guide-access-metrics?from=YYYY-MM-DD&to=YYYY-MM-DD`. It uses
+the same default 30-day window and 365-day maximum as the cohort funnel, but it
+is deliberately not a parent drop-off list.
+
+## Strict guide-access metrics
+
+The strict-access endpoint returns stable, zero-filled `counts` and
+`latenciesMs` fields for these stages:
+
+| Stage | Allowlisted outcomes |
+| --- | --- |
+| `opening` | `accepted`, `failed`, `uncertain` |
+| `action` | `received`, `replayed`, `expired`, `unsupported` |
+| `fresh_check` | `follower`, `non_follower`, `unavailable` |
+| `gate` | `shown` |
+| `recheck` | `attempted`, `confirmed`, `not_confirmed`, `unavailable` |
+| `cover_gate` | `accepted`, `failed`, `uncertain`, `omitted_not_selected`, `omitted_mismatch` |
+| `cover_delivery` | `selected`, `omitted_already_shown`, `omitted_not_selected`, `omitted_mismatch` |
+| `delivery` | `planned` |
+| `needs_review` | `marked` |
+
+`fresh_check` and `recheck` are the same measurement taken at two different moments, and
+keeping them apart is the point. `fresh_check` is the follow check when a parent first
+asks. `recheck` is the check after they have already been shown the gate and told us they
+followed — so `recheck.not_confirmed` means "they say they followed and Instagram
+disagrees", which is the number a follow gate lives or dies by. Both used to be recorded
+as `fresh_check`, which made that number unreadable.
+
+`recheck.attempted` is the denominator for the other three.
+
+Every stage in this table has a production writer, asserted by a test that matches on the
+typed `recordGuideAccessMetric("stage", …)` call. A declared stage or outcome that nothing
+writes reads as a permanent zero, which is indistinguishable from "this has not started yet"
+— `cover`, `gate` and `recheck` were all in that state at some point during the guide-cover
+work, as were `gate.profile_action_offered` and three `delivery` outcomes. All are either
+written now or removed.
+
+Two removals worth naming. `gate.profile_action_offered` went because the follower gate is
+unconditionally plain text until the capability spike runs, so nothing could produce it.
+`delivery.completed`, `delivery.failed` and `delivery.needs_review` went because the delivery
+ledger already emits `sequence_completed`, which the cohort funnel reads to measure delivered
+guides — a second, worse measurement of the same thing under a different name is how two
+numbers start disagreeing. What this stage adds that the cohort funnel cannot see is delivery
+STARTS, which is why `planned` stays.
+
+The test proves a literal call site exists for every stage. It cannot prove the call is
+reachable, so read it as a floor rather than a guarantee.
+
+Each latency summary contains `samples`, rounded `average`, `p50`, `p95`, and
+`max` milliseconds. Missing samples return zero plus `null` latency values. The
+response also includes `totalEvents` and `ownerReviewEvents`.
+
+`totalEvents` counts EVENTS, not journeys, and `recheck.attempted` is a sibling outcome of the
+three it denominates — so every recheck contributes twice. That is correct for what the field
+says it is; do not read it as a count of parents.
+
+The underlying `guide_access_v2_metric` event is aggregate-safe by construction.
+Its payload contains only `version`, an allowlisted `stage`, an allowlisted
+`outcome`, and an optional bounded latency. It rejects extra fields. Never add
+Instagram account IDs, usernames, guide/resource IDs or titles, action tokens,
+DM copy, URLs, provider payloads, or raw errors. Parent investigation belongs in
+the durable access-attempt review surface, not in this aggregate endpoint.
+
+The rollout fence is allowlist-first. `GUIDE_FOLLOW_GATE_V2_ENABLED` and
+`GUIDE_RICH_GATE_ENABLED` default off and cannot be enabled from the console;
+the console may stop them. Even when strict access is enabled in the deployed
+environment, an empty `GUIDE_FOLLOW_GATE_V2_COHORT_IG_USER_IDS` and empty
+`GUIDE_FOLLOW_GATE_V2_RESOURCE_IDS` select nobody. An exact match in either list
+enters the controlled pilot. There is intentionally no percentage assignment in
+this phase.
+
 ## The two rules
 
 **Cohort, not event counts.** A funnel picks the set of conversations that

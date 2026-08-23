@@ -217,6 +217,22 @@ describe("Sequences delete refusals", () => {
     expect(toastError.mock.calls[0]![0]).not.toContain("resource_has_delivery_history");
   });
 
+  it("explains guide access history rather than printing its error code", async () => {
+    apiMutation.mockRejectedValue(
+      new ApiError(
+        409,
+        { error: "resource_has_guide_access_history" },
+        "resource_has_guide_access_history",
+      ),
+    );
+
+    await attemptDelete();
+
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    expect(toastError.mock.calls[0]![0]).toContain("follow check");
+    expect(toastError.mock.calls[0]![0]).not.toContain("resource_has_guide_access_history");
+  });
+
   // No code, no body: still a sentence, never "HTTP 500".
   it("stays readable when the failure carries no code at all", async () => {
     apiMutation.mockRejectedValue(new Error("network down"));

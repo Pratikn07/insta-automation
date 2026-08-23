@@ -3,6 +3,8 @@ import type { Request, Response, NextFunction } from "express";
 import { requireAdmin } from "./auth.js";
 import { keywordsRouter } from "./keywords.routes.js";
 import { resourcesRouter } from "./resources.routes.js";
+import { resourceCoversRouter } from "./resourceCovers.routes.js";
+import { presentationCategoriesRouter } from "./presentationCategories.routes.js";
 import { messagesRouter } from "./messages.routes.js";
 import { uploadRouter } from "./upload.routes.js";
 import { conversationsRouter } from "./conversations.routes.js";
@@ -30,7 +32,11 @@ apiRouter.get("/me", (req, res) => {
 });
 
 apiRouter.use("/keywords", keywordsRouter);
+// Cover routes are mounted first because `/resources/:id` is otherwise a broad
+// match. Both remain behind the same requireAdmin boundary above.
+apiRouter.use("/resources", resourceCoversRouter);
 apiRouter.use("/resources", resourcesRouter);
+apiRouter.use("/presentation-categories", presentationCategoriesRouter);
 apiRouter.use("/messages", messagesRouter);
 apiRouter.use("/upload", uploadRouter);
 apiRouter.use("/conversations", conversationsRouter);

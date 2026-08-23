@@ -13,6 +13,7 @@ const THREAD_ID = "30000000-0000-4000-8000-000000000001";
 const TRIGGER_ID = "40000000-0000-4000-8000-000000000001";
 const CLAIM_TOKEN = "50000000-0000-4000-8000-000000000001";
 const TRIGGERED_AT = new Date("2026-08-17T12:00:00.000Z");
+const SEND_WINDOW_EXPIRES_AT = new Date("2026-08-17T12:01:00.000Z");
 const COMPLETED_AT = new Date("2026-08-17T12:02:00.000Z");
 
 function completionRecord(
@@ -25,7 +26,7 @@ function completionRecord(
     triggerKind: "inbound_reply",
     triggerId: TRIGGER_ID,
     triggeredAt: TRIGGERED_AT,
-    sendWindowExpiresAt: new Date("2026-08-17T12:01:00.000Z"),
+    sendWindowExpiresAt: SEND_WINDOW_EXPIRES_AT,
     followerAtTrigger: true,
     status: "sending",
     claimToken: CLAIM_TOKEN,
@@ -57,11 +58,18 @@ function completionHarness(record = completionRecord()) {
     order.push("thread-resolved");
   });
   const logger = { error: vi.fn() };
+  const settleAccessAttempt = vi.fn(
+    async (): Promise<"settled" | "already_settled" | "not_found" | "window_mismatch"> => {
+      order.push("attempt-settled");
+      return "settled";
+    },
+  );
   const service = createGuideDeliveryCompletionService({
     repository,
     markConversationCompleted,
     scheduleEngagementFollowUp,
     markThreadResolved,
+    settleAccessAttempt,
     followUpsEnabled: () => true,
     logger,
     now: () => COMPLETED_AT,
@@ -72,6 +80,7 @@ function completionHarness(record = completionRecord()) {
     markConversationCompleted,
     scheduleEngagementFollowUp,
     markThreadResolved,
+    settleAccessAttempt,
     logger,
     order,
   };
@@ -103,6 +112,10 @@ describe("finalizeGuideDelivery", () => {
       "follow-up-scheduled",
       "thread-resolved",
       "delivery-finalized",
+      // Dead last. Everything above is idempotent and safe to repeat, so a crash anywhere
+      // in it costs a retry. Releasing the access attempt is NOT repeatable in that sense:
+      // it re-arms the parent. It has to come after the delivery is durably `completed`.
+      "attempt-settled",
     ]);
     expect(harness.scheduleEngagementFollowUp).toHaveBeenCalledWith({
       conversationId: CONVERSATION_ID,
@@ -147,6 +160,7 @@ describe("finalizeGuideDelivery", () => {
   it("skips follow-up scheduling when the feature is disabled", async () => {
     const harness = completionHarness();
     const service = createGuideDeliveryCompletionService({
+      settleAccessAttempt: async () => "settled" as const,
       repository: harness.repository,
       markConversationCompleted: harness.markConversationCompleted,
       scheduleEngagementFollowUp: harness.scheduleEngagementFollowUp,
@@ -301,5 +315,119 @@ describe("guide delivery completion repository", () => {
     ).resolves.toBe("already_completed");
     expect(tx.guideDelivery.updateMany).not.toHaveBeenCalled();
     expect(tx.eventLog.create).not.toHaveBeenCalled();
+  });
+});
+
+// Parent-delivery Task 5. `delivering` is an ACTIVE guide-access attempt state, so an
+// attempt left unsettled keeps `createOrLoadAttempt` loading it and blocks the parent's
+// next request until the messaging window expires. Completion has to close it.
+describe("guide access attempt settlement", () => {
+  it("settles the attempt as delivered once every unit is provably sent", async () => {
+    const test = completionHarness();
+
+    await expect(test.service.finalizeGuideDelivery(DELIVERY_ID, CLAIM_TOKEN)).resolves.toBe(
+      "completed",
+    );
+
+    expect(test.settleAccessAttempt).toHaveBeenCalledWith({
+      conversationId: CONVERSATION_ID,
+      outcome: "delivered",
+      expectedWindowExpiresAt: SEND_WINDOW_EXPIRES_AT,
+    });
+    // Only after the ledger state is durable — never before. Releasing the conversation
+    // first would let the parent open a fresh attempt while this delivery is still
+    // `sending`, and a crash in between would leave a duplicate send authorized.
+    expect(test.order.indexOf("delivery-finalized")).toBeLessThan(
+      test.order.indexOf("attempt-settled"),
+    );
+  });
+
+  it("still completes the delivery when the attempt cannot be settled", async () => {
+    const test = completionHarness();
+    test.settleAccessAttempt.mockRejectedValue(new Error("attempt settle exploded"));
+
+    await expect(test.service.finalizeGuideDelivery(DELIVERY_ID, CLAIM_TOKEN)).resolves.toBe(
+      "completed",
+    );
+
+    // A stuck attempt is an operator problem; it is not a reason to fail a delivery whose
+    // units all provably went out. But it must be visible.
+    expect(test.logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ errorCode: "access_attempt_settle_failed" }),
+      expect.any(String),
+    );
+  });
+
+  it("settles nothing when the delivery is not ready to complete", async () => {
+    const test = completionHarness(completionRecord({ sentUnitCount: 1, totalUnitCount: 2 }));
+
+    await expect(test.service.finalizeGuideDelivery(DELIVERY_ID, CLAIM_TOKEN)).resolves.toBe(
+      "not_ready",
+    );
+
+    expect(test.settleAccessAttempt).not.toHaveBeenCalled();
+  });
+
+  it("settles nothing on a repeated completion", async () => {
+    const test = completionHarness(completionRecord({ status: "completed" }));
+
+    await expect(test.service.finalizeGuideDelivery(DELIVERY_ID, CLAIM_TOKEN)).resolves.toBe(
+      "already_completed",
+    );
+
+    expect(test.settleAccessAttempt).not.toHaveBeenCalled();
+  });
+});
+
+// Parent-delivery Task 5, review round 1.
+describe("guide delivery completion attempt settlement", () => {
+  it("does not settle the attempt when the ledger finalize lost the claim", async () => {
+    const test = completionHarness();
+    test.repository.finalizeAtomically = vi.fn(async () => "lost_claim" as const);
+
+    await expect(test.service.finalizeGuideDelivery(DELIVERY_ID, CLAIM_TOKEN)).resolves.toBe(
+      "lost_claim",
+    );
+
+    // Another worker owns this delivery. Releasing the conversation on its behalf would
+    // let the parent open a second attempt against a delivery still in flight.
+    expect(test.settleAccessAttempt).not.toHaveBeenCalled();
+  });
+
+  it("logs a settle the database refused as belonging to another attempt", async () => {
+    const test = completionHarness();
+    test.settleAccessAttempt.mockResolvedValue("window_mismatch");
+
+    await expect(test.service.finalizeGuideDelivery(DELIVERY_ID, CLAIM_TOKEN)).resolves.toBe(
+      "completed",
+    );
+
+    expect(test.logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ errorCode: "access_attempt_settle_refused", outcome: "window_mismatch" }),
+      expect.any(String),
+    );
+  });
+
+  it("logs an attempt that some other path had already moved off delivering", async () => {
+    const test = completionHarness();
+    test.settleAccessAttempt.mockResolvedValue("already_settled");
+
+    await test.service.finalizeGuideDelivery(DELIVERY_ID, CLAIM_TOKEN);
+
+    expect(test.logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ errorCode: "access_attempt_settle_refused", outcome: "already_settled" }),
+      expect.any(String),
+    );
+  });
+
+  it("stays quiet when the delivery never went through the strict gate", async () => {
+    const test = completionHarness();
+    test.settleAccessAttempt.mockResolvedValue("not_found");
+
+    await test.service.finalizeGuideDelivery(DELIVERY_ID, CLAIM_TOKEN);
+
+    // Every pre-gate delivery has no attempt at all. Logging that as an error would bury
+    // the two outcomes above in noise from the normal path.
+    expect(test.logger.error).not.toHaveBeenCalled();
   });
 });

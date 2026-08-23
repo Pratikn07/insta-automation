@@ -3,6 +3,58 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* The browser preview measures and renders with the same pinned faces as the
+   server renderer. Keep these family names in sync with guideCoverRenderer.ts. */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 400;
+  src: url("../../shared/guide-cover-assets/fonts/inter-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 600;
+  src: url("../../shared/guide-cover-assets/fonts/inter-latin-600-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Source Serif 4";
+  font-style: normal;
+  font-weight: 400;
+  src: url("../../shared/guide-cover-assets/fonts/source-serif-4-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Source Serif 4";
+  font-style: normal;
+  font-weight: 600;
+  src: url("../../shared/guide-cover-assets/fonts/source-serif-4-latin-600-normal.woff2") format("woff2");
+}
+
+.guide-cover-preview {
+  aspect-ratio: 1200 / 916;
+  max-width: 100%;
+}
+
+.guide-cover-preview > svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Tailwind's inherited app face wins over SVG presentation attributes in
+   Chromium. Restate the renderer-owned families as CSS so the browser preview
+   uses the same pinned faces as the approved server PNG. */
+.guide-cover-preview text[font-family="Inter"] {
+  font-family: "Inter";
+}
+
+.guide-cover-preview text[font-family="Source Serif 4"] {
+  font-family: "Source Serif 4";
+}
+
 /* Signal. A decision surface: the page opens with what to do, not with what
    happened, and every figure carries the qualification that makes it safe to
    act on.

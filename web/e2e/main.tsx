@@ -1135,6 +1135,30 @@ const HOME_FUNNEL = {
 
 
 /** Funnels, Sequence Editor and Insights fixtures — synthetic, deterministic. */
+const coverRate = (numerator: number, denominator: number) => ({
+  numerator,
+  denominator,
+  pct: denominator >= 5 ? Math.round((numerator / denominator) * 1000) / 10 : null,
+  belowMinSample: denominator < 5,
+});
+
+const GUIDE_COVER_METRICS = {
+  key: "guide-access-v2" as const,
+  window: { from: "2026-07-18", to: "2026-08-16" },
+  coverRates: {
+    gate: {
+      accepted: coverRate(79, 84),
+      failed: coverRate(3, 84),
+      uncertain: coverRate(2, 84),
+    },
+    delivery: {
+      included: coverRate(112, 471),
+      duplicateSuppressed: coverRate(31, 471),
+      mispaired: coverRate(0, 471),
+    },
+  },
+};
+
 const FUNNEL_DROP_OFF = {
   bucket: "no-reply" as const,
   label: "Never replied DONE",
@@ -1161,6 +1185,14 @@ const EDITOR_RESOURCE = {
   keywords: [{ id: "keyword-1", keyword: "SLEEP" }],
 };
 
+const EDITOR_ACTIVITY_IMAGE = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400" viewBox="0 0 600 400">
+    <rect width="600" height="400" fill="#EBE8DF"/>
+    <text x="300" y="215" text-anchor="middle" fill="#66665F" font-family="Arial, sans-serif" font-size="48">Activity one</text>
+  </svg>`,
+)}`;
+const EDITOR_PRINTABLE_PDF = "data:application/pdf,PDF";
+
 const EDITOR_MESSAGES = [
   {
     id: "message-1",
@@ -1176,7 +1208,7 @@ const EDITOR_MESSAGES = [
     order: 1,
     type: "image" as const,
     body: "Activity one: the sorting basket.",
-    mediaUrl: "https://placehold.co/600x400/EBE8DF/66665F?text=Activity+one",
+    mediaUrl: EDITOR_ACTIVITY_IMAGE,
   },
   {
     id: "message-3",
@@ -1184,9 +1216,76 @@ const EDITOR_MESSAGES = [
     order: 2,
     type: "pdf" as const,
     body: null,
-    mediaUrl: "https://placehold.co/600x400/EBE8DF/66665F?text=Printable",
+    mediaUrl: EDITOR_PRINTABLE_PDF,
   },
 ];
+
+const GUIDE_COVER_CATEGORIES = [
+  {
+    id: "10000000-0000-4000-8000-000000000001",
+    slug: "bedtime",
+    name: "Bedtime",
+    collectionLabel: "SLEEP",
+    defaultKicker: "A TINY WIN FOR TONIGHT",
+    templateKey: "warm_editorial_corner_v1",
+    paletteKey: "bedtime_blush_v1",
+    illustrationKey: "bedtime_window_house_v1",
+    designStatus: "ready",
+    nextEditionNumber: 1,
+    sortOrder: 1,
+    createdBy: "creator@tinysoho.com",
+    updatedBy: "creator@tinysoho.com",
+    createdAt: "2026-08-22T12:00:00.000Z",
+    updatedAt: "2026-08-22T12:00:00.000Z",
+  },
+  {
+    id: "10000000-0000-4000-8000-000000000002",
+    slug: "recipes",
+    name: "Recipes",
+    collectionLabel: "RECIPES",
+    defaultKicker: "A LITTLE WIN AT THE TABLE",
+    templateKey: "warm_editorial_corner_v1",
+    paletteKey: "recipes_corner_table_v1",
+    illustrationKey: "recipes_corner_bowl_v1",
+    designStatus: "ready",
+    nextEditionNumber: 4,
+    sortOrder: 2,
+    createdBy: "creator@tinysoho.com",
+    updatedBy: "creator@tinysoho.com",
+    createdAt: "2026-08-22T12:00:00.000Z",
+    updatedAt: "2026-08-22T12:00:00.000Z",
+  },
+] as const;
+
+const GUIDE_COVER_SUGGESTED_COPY = {
+  headline: "Bedtime can feel softer",
+  supportingLine: "A calmer bedtime, one small shift at a time.",
+  closingLine: "Prepared for calmer evenings.",
+  alternativeDescription:
+    "Blush TinySoho sleep guide cover with a moonlit house illustration.",
+};
+
+let guideCoverVersion: Record<string, unknown> | null = null;
+const guideCoverMutations: Array<{
+  method: string;
+  path: string;
+  idempotencyKey: string | null;
+  body: unknown;
+}> = [];
+
+function guideCoverPresentation() {
+  if (!guideCoverVersion) return { presentation: null, coverVersions: [] };
+  return {
+    presentation: {
+      resourceId: "resource-1",
+      categoryId: guideCoverVersion.categoryId,
+      editionNumber: guideCoverVersion.editionNumber,
+      createdAt: "2026-08-22T12:00:00.000Z",
+      updatedAt: "2026-08-22T12:00:00.000Z",
+    },
+    coverVersions: [guideCoverVersion],
+  };
+}
 
 const leaderboardRow = (
   mediaId: string,
@@ -1257,6 +1356,21 @@ function installFetchStub(): void {
       });
     }
 
+    const idempotencyKey = new Headers(init?.headers).get("idempotency-key");
+    let requestBody: unknown = null;
+    if (typeof init?.body === "string") {
+      try {
+        requestBody = JSON.parse(init.body);
+      } catch {
+        requestBody = init.body;
+      }
+    }
+
+    if (activeScenario() === "guide-cover-authoring" && method !== "GET") {
+      guideCoverMutations.push({ method, path, idempotencyKey, body: requestBody });
+      capture(JSON.stringify({ mutations: guideCoverMutations }));
+    }
+
     // Home. Added so the follower chart's paper palette can be inspected in a real
     // browser: the marks, the rolling mean, and the provisional dash are SVG
     // rendering decisions that a unit test can only assert about, not look at.
@@ -1276,6 +1390,11 @@ function installFetchStub(): void {
     if (path === "/funnels/guide-follow/drop-off/no-reply" && method === "GET") {
       return json(FUNNEL_DROP_OFF);
     }
+    // Without this the cover panel renders its error state in every visual artifact, so
+    // the one surface the screenshots exist to check would never be captured working.
+    if (path.startsWith("/funnels/guide-access-metrics") && method === "GET") {
+      return json(GUIDE_COVER_METRICS);
+    }
     if (path === "/resources" && method === "GET") {
       return json([
         { ...EDITOR_RESOURCE, _count: { messages: 3, keywords: 1 }, invalidMessageCount: 0 },
@@ -1292,6 +1411,126 @@ function installFetchStub(): void {
     if (path === "/resources/resource-1" && method === "GET") return json(EDITOR_RESOURCE);
     if (path === "/messages/by-resource/resource-1" && method === "GET") {
       return json(EDITOR_MESSAGES);
+    }
+    if (path === "/presentation-categories" && method === "GET") {
+      return activeScenario() === "guide-cover-authoring"
+        ? json({ categories: GUIDE_COVER_CATEGORIES })
+        : json({ error: "guide_cover_authoring_disabled" }, 403);
+    }
+    if (path === "/resources/resource-1/presentation" && method === "GET") {
+      return activeScenario() === "guide-cover-authoring"
+        ? json(guideCoverPresentation())
+        : json({ error: "guide_cover_authoring_disabled" }, 403);
+    }
+    if (
+      path === "/resources/resource-1/cover-suggestions" &&
+      method === "POST" &&
+      activeScenario() === "guide-cover-authoring"
+    ) {
+      const body = requestBody as { id?: unknown; selectedCategoryId?: unknown } | null;
+      if (!body || typeof body.id !== "string" || body.id !== idempotencyKey) {
+        return json({ error: "idempotency_key_mismatch" }, 400);
+      }
+      return json({
+        replayed: false,
+        suggestion: { id: body.id },
+        draft: {
+          categoryId: GUIDE_COVER_CATEGORIES[0].id,
+          templateKey: GUIDE_COVER_CATEGORIES[0].templateKey,
+          paletteKey: GUIDE_COVER_CATEGORIES[0].paletteKey,
+          illustrationKey: GUIDE_COVER_CATEGORIES[0].illustrationKey,
+          ...GUIDE_COVER_SUGGESTED_COPY,
+        },
+      }, 201);
+    }
+    if (
+      path === "/resources/resource-1/cover-versions" &&
+      method === "POST" &&
+      activeScenario() === "guide-cover-authoring"
+    ) {
+      const body = requestBody as {
+        id: string;
+        categoryId: string;
+        suggestionId: string | null;
+        copy: typeof GUIDE_COVER_SUGGESTED_COPY;
+      };
+      if (!body || typeof body.id !== "string" || body.id !== idempotencyKey) {
+        return json({ error: "idempotency_key_mismatch" }, 400);
+      }
+      const category = GUIDE_COVER_CATEGORIES.find(
+        (candidate) => candidate.id === body.categoryId,
+      )!;
+      guideCoverVersion = {
+        id: body.id,
+        resourceId: "resource-1",
+        revision: 1,
+        status: "draft",
+        renderStatus: "not_rendered",
+        categoryId: category.id,
+        editionNumber: null,
+        templateKey: category.templateKey,
+        paletteKey: category.paletteKey,
+        illustrationKey: category.illustrationKey,
+        kicker: category.defaultKicker,
+        collectionLabel: category.collectionLabel,
+        ...body.copy,
+        suggestionId: body.suggestionId,
+        contentHash: null,
+        dmStoragePath: null,
+        genericStoragePath: null,
+        renderErrorCode: null,
+        approvedBy: null,
+        approvedAt: null,
+        publishedBy: null,
+        publishedAt: null,
+        createdAt: "2026-08-22T12:00:00.000Z",
+        updatedAt: "2026-08-22T12:00:00.000Z",
+      };
+      return json({ cover: guideCoverVersion, replayed: false }, 201);
+    }
+    const guideCoverLifecycle =
+      activeScenario() === "guide-cover-authoring"
+        ? /^\/resources\/resource-1\/cover-versions\/([^/]+)\/(approve|publish)$/u.exec(path)
+        : null;
+    if (guideCoverLifecycle && method === "POST" && guideCoverVersion) {
+      const [, coverId, action] = guideCoverLifecycle;
+      if (coverId !== guideCoverVersion.id) return json({ error: "not_found" }, 404);
+      const body = requestBody as { expectedRevision?: unknown } | null;
+      if (!body || body.expectedRevision !== guideCoverVersion.revision) {
+        return json({ error: "cover_revision_conflict" }, 409);
+      }
+      if (action === "approve") {
+        guideCoverVersion = {
+          ...guideCoverVersion,
+          status: "approved",
+          approvedBy: "creator@tinysoho.com",
+          approvedAt: "2026-08-22T12:05:00.000Z",
+          updatedAt: "2026-08-22T12:05:00.000Z",
+        };
+        return json({ ok: true, outcome: "approved" });
+      }
+      if (guideCoverVersion.status !== "approved") {
+        return json({ error: "cover_not_approved" }, 409);
+      }
+      guideCoverVersion = {
+        ...guideCoverVersion,
+        status: "published",
+        renderStatus: "ready",
+        editionNumber: 1,
+        contentHash: "a".repeat(64),
+        dmStoragePath: `guide-cover/resource-1/${coverId}/${"a".repeat(64)}/dm.png`,
+        genericStoragePath: `guide-cover/resource-1/${coverId}/${"a".repeat(64)}/generic.png`,
+        publishedBy: "creator@tinysoho.com",
+        publishedAt: "2026-08-22T12:06:00.000Z",
+        updatedAt: "2026-08-22T12:06:00.000Z",
+      };
+      return json({
+        ok: true,
+        outcome: "published",
+        contentHash: "a".repeat(64),
+        editionNumber: 1,
+        path: `guide-cover/resource-1/${coverId}/${"a".repeat(64)}/dm.png`,
+      });
     }
     if (path === "/insights/leaderboard" && method === "GET") {
       return json({ items: INSIGHTS_LEADERBOARD });
@@ -1790,6 +2029,19 @@ export function CapabilitiesScenario() {
   );
 }
 
+function GuideCoverAuthoringScenario() {
+  return (
+    <div className="p-4">
+      <Routes>
+        <Route path="/guides/:id" element={<SequenceEditor />} />
+      </Routes>
+      <pre className="sr-only" data-testid="guide-cover-mutation-log">
+        {useCapturedBody()}
+      </pre>
+    </div>
+  );
+}
+
 export function Harness() {
   const scenario = new URLSearchParams(window.location.search).get("scenario");
   if (scenario === "historical-dashboard") {
@@ -1851,6 +2103,7 @@ export function Harness() {
       </div>
     );
   }
+  if (scenario === "guide-cover-authoring") return <GuideCoverAuthoringScenario />;
   if (scenario === "insights") {
     return (
       <div className="p-4">
@@ -1918,7 +2171,7 @@ const harnessScenario = new URLSearchParams(window.location.search).get("scenari
 const initialEntry =
   harnessScenario?.startsWith("recovery-")
     ? "/dm-recovery"
-    : harnessScenario === "sequence-editor"
+    : harnessScenario === "sequence-editor" || harnessScenario === "guide-cover-authoring"
       ? "/guides/resource-1"
       : harnessScenario === "switch-detail"
         ? // The lone Stop now with no matching start — the safety model made visible.

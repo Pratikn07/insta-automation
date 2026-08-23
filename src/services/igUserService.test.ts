@@ -115,3 +115,25 @@ describe("origin verdict lifecycle", () => {
     }
   });
 });
+
+describe("resolveUsername authorization boundary", () => {
+  it("keeps cached profile data for display enrichment after a Graph failure", async () => {
+    graphGet.mockRejectedValue(new Error("Meta unavailable"));
+    upsert.mockResolvedValue({
+      id: "ig-1",
+      username: "display_handle",
+      name: "Display Name",
+      audienceSegment: null,
+      isFollower: true,
+      followerCount: null,
+      isVerified: null,
+    });
+
+    const profile = await resolveUsername("ig-1");
+
+    // This compatibility result is intentionally useful to render a profile,
+    // but it has no `meta_live` provenance and therefore cannot authorize the
+    // strict follower-gate flow. That flow uses resolveFollowStatusFresh.
+    expect(profile).toMatchObject({ username: "display_handle", isFollower: true });
+  });
+});

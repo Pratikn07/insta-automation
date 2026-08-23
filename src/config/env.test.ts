@@ -3,6 +3,7 @@ import {
   envSchema,
   FORBIDDEN_SETTINGS_SIGNATURE,
   guideDeliveryCohortIgUserIds,
+  parseIdentifierSet,
 } from "./env.js";
 
 const baseEnv = {
@@ -16,6 +17,85 @@ const baseEnv = {
 };
 
 describe("env configuration schema for DM recovery", () => {
+  it("defaults the strict follower and rich-message gates off with empty allowlists", () => {
+    expect(envSchema.parse(baseEnv)).toMatchObject({
+      GUIDE_FOLLOW_GATE_V2_ENABLED: false,
+      GUIDE_RICH_GATE_ENABLED: false,
+      GUIDE_FOLLOW_GATE_V2_COHORT_IG_USER_IDS: "",
+      GUIDE_FOLLOW_GATE_V2_RESOURCE_IDS: "",
+    });
+  });
+
+  it("parses strict-gate allowlists as exact, trimmed, de-duplicated IDs", () => {
+    expect([...parseIdentifierSet(" account-1, , account-2,account-1 ")]).toEqual([
+      "account-1",
+      "account-2",
+    ]);
+  });
+
+  it("keeps an enabled strict gate inert when neither account nor guide is allowlisted", () => {
+    const parsed = envSchema.parse({
+      ...baseEnv,
+      GUIDE_FOLLOW_GATE_V2_ENABLED: "true",
+    });
+
+    expect(parsed.GUIDE_FOLLOW_GATE_V2_ENABLED).toBe(true);
+    expect(parseIdentifierSet(parsed.GUIDE_FOLLOW_GATE_V2_COHORT_IG_USER_IDS)).toHaveProperty(
+      "size",
+      0,
+    );
+    expect(parseIdentifierSet(parsed.GUIDE_FOLLOW_GATE_V2_RESOURCE_IDS)).toHaveProperty(
+      "size",
+      0,
+    );
+  });
+
+  it("parses both strict-gate switches with booleanFlag semantics", () => {
+    expect(
+      envSchema.parse({
+        ...baseEnv,
+        GUIDE_FOLLOW_GATE_V2_ENABLED: "true",
+        GUIDE_RICH_GATE_ENABLED: "true",
+      }),
+    ).toMatchObject({
+      GUIDE_FOLLOW_GATE_V2_ENABLED: true,
+      GUIDE_RICH_GATE_ENABLED: true,
+    });
+    expect(
+      envSchema.safeParse({ ...baseEnv, GUIDE_FOLLOW_GATE_V2_ENABLED: "flase" }).success,
+    ).toBe(false);
+    expect(
+      envSchema.safeParse({ ...baseEnv, GUIDE_RICH_GATE_ENABLED: "maybe" }).success,
+    ).toBe(false);
+  });
+
+  it("keeps guide cover authoring disabled unless explicitly enabled", () => {
+    expect(envSchema.parse(baseEnv).GUIDE_COVER_AUTHORING_ENABLED).toBe(false);
+    expect(
+      envSchema.parse({
+        ...baseEnv,
+        GUIDE_COVER_AUTHORING_ENABLED: "true",
+      }).GUIDE_COVER_AUTHORING_ENABLED,
+    ).toBe(true);
+  });
+
+  it("uses conservative bounded guide-cover orphan cleanup settings", () => {
+    expect(envSchema.parse(baseEnv)).toMatchObject({
+      GUIDE_COVER_ORPHAN_BATCH: 10,
+      GUIDE_COVER_ORPHAN_INTERVAL_MS: 900_000,
+    });
+    expect(
+      envSchema.safeParse({ ...baseEnv, GUIDE_COVER_ORPHAN_BATCH: "0" }).success,
+    ).toBe(false);
+    expect(
+      envSchema.safeParse({ ...baseEnv, GUIDE_COVER_ORPHAN_BATCH: "51" }).success,
+    ).toBe(false);
+    expect(
+      envSchema.safeParse({ ...baseEnv, GUIDE_COVER_ORPHAN_INTERVAL_MS: "59999" })
+        .success,
+    ).toBe(false);
+  });
+
   it("defaults guide delivery to a disabled, bounded rollout", () => {
     const parsed = envSchema.parse(baseEnv);
     expect(parsed).toMatchObject({

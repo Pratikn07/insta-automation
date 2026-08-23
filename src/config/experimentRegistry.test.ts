@@ -133,6 +133,16 @@ describe("experiment registry", () => {
     const owned = new Set(EXPERIMENT_REGISTRY.flatMap((e) => e.ownedFlagKeys));
     const standalone = FLAG_REGISTRY.filter((f) => !owned.has(f.key)).map((f) => f.key);
     expect(standalone).toEqual([
+      // These are safety switches, not an invitation to compare strict access
+      // against an ungated arm that violates the approved product rule.
+      "GUIDE_FOLLOW_GATE_V2_ENABLED",
+      "GUIDE_RICH_GATE_ENABLED",
+      // Cover inclusion is a presentation switch, not a comparison arm. There is no
+      // "guide without its cover" hypothesis being measured here; the percent exists to
+      // ramp exposure safely, and pairing it with an experiment would imply an ungated
+      // arm we are not running.
+      "GUIDE_COVER_DELIVERY_ENABLED",
+      "GUIDE_COVER_DELIVERY_ROLLOUT_PERCENT",
       "AI_SEND_ENABLED",
       "UPCOMING_AUTOMATIONS_ENABLED",
       "DM_RECOVERY_HISTORICAL_ENABLED",
@@ -140,6 +150,7 @@ describe("experiment registry", () => {
       "AI_DRAFTS_ENABLED",
       "AI_FOLLOW_UPS_ENABLED",
       "AI_ADVISOR_ENABLED",
+      "GUIDE_COVER_AUTHORING_ENABLED",
       "WORKERS_ENABLED",
     ]);
   });

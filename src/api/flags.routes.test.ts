@@ -85,12 +85,12 @@ describe("flags API", () => {
     expect(drafts.ifOff.length).toBeGreaterThan(10);
   });
 
-  it("returns all sixteen, even those with no stored row", async () => {
+  it("returns all twenty-one, even those with no stored row", async () => {
     snapshot.mockReturnValue([]);
 
     const response = await request(app()).get("/api/flags").expect(200);
 
-    expect(response.body.flags).toHaveLength(16);
+    expect(response.body.flags).toHaveLength(21);
   });
 
   /**
@@ -185,6 +185,25 @@ describe("flags API", () => {
 
     expect(upsert).toHaveBeenCalled();
   });
+
+  it.each(["GUIDE_FOLLOW_GATE_V2_ENABLED", "GUIDE_RICH_GATE_ENABLED"])(
+    "refuses to enable %s from the page but permits its emergency stop",
+    async (key) => {
+      await request(app())
+        .patch(`/api/flags/${key}`)
+        .send({ valueBool: true })
+        .expect(403, { error: "flag_enable_not_permitted" });
+      expect(upsert).not.toHaveBeenCalled();
+
+      await request(app()).patch(`/api/flags/${key}`).send({ valueBool: false }).expect(200);
+      expect(upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { key },
+          create: expect.objectContaining({ valueBool: false }),
+        }),
+      );
+    },
+  );
 
   it("refuses any change to a flag that offers no control", async () => {
     const response = await request(app())

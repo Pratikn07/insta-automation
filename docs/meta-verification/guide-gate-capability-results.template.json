@@ -1,0 +1,133 @@
+{
+  "schemaVersion": 1,
+  "run": {
+    "graphVersion": "not_verified",
+    "loginType": "not_verified",
+    "permissions": [],
+    "startedAt": null,
+    "completedAt": null,
+    "reviewedAt": null,
+    "reviewedBy": null
+  },
+  "cases": [
+    {
+      "case": "private_text",
+      "decision": "not_verified",
+      "sanitizedResult": {
+        "accepted": null,
+        "httpStatus": null,
+        "graphCode": null,
+        "graphSubcode": null,
+        "providerMessageIdPresent": null,
+        "checkedAt": null
+      },
+      "webhookType": "not_verified",
+      "mobilePresentation": "not_verified",
+      "desktopPresentation": "not_verified",
+      "cropAndSafeArea": "not_applicable",
+      "profileReturn": "not_applicable",
+      "duplicateAction": "not_applicable",
+      "screenshotRefs": [],
+      "reviewNotes": []
+    },
+    {
+      "case": "private_quick_reply",
+      "decision": "not_verified",
+      "sanitizedResult": {
+        "accepted": null,
+        "httpStatus": null,
+        "graphCode": null,
+        "graphSubcode": null,
+        "providerMessageIdPresent": null,
+        "checkedAt": null
+      },
+      "webhookType": "not_verified",
+      "mobilePresentation": "not_verified",
+      "desktopPresentation": "not_verified",
+      "cropAndSafeArea": "not_applicable",
+      "profileReturn": "not_applicable",
+      "duplicateAction": "not_verified",
+      "screenshotRefs": [],
+      "reviewNotes": []
+    },
+    {
+      "case": "private_generic",
+      "decision": "not_verified",
+      "sanitizedResult": {
+        "accepted": null,
+        "httpStatus": null,
+        "graphCode": null,
+        "graphSubcode": null,
+        "providerMessageIdPresent": null,
+        "checkedAt": null
+      },
+      "webhookType": "not_verified",
+      "mobilePresentation": "not_verified",
+      "desktopPresentation": "not_verified",
+      "cropAndSafeArea": "not_verified",
+      "profileReturn": "not_verified",
+      "duplicateAction": "not_verified",
+      "screenshotRefs": [],
+      "reviewNotes": []
+    },
+    {
+      "case": "dm_quick_reply",
+      "decision": "not_verified",
+      "sanitizedResult": {
+        "accepted": null,
+        "httpStatus": null,
+        "graphCode": null,
+        "graphSubcode": null,
+        "providerMessageIdPresent": null,
+        "checkedAt": null
+      },
+      "webhookType": "not_verified",
+      "mobilePresentation": "not_verified",
+      "desktopPresentation": "not_verified",
+      "cropAndSafeArea": "not_applicable",
+      "profileReturn": "not_applicable",
+      "duplicateAction": "not_verified",
+      "screenshotRefs": [],
+      "reviewNotes": []
+    },
+    {
+      "case": "dm_generic_gate",
+      "decision": "not_verified",
+      "sanitizedResult": {
+        "accepted": null,
+        "httpStatus": null,
+        "graphCode": null,
+        "graphSubcode": null,
+        "providerMessageIdPresent": null,
+        "checkedAt": null
+      },
+      "webhookType": "not_verified",
+      "mobilePresentation": "not_verified",
+      "desktopPresentation": "not_verified",
+      "cropAndSafeArea": "not_verified",
+      "profileReturn": "not_verified",
+      "duplicateAction": "not_verified",
+      "screenshotRefs": [],
+      "reviewNotes": []
+    }
+  ],
+  "followFlagPropagation": {
+    "beforeFollow": null,
+    "observations": [],
+    "firstTrueAfterMs": null,
+    "reviewNotes": []
+  },
+  "releaseDecision": {
+    "textFallbackRequired": true,
+    "richGateMayBeEnabled": false,
+    "approvedCases": [],
+    "blockedCases": [
+      "private_quick_reply",
+      "private_generic",
+      "dm_quick_reply",
+      "dm_generic_gate"
+    ],
+    "decisionAt": null,
+    "decidedBy": null
+  }
+}

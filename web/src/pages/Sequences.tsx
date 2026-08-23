@@ -37,6 +37,9 @@ function deleteRefusal(error: unknown): string {
       ? `A past setup${named} still points at this guide, so it can't be deleted.`
       : `A setup waiting for a post${named} uses this guide. Cancel it on Content first.`;
   }
+  if (code === "resource_has_guide_access_history") {
+    return "Someone has already asked for this guide through the follow check, so it is kept as a record. Remove its keywords instead.";
+  }
   if (code === "resource_still_referenced") {
     return "Something still points at this guide, so it can't be deleted yet.";
   }

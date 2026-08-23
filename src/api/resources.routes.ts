@@ -119,6 +119,25 @@ resourcesRouter.delete("/:id", async (req, res, next) => {
   }
 
   /**
+   * A strict-gate attempt is history for the same reason a delivery is: it records what a
+   * real parent was asked, including whether a cover image may already have reached them.
+   *
+   * The delete was already refused without this — `guide_access_attempt` restricts its
+   * conversation, so the generic foreign-key backstop below catches it. But that answer is
+   * `resource_still_referenced`, which tells an operator only that something points at the
+   * guide and gives them nothing to act on. This one names it, and it is terminal on
+   * purpose: releasing an attempt expires it, it does not delete it, so a guide that ever
+   * ran through the strict gate stays undeletable. That is the same trade the delivery
+   * guard above already makes.
+   */
+  const accessHistoryCount = await prisma.guideAccessAttempt.count({
+    where: { resourceId: id },
+  });
+  if (accessHistoryCount > 0) {
+    return res.status(409).json({ error: "resource_has_guide_access_history" });
+  }
+
+  /**
    * An upcoming setup holding this guide blocks the delete.
    *
    * `upcoming_automations.resource_id` is an ON DELETE RESTRICT foreign key, so
@@ -152,15 +171,72 @@ resourcesRouter.delete("/:id", async (req, res, next) => {
       ),
     });
   }
-  const keywordIds = (
-    await prisma.keyword.findMany({ where: { resourceId: id }, select: { id: true } })
-  ).map((k) => k.id);
+
   try {
-    await prisma.$transaction([
-      prisma.conversation.deleteMany({ where: { keywordId: { in: keywordIds } } }),
-      prisma.keyword.deleteMany({ where: { resourceId: id } }),
-      prisma.resource.delete({ where: { id } }),
-    ]);
+    const deletion = await prisma.$transaction(async (tx) => {
+      // Publication reserves this same row before any Storage write. Whichever
+      // operation obtains the lock first determines the safe outcome: a delete
+      // that commits makes publication stop before upload; a publication intent
+      // makes deletion observe `rendering` and refuse.
+      const locked = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id"
+        FROM resources
+        WHERE "id" = ${id}::uuid
+        FOR UPDATE
+      `;
+      if (locked.length === 0) return { error: null } as const;
+      if (locked.length !== 1) throw new Error("resource_lock_identity_conflict");
+
+      const renderingCoverCount = await tx.resourceCoverVersion.count({
+        where: { resourceId: id, renderStatus: "rendering" },
+      });
+      if (renderingCoverCount > 0) {
+        return { error: "resource_cover_publish_in_progress" } as const;
+      }
+
+      // A published cover is immutable public history. Stored retired covers are
+      // history too: an ordinary guide delete never removes their exact objects.
+      const publishedCoverCount = await tx.resourceCoverVersion.count({
+        where: { resourceId: id, status: "published" },
+      });
+      if (publishedCoverCount > 0) {
+        return { error: "resource_has_published_cover" } as const;
+      }
+      const storedCoverHistoryCount = await tx.resourceCoverVersion.count({
+        where: { resourceId: id, dmStoragePath: { not: null } },
+      });
+      if (storedCoverHistoryCount > 0) {
+        return { error: "resource_has_cover_history" } as const;
+      }
+
+      // Orphans name exact uploaded objects that the cleanup worker must
+      // reconcile. Keep their foreign keys intact until cleanup has settled.
+      const pendingCoverCleanupCount = await tx.guideCoverOrphan.count({
+        where: { resourceId: id, status: { not: "deleted" } },
+      });
+      if (pendingCoverCleanupCount > 0) {
+        return { error: "resource_has_cover_cleanup_pending" } as const;
+      }
+
+      const keywordIds = (
+        await tx.keyword.findMany({ where: { resourceId: id }, select: { id: true } })
+      ).map((keyword) => keyword.id);
+      await tx.conversation.deleteMany({ where: { keywordId: { in: keywordIds } } });
+      await tx.keyword.deleteMany({ where: { resourceId: id } });
+      await tx.guideCoverOrphan.deleteMany({
+        where: { resourceId: id, status: "deleted" },
+      });
+      // Only drafts without any Storage intent reach here. No bucket-prefix or
+      // other Storage call belongs in this route.
+      await tx.resourceCoverVersion.deleteMany({ where: { resourceId: id } });
+      await tx.resourceCoverSuggestion.deleteMany({ where: { resourceId: id } });
+      await tx.resourcePresentation.deleteMany({ where: { resourceId: id } });
+      await tx.resource.delete({ where: { id } });
+      return { error: null } as const;
+    });
+    if (deletion.error) {
+      return res.status(409).json({ error: deletion.error });
+    }
   } catch (error) {
     // Backstop for a restricting reference this route does not yet know about, so
     // the next one is a refusal that says "something still points at this" rather

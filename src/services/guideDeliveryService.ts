@@ -1,10 +1,13 @@
 import type { DmMessageSource } from "@prisma/client";
 import { env } from "../config/env.js";
+import { publicMediaUrl } from "../lib/supabase.js";
+import { guideCoverDeliverySelector } from "./guideCoverDeliveryRollout.js";
+import { recordGuideAccessMetric } from "./guideAccessMetrics.js";
 import { logger } from "../lib/logger.js";
 import { prisma } from "../lib/prisma.js";
 import type { MetaSendResult } from "../types/meta.js";
 import { sendTrackedMedia, sendTrackedText } from "./dmDeliveryService.js";
-import { describeGraphError, type GraphErrorMetadata } from "./eventLogger.js";
+import { describeGraphError, logEvent, type GraphErrorMetadata } from "./eventLogger.js";
 import { finalizeGuideDelivery } from "./guideDeliveryCompletion.js";
 import {
   classifyDirectMessageSend,
@@ -45,6 +48,14 @@ export type DeliverGuideForTriggerInput = {
   sendWindowExpiresAt: Date;
   followerAtTrigger: boolean | null;
   redeliveryIntro?: string;
+  /**
+   * The cover snapshotted onto the access attempt, passed as the snapshot rather than a
+   * URL so this layer can verify it belongs to `resourceId` before anything is compiled.
+   * Structurally the `GuideAccessCoverSnapshot` the access repository returns.
+   */
+  cover?: { versionId: string; resourceId: string; dmStoragePath: string } | null;
+  /** True when the parent already accepted this cover during the follower gate. */
+  coverAlreadyShown?: boolean;
 };
 
 export type GuideDeliveryResult =
@@ -96,6 +107,24 @@ type GuideDeliveryServiceDependencies = {
     deliveryId: string,
     claimToken: string,
   ): Promise<"completed" | "already_completed" | "not_ready" | "lost_claim">;
+  /** Resolves an immutable storage path to a public URL. No network work. */
+  coverMediaUrl(path: string): string;
+  /**
+   * Whether this delivery may include its cover. Consulted once, before the plan is
+   * compiled. It governs cover inclusion ONLY — never follower authorization, and never
+   * which service owns the guide send.
+   */
+  coverDecision(input: { resourceId: string; triggerId: string }): "include" | "omit";
+  /** Aggregate-only cover counter. Never receives an identifier, URL, or copy. */
+  recordCoverMetric(
+    outcome: "selected" | "omitted_already_shown" | "omitted_not_selected" | "omitted_mismatch",
+  ): Promise<void>;
+  /** Operator-visible record that a snapshotted cover did not match its guide. */
+  recordCoverMismatch(input: {
+    deliveryResourceId: string;
+    coverResourceId: string;
+    coverVersionId: string;
+  }): Promise<void>;
   sleep(ms: number): Promise<void>;
   now(): Date;
   logger: DeliveryLogger;
@@ -432,6 +461,75 @@ export function createGuideDeliveryService(dependencies: GuideDeliveryServiceDep
     return processClaimed(delivery, recipientIgUserId);
   }
 
+  /**
+   * A snapshot resolved on replay comes from the attempt's own stored id, which can name
+   * a different guide than the one being compiled — an owner repointing
+   * `keyword.resourceId` mid-attempt is enough. Prepending that cover would pair one
+   * guide's image with another guide's messages, so it is dropped and recorded instead.
+   * The guide itself still goes out; a mismatched cover is not a reason to withhold it.
+   */
+  function eligibleCover(
+    input: DeliverGuideForTriggerInput,
+  ): { versionId: string; mediaUrl: string } | undefined {
+    const snapshot = input.cover;
+    if (!snapshot) return undefined;
+    // Integrity BEFORE policy. A snapshot paired with a different guide is a fault in how
+    // the attempt was built, and it is equally a fault whether or not this delivery would
+    // have attached the image. Checking the rollout fence first would silence the signal
+    // for the whole pre-rollout period — every deployment that exists today.
+    if (snapshot.resourceId !== input.resourceId) {
+      dependencies.logger.warn(
+        {
+          errorCode: "guide_cover_resource_mismatch",
+          deliveryResourceId: input.resourceId,
+          coverResourceId: snapshot.resourceId,
+        },
+        "Guide cover belongs to a different guide — delivering without it",
+      );
+      // A warn line alone means nobody learns the cover silently stopped being
+      // attached. Recorded as an event so it reaches a surface an operator reads.
+      void dependencies.recordCoverMismatch({
+        deliveryResourceId: input.resourceId,
+        coverResourceId: snapshot.resourceId,
+        coverVersionId: snapshot.versionId,
+      });
+      // Its own outcome, so a pairing bug cannot read as a routine rollout omission.
+      // Counted per plan compilation rather than per delivery: this runs before
+      // `createOrLoadPlan` resolves a concurrent race, and the write is fire-and-forget.
+      void recordCover("omitted_mismatch");
+      return undefined;
+    }
+    // Short-circuit before resolving a URL nobody will use. The planner keeps its own
+    // already-shown guard for callers that reach it directly.
+    if (input.coverAlreadyShown === true) {
+      void recordCover("omitted_already_shown");
+      return undefined;
+    }
+    // The rollout fence. Off or unselected means the guide still goes out, exactly as it
+    // did before covers existed — only the image is withheld.
+    if (
+      dependencies.coverDecision({
+        resourceId: input.resourceId,
+        triggerId: input.triggerId,
+      }) !== "include"
+    ) {
+      void recordCover("omitted_not_selected");
+      return undefined;
+    }
+    void recordCover("selected");
+    return {
+      versionId: snapshot.versionId,
+      mediaUrl: dependencies.coverMediaUrl(snapshot.dmStoragePath),
+    };
+  }
+
+  /** Measurement must never fail a delivery. */
+  function recordCover(
+    outcome: "selected" | "omitted_already_shown" | "omitted_not_selected" | "omitted_mismatch",
+  ): Promise<void> {
+    return dependencies.recordCoverMetric(outcome).catch(() => undefined);
+  }
+
   const deliverGuideForTrigger = async function deliverGuideForTrigger(
     input: DeliverGuideForTriggerInput,
   ): Promise<GuideDeliveryResult> {
@@ -442,10 +540,13 @@ export function createGuideDeliveryService(dependencies: GuideDeliveryServiceDep
 
     if (!delivery) {
       const messages = await dependencies.loadResourceMessages(input.resourceId);
+      const cover = eligibleCover(input);
       const plan = compileGuideDeliveryPlan({
         messages,
         triggerKind: input.triggerKind,
         redeliveryIntro: input.redeliveryIntro,
+        ...(cover ? { cover } : {}),
+        ...(input.coverAlreadyShown === true ? { coverAlreadyShown: true } : {}),
       });
       delivery = await dependencies.repository.createOrLoadPlan({
         conversationId: input.conversationId,
@@ -526,6 +627,12 @@ const defaultService = createGuideDeliveryService({
   sendText: sendTrackedText,
   sendMedia: sendTrackedMedia,
   finalizeGuideDelivery,
+  coverMediaUrl: publicMediaUrl,
+  coverDecision: (decision) => guideCoverDeliverySelector.decide(decision),
+  recordCoverMetric: async (outcome) => {
+    await recordGuideAccessMetric("cover_delivery", outcome);
+  },
+  recordCoverMismatch: (details) => logEvent("guide_cover_resource_mismatch", details),
   sleep,
   now: () => new Date(),
   logger,

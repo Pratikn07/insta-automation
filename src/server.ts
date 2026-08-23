@@ -30,9 +30,11 @@ import { apiRouter } from "./api/router.js";
 import { buildDeploymentHealth } from "./services/deploymentHealth.js";
 import { startUpcomingAutomationScheduler } from "./services/upcomingAutomationScheduler.js";
 import { flags } from "./services/flagService.js";
+import { startGuideCoverOrphanCleanupScheduler } from "./services/guideCoverOrphanCleanupScheduler.js";
 
 const app = express();
 let stopGuideDeliveryScheduler: (() => void) | undefined;
+let stopGuideCoverOrphanCleanupScheduler: (() => void) | undefined;
 
 const allowedOrigins = (env.WEB_ORIGIN ?? "http://localhost:5173")
   .split(",")
@@ -199,16 +201,30 @@ function startBackgroundWorkers(server: Server): void {
       clearInterval: globalThis.clearInterval,
       runTick: runGuideDeliveryTick,
     });
-    bindGuideDeliveryServerShutdown({
-      server,
-      stopOwnedWork: () => {
-        stopGuideDeliveryScheduler?.();
-        stopGuideDeliveryScheduler = undefined;
-      },
-    });
   } else {
     logger.info({ errorCode: "guide_delivery_disabled" }, "Guide delivery worker disabled");
   }
+
+  // Failed publish transactions record the one exact immutable object that may
+  // have been uploaded. This worker deletes only those allowlisted paths; it
+  // never lists or removes a Storage prefix and it starts only inside the global
+  // workers boundary.
+  stopGuideCoverOrphanCleanupScheduler?.();
+  stopGuideCoverOrphanCleanupScheduler = startGuideCoverOrphanCleanupScheduler({
+    intervalMs: env.GUIDE_COVER_ORPHAN_INTERVAL_MS,
+  });
+
+  // One shutdown owner for both new schedulers. Binding even when guide delivery
+  // is off ensures the cleanup interval is cleared before HTTP closes.
+  bindGuideDeliveryServerShutdown({
+    server,
+    stopOwnedWork: () => {
+      stopGuideDeliveryScheduler?.();
+      stopGuideDeliveryScheduler = undefined;
+      stopGuideCoverOrphanCleanupScheduler?.();
+      stopGuideCoverOrphanCleanupScheduler = undefined;
+    },
+  });
 
   startDmRecoveryScheduler({
     enabled: env.DM_RECOVERY_ENABLED,

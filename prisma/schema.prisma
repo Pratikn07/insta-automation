@@ -74,9 +74,192 @@ model Resource {
   keywords            Keyword[]
   guideDeliveries     GuideDelivery[]
   upcomingAutomations UpcomingAutomation[]
+  presentation        ResourcePresentation?
+  coverSuggestions    ResourceCoverSuggestion[]
+  coverVersions       ResourceCoverVersion[]
+  coverOrphans        GuideCoverOrphan[]
+  guideAccessAttempts GuideAccessAttempt[]
 
   @@index([theme, ageMinMonths, ageMaxMonths])
   @@map("resources")
+}
+
+enum PresentationCategoryDesignStatus {
+  ready
+  needs_review
+  inactive
+
+  @@map("presentation_category_design_status")
+}
+
+enum ResourceCoverStatus {
+  draft
+  approved
+  published
+  retired
+
+  @@map("resource_cover_status")
+}
+
+enum ResourceCoverRenderStatus {
+  not_rendered
+  rendering
+  ready
+  failed
+
+  @@map("resource_cover_render_status")
+}
+
+enum ResourceCoverSuggestionConfidence {
+  high
+  medium
+  low
+
+  @@map("resource_cover_suggestion_confidence")
+}
+
+enum GuideCoverOrphanCleanupStatus {
+  pending
+  claimed
+  deleted
+  needs_review
+
+  @@map("guide_cover_orphan_cleanup_status")
+}
+
+model PresentationCategory {
+  id                String                           @id @db.Uuid
+  slug              String
+  name              String
+  collectionLabel   String                           @map("collection_label")
+  defaultKicker     String                           @map("default_kicker")
+  templateKey       String                           @map("template_key")
+  paletteKey        String                           @map("palette_key")
+  illustrationKey   String                           @map("illustration_key")
+  designStatus      PresentationCategoryDesignStatus @default(needs_review) @map("design_status")
+  nextEditionNumber Int                              @default(1) @map("next_edition_number")
+  sortOrder         Int?                             @map("sort_order")
+  createdBy         String                           @map("created_by")
+  updatedBy         String                           @map("updated_by")
+  createdAt         DateTime                         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime                         @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  presentations ResourcePresentation[]
+  suggestions   ResourceCoverSuggestion[]
+  coverVersions ResourceCoverVersion[]
+
+  @@index([designStatus, sortOrder, name])
+  @@map("presentation_category")
+}
+
+model ResourcePresentation {
+  resourceId    String   @id @map("resource_id") @db.Uuid
+  categoryId    String   @map("category_id") @db.Uuid
+  editionNumber Int?     @map("edition_number")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  resource Resource             @relation(fields: [resourceId], references: [id], onDelete: Restrict)
+  category PresentationCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+
+  @@index([categoryId])
+  // The partial unique (category_id, edition_number) index is hand-authored in SQL.
+  @@map("resource_presentation")
+}
+
+model ResourceCoverSuggestion {
+  id                     String                            @id @db.Uuid
+  resourceId             String                            @map("resource_id") @db.Uuid
+  suggestedCategoryId    String                            @map("suggested_category_id") @db.Uuid
+  headline               String
+  supportingLine         String                            @map("supporting_line")
+  closingLine            String                            @map("closing_line")
+  alternativeDescription String                            @map("alternative_description")
+  confidence             ResourceCoverSuggestionConfidence
+  warnings               Json                              @default("[]")
+  provider               String
+  model                  String
+  promptVersion          String                            @map("prompt_version")
+  normalizedSourceHash   String                            @map("normalized_source_hash")
+  createdAt              DateTime                          @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  resource          Resource             @relation(fields: [resourceId], references: [id], onDelete: Restrict)
+  suggestedCategory PresentationCategory @relation(fields: [suggestedCategoryId], references: [id], onDelete: Restrict)
+  coverVersions     ResourceCoverVersion[]
+
+  @@index([resourceId])
+  @@index([suggestedCategoryId])
+  @@unique([resourceId, normalizedSourceHash], map: "resource_cover_suggestion_resource_source_key")
+  @@map("resource_cover_suggestion")
+}
+
+model ResourceCoverVersion {
+  id                     String                    @id @db.Uuid
+  resourceId             String                    @map("resource_id") @db.Uuid
+  revision               Int
+  status                 ResourceCoverStatus       @default(draft)
+  renderStatus           ResourceCoverRenderStatus @default(not_rendered) @map("render_status")
+  categoryId             String                    @map("category_id") @db.Uuid
+  editionNumber          Int?                      @map("edition_number")
+  templateKey            String                    @map("template_key")
+  paletteKey             String                    @map("palette_key")
+  illustrationKey        String                    @map("illustration_key")
+  kicker                 String
+  collectionLabel        String                    @map("collection_label")
+  headline               String
+  supportingLine         String                    @map("supporting_line")
+  closingLine            String                    @map("closing_line")
+  alternativeDescription String                    @map("alternative_description")
+  suggestionId           String?                   @map("suggestion_id") @db.Uuid
+  contentHash            String?                   @map("content_hash")
+  dmStoragePath          String?                   @map("dm_storage_path")
+  genericStoragePath     String?                   @map("generic_storage_path")
+  renderErrorCode        String?                   @map("render_error_code")
+  approvedBy             String?                   @map("approved_by")
+  approvedAt             DateTime?                 @map("approved_at") @db.Timestamptz(3)
+  publishedBy            String?                   @map("published_by")
+  publishedAt            DateTime?                 @map("published_at") @db.Timestamptz(3)
+  createdAt              DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt              DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  resource   Resource                 @relation(fields: [resourceId], references: [id], onDelete: Restrict)
+  category   PresentationCategory     @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  suggestion ResourceCoverSuggestion? @relation(fields: [suggestionId], references: [id], onDelete: SetNull)
+  orphans    GuideCoverOrphan[]
+  guideAccessAttempts GuideAccessAttempt[]
+
+  @@unique([resourceId, revision])
+  @@index([categoryId])
+  @@index([suggestionId])
+  @@index([resourceId, status, revision(sort: Desc)])
+  // The one-published-cover partial unique index is hand-authored in SQL.
+  @@map("resource_cover_version")
+}
+
+model GuideCoverOrphan {
+  id               String                        @id @db.Uuid
+  resourceId       String                        @map("resource_id") @db.Uuid
+  coverVersionId   String                        @map("cover_version_id") @db.Uuid
+  contentHash      String                        @map("content_hash")
+  rendition        String
+  storagePath      String                        @unique @map("storage_path")
+  status           GuideCoverOrphanCleanupStatus @default(pending)
+  attempts         Int                           @default(0)
+  nextAttemptAt    DateTime                      @default(now()) @map("next_attempt_at") @db.Timestamptz(3)
+  claimedAt        DateTime?                     @map("claimed_at") @db.Timestamptz(3)
+  claimExpiresAt   DateTime?                     @map("claim_expires_at") @db.Timestamptz(3)
+  lastErrorCode    String?                       @map("last_error_code")
+  deletedAt        DateTime?                     @map("deleted_at") @db.Timestamptz(3)
+  createdAt        DateTime                      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  resource     Resource             @relation(fields: [resourceId], references: [id], onDelete: Restrict)
+  coverVersion ResourceCoverVersion @relation(fields: [coverVersionId], references: [id], onDelete: Restrict)
+
+  @@index([resourceId])
+  @@index([coverVersionId])
+  // Worker partial indexes are hand-authored in SQL.
+  @@map("guide_cover_orphan")
 }
 
 enum UpcomingAutomationStatus {
@@ -189,6 +372,7 @@ model Conversation {
   journeyTriggers    JourneyTrigger[]
   recoveryCandidates RecoveryCandidate[]
   guideDeliveries    GuideDelivery[]
+  guideAccessAttempts GuideAccessAttempt[]
 
   @@index([igUserId, state])
   @@index([state, createdAt])
@@ -682,6 +866,9 @@ enum GuideDeliveryStatus {
 enum GuideDeliveryUnitOrigin {
   resource_step
   redelivery_intro
+  // Appended, never reordered: the database labels carry a sort order that existing
+  // guide_delivery_unit rows depend on.
+  generated_cover
 
   @@map("guide_delivery_unit_origin")
 }
@@ -711,6 +898,95 @@ enum GuideDeliveryFailureDisposition {
   permanent
 
   @@map("guide_delivery_failure_disposition")
+}
+
+enum GuideAccessAttemptState {
+  awaiting_request
+  checking_follow
+  awaiting_follow
+  delivering
+  delivered
+  needs_review
+  expired
+
+  @@map("guide_access_attempt_state")
+}
+
+enum GuideFollowResult {
+  follower
+  non_follower
+  unknown
+
+  @@map("guide_follow_result")
+}
+
+enum GuideCoverExposure {
+  not_shown
+  accepted
+  uncertain
+  failed
+
+  @@map("guide_cover_exposure")
+}
+
+enum GuideActionTokenAction {
+  request_guide
+  check_follow
+
+  @@map("guide_action_token_action")
+}
+
+enum GuideActionTokenStatus {
+  active
+  consumed
+  expired
+  cancelled
+
+  @@map("guide_action_token_status")
+}
+
+model GuideAccessAttempt {
+  id                       String                  @id @db.Uuid
+  conversationId           String                  @map("conversation_id") @db.Uuid
+  resourceId               String                  @map("resource_id") @db.Uuid
+  coverVersionId           String?                 @map("cover_version_id") @db.Uuid
+  state                    GuideAccessAttemptState @default(awaiting_request)
+  lastFollowResult         GuideFollowResult       @default(unknown) @map("last_follow_result")
+  lastFollowCheckedAt      DateTime?               @map("last_follow_checked_at") @db.Timestamptz(3)
+  followCheckCount         Int                     @default(0) @map("follow_check_count")
+  followResponseCount      Int                     @default(0) @map("follow_response_count")
+  coverExposure            GuideCoverExposure      @default(not_shown) @map("cover_exposure")
+  coverProviderMessageId   String?                 @map("cover_provider_message_id")
+  messagingWindowExpiresAt DateTime                @map("messaging_window_expires_at") @db.Timestamptz(3)
+  createdAt                DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                DateTime                @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  conversation Conversation          @relation(fields: [conversationId], references: [id], onDelete: Restrict)
+  resource     Resource              @relation(fields: [resourceId], references: [id], onDelete: Restrict)
+  coverVersion ResourceCoverVersion? @relation(fields: [coverVersionId], references: [id], onDelete: Restrict)
+  actionTokens GuideActionToken[]
+
+  @@index([conversationId])
+  @@index([resourceId])
+  @@index([coverVersionId])
+  // The one-active-attempt and expiration indexes are partial and hand-authored in SQL.
+  @@map("guide_access_attempt")
+}
+
+model GuideActionToken {
+  id        String                 @id @db.Uuid
+  attemptId String                 @map("attempt_id") @db.Uuid
+  action    GuideActionTokenAction
+  status    GuideActionTokenStatus @default(active)
+  expiresAt DateTime               @map("expires_at") @db.Timestamptz(3)
+  consumedAt DateTime?             @map("consumed_at") @db.Timestamptz(3)
+  createdAt DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  attempt GuideAccessAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+
+  @@index([attemptId, status])
+  // The active-token expiry index is partial and hand-authored in SQL.
+  @@map("guide_action_token")
 }
 
 model GuideDelivery {

@@ -6,20 +6,43 @@ const findMany = vi.fn();
 const findUnique = vi.fn();
 const create = vi.fn();
 const countDeliveries = vi.fn();
+const countAccessAttempts = vi.fn();
 const findUpcoming = vi.fn();
 const findKeywords = vi.fn();
 const deleteConversations = vi.fn();
 const deleteKeywords = vi.fn();
 const deleteResource = vi.fn();
+const lockResource = vi.fn();
+const countRenderingCovers = vi.fn();
+const countPublishedCovers = vi.fn();
+const countStoredCoverHistory = vi.fn();
+const countCoverVersions = vi.fn((args: { where?: Record<string, unknown> }) => {
+  if (args.where?.renderStatus === "rendering") return countRenderingCovers(args);
+  if (args.where?.status === "published") return countPublishedCovers(args);
+  return countStoredCoverHistory(args);
+});
+const countCoverOrphans = vi.fn();
+const deleteCoverOrphans = vi.fn();
+const deleteCoverVersions = vi.fn();
+const deleteCoverSuggestions = vi.fn();
+const deletePresentation = vi.fn();
 const transaction = vi.fn();
 
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
     guideDelivery: { count: countDeliveries },
+    guideAccessAttempt: { count: countAccessAttempts },
     upcomingAutomation: { findMany: findUpcoming },
     keyword: { findMany: findKeywords, deleteMany: deleteKeywords },
     conversation: { deleteMany: deleteConversations },
     resource: { findMany, findUnique, create, delete: deleteResource },
+    resourceCoverVersion: {
+      count: countCoverVersions,
+      deleteMany: deleteCoverVersions,
+    },
+    resourceCoverSuggestion: { deleteMany: deleteCoverSuggestions },
+    resourcePresentation: { deleteMany: deletePresentation },
+    guideCoverOrphan: { count: countCoverOrphans, deleteMany: deleteCoverOrphans },
     $transaction: transaction,
   },
 }));
@@ -79,12 +102,34 @@ beforeEach(() => {
     description: null,
   });
   countDeliveries.mockReset().mockResolvedValue(0);
+  countAccessAttempts.mockReset().mockResolvedValue(0);
   findUpcoming.mockReset().mockResolvedValue([]);
   findKeywords.mockReset().mockResolvedValue([]);
   deleteConversations.mockReset().mockReturnValue({ operation: "delete-conversations" });
   deleteKeywords.mockReset().mockReturnValue({ operation: "delete-keywords" });
   deleteResource.mockReset().mockReturnValue({ operation: "delete-resource" });
-  transaction.mockReset().mockResolvedValue([]);
+  lockResource.mockReset().mockResolvedValue([{ id: RESOURCE_ID }]);
+  countRenderingCovers.mockReset().mockResolvedValue(0);
+  countPublishedCovers.mockReset().mockResolvedValue(0);
+  countStoredCoverHistory.mockReset().mockResolvedValue(0);
+  countCoverVersions.mockClear();
+  countCoverOrphans.mockReset().mockResolvedValue(0);
+  deleteCoverOrphans.mockReset().mockReturnValue({ operation: "delete-cover-orphans" });
+  deleteCoverVersions.mockReset().mockReturnValue({ operation: "delete-cover-versions" });
+  deleteCoverSuggestions.mockReset().mockReturnValue({ operation: "delete-cover-suggestions" });
+  deletePresentation.mockReset().mockReturnValue({ operation: "delete-presentation" });
+  transaction.mockReset().mockImplementation(async (operation) =>
+    operation({
+      $queryRaw: lockResource,
+      conversation: { deleteMany: deleteConversations },
+      keyword: { findMany: findKeywords, deleteMany: deleteKeywords },
+      guideCoverOrphan: { count: countCoverOrphans, deleteMany: deleteCoverOrphans },
+      resourceCoverVersion: { count: countCoverVersions, deleteMany: deleteCoverVersions },
+      resourceCoverSuggestion: { deleteMany: deleteCoverSuggestions },
+      resourcePresentation: { deleteMany: deletePresentation },
+      resource: { delete: deleteResource },
+    }),
+  );
 });
 
 // The browser cannot always know whether a create arrived. It owns the UUID and
@@ -158,6 +203,50 @@ describe("resource create replay", () => {
 });
 
 describe("resource deletion", () => {
+  it("refuses to delete a guide whose published cover is part of its public history", async () => {
+    countPublishedCovers.mockResolvedValue(1);
+
+    const response = await request(makeApp())
+      .delete(`/api/resources/${RESOURCE_ID}`)
+      .expect(409);
+
+    expect(response.body).toEqual({ error: "resource_has_published_cover" });
+    expect(transaction).toHaveBeenCalledOnce();
+  });
+
+  it("refuses deletion while an exact generated object still needs cleanup", async () => {
+    countCoverOrphans.mockResolvedValue(1);
+
+    const response = await request(makeApp())
+      .delete(`/api/resources/${RESOURCE_ID}`)
+      .expect(409);
+
+    expect(response.body).toEqual({ error: "resource_has_cover_cleanup_pending" });
+    expect(transaction).toHaveBeenCalledOnce();
+  });
+
+  it("preserves retired published-cover history and its immutable object", async () => {
+    countStoredCoverHistory.mockResolvedValue(1);
+
+    const response = await request(makeApp())
+      .delete(`/api/resources/${RESOURCE_ID}`)
+      .expect(409);
+
+    expect(response.body).toEqual({ error: "resource_has_cover_history" });
+    expect(transaction).toHaveBeenCalledOnce();
+  });
+
+  it("refuses deletion while a cover has a durable pre-upload intent", async () => {
+    countRenderingCovers.mockResolvedValue(1);
+
+    const response = await request(makeApp())
+      .delete(`/api/resources/${RESOURCE_ID}`)
+      .expect(409);
+
+    expect(response.body).toEqual({ error: "resource_cover_publish_in_progress" });
+    expect(deleteResource).not.toHaveBeenCalled();
+  });
+
   it("rejects deletion before its transaction when immutable delivery history exists", async () => {
     countDeliveries.mockResolvedValue(1);
 
@@ -166,6 +255,18 @@ describe("resource deletion", () => {
     expect(response.body).toEqual({ error: "resource_has_delivery_history" });
     expect(countDeliveries).toHaveBeenCalledWith({ where: { resourceId: RESOURCE_ID } });
     expect(findKeywords).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it("names guide access history instead of letting the constraint answer generically", async () => {
+    countAccessAttempts.mockResolvedValue(2);
+
+    const response = await request(makeApp()).delete(`/api/resources/${RESOURCE_ID}`).expect(409);
+
+    // `guide_access_attempt` restricts its conversation, so the delete was already refused —
+    // but by the generic foreign-key backstop, which tells an operator only that "something
+    // still points at this". Naming it is the difference between a dead end and an answer.
+    expect(response.body).toEqual({ error: "resource_has_guide_access_history" });
     expect(transaction).not.toHaveBeenCalled();
   });
 
@@ -220,7 +321,21 @@ describe("resource deletion", () => {
     await request(makeApp()).delete(`/api/resources/${RESOURCE_ID}`).expect(204);
 
     expect(transaction).toHaveBeenCalledOnce();
+    expect(deleteCoverVersions).toHaveBeenCalledWith({ where: { resourceId: RESOURCE_ID } });
+    expect(deleteCoverOrphans).toHaveBeenCalledWith({
+      where: { resourceId: RESOURCE_ID, status: "deleted" },
+    });
+    expect(deleteCoverSuggestions).toHaveBeenCalledWith({ where: { resourceId: RESOURCE_ID } });
+    expect(deletePresentation).toHaveBeenCalledWith({ where: { resourceId: RESOURCE_ID } });
     expect(deleteResource).toHaveBeenCalledWith({ where: { id: RESOURCE_ID } });
+  });
+
+  it("treats deletion of an already-absent guide as an idempotent success", async () => {
+    lockResource.mockResolvedValue([]);
+
+    await request(makeApp()).delete(`/api/resources/${RESOURCE_ID}`).expect(204);
+
+    expect(deleteResource).not.toHaveBeenCalled();
   });
 
   // A restricting reference this route does not yet know about must still not reach

@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "prisma generate && tsc",
+    "build": "prisma generate && tsc && node scripts/copy-guide-cover-assets.mjs",
     "start": "node dist/src/migrate.js && node dist/src/server.js",
     "migrate:deploy": "prisma migrate deploy",
     "migrate:status": "prisma migrate status",
@@ -17,6 +17,8 @@
     "seed": "tsx scripts/seed-keywords.ts",
     "standardize:public-replies": "tsx scripts/standardize-public-replies.ts",
     "audit:guide-message-lengths": "tsx scripts/audit-guide-message-lengths.ts",
+    "verify:meta-guide-gate": "tsx scripts/meta-guide-gate-capability-spike.ts",
+    "render:guide-cover-snapshots": "tsx scripts/render-approved-guide-cover-snapshots.ts",
     "check:guide-delivery-bypasses": "node scripts/check-guide-delivery-bypasses.mjs",
     "funnel": "tsx scripts/funnel-report.ts",
     "recovery:select-expanded": "tsx scripts/select-expanded-historical-recovery.ts",
@@ -25,11 +27,13 @@
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
+    "@resvg/resvg-js": "2.6.2",
     "@supabase/supabase-js": "^2.46.1",
     "axios": "^1.7.9",
     "cors": "^2.8.6",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "fontkit": "2.0.4",
     "pino": "^9.5.0",
     "pino-pretty": "^13.0.0",
     "zod": "^3.24.1"
@@ -37,6 +41,7 @@
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.0",
+    "@types/fontkit": "2.0.9",
     "@types/node": "^22.10.2",
     "@types/supertest": "7.2.1",
     "pg": "^8.21.0",

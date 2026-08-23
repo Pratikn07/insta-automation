@@ -3,7 +3,7 @@ import { defineConfig } from "vitest/config";
 // Backend tests only — web/ has its own vitest with the "@" alias config.
 export default defineConfig({
   test: {
-    include: ["src/**/*.test.ts"],
+    include: ["src/**/*.test.ts", "shared/**/*.test.ts"],
     // Contract tests share one disposable Postgres database. Most fixtures use unique
     // prefixes, but production reconcilers intentionally scan all running campaigns
     // and expired leases. Running database files in parallel therefore lets one test

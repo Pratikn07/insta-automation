@@ -11,6 +11,7 @@ import {
 } from "../services/funnels/runFunnel.js";
 import { DROP_OFF_BUCKETS, type DropOffBucket } from "../services/funnels/dropOff.js";
 import { createReadThroughCache } from "../lib/readThroughCache.js";
+import { runGuideAccessMetrics } from "../services/guideAccessMetrics.js";
 import { asyncRouter } from "./asyncRouter.js";
 
 /**
@@ -118,6 +119,25 @@ funnelsRouter.get("/", (_req, res) => {
       headline: def.headline,
     })),
   });
+});
+
+// GET /api/funnels/guide-access-metrics — aggregate-only strict-gate operations.
+// This exact route stays before /:key so it cannot be mistaken for a registry
+// funnel. It intentionally has no drop-off endpoint or parent identifiers.
+funnelsRouter.get("/guide-access-metrics", async (req, res) => {
+  const parsed = windowQuery.safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: "bad_window", detail: "from/to must be YYYY-MM-DD" });
+    return;
+  }
+
+  const window = resolveWindow(parsed.data);
+  if (isWindowError(window)) {
+    res.status(400).json(window);
+    return;
+  }
+
+  res.json(await runGuideAccessMetrics(prisma, window));
 });
 
 // GET /api/funnels/:key?from=&to= — one funnel over a cohort window.

@@ -21,6 +21,31 @@ function envFlagKeys(): string[] {
 }
 
 describe("flag registry coverage", () => {
+  it.each([
+    "GUIDE_FOLLOW_GATE_V2_ENABLED",
+    "GUIDE_RICH_GATE_ENABLED",
+    "GUIDE_COVER_DELIVERY_ENABLED",
+  ])(
+    "registers %s as an operator-stoppable outbound flag that the page cannot enable",
+    (key) => {
+      expect(flagDefinition(key)).toMatchObject({
+        group: "outbound",
+        kind: "boolean",
+        pageMayEnable: false,
+        pageMayStop: true,
+      });
+    },
+  );
+
+  it("registers guide cover authoring as a reversible assistive feature", () => {
+    expect(flagDefinition("GUIDE_COVER_AUTHORING_ENABLED")).toMatchObject({
+      group: "assistive",
+      kind: "boolean",
+      pageMayEnable: true,
+      pageMayStop: true,
+    });
+  });
+
   it("has a definition for every flag in env.ts", () => {
     const missing = envFlagKeys().filter((key) => !flagDefinition(key));
     expect(missing).toEqual([]);
@@ -53,5 +78,21 @@ describe("flag registry coverage", () => {
     for (const d of FLAG_REGISTRY) {
       if (d.group === "infrastructure") expect(d.pageMayStop, d.key).toBe(false);
     }
+  });
+});
+
+// Parent-delivery Task 6, review round 1. `pageMayStop` is a safety claim an operator acts
+// on under pressure. `resolvePercent` ignores any stored value when `pageMayEnable` is
+// false, so a percent entry that pairs the two is advertising a stop the console cannot
+// perform. Asserted across the whole registry rather than per key, so a new entry inherits
+// the check instead of needing to remember it.
+describe("percent flags cannot advertise a stop the console cannot perform", () => {
+  it("pairs pageMayStop with pageMayEnable for every percent flag", () => {
+    const lying = FLAG_REGISTRY
+      .filter((definition) => definition.kind === "percent")
+      .filter((definition) => definition.pageMayStop && !definition.pageMayEnable)
+      .map((definition) => definition.key);
+
+    expect(lying).toEqual([]);
   });
 });

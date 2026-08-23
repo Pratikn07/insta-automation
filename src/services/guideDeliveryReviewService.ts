@@ -422,6 +422,41 @@ export function createGuideDeliveryReviewService(dependencies: ReviewDependencie
             updatedAt: input.now,
           },
         });
+        // Release the guide-access attempt in the SAME transaction as the cancel.
+        //
+        // `delivering` is an ACTIVE attempt state, so a cancelled delivery that left the
+        // attempt untouched would keep `createOrLoadAttempt` loading it and silently block
+        // the parent's next request for the rest of the messaging window.
+        //
+        // It has to be `expired`, not `needs_review`. `needs_review` is ALSO an active
+        // state, and the only escape from it is `isRetryableReview`, which requires
+        // `lastFollowResult: "unknown"` — a value the schema forbids on any attempt that
+        // ever reached `delivering` (`guide_access_attempt_state_follow_result_check`
+        // pins that pairing to `follower`). So `needs_review` here would leave the parent
+        // blocked exactly as doing nothing would, with no surface to observe it: nothing
+        // in the API or the metrics reads `guideAccessAttempt`.
+        //
+        // Releasing does not weaken the gate. A parent who asks again opens a fresh
+        // attempt that must earn its own live `meta_live` follow confirmation; cancelling
+        // authorizes nothing, it just stops pretending a finished attempt is in flight.
+        //
+        // Fenced on the window as well as the state, because `delivering` alone does not
+        // say WHICH attempt. A stale delivery sitting in the review backlog can outlive
+        // its own attempt: the window lapses, the parent messages again, the old attempt
+        // is force-expired and a new one opens and reaches `delivering` under a live
+        // delivery. Cancelling the stale one would then expire the LIVE attempt, leaving
+        // the conversation with nothing active — so the parent's next message opens a
+        // third attempt and sends a third guide while the second is still in flight.
+        // A delivery copies its attempt's `messagingWindowExpiresAt` verbatim into
+        // `sendWindowExpiresAt`, so this is an exact identity handle. No new token.
+        await tx.guideAccessAttempt.updateMany({
+          where: {
+            conversationId: delivery.conversationId,
+            state: "delivering",
+            messagingWindowExpiresAt: delivery.sendWindowExpiresAt,
+          },
+          data: { state: "expired" },
+        });
         await writeOwnerAction(tx, delivery, {
           actor: input.actor,
           action: "cancel_delivery",

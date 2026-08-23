@@ -12,6 +12,8 @@ const sendTrackedText = vi.fn();
 const logEvent = vi.fn();
 const logger = { error: vi.fn(), info: vi.fn(), warn: vi.fn(), debug: vi.fn() };
 const flags = { experiment: false };
+const gateOwner = vi.fn();
+const recordGuideAccessMetric = vi.fn();
 
 const scheduleAcceptedGateRecovery = vi.fn();
 const scheduleSettingsBlockedRecovery = vi.fn();
@@ -52,6 +54,12 @@ vi.mock("../config/env.js", () => ({
       },
     },
   ),
+}));
+vi.mock("./guideFollowGateV2Rollout.js", () => ({
+  guideFollowGateV2Selector: { owner: gateOwner },
+}));
+vi.mock("./guideAccessMetrics.js", () => ({
+  recordGuideAccessMetric,
 }));
 vi.mock("./dmRecoveryService.js", () => ({
   scheduleAcceptedGateRecovery,
@@ -118,7 +126,7 @@ const convoObj = {
   id: "conversation-1",
   state: "awaiting_gate",
   keywordId: "keyword-1",
-  keyword: { id: "keyword-1", keyword: "SLEEP" },
+  keyword: { id: "keyword-1", keyword: "SLEEP", resourceId: "resource-1" },
 };
 
 beforeEach(() => {
@@ -133,6 +141,8 @@ beforeEach(() => {
     scheduleSettingsBlockedRecovery,
     scheduleTrackingUnavailableRecovery,
     resolveActiveSettingsBlockedVerification,
+    gateOwner,
+    recordGuideAccessMetric,
     ...Object.values(logger),
   ]) {
     fn.mockReset();
@@ -146,6 +156,8 @@ beforeEach(() => {
   gateQueue.update.mockResolvedValue(row);
   conversation.findMany.mockResolvedValue([convoObj]);
   conversation.findUnique.mockResolvedValue(convoObj);
+  gateOwner.mockReturnValue("v1");
+  recordGuideAccessMetric.mockResolvedValue("recorded");
   logEvent.mockResolvedValue(undefined);
   scheduleAcceptedGateRecovery.mockResolvedValue({ id: "rec-1", status: "waiting" });
   scheduleSettingsBlockedRecovery.mockResolvedValue({ id: "rec-2", status: "waiting" });
@@ -536,5 +548,112 @@ describe("canonical intent completion", () => {
     await runGateQueueTick();
 
     expect(sendTrackedPrivateReply).toHaveBeenCalled();
+  });
+});
+
+// Task 9 fix round 1. Queueing a failed strict opening made this worker reachable
+// from V2 for the first time. A successful retry then called
+// `scheduleAcceptedGateRecovery`, whose reminder renders V1 public-comment copy — so
+// a V2 parent would get correct opening copy followed by a V1 nudge. The retry also
+// logged `dm_sent {kind:"gate"}` with no owner tag, inflating the V1 baseline with
+// V2 volume while recording nothing against V2's own opening metric.
+describe("strict-gate ownership of a queued retry", () => {
+  it("sends no V1 recovery reminder after a successful strict retry", async () => {
+    gateOwner.mockReturnValue("v2");
+    sendTrackedPrivateReply.mockResolvedValue({
+      dmMessageId: "dm-1",
+      instagramMessageId: "mid-1",
+    });
+
+    await runGateQueueTick();
+
+    expect(sendTrackedPrivateReply).toHaveBeenCalledTimes(1);
+    expect(scheduleAcceptedGateRecovery).not.toHaveBeenCalled();
+  });
+
+  it("still sends the V1 reminder for a V1-owned retry", async () => {
+    sendTrackedPrivateReply.mockResolvedValue({
+      dmMessageId: "dm-1",
+      instagramMessageId: "mid-1",
+    });
+
+    await runGateQueueTick();
+
+    expect(scheduleAcceptedGateRecovery).toHaveBeenCalledTimes(1);
+  });
+
+  it("tags the retry event with its owner so the V1 baseline stays separable", async () => {
+    gateOwner.mockReturnValue("v2");
+    sendTrackedPrivateReply.mockResolvedValue({
+      dmMessageId: "dm-1",
+      instagramMessageId: "mid-1",
+    });
+
+    await runGateQueueTick();
+
+    expect(logEvent).toHaveBeenCalledWith(
+      "dm_sent",
+      expect.objectContaining({ kind: "gate", source: "retry", gateOwner: "v2" }),
+    );
+  });
+
+  it("counts a successful strict retry against the V2 opening metric", async () => {
+    gateOwner.mockReturnValue("v2");
+    sendTrackedPrivateReply.mockResolvedValue({
+      dmMessageId: "dm-1",
+      instagramMessageId: "mid-1",
+    });
+
+    await runGateQueueTick();
+
+    expect(recordGuideAccessMetric).toHaveBeenCalledWith("opening", "accepted");
+  });
+
+  it("records no V2 metric for a V1-owned retry", async () => {
+    sendTrackedPrivateReply.mockResolvedValue({
+      dmMessageId: "dm-1",
+      instagramMessageId: "mid-1",
+    });
+
+    await runGateQueueTick();
+
+    expect(recordGuideAccessMetric).not.toHaveBeenCalled();
+  });
+});
+
+// Fix round 2 for Task 9. The V2 branch used `continue`, which jumped past the shared
+// tail of the send loop — `sent++` and the 4-second PER_SEND_GAP_MS spacing. A tick
+// holding several V2 rows would have fired private replies back to back in a worker
+// that otherwise aborts the whole tick on a rate limit.
+describe("strict retries keep the shared send tail", () => {
+  it("counts a V2 retry in the tick total like any other send", async () => {
+    gateOwner.mockReturnValue("v2");
+    sendTrackedPrivateReply.mockResolvedValue({
+      dmMessageId: "dm-1",
+      instagramMessageId: "mid-1",
+    });
+
+    await runGateQueueTick();
+
+    // `sent` drives the tick summary and the rate-limit backoff arithmetic, so a V2
+    // row must increment it exactly as a V1 row does.
+    expect(logger.info).toHaveBeenCalledWith(
+      { sent: 1 },
+      "Gate retry worker delivered queued gates",
+    );
+  });
+
+  it("counts a V1 retry the same way", async () => {
+    sendTrackedPrivateReply.mockResolvedValue({
+      dmMessageId: "dm-1",
+      instagramMessageId: "mid-1",
+    });
+
+    await runGateQueueTick();
+
+    expect(logger.info).toHaveBeenCalledWith(
+      { sent: 1 },
+      "Gate retry worker delivered queued gates",
+    );
   });
 });

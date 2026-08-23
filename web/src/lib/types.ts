@@ -729,12 +729,22 @@ export type GuideDeliveryReviewUnitStatus =
   | "uncertain"
   | "cancelled";
 
+export type GuideDeliveryReviewUnitOrigin =
+  | "resource_step"
+  | "redelivery_intro"
+  | "generated_cover";
+
 export interface GuideDeliveryReviewUnit {
   id: string;
   /** Zero-based on the wire; rendered one-based so the owner counts messages. */
   position: number;
   kind: GuideDeliveryReviewUnitKind;
   status: GuideDeliveryReviewUnitStatus;
+  /**
+   * Which part of the guide this unit is. Lets the review surface label a generated
+   * cover distinctly without ever receiving its URL or content.
+   */
+  origin: GuideDeliveryReviewUnitOrigin;
 }
 
 export interface GuideDeliveryReview {
@@ -1189,6 +1199,52 @@ export interface GuardedRate {
   denominator: number;
   pct: number | null;
   belowMinSample: boolean;
+}
+
+/**
+ * Cover shares from `/funnels/guide-access-metrics`.
+ *
+ * Deliberately narrower than the server's `GuideAccessMetricsResult`: the page reads the
+ * shares and nothing else. Every percentage is computed server-side, so this page and
+ * `npm run funnel` cannot disagree about the arithmetic — only about the rendering.
+ *
+ * `included`, `duplicateSuppressed` and `mispaired` are shares of every delivery that had
+ * a cover to consider. `accepted`, `failed` and `uncertain` are shares of the covers that
+ * actually entered a plan, which is a strictly smaller pool.
+ */
+export interface GuideCoverRates {
+  /**
+   * The cover the follow gate sends directly to a non-follower. Denominated by the
+   * exposures the gate actually attempted, so these three are mutually exclusive.
+   */
+  gate: {
+    accepted: GuardedRate;
+    failed: GuardedRate;
+    uncertain: GuardedRate;
+  };
+  /**
+   * The cover prepended as the first unit of a ledger delivery. Denominated by every
+   * delivery that had a cover to consider. Kept apart from `gate` because the two are
+   * different populations — one is a send result, the other a plan-time decision, and a
+   * ratio between them is not a percentage of anything.
+   */
+  delivery: {
+    included: GuardedRate;
+    duplicateSuppressed: GuardedRate;
+    mispaired: GuardedRate;
+  };
+}
+
+export interface GuideAccessMetricsResult {
+  key: "guide-access-v2";
+  window: { from: string; to: string };
+  /**
+   * Optional on purpose. The web bundle auto-deploys on merge while the API is a manual
+   * step, so a 200 response from an older API without this key is the EXPECTED ordering,
+   * not an edge case. Typing it as always-present made the panel sit in a permanent
+   * skeleton: the query had succeeded, so nothing retried and nothing said so.
+   */
+  coverRates?: GuideCoverRates;
 }
 
 export interface FunnelStageCount {

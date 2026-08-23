@@ -58,4 +58,14 @@ describe("flag call sites", () => {
 
     expect(offenders).toEqual([]);
   });
+
+  it.each(["GUIDE_FOLLOW_GATE_V2_ENABLED", "GUIDE_RICH_GATE_ENABLED"])(
+    "keeps %s eligible for per-action service reads",
+    (key) => {
+      expect(ENV_ONLY.has(key)).toBe(false);
+      expect(FLAG_REGISTRY.find((definition) => definition.key === key)).toMatchObject({
+        pageMayStop: true,
+      });
+    },
+  );
 });

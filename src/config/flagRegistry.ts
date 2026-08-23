@@ -80,12 +80,71 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
     group: "outbound",
     kind: "boolean",
     doesWhat: "Sends the guide itself, step by step, once someone has followed and replied.",
-    affectsWho: "Everyone who completes the unlock steps.",
+    affectsWho:
+      "Everyone who completes the unlock steps through the original path. Parents on the strict-access path are NOT governed by this switch.",
     ifOff:
-      "New guides stop being sent through this path, and anything already queued stops on the next check.",
+      "The original path returns to the previous sender and the retry worker stops on its next check. Strict-access sends are unaffected — use Strict guide access to stop those.",
     pageMayEnable: false,
     pageMayStop: true,
     experimentKey: "guide-delivery-rollout",
+  },
+  {
+    key: "GUIDE_FOLLOW_GATE_V2_ENABLED",
+    name: "Strict guide access",
+    group: "outbound",
+    kind: "boolean",
+    doesWhat:
+      "Uses a fresh Instagram follow check before a new guide or repeat guide can be sent.",
+    affectsWho:
+      "Only new actions from the controlled accounts or guides selected for the pilot.",
+    ifOff:
+      "New actions stay on the existing guide-request path. In-progress evidence remains available.",
+    pageMayEnable: false,
+    pageMayStop: true,
+  },
+  {
+    key: "GUIDE_RICH_GATE_ENABLED",
+    name: "Rich guide actions",
+    group: "outbound",
+    kind: "boolean",
+    doesWhat:
+      "Uses the verified Instagram action control on the first private reply that offers a guide.",
+    affectsWho:
+      "Parents already selected for the controlled strict-access path on supported Instagram clients. The follow gate and the follow-lag nudge are always plain text and are not affected.",
+    ifOff:
+      "Guide access uses the reviewed text fallback and never assumes a rich control is supported.",
+    pageMayEnable: false,
+    pageMayStop: true,
+  },
+  {
+    key: "GUIDE_COVER_DELIVERY_ENABLED",
+    name: "Guide cover image",
+    group: "outbound",
+    kind: "boolean",
+    doesWhat:
+      "Sends the published cover image to a parent: as the first part of a delivered guide, AND on its own when someone who is not following yet is asked to follow.",
+    affectsWho:
+      "Only guides explicitly selected for the cover pilot, or a share of new requests once a percentage is set. Both cover moments are governed together — there is no way to enable one without the other.",
+    ifOff:
+      "No cover image reaches anyone. Guides are sent exactly as before and the follow request is text only. Follower checks are unaffected either way.",
+    pageMayEnable: false,
+    pageMayStop: true,
+  },
+  {
+    key: "GUIDE_COVER_DELIVERY_ROLLOUT_PERCENT",
+    name: "Guide cover rollout share",
+    group: "outbound",
+    kind: "percent",
+    doesWhat:
+      "Share of new guide requests whose delivery includes the cover image.",
+    affectsWho: "New requests only. A journey already under way keeps its original decision.",
+    ifOff: "Zero means only explicitly allowlisted guides include a cover.",
+    // Display-only, like the other two percentages the console may not set. A stored value
+    // for a percentage `pageMayEnable` forbids is discarded outright by `resolvePercent`,
+    // so claiming `pageMayStop` here would offer an operator a stop that does nothing. The
+    // real stop for this feature is `GUIDE_COVER_DELIVERY_ENABLED`, which the page can set.
+    pageMayEnable: false,
+    pageMayStop: false,
   },
   {
     key: "GUIDE_DELIVERY_ROLLOUT_PERCENT",
@@ -264,6 +323,20 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
     doesWhat: "Lets you ask questions about your own numbers and get an answer in words.",
     affectsWho: "Only you. It reads your own figures and sends nothing to anyone.",
     ifOff: "The Assistant page stops answering. Every other number still works.",
+    pageMayEnable: true,
+    pageMayStop: true,
+  },
+  {
+    key: "GUIDE_COVER_AUTHORING_ENABLED",
+    name: "Guide cover studio",
+    group: "assistive",
+    kind: "boolean",
+    doesWhat:
+      "Opens the private creator tools used to draft, approve, and publish branded guide covers.",
+    affectsWho:
+      "Only signed-in creators using the console. It does not message parents or alter guide delivery.",
+    ifOff:
+      "New cover changes are refused. Covers that were already published remain available and unchanged.",
     pageMayEnable: true,
     pageMayStop: true,
   },
