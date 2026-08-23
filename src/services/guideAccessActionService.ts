@@ -12,7 +12,7 @@ import { sendTrackedText } from "./dmDeliveryService.js";
 import { describeGraphError } from "./eventLogger.js";
 import { resolveFollowStatusFresh, type FreshFollowResult } from "./freshFollowVerifier.js";
 import { classifyDirectMessageSend } from "./graphErrorClassifier.js";
-import { guideAccessCopy } from "./guideAccessCopy.js";
+import { guideAccessCopy, guideAccessOpeningText } from "./guideAccessCopy.js";
 import {
   guideAccessRepository,
   type GuideAccessRepository,
@@ -41,6 +41,26 @@ export type GuideAccessActionOutcome =
   | "guide_opening_sent"
   | "guide_opening_already_sent"
   | "guide_opening_failed";
+
+export type CommentGuideRequestFailure = {
+  /** The provider error, for the caller's existing failure classifier. */
+  error: unknown;
+  /**
+   * The copy a queued retry must re-send. Always the TEXT variant: a queued retry
+   * carries no control, whatever mode the original attempt used.
+   */
+  retryText: string;
+};
+
+export type CommentGuideRequestResult = {
+  outcome: GuideAccessActionOutcome;
+  /**
+   * Set only when the opening SEND itself failed, so the caller can run the same
+   * recovery ladder V1 uses. Absent when nothing was sent (closed window, replay,
+   * an attempt already past its opening) or when a non-send step failed.
+   */
+  openingSendFailure?: CommentGuideRequestFailure;
+};
 
 /**
  * A comment opens a journey; it never authorizes one. Meta allows a single
@@ -785,8 +805,9 @@ export function createGuideAccessActionService(
     }
   }
 
-  async function startCommentGuideRequest(
+  async function runCommentGuideRequest(
     input: CommentGuideRequest,
+    onSendFailure: (failure: CommentGuideRequestFailure) => void,
   ): Promise<GuideAccessActionOutcome> {
     const now = dependencies.now();
     const windowExpiresAt =
@@ -857,14 +878,22 @@ export function createGuideAccessActionService(
     if (issued.kind === "replayed") return "guide_opening_already_sent";
 
     const capabilities = dependencies.richCapabilities();
-    const disposition = await sendAfterFence(attempt.id, "awaiting_request", () =>
-      dependencies.sendInitialPrivateReply({
-        commentId: input.commentId,
-        guideName,
-        actionToken: issued.token.id,
-        capabilities,
-      }),
-    );
+    const disposition = await sendAfterFence(attempt.id, "awaiting_request", async () => {
+      try {
+        return await dependencies.sendInitialPrivateReply({
+          commentId: input.commentId,
+          guideName,
+          actionToken: issued.token.id,
+          capabilities,
+        });
+      } catch (error) {
+        // Report, then rethrow so `sendAfterFence` classifies exactly as before.
+        // A definite failure and an uncertain one both need recovery evidence; only
+        // the caller's ladder decides what to do with it.
+        onSendFailure({ error, retryText: guideAccessOpeningText(guideName) });
+        throw error;
+      }
+    });
     if (disposition === "sent") return "guide_opening_sent";
     if (disposition === "needs_review") return "access_attempt_needs_review";
 
@@ -875,6 +904,16 @@ export function createGuideAccessActionService(
       "Guide access comment opening failed",
     );
     return "guide_opening_failed";
+  }
+
+  async function startCommentGuideRequest(
+    input: CommentGuideRequest,
+  ): Promise<CommentGuideRequestResult> {
+    let openingSendFailure: CommentGuideRequestFailure | undefined;
+    const outcome = await runCommentGuideRequest(input, (failure) => {
+      openingSendFailure = failure;
+    });
+    return openingSendFailure ? { outcome, openingSendFailure } : { outcome };
   }
 
   return {

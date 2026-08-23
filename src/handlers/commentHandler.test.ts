@@ -163,7 +163,7 @@ beforeEach(() => {
   // Default-off is the production default: every existing expectation below is
   // the V1 path, and only a test that opts in reaches V2.
   gateOwner.mockReturnValue("v1");
-  startCommentGuideRequest.mockResolvedValue("guide_opening_sent");
+  startCommentGuideRequest.mockResolvedValue({ outcome: "guide_opening_sent" });
   recordGuideAccessMetric.mockResolvedValue("recorded");
 
   // The database enforces this in production; here a set stands in for it.
@@ -839,7 +839,7 @@ describe("strict follower gate v2 — comment path", () => {
     { outcome: "access_attempt_needs_review", want: "uncertain" },
   ])("records the $want opening outcome as an aggregate", async ({ outcome, want }) => {
     gateOwner.mockReturnValue("v2");
-    startCommentGuideRequest.mockResolvedValue(outcome);
+    startCommentGuideRequest.mockResolvedValue({ outcome });
 
     await handleComment(COMMENT);
 
@@ -851,7 +851,7 @@ describe("strict follower gate v2 — comment path", () => {
 
   it("records no opening metric when no opening was sent", async () => {
     gateOwner.mockReturnValue("v2");
-    startCommentGuideRequest.mockResolvedValue("guide_opening_already_sent");
+    startCommentGuideRequest.mockResolvedValue({ outcome: "guide_opening_already_sent" });
 
     await handleComment(COMMENT);
 
@@ -881,5 +881,123 @@ describe("strict follower gate v2 — comment path", () => {
 
     expect(startCommentGuideRequest).not.toHaveBeenCalled();
     expect(sendTrackedPrivateReply).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Task 9. A failed strict opening used to be a permanent silent drop. V1 answers the
+// same failure with a five-branch ladder; V2 now runs the identical ladder, with the
+// only difference being the copy a queued retry re-sends.
+describe("strict opening failure recovery", () => {
+  const COMMENT = {
+    id: "comment-recovery-1",
+    text: "sleep",
+    from: { id: "ig-parent", username: "parent" },
+    media: { id: "reel-1", media_product_type: "REELS" },
+  };
+  const RETRY_TEXT =
+    "Got it 💛 I've got the toddler sleep guide you asked for. Want me to send it here? Reply YES and I'll send it over.";
+
+  // HTTP 503: Meta answered and did not accept the send, so it is provably
+  // retryable ("retryable_transport"). A 400 would classify as "permanent" and
+  // correctly queue nothing.
+  function gatewayFailure(): AxiosError {
+    const error = new AxiosError("gateway", "ERR_BAD_RESPONSE");
+    error.config = { headers: {} as never };
+    error.response = {
+      status: 503,
+      statusText: "Service Unavailable",
+      headers: {},
+      config: error.config,
+      data: {},
+    };
+    return error;
+  }
+
+  function failing(outcome: string, error: unknown) {
+    gateOwner.mockReturnValue("v2");
+    startCommentGuideRequest.mockResolvedValue({
+      outcome,
+      openingSendFailure: { error, retryText: RETRY_TEXT },
+    });
+  }
+
+  it("queues the STRICT opening copy, never the V1 gate message", async () => {
+    failing("guide_opening_failed", gatewayFailure());
+
+    await handleComment(COMMENT);
+
+    expect(enqueueGate).toHaveBeenCalledTimes(1);
+    const queued = enqueueGate.mock.calls[0]![0];
+    expect(queued).toMatchObject({
+      conversationId: "conversation-1",
+      igUserId: "ig-parent",
+      commentId: COMMENT.id,
+      gateMessage: RETRY_TEXT,
+    });
+    // The V1 gate copy must never reach a V2 parent.
+    expect(queued.gateMessage).not.toBe("PRIVATE-DM-SENTINEL");
+  });
+
+  it("routes a settings-blocked failure to the settings recovery and queues nothing", async () => {
+    failing("guide_opening_failed", graphFailure(10, 12345));
+
+    await handleComment(COMMENT);
+
+    expect(scheduleSettingsBlockedRecovery).toHaveBeenCalledTimes(1);
+    expect(scheduleSettingsBlockedRecovery.mock.calls[0]![0]).toMatchObject({
+      conversationId: "conversation-1",
+      igUserId: "ig-parent",
+      keywordId: "keyword-1",
+      commentId: COMMENT.id,
+    });
+    expect(enqueueGate).not.toHaveBeenCalled();
+  });
+
+  it("queues nothing for a permanent rejection that cannot succeed on a retry", async () => {
+    failing("guide_opening_failed", graphFailure(100, 2534025));
+
+    await handleComment(COMMENT);
+
+    expect(enqueueGate).not.toHaveBeenCalled();
+    expect(scheduleSettingsBlockedRecovery).not.toHaveBeenCalled();
+    expect(scheduleTrackingUnavailableRecovery).not.toHaveBeenCalled();
+  });
+
+  it("parks an uncertain opening for the owner and also records a recovery row", async () => {
+    failing("access_attempt_needs_review", new AxiosError("timed out", "ETIMEDOUT"));
+
+    await handleComment(COMMENT);
+
+    expect(enqueueGate).toHaveBeenCalledTimes(1);
+    expect(enqueueGate.mock.calls[0]![0]).toMatchObject({
+      gateMessage: RETRY_TEXT,
+      initialErrorCategory: expect.stringMatching(/uncertain/),
+    });
+    expect(scheduleTrackingUnavailableRecovery).toHaveBeenCalledTimes(1);
+  });
+
+  it("records the failure under the same event stage as V1 so the baseline stays comparable", async () => {
+    failing("guide_opening_failed", gatewayFailure());
+
+    await handleComment(COMMENT);
+
+    expect(logEvent).toHaveBeenCalledWith(
+      "dm_failed",
+      expect.objectContaining({
+        conversationId: "conversation-1",
+        stage: "gate_private_reply",
+        commentId: COMMENT.id,
+      }),
+    );
+  });
+
+  it("does nothing extra when the opening succeeded", async () => {
+    gateOwner.mockReturnValue("v2");
+
+    await handleComment(COMMENT);
+
+    expect(enqueueGate).not.toHaveBeenCalled();
+    expect(scheduleSettingsBlockedRecovery).not.toHaveBeenCalled();
+    expect(scheduleTrackingUnavailableRecovery).not.toHaveBeenCalled();
   });
 });

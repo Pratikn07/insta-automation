@@ -71,6 +71,109 @@ async function persistPublicAcknowledgement(input: {
   }
 }
 
+/**
+ * The single recovery ladder for a failed private reply, shared by the V1 gate and
+ * the V2 strict opening. Extracted rather than duplicated so the two paths cannot
+ * drift on what happens to a parent whose opening never arrived — measured at 15.3%
+ * of comment openings over 60 days.
+ *
+ * `gateMessage` is the exact copy a queued retry will re-send, so each caller passes
+ * its own: the V1 gate text, or the strict opening.
+ */
+async function recoverFailedPrivateReply(input: {
+  error: unknown;
+  conversationId: string;
+  senderId: string;
+  keywordId: string;
+  keywordSnapshot: string;
+  commentId: string;
+  parentId: string | null;
+  mediaId: string | null;
+  gateMessage: string;
+}): Promise<void> {
+  const metadata = describeGraphError(input.error);
+  const classification = classifyPrivateGateFailure(
+    metadata,
+    parseGraphSignatures(env.DM_RECOVERY_SETTINGS_BLOCKED_SIGNATURES),
+  );
+  await logEvent("dm_failed", {
+    conversationId: input.conversationId,
+    stage: "gate_private_reply",
+    commentId: input.commentId,
+    parentId: input.parentId,
+    classification,
+    ...metadata,
+  });
+  if (classification === "settings_blocked") {
+    let verification;
+    try {
+      verification = await resolveActiveSettingsBlockedVerification(metadata);
+    } catch (verificationError) {
+      await logEvent("dm_recovery_verification_rejected", {
+        conversationId: input.conversationId,
+        commentId: input.commentId,
+        triggerKind: "settings_blocked",
+        reason: settingsBlockedVerificationRejectionReason(verificationError),
+      });
+      return;
+    }
+    try {
+      await scheduleSettingsBlockedRecovery({
+        conversationId: input.conversationId,
+        igUserId: input.senderId,
+        keywordId: input.keywordId,
+        keywordSnapshot: input.keywordSnapshot,
+        commentId: input.commentId,
+        mediaId: input.mediaId,
+        verification,
+      });
+    } catch {
+      await logEvent("dm_recovery_schedule_failed", {
+        conversationId: input.conversationId,
+        commentId: input.commentId,
+        triggerKind: "settings_blocked",
+      });
+    }
+    return;
+  }
+  // A permanent rejection or an auth failure cannot succeed on a retry;
+  // queueing it only spends one attempt and delays the owner noticing.
+  if (classification === "permanent" || classification === "permission_or_auth") {
+    return;
+  }
+  await enqueueGate({
+    conversationId: input.conversationId,
+    igUserId: input.senderId,
+    commentId: input.commentId,
+    mediaId: input.mediaId,
+    gateMessage: input.gateMessage,
+    lastError: metadata.category,
+    initialErrorCategory: classification,
+  });
+  // An ambiguous outcome may already have delivered the gate DM, so the queue
+  // row is parked for review rather than retried, and a recovery row is
+  // created so the owner can see it.
+  if (classification === "uncertain" || classification === "transport_uncertain") {
+    try {
+      await scheduleTrackingUnavailableRecovery({
+        conversationId: input.conversationId,
+        igUserId: input.senderId,
+        keywordId: input.keywordId,
+        keywordSnapshot: input.keywordSnapshot,
+        commentId: input.commentId,
+        mediaId: input.mediaId,
+        observedAt: new Date(),
+      });
+    } catch {
+      await logEvent("dm_recovery_schedule_failed", {
+        conversationId: input.conversationId,
+        commentId: input.commentId,
+        triggerKind: "tracking_unavailable",
+      });
+    }
+  }
+}
+
 export async function handleComment(comment: CommentValue): Promise<void> {
   const log = logger.child({ commentId: comment.id });
 
@@ -283,7 +386,7 @@ export async function handleComment(comment: CommentValue): Promise<void> {
 
   if (strictGateOwner === "v2") {
     try {
-      const outcome = await startCommentGuideRequest({
+      const result = await startCommentGuideRequest({
         conversationId: convo.id,
         igUserId: senderId,
         resourceId: keyword.resourceId,
@@ -292,9 +395,24 @@ export async function handleComment(comment: CommentValue): Promise<void> {
         // available — the same basis `enqueueGate` uses for `commentAt`.
         observedAt: new Date(),
       });
-      const measured = OPENING_METRIC_OUTCOME.get(outcome);
+      const measured = OPENING_METRIC_OUTCOME.get(result.outcome);
       if (measured) {
         await guideAccessMetrics.record({ stage: "opening", outcome: measured });
+      }
+      // Same ladder V1 runs, so a parent whose opening never arrived is queued,
+      // recovered, or escalated rather than dropped. Only the retry copy differs.
+      if (result.openingSendFailure) {
+        await recoverFailedPrivateReply({
+          error: result.openingSendFailure.error,
+          conversationId: convo.id,
+          senderId,
+          keywordId: keyword.id,
+          keywordSnapshot: keyword.keyword,
+          commentId: comment.id,
+          parentId: comment.parent_id ?? null,
+          mediaId: comment.media?.id ?? null,
+          gateMessage: result.openingSendFailure.retryText,
+        });
       }
     } catch (error) {
       // A strict-path fault must not fail the webhook or fall through to V1:
@@ -330,87 +448,17 @@ export async function handleComment(comment: CommentValue): Promise<void> {
       source: "keyword_automation",
     });
   } catch (error) {
-    const metadata = describeGraphError(error);
-    const classification = classifyPrivateGateFailure(
-      metadata,
-      parseGraphSignatures(env.DM_RECOVERY_SETTINGS_BLOCKED_SIGNATURES),
-    );
-    await logEvent("dm_failed", {
+    await recoverFailedPrivateReply({
+      error,
       conversationId: convo.id,
-      stage: "gate_private_reply",
+      senderId,
+      keywordId: keyword.id,
+      keywordSnapshot: keyword.keyword,
       commentId: comment.id,
       parentId: comment.parent_id ?? null,
-      classification,
-      ...metadata,
-    });
-    if (classification === "settings_blocked") {
-      let verification;
-      try {
-        verification = await resolveActiveSettingsBlockedVerification(metadata);
-      } catch (verificationError) {
-        await logEvent("dm_recovery_verification_rejected", {
-          conversationId: convo.id,
-          commentId: comment.id,
-          triggerKind: "settings_blocked",
-          reason: settingsBlockedVerificationRejectionReason(verificationError),
-        });
-        return;
-      }
-      try {
-        await scheduleSettingsBlockedRecovery({
-          conversationId: convo.id,
-          igUserId: senderId,
-          keywordId: keyword.id,
-          keywordSnapshot: keyword.keyword,
-          commentId: comment.id,
-          mediaId: comment.media?.id ?? null,
-          verification,
-        });
-      } catch {
-        await logEvent("dm_recovery_schedule_failed", {
-          conversationId: convo.id,
-          commentId: comment.id,
-          triggerKind: "settings_blocked",
-        });
-      }
-      return;
-    }
-    // A permanent rejection or an auth failure cannot succeed on a retry;
-    // queueing it only spends one attempt and delays the owner noticing.
-    if (classification === "permanent" || classification === "permission_or_auth") {
-      return;
-    }
-    await enqueueGate({
-      conversationId: convo.id,
-      igUserId: senderId,
-      commentId: comment.id,
       mediaId: comment.media?.id ?? null,
       gateMessage: gate.text,
-      lastError: metadata.category,
-      initialErrorCategory: classification,
     });
-    // An ambiguous outcome may already have delivered the gate DM, so the queue
-    // row is parked for review rather than retried, and a recovery row is
-    // created so the owner can see it.
-    if (classification === "uncertain" || classification === "transport_uncertain") {
-      try {
-        await scheduleTrackingUnavailableRecovery({
-          conversationId: convo.id,
-          igUserId: senderId,
-          keywordId: keyword.id,
-          keywordSnapshot: keyword.keyword,
-          commentId: comment.id,
-          mediaId: comment.media?.id ?? null,
-          observedAt: new Date(),
-        });
-      } catch {
-        await logEvent("dm_recovery_schedule_failed", {
-          conversationId: convo.id,
-          commentId: comment.id,
-          triggerKind: "tracking_unavailable",
-        });
-      }
-    }
     return;
   }
 

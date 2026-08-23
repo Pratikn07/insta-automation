@@ -1,7 +1,11 @@
 import type { GuideAccessAttempt, GuideActionToken } from "@prisma/client";
 import { AxiosError } from "axios";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { guideAccessCopy, guideAccessOpening } from "./guideAccessCopy.js";
+import {
+  guideAccessCopy,
+  guideAccessOpening,
+  guideAccessOpeningText,
+} from "./guideAccessCopy.js";
 import { createGuideAccessActionService } from "./guideAccessActionService.js";
 import type { GuideActionCapabilities } from "../meta/sendGuideAction.js";
 
@@ -1372,6 +1376,13 @@ describe("comment guide request", () => {
     test: ReturnType<typeof createHarness>,
     overrides: { commentId?: string; windowExpiresAt?: Date } = {},
   ) {
+    return commentFull(test, overrides).then((result) => result.outcome);
+  }
+
+  function commentFull(
+    test: ReturnType<typeof createHarness>,
+    overrides: { commentId?: string; windowExpiresAt?: Date } = {},
+  ) {
     return test.service.startCommentGuideRequest({
       conversationId: CONVERSATION_ID,
       igUserId: SENDER_ID,
@@ -1687,5 +1698,117 @@ describe("retry after an inconclusive review", () => {
 
     expect(test.sendFollowerGate).toHaveBeenCalledTimes(1);
     expect(test.sendFollowLag).not.toHaveBeenCalled();
+  });
+});
+
+// Task 9. A failed opening was a permanent silent drop: 15.3% of comment openings
+// fail in production (1,358 of 8,904 over 60 days), and V2 only logged. The caller
+// needs the send error and the exact retry copy so it can run the same recovery
+// ladder V1 uses — queueing the STRICT opening, never V1 gate copy.
+describe("failed opening surfaces recovery evidence", () => {
+  function commentAgain(test: ReturnType<typeof createHarness>) {
+    return test.service.startCommentGuideRequest({
+      conversationId: CONVERSATION_ID,
+      igUserId: SENDER_ID,
+      resourceId: RESOURCE_ID,
+      commentId: COMMENT_ID,
+      observedAt: EVENT_AT,
+    });
+  }
+
+  const definiteRejection = new AxiosError(
+    "private payload",
+    "ERR_BAD_REQUEST",
+    undefined,
+    undefined,
+    {
+      status: 400,
+      statusText: "Bad Request",
+      headers: {},
+      config: { headers: {} } as never,
+      data: { error: { code: 100, fbtrace_id: "safe_trace_recovery" } },
+    },
+  );
+
+  it("returns the send error and the text retry copy on a definite failure", async () => {
+    const test = createHarness({
+      sendInitialPrivateReply: async () => {
+        throw definiteRejection;
+      },
+    });
+
+    const result = await commentAgain(test);
+
+    expect(result.outcome).toBe("guide_opening_failed");
+    expect(result.openingSendFailure?.error).toBe(definiteRejection);
+    // Always the text variant: a queued retry carries no control, whatever mode
+    // the original attempt used.
+    expect(result.openingSendFailure?.retryText).toBe(
+      guideAccessOpeningText("toddler sleep guide"),
+    );
+  });
+
+  it("surfaces the same evidence for an uncertain send, which still needs review", async () => {
+    const ambiguous = new AxiosError("private payload", "ETIMEDOUT");
+    const test = createHarness({
+      sendInitialPrivateReply: async () => {
+        throw ambiguous;
+      },
+    });
+
+    const result = await commentAgain(test);
+
+    expect(result.outcome).toBe("access_attempt_needs_review");
+    expect(result.openingSendFailure?.error).toBe(ambiguous);
+  });
+
+  it("still passes rich capabilities to the sender while retry copy stays text", async () => {
+    const test = createHarness({
+      richCapabilities: RICH,
+      sendInitialPrivateReply: async () => {
+        throw definiteRejection;
+      },
+    });
+
+    const result = await commentAgain(test);
+
+    expect(test.sendInitialPrivateReply).toHaveBeenCalledWith(
+      expect.objectContaining({ capabilities: RICH }),
+    );
+    expect(result.openingSendFailure?.retryText).toBe(
+      guideAccessOpeningText("toddler sleep guide"),
+    );
+  });
+
+  it("reports no send failure when the opening succeeded", async () => {
+    const test = createHarness({});
+
+    const result = await commentAgain(test);
+
+    expect(result.outcome).toBe("guide_opening_sent");
+    expect(result.openingSendFailure).toBeUndefined();
+  });
+
+  it.each([
+    { label: "a closed window", build: () => createHarness({}) },
+    {
+      label: "an attempt already past its opening",
+      build: () => createHarness({ initialAttempt: attempt({ state: "delivering" }) }),
+    },
+  ])("reports no send failure when nothing was sent for $label", async ({ label, build }) => {
+    const test = build();
+    const result =
+      label === "a closed window"
+        ? await test.service.startCommentGuideRequest({
+            conversationId: CONVERSATION_ID,
+            igUserId: SENDER_ID,
+            resourceId: RESOURCE_ID,
+            commentId: COMMENT_ID,
+            observedAt: EVENT_AT,
+            messagingWindowExpiresAt: new Date(NOW.getTime() - 1),
+          })
+        : await commentAgain(test);
+
+    expect(result.openingSendFailure).toBeUndefined();
   });
 });
