@@ -323,6 +323,36 @@ delivery count.
 This path records **no** send outcome: whether the cover unit reached the parent is the
 delivery ledger's business, and the review surface is where an operator sees it.
 
+### The follow-check signals a rollout decision rests on
+
+Task 8 says to hold expansion if the follow-check unavailable rate, the duplicate rate, the
+send uncertainty or the owner-review rate crosses a threshold. Three of those come from
+these stages, and the first one is **split across two of them** — read both or the number
+is wrong:
+
+- `fresh_check.unavailable` — Instagram could not answer when the parent first asked.
+- `recheck.unavailable` — could not answer when they came back saying they had followed.
+- `recheck.not_confirmed` — they say they followed and Instagram disagrees. This is the
+  number a follow gate lives or dies by, and it was unreadable until these two stages were
+  separated: both used to be recorded as `fresh_check`.
+- `recheck.attempted` — the denominator for the three recheck outcomes.
+- `gate.shown` — gates that provably reached a parent. The denominator for any gate
+  conversion. An uncertain gate send is deliberately excluded, so this is a floor, not an
+  estimate.
+- `needs_review.marked` — the owner-review rate.
+
+```sql
+SELECT payload->>'stage' AS stage, payload->>'outcome' AS outcome, count(*)
+FROM event_log
+WHERE kind = 'guide_access_v2_metric'
+  AND payload->>'stage' IN ('fresh_check', 'recheck', 'gate', 'needs_review')
+  AND created_at >= now() - interval '7 days'
+GROUP BY 1, 2 ORDER BY 1, 3 DESC;
+```
+
+The thresholds themselves are **not set**. They are a human decision and must be recorded
+here before Task 8 begins.
+
 Aggregate rows only. Every payload is validated by a `.strict()` schema against a
 closed stage/outcome vocabulary, so a parent identifier, a URL, or a copy string
 cannot reach this surface even by mistake — privacy here is a schema constraint, not
