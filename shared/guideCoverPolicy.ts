@@ -61,6 +61,7 @@ const DRAFT_FIELDS = [
 
 const ENTITY_PATTERN = /&(?:#[0-9]+|#x[0-9a-f]+|[a-z][a-z0-9]+);/iu;
 const MARKUP_PATTERN = /[<>]/u;
+const DATA_URL_PATTERN = /\bdata\s*:/iu;
 
 export function normalizeGuideCoverText(value: string): string {
   return value.normalize("NFC").replace(/\s+/gu, " ").trim();
@@ -103,7 +104,11 @@ function validateTextField(
     };
   }
 
-  if (MARKUP_PATTERN.test(rawValue) || ENTITY_PATTERN.test(rawValue)) {
+  if (
+    MARKUP_PATTERN.test(rawValue) ||
+    ENTITY_PATTERN.test(rawValue) ||
+    DATA_URL_PATTERN.test(rawValue)
+  ) {
     return {
       ok: false,
       error: { code: "cover_invalid_input", field, reason: "markup" },
