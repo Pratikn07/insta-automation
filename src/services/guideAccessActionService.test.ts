@@ -105,6 +105,7 @@ function createHarness(input: {
   loadGuideName?: (resourceId: string) => Promise<string>;
   loadThreadId?: (inboundMessageId: string) => Promise<string | null>;
   repositoryFailures?: Partial<Record<
+    | "consumeToken"
     | "claimDirectInbound"
     | "markAwaitingFollow"
     | "markDelivered"
@@ -114,6 +115,21 @@ function createHarness(input: {
     | "reserveFollowResponse",
     Error[]
   >>;
+  repositoryAmbiguities?: Partial<Record<
+    | "consumeToken"
+    | "claimDirectInbound"
+    | "markAwaitingFollow"
+    | "markDelivered"
+    | "markDelivering"
+    | "markNeedsReview"
+    | "replaceToken"
+    | "reserveFollowResponse",
+    Error[]
+  >>;
+  markNeedsReviewResults?: Array<
+    | { kind: "attempt_not_found" }
+    | { kind: "state_conflict"; actualState: GuideAccessAttempt["state"] }
+  >;
 }) {
   let current = input.initialAttempt ?? attempt();
   let nextToken = 0;
@@ -131,6 +147,12 @@ function createHarness(input: {
     const error = input.repositoryFailures?.[stage]?.shift();
     if (error) throw error;
   }
+  function loseAcknowledgement(
+    stage: keyof NonNullable<typeof input.repositoryAmbiguities>,
+  ): void {
+    const error = input.repositoryAmbiguities?.[stage]?.shift();
+    if (error) throw error;
+  }
 
   const repository = {
     createOrLoadAttempt: vi.fn(async () => {
@@ -139,6 +161,7 @@ function createHarness(input: {
     }),
     consumeToken: vi.fn(async (request: { tokenId: string; action: string }) => {
       order.push(`consume:${request.action}`);
+      fail("consumeToken");
       const forced = input.consumeResults?.shift();
       if (forced) {
         if (forced.kind === "consumed") current = { ...forced.attempt };
@@ -157,6 +180,7 @@ function createHarness(input: {
         lastFollowCheckedAt: null,
         followCheckCount: current.followCheckCount + 1,
       };
+      loseAcknowledgement("consumeToken");
       return { kind: "consumed", attempt: { ...current } } as const;
     }),
     claimDirectInbound: vi.fn(async (request: { inboundMessageId: string }) => {
@@ -177,6 +201,7 @@ function createHarness(input: {
         lastFollowCheckedAt: null,
         followCheckCount: current.followCheckCount + 1,
       };
+      loseAcknowledgement("claimDirectInbound");
       return { kind: "consumed", attempt: { ...current } } as const;
     }),
     beginChecking: vi.fn(async (request: { expectedState: GuideAccessAttempt["state"] }) => {
@@ -205,6 +230,7 @@ function createHarness(input: {
         lastFollowResult: "non_follower",
         lastFollowCheckedAt: NOW,
       };
+      loseAcknowledgement("markAwaitingFollow");
       return { kind: "transitioned", attempt: { ...current } } as const;
     }),
     markDelivering: vi.fn(async () => {
@@ -219,15 +245,19 @@ function createHarness(input: {
         lastFollowResult: "follower",
         lastFollowCheckedAt: NOW,
       };
+      loseAcknowledgement("markDelivering");
       return { kind: "transitioned", attempt: { ...current } } as const;
     }),
     markNeedsReview: vi.fn(async (request: { expectedState: GuideAccessAttempt["state"] }) => {
       order.push("mark:needs_review");
       fail("markNeedsReview");
+      const forced = input.markNeedsReviewResults?.shift();
+      if (forced) return forced;
       if (current.state !== request.expectedState) {
         return { kind: "state_conflict", actualState: current.state } as const;
       }
       current = { ...current, state: "needs_review" };
+      loseAcknowledgement("markNeedsReview");
       return { kind: "transitioned", attempt: { ...current } } as const;
     }),
     issueToken: vi.fn(async () => {
@@ -241,6 +271,7 @@ function createHarness(input: {
       if (activeFollowToken) cancelledTokens.add(activeFollowToken);
       const id = followTokens[nextToken++]!;
       activeFollowToken = id;
+      loseAcknowledgement("replaceToken");
       return { kind: "issued", token: actionToken(id, "check_follow") } as const;
     }),
     reserveFollowResponse: vi.fn(async () => {
@@ -249,6 +280,7 @@ function createHarness(input: {
       if (current.followResponseCount >= 2) return { kind: "limit_reached" } as const;
       const responseNumber = (current.followResponseCount + 1) as 1 | 2;
       current = { ...current, followResponseCount: responseNumber };
+      loseAcknowledgement("reserveFollowResponse");
       return { kind: "reserved", responseNumber } as const;
     }),
     markDelivered: vi.fn(async () => {
@@ -258,6 +290,7 @@ function createHarness(input: {
         return { kind: "state_conflict", actualState: current.state } as const;
       }
       current = { ...current, state: "delivered" };
+      loseAcknowledgement("markDelivered");
       return { kind: "transitioned", attempt: { ...current } } as const;
     }),
     markExpired: vi.fn(),
@@ -1046,5 +1079,217 @@ describe("post-consumption checkpoint failures", () => {
 
     expect(test.startGuideDelivery).toHaveBeenCalledOnce();
     expect(test.attempt().state).toBe("needs_review");
+  });
+});
+
+describe("ambiguous repository acknowledgements", () => {
+  it.each([
+    { name: "request", action: "request" as const, initial: attempt() },
+    {
+      name: "follow recheck",
+      action: "check" as const,
+      initial: attempt({ state: "awaiting_follow", lastFollowResult: "non_follower" }),
+    },
+  ])(
+    "reconciles a committed $name consume to review without authorizing",
+    async ({ action, initial }) => {
+      const test = createHarness({
+        initialAttempt: initial,
+        repositoryAmbiguities: {
+          consumeToken: [new Error("private lost acknowledgement")],
+        },
+      });
+
+      const first =
+        action === "request" ? request(test) : check(test, FOLLOW_TOKEN_1);
+      await expect(first).resolves.toBe("access_attempt_needs_review");
+      await expect(
+        action === "request" ? request(test) : check(test, FOLLOW_TOKEN_1),
+      ).resolves.toBe("action_replayed");
+
+      expect(test.attempt().state).toBe("needs_review");
+      expect(test.resolveFresh).not.toHaveBeenCalled();
+      expect(test.sendFollowerGate).not.toHaveBeenCalled();
+      expect(test.sendFollowLag).not.toHaveBeenCalled();
+      expect(test.startGuideDelivery).not.toHaveBeenCalled();
+      const operatorEvidence = JSON.stringify(test.logger.error.mock.calls);
+      expect(operatorEvidence).not.toContain("private lost acknowledgement");
+      expect(operatorEvidence).not.toContain(
+        action === "request" ? REQUEST_TOKEN_ID : FOLLOW_TOKEN_1,
+      );
+    },
+  );
+
+  it.each([
+    { name: "initial request", initial: attempt() },
+    {
+      name: "follow recheck",
+      initial: attempt({ state: "awaiting_follow", lastFollowResult: "non_follower" }),
+    },
+  ])(
+    "reconciles a committed direct-inbound claim for an $name without external work",
+    async ({ initial }) => {
+      const test = createHarness({
+        initialAttempt: initial,
+        repositoryAmbiguities: {
+          claimDirectInbound: [new Error("private lost acknowledgement")],
+        },
+      });
+      const conversation = {
+        id: CONVERSATION_ID,
+        igUserId: SENDER_ID,
+        resourceId: RESOURCE_ID,
+        guideName: "toddler sleep guide",
+      };
+      const inbound = {
+        id: DIRECT_INBOUND_ID,
+        threadId: THREAD_ID,
+        eventAt: EVENT_AT,
+        messagingWindowExpiresAt: WINDOW_END,
+      };
+
+      await expect(
+        test.service.startDirectDmGuideRequest(conversation, inbound),
+      ).resolves.toBe("access_attempt_needs_review");
+      await expect(
+        test.service.startDirectDmGuideRequest(conversation, inbound),
+      ).resolves.toBe("action_replayed");
+
+      expect(test.attempt().state).toBe("needs_review");
+      expect(test.resolveFresh).not.toHaveBeenCalled();
+      expect(test.sendFollowerGate).not.toHaveBeenCalled();
+      expect(test.sendFollowLag).not.toHaveBeenCalled();
+      expect(test.startGuideDelivery).not.toHaveBeenCalled();
+    },
+  );
+
+  it("reconciles a committed awaiting-follow transition after one gate send", async () => {
+    const test = createHarness({
+      freshResults: [live(false)],
+      repositoryAmbiguities: {
+        markAwaitingFollow: [new Error("private lost acknowledgement")],
+      },
+    });
+
+    await expect(request(test)).resolves.toBe("access_attempt_needs_review");
+    await expect(request(test)).resolves.toBe("action_replayed");
+
+    expect(test.attempt().state).toBe("needs_review");
+    expect(test.sendFollowerGate).toHaveBeenCalledOnce();
+    expect(test.resolveFresh).toHaveBeenCalledOnce();
+    expect(test.startGuideDelivery).not.toHaveBeenCalled();
+  });
+
+  it("reconciles a committed delivering claim without starting durable delivery", async () => {
+    const test = createHarness({
+      freshResults: [live(true)],
+      repositoryAmbiguities: {
+        markDelivering: [new Error("private lost acknowledgement")],
+      },
+    });
+
+    await expect(request(test)).resolves.toBe("access_attempt_needs_review");
+    await expect(request(test)).resolves.toBe("action_replayed");
+
+    expect(test.attempt().state).toBe("needs_review");
+    expect(test.resolveFresh).toHaveBeenCalledOnce();
+    expect(test.startGuideDelivery).not.toHaveBeenCalled();
+  });
+
+  it("safely recognizes delivered when completion commits before acknowledgement loss", async () => {
+    const test = createHarness({
+      freshResults: [live(true)],
+      deliveryResults: ["completed"],
+      repositoryAmbiguities: {
+        markDelivered: [new Error("private lost acknowledgement")],
+      },
+    });
+
+    await expect(request(test)).resolves.toBe("guide_delivery_already_started");
+
+    expect(test.attempt().state).toBe("delivered");
+    expect(test.startGuideDelivery).toHaveBeenCalledOnce();
+    expect(test.repository.markNeedsReview).toHaveBeenCalledWith({
+      attemptId: ATTEMPT_ID,
+      expectedState: "delivering",
+      checkedAt: NOW,
+    });
+  });
+
+  it("contains a committed token replacement acknowledgement loss in review", async () => {
+    const test = createHarness({
+      freshResults: [live(false), live(false)],
+      repositoryAmbiguities: {
+        replaceToken: [new Error("private lost acknowledgement")],
+      },
+    });
+
+    await expect(request(test)).resolves.toBe("access_attempt_needs_review");
+
+    expect(test.attempt().state).toBe("needs_review");
+    expect(test.sendFollowerGate).not.toHaveBeenCalled();
+    expect(test.startGuideDelivery).not.toHaveBeenCalled();
+  });
+
+  it("contains a committed response reservation acknowledgement loss in review", async () => {
+    const test = createHarness({ freshResults: [live(false), live(false)] });
+    await expect(request(test)).resolves.toBe("follow_not_confirmed");
+    test.repository.reserveFollowResponse.mockImplementationOnce(async () => {
+      const current = test.attempt();
+      Object.assign(current, { followResponseCount: current.followResponseCount + 1 });
+      throw new Error("private lost acknowledgement");
+    });
+
+    await expect(check(test, FOLLOW_TOKEN_1)).resolves.toBe(
+      "access_attempt_needs_review",
+    );
+
+    expect(test.attempt().state).toBe("needs_review");
+    expect(test.sendFollowLag).not.toHaveBeenCalled();
+    expect(test.startGuideDelivery).not.toHaveBeenCalled();
+  });
+
+  it("recognizes needs-review when its checkpoint commits before acknowledgement loss", async () => {
+    const test = createHarness({
+      freshResults: [unavailable],
+      repositoryAmbiguities: {
+        markNeedsReview: [new Error("private lost acknowledgement")],
+      },
+    });
+
+    await expect(request(test)).resolves.toBe("follow_check_unavailable");
+
+    expect(test.attempt().state).toBe("needs_review");
+    expect(test.sendText).toHaveBeenCalledOnce();
+    expect(test.startGuideDelivery).not.toHaveBeenCalled();
+  });
+
+  it("emits allowlisted evidence when neither ambiguous state can be checkpointed", async () => {
+    const test = createHarness({
+      freshResults: [live(true)],
+      repositoryAmbiguities: {
+        markDelivering: [new Error("private transition acknowledgement")],
+      },
+      markNeedsReviewResults: [
+        { kind: "state_conflict", actualState: "delivering" },
+        { kind: "state_conflict", actualState: "awaiting_follow" },
+      ],
+    });
+
+    await expect(request(test)).resolves.toBe("access_attempt_needs_review");
+
+    expect(test.startGuideDelivery).not.toHaveBeenCalled();
+    expect(test.logger.error).toHaveBeenCalledWith(
+      {
+        errorCode: "guide_access_review_checkpoint_failed",
+        stage: "delivering_claim_failed",
+        attemptId: ATTEMPT_ID,
+      },
+      "Guide access review checkpoint failed",
+    );
+    const operatorEvidence = JSON.stringify(test.logger.error.mock.calls);
+    expect(operatorEvidence).not.toContain("private transition acknowledgement");
+    expect(operatorEvidence).not.toContain(REQUEST_TOKEN_ID);
+    expect(operatorEvidence).not.toContain(INBOUND_ID);
   });
 });

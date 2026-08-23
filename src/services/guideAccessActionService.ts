@@ -100,6 +100,11 @@ type ReviewCheckpoint = {
   durable: boolean;
 };
 
+type ReviewableAttemptState = Exclude<
+  GuideAccessAttemptState,
+  "delivered" | "expired"
+>;
+
 function validateDependencies(dependencies: GuideAccessActionDependencies): void {
   if (
     !Number.isFinite(dependencies.actionTokenTtlMs) ||
@@ -137,11 +142,24 @@ export function createGuideAccessActionService(
 
   async function checkpointNeedsReview(
     attemptId: string,
-    expectedState: Exclude<GuideAccessAttemptState, "delivered" | "expired">,
+    candidateStates: ReviewableAttemptState | readonly ReviewableAttemptState[],
     errorCode: string,
     checkedAt?: Date,
   ): Promise<ReviewCheckpoint> {
-    for (let checkpointAttempt = 1; checkpointAttempt <= 2; checkpointAttempt += 1) {
+    const candidates = [
+      ...new Set(
+        typeof candidateStates === "string" ? [candidateStates] : candidateStates,
+      ),
+    ];
+    const pending = [...candidates];
+    const attempts = new Map<ReviewableAttemptState, number>();
+
+    while (pending.length > 0) {
+      const expectedState = pending.shift()!;
+      const priorAttempts = attempts.get(expectedState) ?? 0;
+      if (priorAttempts >= 2) continue;
+      const attemptNumber = priorAttempts + 1;
+      attempts.set(expectedState, attemptNumber);
       try {
         const result = await dependencies.repository.markNeedsReview({
           attemptId,
@@ -154,10 +172,30 @@ export function createGuideAccessActionService(
         if (result.kind === "state_conflict" && result.actualState === "needs_review") {
           return { outcome: "access_attempt_needs_review", durable: true };
         }
-        return { outcome: outcomeForTransition(result), durable: false };
+        if (result.kind === "state_conflict") {
+          if (result.actualState === "delivered" || result.actualState === "expired") {
+            return { outcome: outcomeForState(result.actualState), durable: false };
+          }
+          if (
+            candidates.includes(result.actualState) &&
+            (attempts.get(result.actualState) ?? 0) < 2
+          ) {
+            const duplicate = pending.indexOf(result.actualState);
+            if (duplicate >= 0) pending.splice(duplicate, 1);
+            pending.unshift(result.actualState);
+            continue;
+          }
+          break;
+        }
+        if (result.kind === "expired") {
+          return { outcome: "action_expired", durable: false };
+        }
+        break;
       } catch {
-        // The checkpoint is idempotent and fenced. One bounded retry can recover
-        // a transient database error without repeating Graph or Meta work.
+        // Each candidate is tried at most twice. A retry can observe a
+        // needs_review commit whose acknowledgement was lost without repeating
+        // Graph, Meta, or durable delivery work.
+        if (attemptNumber < 2) pending.unshift(expectedState);
       }
     }
     dependencies.logger.error(
@@ -369,7 +407,7 @@ export function createGuideAccessActionService(
     } catch {
       const review = await checkpointNeedsReview(
         context.attempt.id,
-        "checking_follow",
+        ["checking_follow", "awaiting_follow"],
         "awaiting_follow_checkpoint_failed",
         checkedAt,
       );
@@ -396,7 +434,7 @@ export function createGuideAccessActionService(
     } catch {
       const review = await checkpointNeedsReview(
         context.attempt.id,
-        "checking_follow",
+        ["checking_follow", "delivering"],
         "delivering_claim_failed",
         checkedAt,
       );
@@ -500,11 +538,32 @@ export function createGuideAccessActionService(
         now: dependencies.now(),
       });
     } catch {
-      dependencies.logger.error(
-        { errorCode: "guide_action_consumption_failed", tokenId },
-        "Guide action consumption failed",
+      let attemptId: string | null;
+      try {
+        attemptId = await dependencies.findAttemptIdByToken(tokenId);
+      } catch {
+        dependencies.logger.error(
+          { errorCode: "guide_action_consumption_reconciliation_failed" },
+          "Guide action consumption reconciliation failed",
+        );
+        return "access_attempt_needs_review";
+      }
+      if (!attemptId) {
+        dependencies.logger.error(
+          { errorCode: "guide_action_consumption_reconciliation_failed" },
+          "Guide action consumption reconciliation failed",
+        );
+        return "access_attempt_needs_review";
+      }
+      const review = await checkpointNeedsReview(
+        attemptId,
+        [
+          action === "request_guide" ? "awaiting_request" : "awaiting_follow",
+          "checking_follow",
+        ],
+        "action_consumption_failed",
       );
-      return "access_attempt_needs_review";
+      return review.outcome;
     }
 
     if (consumed.kind === "already_consumed") return "action_replayed";
@@ -525,7 +584,7 @@ export function createGuideAccessActionService(
         attemptId = await dependencies.findAttemptIdByToken(tokenId);
       } catch {
         dependencies.logger.error(
-          { errorCode: "guide_action_limit_lookup_failed", tokenId },
+          { errorCode: "guide_action_limit_lookup_failed" },
           "Guide action limit lookup failed",
         );
         return "access_attempt_needs_review";
@@ -553,7 +612,7 @@ export function createGuideAccessActionService(
     } catch {
       const review = await checkpointNeedsReview(
         consumed.attempt.id,
-        "checking_follow",
+        ["checking_follow", "awaiting_follow", "delivering"],
         "post_consumption_orchestration_failed",
       );
       return review.outcome;
@@ -588,7 +647,7 @@ export function createGuideAccessActionService(
       }
     } catch {
       dependencies.logger.error(
-        { errorCode: "direct_inbound_replay_lookup_failed", inboundMessageId: inbound.id },
+        { errorCode: "direct_inbound_replay_lookup_failed" },
         "Direct guide inbound replay lookup failed",
       );
       return "access_attempt_needs_review";
@@ -626,7 +685,7 @@ export function createGuideAccessActionService(
     } catch {
       const review = await checkpointNeedsReview(
         attempt.id,
-        attempt.state,
+        [attempt.state, "checking_follow"],
         "direct_inbound_claim_failed",
       );
       return review.outcome;
@@ -665,7 +724,7 @@ export function createGuideAccessActionService(
     } catch {
       const review = await checkpointNeedsReview(
         attempt.id,
-        "checking_follow",
+        ["checking_follow", "awaiting_follow", "delivering"],
         "post_direct_claim_orchestration_failed",
       );
       return review.outcome;
