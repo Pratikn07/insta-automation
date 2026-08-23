@@ -169,6 +169,17 @@ export type ReserveGuideFollowResponseInput = {
   now: Date;
 };
 
+export type ClaimCoverExposureResult =
+  | { kind: "claimed" }
+  | { kind: "already_claimed"; exposure: "accepted" | "uncertain" | "failed" }
+  | { kind: "attempt_not_found" };
+
+export type SettleCoverExposureInput = {
+  attemptId: string;
+  exposure: "accepted" | "failed";
+  providerMessageId: string | null;
+};
+
 export type ReserveGuideFollowResponseResult =
   | { kind: "reserved"; responseNumber: 1 | 2 }
   | { kind: "expired"; attempt: GuideAccessAttempt }
@@ -195,6 +206,9 @@ export interface GuideAccessRepository {
   reserveFollowResponse(
     input: ReserveGuideFollowResponseInput,
   ): Promise<ReserveGuideFollowResponseResult>;
+  claimCoverExposure(input: { attemptId: string }): Promise<ClaimCoverExposureResult>;
+  settleCoverExposure(input: SettleCoverExposureInput): Promise<void>;
+  findCoverSnapshot(coverVersionId: string): Promise<GuideAccessCoverSnapshot | null>;
 }
 
 /**
@@ -825,6 +839,56 @@ export function createGuideAccessRepository(
           attempt: withAttemptUpdate(locked.attempt, data),
         };
       });
+    },
+
+    /**
+     * Claim the single cover exposure for this attempt, pessimistically.
+     *
+     * The claim moves `not_shown -> uncertain` BEFORE the send, because at that moment we
+     * genuinely do not know whether Meta will accept it. A crash between here and the
+     * settle therefore leaves `uncertain`, which the spec forbids from ever being repeated
+     * automatically — the attempt goes to owner review instead. A duplicate action finds
+     * `already_claimed` and sends nothing.
+     */
+    async claimCoverExposure(input) {
+      const updated = await database.$transaction(async (tx) => {
+        const claimed = await tx.guideAccessAttempt.updateMany({
+          where: { id: input.attemptId, coverExposure: "not_shown" },
+          data: { coverExposure: "uncertain" },
+        });
+        if (claimed.count === 1) return { kind: "claimed" as const };
+        const attempt = await tx.guideAccessAttempt.findUnique({
+          where: { id: input.attemptId },
+          select: { coverExposure: true },
+        });
+        if (!attempt) return { kind: "attempt_not_found" as const };
+        return {
+          kind: "already_claimed" as const,
+          exposure: attempt.coverExposure as "accepted" | "uncertain" | "failed",
+        };
+      });
+      return updated;
+    },
+
+    /**
+     * Record the definite outcome of a claimed exposure. Only `accepted` makes the cover
+     * count as shown for later planning; `failed` means it provably never arrived.
+     * Fenced on `uncertain` so a late duplicate cannot overwrite a settled outcome.
+     */
+    async settleCoverExposure(input) {
+      await database.$transaction(async (tx) => {
+        await tx.guideAccessAttempt.updateMany({
+          where: { id: input.attemptId, coverExposure: "uncertain" },
+          data: {
+            coverExposure: input.exposure,
+            coverProviderMessageId: input.providerMessageId,
+          },
+        });
+      });
+    },
+
+    findCoverSnapshot(coverVersionId) {
+      return database.$transaction((tx) => resolveSnapshotById(tx, coverVersionId));
     },
 
     async markExpired(input) {

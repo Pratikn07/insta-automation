@@ -156,6 +156,9 @@ function createHarness(input: {
     capabilities: GuideActionCapabilities;
   }) => Promise<{ messageId: string | null }>;
   richCapabilities?: GuideActionCapabilities;
+  coverSnapshot?: { versionId: string; resourceId: string; dmStoragePath: string } | null;
+  exposureAlready?: "accepted" | "uncertain" | "failed";
+  sendCover?: () => Promise<{ messageId: string | null }>;
   issueTokenResults?: Array<
     | { kind: "attempt_not_found" }
     | { kind: "attempt_expired" }
@@ -165,6 +168,7 @@ function createHarness(input: {
   let current = input.initialAttempt ?? attempt();
   let nextToken = 0;
   let requestTokenIssued = false;
+  let coverClaimed = false;
   const followTokens = [FOLLOW_TOKEN_1, FOLLOW_TOKEN_2, FOLLOW_TOKEN_3];
   const consumed = new Set<string>();
   const directClaims = new Set<string>();
@@ -352,6 +356,30 @@ function createHarness(input: {
       return { kind: "transitioned", attempt: { ...current } } as const;
     }),
     markExpired: vi.fn(),
+    claimCoverExposure: vi.fn(async () => {
+      order.push("claim:cover_exposure");
+      if (input.exposureAlready) {
+        return { kind: "already_claimed", exposure: input.exposureAlready } as const;
+      }
+      if (coverClaimed) {
+        return { kind: "already_claimed", exposure: "uncertain" } as const;
+      }
+      coverClaimed = true;
+      current = { ...current, coverExposure: "uncertain" };
+      return { kind: "claimed" } as const;
+    }),
+    settleCoverExposure: vi.fn(async (request: {
+      exposure: "accepted" | "failed";
+      providerMessageId: string | null;
+    }) => {
+      order.push(`settle:cover_${request.exposure}`);
+      current = {
+        ...current,
+        coverExposure: request.exposure,
+        coverProviderMessageId: request.providerMessageId,
+      };
+    }),
+    findCoverSnapshot: vi.fn(async () => input.coverSnapshot ?? null),
   };
 
   const resolveFresh = vi.fn(async () => {
@@ -392,6 +420,11 @@ function createHarness(input: {
       : { messageId: "opening-mid" };
   });
   const richCapabilities = vi.fn(() => input.richCapabilities ?? TEXT_ONLY);
+  const sendCover = vi.fn(async () => {
+    order.push("external:cover");
+    return input.sendCover ? input.sendCover() : { messageId: "cover-mid" };
+  });
+  const coverMediaUrl = vi.fn((path: string) => `https://cdn.example.test/${path}`);
   const loadGuideName = vi.fn(
     input.loadGuideName ?? (async () => "toddler sleep guide"),
   );
@@ -410,6 +443,8 @@ function createHarness(input: {
     sendFollowLag,
     sendInitialPrivateReply,
     richCapabilities,
+    sendCover,
+    coverMediaUrl,
     loadGuideName,
     loadThreadId,
     findAttemptIdByToken,
@@ -428,6 +463,8 @@ function createHarness(input: {
     sendFollowLag,
     sendInitialPrivateReply,
     richCapabilities,
+    sendCover,
+    coverMediaUrl,
     loadGuideName,
     loadThreadId,
     cancelledTokens,
@@ -1874,5 +1911,212 @@ describe("opening with no provider message id", () => {
     await expect(commentOnce(test)).rejects.toThrow("invalid_guide_access_copy");
     // Nothing was sent, so no opening escaped with unreviewed copy.
     expect(test.sendInitialPrivateReply).not.toHaveBeenCalled();
+  });
+});
+
+// Parent-delivery Task 4. A confirmed non-follower sees the cover in the gate. The
+// exposure is claimed pessimistically BEFORE the send (not_shown -> uncertain), then
+// settled, so a crash or duplicate action can never re-expose it. Only `accepted` lets a
+// later delivery skip the cover.
+describe("gate cover exposure", () => {
+  const COVER = {
+    versionId: "b0000000-0000-4000-8000-00000000000b",
+    resourceId: RESOURCE_ID,
+    dmStoragePath: "guide-cover/sleep/dm.png",
+  };
+
+  function gateHarness(over: Parameters<typeof createHarness>[0] = {}) {
+    return createHarness({
+      initialAttempt: attempt({ coverVersionId: COVER.versionId }),
+      freshResults: [live(false)],
+      coverSnapshot: COVER,
+      ...over,
+    });
+  }
+
+  it("sends the cover before the gate and settles the exposure as accepted", async () => {
+    const test = gateHarness();
+
+    await expect(request(test)).resolves.toBe("follow_not_confirmed");
+
+    expect(test.coverMediaUrl).toHaveBeenCalledWith(COVER.dmStoragePath);
+    expect(test.sendCover).toHaveBeenCalledWith(
+      expect.objectContaining({
+        recipientId: SENDER_ID,
+        mediaUrl: `https://cdn.example.test/${COVER.dmStoragePath}`,
+      }),
+    );
+    // Claim, send, settle — in that order — and the gate copy still follows, so the
+    // image is never the only source of what the parent has to do.
+    expect(test.order).toEqual(
+      expect.arrayContaining(["claim:cover_exposure", "external:cover", "settle:cover_accepted"]),
+    );
+    expect(test.order.indexOf("claim:cover_exposure")).toBeLessThan(
+      test.order.indexOf("external:cover"),
+    );
+    expect(test.order.indexOf("external:cover")).toBeLessThan(
+      test.order.indexOf("external:gate"),
+    );
+    expect(test.sendFollowerGate).toHaveBeenCalledTimes(1);
+    expect(test.attempt().coverExposure).toBe("accepted");
+    expect(test.attempt().coverProviderMessageId).toBe("cover-mid");
+  });
+
+  it("settles a definitely rejected cover as failed and still sends the gate", async () => {
+    const rejected = new AxiosError("cover", "ERR_BAD_REQUEST", undefined, undefined, {
+      status: 400,
+      statusText: "Bad Request",
+      headers: {},
+      config: { headers: {} } as never,
+      data: { error: { code: 100, fbtrace_id: "safe_cover" } },
+    });
+    const test = gateHarness({
+      sendCover: async () => {
+        throw rejected;
+      },
+    });
+
+    await expect(request(test)).resolves.toBe("follow_not_confirmed");
+
+    expect(test.attempt().coverExposure).toBe("failed");
+    // A cover that provably never arrived must not stop the parent learning what to do.
+    expect(test.sendFollowerGate).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves an ambiguous cover uncertain, sends no gate, and asks for review", async () => {
+    const test = gateHarness({
+      sendCover: async () => {
+        throw new AxiosError("cover", "ETIMEDOUT");
+      },
+    });
+
+    await expect(request(test)).resolves.toBe("access_attempt_needs_review");
+
+    // Meta may have accepted it, so it is never repeated and a human looks.
+    expect(test.attempt().coverExposure).toBe("uncertain");
+    expect(test.sendCover).toHaveBeenCalledTimes(1);
+    expect(test.sendFollowerGate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { exposure: "accepted" as const },
+    { exposure: "uncertain" as const },
+    { exposure: "failed" as const },
+  ])("never re-exposes a cover already claimed as $exposure", async ({ exposure }) => {
+    const test = gateHarness({ exposureAlready: exposure });
+
+    await request(test);
+
+    expect(test.sendCover).not.toHaveBeenCalled();
+  });
+
+  it("shows no cover on the follow-lag response", async () => {
+    const test = createHarness({
+      initialAttempt: attempt({ state: "awaiting_follow", coverVersionId: COVER.versionId }),
+      freshResults: [live(false)],
+      coverSnapshot: COVER,
+    });
+
+    await check(test, FOLLOW_TOKEN_1);
+
+    // The lag response is a nudge, not a first impression; the cover belongs to the gate.
+    expect(test.sendCover).not.toHaveBeenCalled();
+    expect(test.repository.claimCoverExposure).not.toHaveBeenCalled();
+  });
+
+  it("sends the gate normally when the attempt snapshotted no cover", async () => {
+    const test = createHarness({
+      initialAttempt: attempt({ coverVersionId: null }),
+      freshResults: [live(false)],
+    });
+
+    await expect(request(test)).resolves.toBe("follow_not_confirmed");
+
+    expect(test.sendCover).not.toHaveBeenCalled();
+    expect(test.repository.claimCoverExposure).not.toHaveBeenCalled();
+    expect(test.sendFollowerGate).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a snapshot belonging to a different guide and still sends the gate", async () => {
+    const test = gateHarness({
+      coverSnapshot: { ...COVER, resourceId: "99999999-9999-4999-8999-999999999999" },
+    });
+
+    await expect(request(test)).resolves.toBe("follow_not_confirmed");
+
+    expect(test.sendCover).not.toHaveBeenCalled();
+    expect(test.sendFollowerGate).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Parent-delivery Task 4, producer half. This is the only place `coverAlreadyShown` is
+// ever set, and `accepted` is the only exposure that sets it. Without this the planner's
+// omit-the-cover branch is unreachable and a parent who saw the cover in the gate would
+// receive it again after confirming the follow.
+describe("cover exposure feeds the durable plan", () => {
+  const COVER = {
+    versionId: "b0000000-0000-4000-8000-00000000000b",
+    resourceId: RESOURCE_ID,
+    dmStoragePath: "guide-cover/sleep/dm.png",
+  };
+
+  function followerHarness(coverExposure: GuideAccessAttempt["coverExposure"]) {
+    return createHarness({
+      initialAttempt: attempt({ coverVersionId: COVER.versionId, coverExposure }),
+      freshResults: [live(true)],
+      coverSnapshot: COVER,
+    });
+  }
+
+  it("passes the snapshot so the planner can prepend it", async () => {
+    const test = followerHarness("not_shown");
+
+    await expect(request(test)).resolves.toBe("guide_delivery_started");
+
+    expect(test.startGuideDelivery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cover: COVER,
+        resourceId: RESOURCE_ID,
+      }),
+    );
+  });
+
+  it("marks the cover already shown when the gate exposure was accepted", async () => {
+    const test = followerHarness("accepted");
+
+    await request(test);
+
+    expect(test.startGuideDelivery).toHaveBeenCalledWith(
+      expect.objectContaining({ coverAlreadyShown: true }),
+    );
+  });
+
+  it.each([
+    { coverExposure: "not_shown" as const },
+    { coverExposure: "failed" as const },
+    { coverExposure: "uncertain" as const },
+  ])("does not mark it shown for $coverExposure", async ({ coverExposure }) => {
+    const test = followerHarness(coverExposure);
+
+    await request(test);
+
+    // `failed` provably never arrived, and `uncertain` is the owner's problem — neither
+    // is evidence the parent saw it, so neither suppresses the planner's cover.
+    expect(test.startGuideDelivery).toHaveBeenCalledWith(
+      expect.not.objectContaining({ coverAlreadyShown: true }),
+    );
+  });
+
+  it("passes no cover when the attempt snapshotted none", async () => {
+    const test = createHarness({
+      initialAttempt: attempt({ coverVersionId: null }),
+      freshResults: [live(true)],
+    });
+
+    await request(test);
+
+    expect(test.startGuideDelivery).toHaveBeenCalledWith(
+      expect.not.objectContaining({ cover: expect.anything() }),
+    );
   });
 });

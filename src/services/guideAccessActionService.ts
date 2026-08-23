@@ -1,6 +1,7 @@
 import type { GuideAccessAttempt, GuideAccessAttemptState } from "@prisma/client";
 import { logger } from "../lib/logger.js";
 import { prisma } from "../lib/prisma.js";
+import { publicMediaUrl } from "../lib/supabase.js";
 import {
   sendGuideFollowerGate,
   sendGuideFollowLag,
@@ -8,7 +9,7 @@ import {
   type GuideActionCapabilities,
 } from "../meta/sendGuideAction.js";
 import type { MetaSendResult } from "../types/meta.js";
-import { sendTrackedText } from "./dmDeliveryService.js";
+import { sendTrackedMedia, sendTrackedText } from "./dmDeliveryService.js";
 import { describeGraphError } from "./eventLogger.js";
 import { resolveFollowStatusFresh, type FreshFollowResult } from "./freshFollowVerifier.js";
 import { classifyDirectMessageSend } from "./graphErrorClassifier.js";
@@ -122,6 +123,10 @@ export type GuideAccessActionDependencies = {
    * controls stay off until the reviewed capability rows say otherwise.
    */
   richCapabilities(): GuideActionCapabilities;
+  /** Sends the snapshotted cover image. Tracked like any other outbound media. */
+  sendCover(input: { recipientId: string; mediaUrl: string }): Promise<MetaSendResult>;
+  /** Resolves an immutable storage path to a public URL. No network work. */
+  coverMediaUrl(path: string): string;
   loadGuideName(resourceId: string): Promise<string>;
   loadThreadId(inboundMessageId: string): Promise<string | null>;
   findAttemptIdByToken(tokenId: string): Promise<string | null>;
@@ -391,6 +396,105 @@ export function createGuideAccessActionService(
     return "follow_check_unavailable";
   }
 
+  /**
+   * Expose the snapshotted cover exactly once, ahead of the gate copy.
+   *
+   * The claim moves `not_shown -> uncertain` BEFORE the send, because at that instant the
+   * outcome is genuinely unknown. So a crash, or a second action, finds the exposure
+   * already claimed and sends nothing. Only a definite provider acknowledgement settles
+   * `accepted`, which is the single signal that lets a later delivery skip the cover.
+   *
+   * A missing, unreadable or mismatched snapshot degrades to "no cover" rather than
+   * withholding the gate: the parent still needs to be told what to do, and the gate copy
+   * carries that independently of the image.
+   */
+  /**
+   * The snapshot to hand the durable planner, or nothing.
+   *
+   * Reads the attempt's own `coverVersionId` and re-checks that the row belongs to the
+   * attempt's resource, so a cover can never be paired with another guide's messages even
+   * if an owner repointed the keyword mid-attempt. A load failure degrades to no cover
+   * rather than withholding the guide.
+   */
+  async function deliverableCover(
+    attempt: GuideAccessAttempt,
+  ): Promise<{ versionId: string; resourceId: string; dmStoragePath: string } | null> {
+    if (attempt.coverVersionId === null) return null;
+    try {
+      const snapshot = await dependencies.repository.findCoverSnapshot(attempt.coverVersionId);
+      if (!snapshot) return null;
+      if (snapshot.resourceId !== attempt.resourceId) {
+        dependencies.logger.error(
+          { errorCode: "cover_resource_mismatch", attemptId: attempt.id },
+          "Guide cover belongs to a different guide",
+        );
+        return null;
+      }
+      return snapshot;
+    } catch {
+      dependencies.logger.error(
+        { errorCode: "cover_snapshot_load_failed", attemptId: attempt.id },
+        "Guide cover snapshot could not be read",
+      );
+      return null;
+    }
+  }
+
+  async function exposeCoverForGate(
+    context: AuthorizationContext,
+  ): Promise<"none" | "accepted" | "failed" | "needs_review"> {
+    const coverVersionId = context.attempt.coverVersionId;
+    if (coverVersionId === null) return "none";
+
+    let snapshot;
+    try {
+      snapshot = await dependencies.repository.findCoverSnapshot(coverVersionId);
+    } catch {
+      dependencies.logger.error(
+        { errorCode: "cover_snapshot_load_failed", attemptId: context.attempt.id },
+        "Guide cover snapshot could not be read",
+      );
+      return "none";
+    }
+    if (!snapshot) return "none";
+    if (snapshot.resourceId !== context.attempt.resourceId) {
+      dependencies.logger.error(
+        { errorCode: "cover_resource_mismatch", attemptId: context.attempt.id },
+        "Guide cover belongs to a different guide",
+      );
+      return "none";
+    }
+
+    const claim = await dependencies.repository.claimCoverExposure({
+      attemptId: context.attempt.id,
+    });
+    if (claim.kind !== "claimed") return "none";
+
+    try {
+      const receipt = await dependencies.sendCover({
+        recipientId: context.senderId,
+        mediaUrl: dependencies.coverMediaUrl(snapshot.dmStoragePath),
+      });
+      if (!receipt.messageId) return "needs_review";
+      await dependencies.repository.settleCoverExposure({
+        attemptId: context.attempt.id,
+        exposure: "accepted",
+        providerMessageId: receipt.messageId,
+      });
+      return "accepted";
+    } catch (error) {
+      if (classifyDirectMessageSend(describeGraphError(error)) === "uncertain") {
+        return "needs_review";
+      }
+      await dependencies.repository.settleCoverExposure({
+        attemptId: context.attempt.id,
+        exposure: "failed",
+        providerMessageId: null,
+      });
+      return "failed";
+    }
+  }
+
   async function handleNonFollower(
     context: AuthorizationContext,
     checkedAt: Date,
@@ -436,6 +540,18 @@ export function createGuideAccessActionService(
     if (context.falseResponse === "gate") {
       guideName = await loadGuideName(context);
       if (guideName === null) return "access_attempt_needs_review";
+
+      // The cover belongs to the gate, which is the parent's first impression. The lag
+      // response is a nudge and deliberately carries no image.
+      if ((await exposeCoverForGate(context)) === "needs_review") {
+        const review = await checkpointNeedsReview(
+          context.attempt.id,
+          "checking_follow",
+          "cover_exposure_uncertain",
+          checkedAt,
+        );
+        return review.outcome;
+      }
     }
 
     const issued = await issueFollowToken(context.attempt, now);
@@ -509,6 +625,13 @@ export function createGuideAccessActionService(
     const thread = await loadThreadId({ ...context, attempt: delivering.attempt });
     if (!thread.ok) return "access_attempt_needs_review";
 
+    // The one and only producer of `coverAlreadyShown`. `accepted` is the sole exposure
+    // that counts as the parent having seen the cover: `failed` provably never arrived,
+    // and `uncertain` belongs to owner review. Getting this wrong sends a second copy of
+    // an image the parent already has.
+    const cover = await deliverableCover(delivering.attempt);
+    const coverAlreadyShown = delivering.attempt.coverExposure === "accepted";
+
     let deliveryResult: GuideDeliveryResult;
     try {
       deliveryResult = await dependencies.startGuideDelivery({
@@ -521,6 +644,8 @@ export function createGuideAccessActionService(
         triggeredAt: context.triggeredAt,
         sendWindowExpiresAt: delivering.attempt.messagingWindowExpiresAt,
         followerAtTrigger: true,
+        ...(cover ? { cover } : {}),
+        ...(coverAlreadyShown ? { coverAlreadyShown: true } : {}),
         ...(context.redeliveryIntro ? { redeliveryIntro: context.redeliveryIntro } : {}),
       });
     } catch {
@@ -953,6 +1078,14 @@ const defaultService = createGuideAccessActionService({
     }),
   sendFollowLag: sendGuideFollowLag,
   sendInitialPrivateReply: sendGuideInitialPrivateReply,
+  sendCover: (input) =>
+    sendTrackedMedia({
+      recipientIgUserId: input.recipientId,
+      type: "image",
+      url: input.mediaUrl,
+      source: "keyword_automation",
+    }),
+  coverMediaUrl: publicMediaUrl,
   // The switch is the operator's assertion that the reviewed capability rows are
   // `supported`; it is read per action so a stop applies to the next opening.
   richCapabilities: () =>
