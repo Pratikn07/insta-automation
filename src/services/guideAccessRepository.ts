@@ -396,10 +396,7 @@ export function createGuideAccessRepository(
           if (token.status !== "active") return { kind: "expired" as const };
           if (token.action !== input.action) return { kind: "wrong_action" as const };
           if (attempt.messagingWindowExpiresAt <= input.now) {
-            await tx.guideAccessAttempt.updateMany({
-              where: { id: attempt.id, state: attempt.state },
-              data: { state: "expired" },
-            });
+            await expireLockedAttempt(tx, attempt, input.now);
             await tx.guideActionToken.updateMany({
               where: { id: token.id, status: "active" },
               data: { status: "expired" },
@@ -422,7 +419,12 @@ export function createGuideAccessRepository(
           }
 
           const attemptUpdate = await tx.guideAccessAttempt.updateMany({
-            where: { id: attempt.id, state: expectedState, followCheckCount: { lt: MAX_FOLLOW_CHECKS } },
+            where: {
+              id: attempt.id,
+              state: expectedState,
+              followCheckCount: { lt: MAX_FOLLOW_CHECKS },
+              messagingWindowExpiresAt: { gt: input.now },
+            },
             data: {
               state: "checking_follow",
               lastFollowResult: "unknown",

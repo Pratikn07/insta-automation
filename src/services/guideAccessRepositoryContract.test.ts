@@ -226,6 +226,33 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
     });
   });
 
+  it("expires token consumption at the exact messaging-window boundary", async () => {
+    const fixture = await createFixture();
+    const attempt = await createAttempt(fixture, NOW);
+    const issued = await firstRepository.issueToken({
+      attemptId: attempt.id,
+      action: "request_guide",
+      now: new Date(NOW.getTime() - 1),
+      expiresAt: NOW,
+    });
+    if (!("token" in issued)) throw new Error("expected token");
+
+    await expect(
+      firstRepository.consumeToken({
+        tokenId: issued.token.id,
+        action: "request_guide",
+        senderId: fixture.senderId,
+        now: NOW,
+      }),
+    ).resolves.toEqual({ kind: "expired" });
+    await expect(
+      firstClient.guideAccessAttempt.findUniqueOrThrow({ where: { id: attempt.id } }),
+    ).resolves.toMatchObject({ state: "expired", followCheckCount: 0 });
+    await expect(
+      firstClient.guideActionToken.findUniqueOrThrow({ where: { id: issued.token.id } }),
+    ).resolves.toMatchObject({ status: "expired", consumedAt: null });
+  });
+
   it("lets exactly one duplicate state transition win", async () => {
     const fixture = await createFixture();
     const attempt = await createAttempt(fixture);

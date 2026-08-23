@@ -243,12 +243,43 @@ describe("guide access repository", () => {
       }),
     ).resolves.toEqual({ kind: "expired" });
     expect(test.tx.guideAccessAttempt.updateMany).toHaveBeenCalledWith({
-      where: { id: ATTEMPT_ID, state: "awaiting_request" },
+      where: {
+        id: ATTEMPT_ID,
+        state: "awaiting_request",
+        messagingWindowExpiresAt: { lte: NOW },
+      },
       data: { state: "expired" },
     });
     expect(test.tx.guideActionToken.updateMany).toHaveBeenCalledWith({
       where: { id: TOKEN_ID, status: "active" },
       data: { status: "expired" },
+    });
+  });
+
+  it("includes the open messaging window in the atomic consume transition fence", async () => {
+    const test = harness();
+
+    await expect(
+      test.repository.consumeToken({
+        tokenId: TOKEN_ID,
+        action: "request_guide",
+        senderId: SENDER_ID,
+        now: NOW,
+      }),
+    ).resolves.toMatchObject({ kind: "consumed" });
+    expect(test.tx.guideAccessAttempt.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: ATTEMPT_ID,
+        state: "awaiting_request",
+        followCheckCount: { lt: 3 },
+        messagingWindowExpiresAt: { gt: NOW },
+      },
+      data: {
+        state: "checking_follow",
+        lastFollowResult: "unknown",
+        lastFollowCheckedAt: null,
+        followCheckCount: { increment: 1 },
+      },
     });
   });
 
