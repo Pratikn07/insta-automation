@@ -2,7 +2,7 @@
 
 ## Commit Under Test
 
-`79b34a3` on `codex/follower-button-flow`, 57 commits ahead of `main`.
+`cb51159` on `codex/follower-button-flow`, 63 commits ahead of `main`.
 
 This report covers the last of five plans in the guide-cover release train:
 
@@ -25,10 +25,17 @@ switch defaults off and the cohort defaults to nobody, so on an unconfigured
 deployment the guide goes out exactly as it did before covers existed — only the
 image is withheld.
 
-The fence is `eligibleCover` (`src/services/guideDeliveryService.ts`), consulted once
-before the plan is compiled. It governs cover inclusion only: never follower
-authorization, never which service owns the send. Verified by grep — the selector has
-exactly one consumer and `guideDeliveryOwner` never imports it.
+There are **two** cover paths and each has its own fence. Both govern the image only:
+never follower authorization, and never which service owns the send.
+
+- `eligibleCover` (`src/services/guideDeliveryService.ts`) fences the cover prepended as
+  the first unit of a ledger delivery, consulted once before the plan is compiled.
+- `exposeCoverForGate` (`src/services/guideAccessActionService.ts`) fences the cover the
+  follow gate sends directly to a non-follower. This one shipped unfenced; see Critical
+  below.
+
+Verified by grep that `guideDeliveryOwner` never imports the cover selector, so cover
+inclusion cannot influence which service owns a guide send.
 
 ### Flag defaults, read from `src/config/env.ts`
 
@@ -63,22 +70,25 @@ to get wrong under pressure. `guideAccessActionService` wires `startGuideDeliver
 
 - `GUIDE_COVER_DELIVERY_ENABLED=false` stops covers only, on the next decision.
 - `GUIDE_FOLLOW_GATE_V2_ENABLED=false` stops strict-gate sending, on the next decision.
-- `GUIDE_DELIVERY_ENABLED=false` stops the retry worker (`src/server.ts:196`) and the
-  legacy-vs-ledger routing, **at process restart only**, and does *not* stop a
-  strict-gate delivery. Setting it false while V2 is on is worse than either state
-  alone: deliveries still start with no worker to retry them.
+- `GUIDE_DELIVERY_ENABLED=false` stops the retry worker and the legacy-vs-ledger routing
+  on the next worker tick (`guideDeliveryWorker.ts:100` reads it through the flags
+  service), and does *not* stop a strict-gate delivery. Note the asymmetry: the scheduler
+  is only created when the flag is true in boot-time env (`server.ts:196`), so turning it
+  ON needs a restart while turning it OFF does not. Setting it false while the strict gate
+  is on is worse than either state alone — deliveries still start, but the worker refuses
+  to run, so a retryable unit is never retried and the guide sits unfinished.
 - `GUIDE_COVER_DELIVERY_ROLLOUT_PERCENT` cannot be lowered from the console at all.
   `resolvePercent` discards a stored value for any key `pageMayEnable` forbids, and the
   registry now declares `pageMayStop: false` to match. The stop is the boolean.
 
 ## Automated verification
 
-All executed against commit `79b34a3` on 2026-08-23.
+All executed against commit `cb51159` on 2026-08-23.
 
 | Gate | Result |
 | --- | --- |
-| Backend suite | **3336 passed / 215 files / 0 skipped** |
-| Web suite | **937 passed / 73 files** |
+| Backend suite | **3358 passed / 215 files / 0 skipped** |
+| Web suite | **939 passed / 73 files** |
 | Playwright E2E | **120 passed** (desktop + mobile) |
 | Backend typecheck | clean |
 | Web typecheck | clean |
@@ -105,55 +115,126 @@ correctly dropped.
 
 ## Defects found and fixed during this pass
 
-Each was found by an independent adversarial review or by execution, not by reading.
+Two independent adversarial reviews were run against the branch, plus execution-based
+verification. Between them they found **five Critical** defects. Each was found by review
+or by execution, never by reading the code and feeling satisfied. Every fix was
+mutation-verified: the production change was broken deliberately and the test suite had to
+fail.
 
-**Critical — cover metrics were silently discarded.** `AGGREGATE_SQL` carried a second
-hand-written copy of the stage/outcome vocabulary and omitted the `cover` stage. Cover
-events were written, validated against the closed vocabulary, stored, and then dropped
-by the reader. Every cover count would have read zero through the entire rollout,
-including the exposure outcomes from Task 4. The predicate is now generated from
-`GUIDE_ACCESS_OUTCOMES`. Fixed in `78a82fe`; three tests verified to fail against the
-exact original bug by re-introducing it.
+### Critical
 
-**Critical — cancelling a review did not release the parent.** The cancel path moved
-the access attempt `delivering → needs_review`, but `needs_review` is also an ACTIVE
-state, and the only escape from it requires `lastFollowResult: "unknown"` — a value
-`guide_access_attempt_state_follow_result_check` forbids on any attempt that reached
-`delivering`. The parent stayed blocked for the rest of the messaging window, with no
-surface showing it: nothing in the API or the metrics reads `guideAccessAttempt`. Now
-terminal. Fixed in `f0328cd`.
+**Cover metrics were silently discarded.** `AGGREGATE_SQL` carried a second hand-written
+copy of the stage/outcome vocabulary and omitted the cover stage. Cover events were
+written, validated against the closed vocabulary, stored — and dropped by the reader.
+Every cover count would have read zero through the entire rollout. Worse, the panel's
+empty state and the runbook both tell an operator that zero means "the pilot has not
+started", so the symptom was camouflaged by design. The predicate is now generated from
+the vocabulary. Found by running the aggregate against real PostgreSQL with 121 seeded
+rows — the unit tests all mock `$queryRawUnsafe`, and a mocked query cannot tell a valid
+SQL string from a correct one. Fixed in `78a82fe`.
 
-**Critical — a stale completion could settle the wrong attempt.**
-`settleAttemptForConversation` identified its attempt by conversation alone, so a
-callback arriving after its own attempt was force-expired and replaced would close the
-replacement — releasing the conversation while a second guide was still in flight. A
-delivery copies its attempt's `messagingWindowExpiresAt` verbatim into
-`sendWindowExpiresAt`, so passing it back is an exact identity handle. Mismatches are
-refused and logged, never guessed. Fixed in `f0328cd`.
+**The gate cover ignored its own kill switch.** `exposeCoverForGate` sends the cover image
+DIRECTLY to a non-follower and never consulted the rollout selector. Publishing a cover in
+the creator console was therefore enough to put an image in front of a real parent with
+`GUIDE_COVER_DELIVERY_ENABLED=false` and the cohort empty — through
+`GUIDE_COVER_AUTHORING_ENABLED`, the one new flag the console may enable, whose own
+description promised "It does not message parents or alter guide delivery." Both cover
+paths now consult the same selector. Fixed in `0e41e36`.
 
-**Important — the cover/guide integrity check was unreachable.** The
-resource-mismatch check sat behind the rollout fence, so while the flag is off — every
-deployment that exists today — a snapshot paired with the wrong guide was never
-detected. Integrity now precedes policy, with its own `omitted_mismatch` outcome so a
-pairing bug cannot hide inside a routine rollout omission. Fixed in `628a360`.
+**A duplicate follow gate to a real parent.** An uncertain gate send parked the attempt in
+`needs_review` from `checking_follow`, and `markNeedsReview` never persisted
+`lastFollowResult` — so the attempt kept `unknown`, meaning "we never found out", although
+the check HAD answered. `isRetryableReview` keys on exactly that field, so the review
+stayed re-enterable and the parent's next ordinary DM sent a second identical gate.
+Bounded at three by `MAX_FOLLOW_CHECKS`. Also a regression against V1, which parks an
+uncertain gate reply as `send_uncertain` and never retries it. Every review inside
+`handleNonFollower` now records the answer it had; `handleUnavailable` deliberately still
+records none, so its intended re-check survives. Fixed in `8fb31de`.
 
-**Important — a safety field that lied.** `GUIDE_COVER_DELIVERY_ROLLOUT_PERCENT`
-declared `pageMayStop: true`, but `resolvePercent` discards any stored value for a key
-`pageMayEnable` forbids, so the console could not perform that stop. Now asserted
-across the whole registry rather than per key. Fixed in `628a360`.
+**Cancelling a delivery could expire a different, live attempt.** The cancel matched on
+`state: "delivering"` alone. A stale delivery in the review backlog can outlive its own
+attempt, so cancelling it expired the LIVE attempt, leaving nothing active — and the
+parent's next message opened a third attempt and sent a third guide while the second was
+still in flight. Fenced on the messaging window, the same identity handle
+`settleAttemptForConversation` already used. This one was self-inflicted: the same hazard
+had been fixed 200 lines away in the same session. Fixed in `0e41e36`.
 
-**Test hygiene — a contract suite that could only pass once.**
-`guideCoverMigrationContract.test.ts` wrote fixed UUIDs with no cleanup, so against a
-persistent contract database it passed once and then failed forever on duplicate keys,
-which reads like a schema regression and is not one. Now cleans up; verified by running
-it twice. Fixed in `628a360`.
+**A stale completion could settle the wrong attempt.**
+`settleAttemptForConversation` identified its attempt by conversation alone, so a callback
+arriving after its own attempt was force-expired and replaced would close the replacement,
+releasing the conversation while a second guide was in flight. Fixed in `f0328cd`.
 
-**Browser QA — the panel was only ever captured failing.** The E2E fixture had no
-handler for the new metrics endpoint, so every visual artifact recorded the cover
-panel's error state. Stubbed in `79b34a3`. The useful half of that finding is that the
-page rendered correctly around the failure, which is live proof the cover query cannot
-take the cohort funnel down; that behaviour is now asserted in a unit test rather than
-observed by accident in a screenshot.
+### Important
+
+**Cancelling a review did not release the parent.** The cancel path moved the attempt
+`delivering → needs_review`, but `needs_review` is also active, and the only escape from it
+requires `lastFollowResult: "unknown"` — which
+`guide_access_attempt_state_follow_result_check` forbids on anything that reached
+`delivering`. The parent stayed blocked for the whole window with no surface showing it.
+Now terminal. Fixed in `f0328cd`.
+
+**Two cover funnels were being divided by each other.** The two cover recorders write
+disjoint halves of what was one stage: the gate records only its send result, the delivery
+planner only its plan-time decision. `accepted / selected` was therefore gate exposures
+over delivery selections. The panel could read "accepted 100%" and "failed 100%"
+simultaneously — `guardedRate` clamps, so both mutually exclusive outcomes hit the ceiling
+— or report that nothing had been considered while thirty parents had received an image.
+Task 8 reads its expansion thresholds off this panel, so fixing the SQL alone would have
+turned a silent zero into a confident wrong number. Split into `cover_gate` and
+`cover_delivery`, each rate denominated only from its own stage. Fixed in `0e41e36`.
+
+**A stuck attempt had no remedy.** Every fault routes to `needs_review`, an active state
+nothing clears: `markExpired` had no production caller, no route read
+`guide_access_attempt`, and the only escape was the parent messaging again *after* their
+window lapsed. A parent who gave up stayed blocked, invisibly. One admin release action
+now clears it, refusing `delivering` and demanding the same explicit duplicate-risk
+acknowledgement the uncertain-unit retry does, audited as `guide_access_owner_action`.
+Fixed in `cb51159`.
+
+**The cover/guide integrity check was unreachable.** The resource-mismatch check sat behind
+the rollout fence, so while the flag is off — every deployment today — a snapshot paired
+with the wrong guide was never detected. Integrity now precedes policy in both cover
+paths, with its own `omitted_mismatch` outcome. Fixed in `628a360`.
+
+**Three flag descriptions were wrong in ways an operator would act on.**
+`GUIDE_COVER_DELIVERY_ROLLOUT_PERCENT` advertised `pageMayStop: true` while
+`resolvePercent` discards stored values for a key `pageMayEnable` forbids.
+`GUIDE_DELIVERY_ENABLED` claimed to stop new guide sends, which is false for a
+strict-access parent. `GUIDE_RICH_GATE_ENABLED` claimed to govern a check-follow control
+that can never be enabled. All three corrected; the percent invariant is now asserted
+across the whole registry rather than per key. Fixed in `628a360` and `c8fd16b`.
+
+**A 200 without `coverRates` sat in a permanent skeleton.** The console deploys ahead of
+the API here, so that ordering is expected, and react-query does not retry a success.
+Absent is now distinguished from empty. Fixed in `0e41e36`.
+
+**A gate cover acknowledged with no message id counted nothing** — the exact class the
+runbook tells operators to watch. Fixed in `0e41e36`.
+
+**An unrecognised quick-reply payload was dropped silently.** Returning rather than falling
+through is deliberate (a reply's visible title must never reach keyword matching), but a
+future quick reply added elsewhere would have vanished without a trace. It now warns.
+Fixed in `c8fd16b`.
+
+### Test and tooling hygiene
+
+- `guideCoverMigrationContract.test.ts` wrote fixed UUIDs with no cleanup, so against a
+  persistent contract database it passed exactly once and then failed forever on duplicate
+  keys — which reads like a schema regression and is not one. Verified fixed by running it
+  twice.
+- The Task 5 cancel behaviour was covered only by a test that grepped its own source file
+  for two strings, and that silently skipped without a database. Replaced with behavioural
+  tests, plus four for `settleAttemptForConversation`, which had none.
+- One assertion was proven vacuous by mutation (`coverRates.accepted.pct` cannot fail,
+  because `guardedRate` clamps) and removed rather than left reading like a second guard.
+- Three fail-closed rollout cases pinned `percent` at the helper default of 0, so they
+  would have passed with the guard under test deleted.
+- `guideAccessMetrics.record` takes `unknown`, so a whole stage was renamed underneath its
+  call sites with no compiler error. Added a typed entry point.
+- The E2E fixture had no handler for the new metrics endpoint, so every visual artifact
+  captured the panel's error state.
+- Nothing at the API boundary asserted that cover shares reach a client at all — which is
+  precisely how the discarded-SQL bug survived 53 green backend tests. Added.
 
 ## Privacy
 
@@ -193,6 +274,39 @@ Wiring it means threading a distinction through the gate's core path, so it is r
 rather than done. No surface displays those stages today, so no operator is currently
 misled by their zeroes.
 
+**No UI for the attempt release action.** The runbook gives the query that finds a stuck
+attempt and the curl that clears it, which is enough to run a pilot. A screen for it is
+worth deciding on rather than assuming.
+
+**The orphaned-cover storage cleanup worker ships ON**, with no feature flag of its own —
+only `WORKERS_ENABLED`, which is restart-only. Its path allowlist is an exact
+`guide-cover/<uuid>/<uuid>/<sha256>/(dm|generic).png` match and it removes single paths
+with no prefix listing, so the blast radius is contained, but a Storage-deleting worker
+without a dedicated switch is inconsistent with the rest of this rollout's discipline. Now
+documented in `.env.example`.
+
+**One migration revokes inconsistently.** `20260822010000` runs
+`REVOKE ALL ... FROM "anon", "authenticated"` unguarded, while its sibling
+`20260822020000` wraps the identical statements in an `IF EXISTS (SELECT 1 FROM pg_roles)`
+check. Both roles exist on Supabase and in the contract container, so production is
+unaffected; a Postgres without them would abort. **Deliberately not fixed**: the migration
+has already been applied in review environments, and editing it would change its checksum
+and break `prisma migrate deploy` for anyone who applied it. Pick one form in the next
+migration instead.
+
+**`guideFollowGateV2Rollout.ts` dereferences `env` at module scope** to build its
+allowlists — the pattern its sibling `guideCoverDeliveryRollout.ts` documents as wrong,
+because it breaks every unrelated test that mocks `../config/env.js` without the parser
+export. It survives only because three handler test files mock it. Behaviour is unaffected
+(`env` is frozen at boot); it is a latent test footgun.
+
+**`resources.routes.ts` DELETE will be blocked** by
+`guide_access_attempt_conversation_id_fkey ON DELETE RESTRICT` once any attempt exists for
+a resource's conversations. The release action expires an attempt but does not delete it.
+
+**A guide postback without a provider `mid` is dropped** before `routeGuideAction`
+(`postbackHandler.ts:14-19`).
+
 **Rollout thresholds are unset.** `docs/guide-delivery-operations.md` describes stop,
 inspect, reconcile and rollback procedures but names no numeric abort thresholds for a
 controlled run. Those are a human decision.
@@ -210,9 +324,17 @@ until the window lapses.
 
 **READY FOR CONTROLLED ROLLOUT**
 
-Every automated pre-production gate passes: 3336 backend tests with zero skips against
-a disposable database, 937 web tests, 120 E2E, both typechecks, both builds, lint, the
+Every automated pre-production gate passes: 3358 backend tests with zero skips against
+a disposable database, 939 web tests, 120 E2E, both typechecks, both builds, lint, the
 bypass detector, and a full migration deploy onto a pristine database.
+
+That verdict is only meaningful because of what the reviews found. Five Critical defects
+reached this branch, and all five were in the same place: **at a boundary the tests
+mocked.** The SQL was mocked, so the reader was never wired to the writer. The two cover
+recorders were mocked, so their vocabularies were never reconciled. The API response shape
+was mocked, so its absence was never handled. Everything inside those mocks was correct.
+That is the pattern to watch for in the next feature, not just the eleven instances fixed
+here.
 
 This verdict means only that the local build is ready to be *considered* for a
 controlled cohort. It is **not** `CONTROLLED PATH STABLE`: no Meta cohort has been
@@ -220,6 +342,12 @@ authorized or run, so there is no evidence at all about real delivery behaviour,
 the capability spike's own live-run task remains unexecuted. It is **not**
 `LEGACY REMOVAL AUTHORIZED`.
 
-Two things a human must decide before Task 8 begins: the numeric abort thresholds for
-the controlled run, and whether the parent-facing copy is acceptable to send. Both are
-named above rather than assumed.
+Three things a human must decide before Task 8 begins: the numeric abort thresholds for
+the controlled run, whether the parent-facing copy is acceptable to send to real parents,
+and whether the attempt release action needs a screen before the pilot rather than a curl.
+All three are named above rather than assumed.
+
+The capability spike's own Task 5 also remains unexecuted. It requires explicit owner
+authorization, a controlled recipient, fresh controlled comment IDs, and an approved test
+window, and it sends real messages from the real account. Nothing in this report
+substitutes for it, and `GUIDE_RICH_GATE_ENABLED` stays false until it runs.
