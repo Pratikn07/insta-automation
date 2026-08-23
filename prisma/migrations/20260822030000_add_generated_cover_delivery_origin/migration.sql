@@ -3,15 +3,21 @@
 --
 -- Additive by construction. `ALTER TYPE ... ADD VALUE` appends a label without
 -- recreating the type, so `resource_step` and `redelivery_intro` keep their existing
--- `enumsortorder`, and every `guide_delivery_unit.origin` value already written stays
--- readable. Recreating the enum would mean rewriting that column, dropping and
--- rebuilding the worker's indexes and policies, and taking a lock on a table the
--- delivery worker reads continuously.
+-- `enumsortorder` and every `guide_delivery_unit.origin` value already written stays
+-- readable. Recreating the enum would mean rewriting that column and rebuilding the
+-- four indexes on a table the delivery worker reads continuously.
 --
--- `IF NOT EXISTS` makes the statement idempotent, so a partially applied migration or a
--- re-run cannot fail on the second attempt.
+-- Verified empirically rather than assumed: this statement takes only an object-level
+-- lock on `pg_type`, not a lock on `guide_delivery_unit`, so it neither blocks the
+-- worker nor waits on it. (`guide_delivery_unit` has RLS enabled but no policies, so
+-- there are none to preserve.)
 --
--- Safe inside Prisma's per-migration transaction on PostgreSQL 12+: adding a label is
--- transactional there, and the new value is not referenced by anything in this file, so
--- the "unsafe use of new value" restriction does not apply.
+-- `IF NOT EXISTS` covers the case where the label was already added by hand; Prisma
+-- records the migration by name and checksum, so the no-op keeps history consistent.
+-- It does not make a failed migration self-healing — this file is a single statement,
+-- so a failure aborts with P3009 and needs `prisma migrate resolve`.
+--
+-- Safe inside Prisma's per-migration transaction: adding a label is transactional on
+-- PostgreSQL 12+, production Supabase runs 17.6, and nothing in this file references
+-- the new value, so the "unsafe use of new value" restriction does not apply.
 ALTER TYPE "guide_delivery_unit_origin" ADD VALUE IF NOT EXISTS 'generated_cover';

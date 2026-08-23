@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { GuideDeliveryUnitOrigin } from "@prisma/client";
 import {
   INSTAGRAM_GUIDE_TEXT_LIMIT,
   countInstagramCodePoints,
@@ -20,7 +21,10 @@ export type GuideDeliveryTriggerKind =
 export type PlannedGuideDeliveryUnit = {
   resourceMessageId: string | null;
   position: number;
-  origin: "resource_step" | "redelivery_intro";
+  // Derived from the database enum rather than hand-written, so appending a label in
+  // a migration cannot silently leave this union behind. That drift is exactly what
+  // happened when `generated_cover` was added.
+  origin: GuideDeliveryUnitOrigin;
   kind: "text" | "image" | "file";
   textSnapshot: string | null;
   mediaUrlSnapshot: string | null;
