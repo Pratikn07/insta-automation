@@ -2515,3 +2515,123 @@ describe("follow-check and gate measurement", () => {
     await expect(request(test)).resolves.toBe("follow_not_confirmed");
   });
 });
+
+// Review round 3, Critical. The previous round marked EVERY review inside
+// `handleNonFollower` terminal by recording the definite follow answer. That is right only
+// where something gate-like provably reached the parent. On three of the five sites nothing
+// had — and the worst of those hands a parent a cover image with no instructions and then
+// refuses them for the rest of their messaging window.
+describe("a review is terminal only when the parent was actually told something", () => {
+  const COVER = {
+    versionId: "d0000000-0000-4000-8000-00000000000d",
+    resourceId: RESOURCE_ID,
+    dmStoragePath: "guide-cover/wedge/dm.png",
+  };
+
+  it("keeps an uncertain COVER send re-enterable, because the gate copy never went out", async () => {
+    const test = createHarness({
+      initialAttempt: attempt({ coverVersionId: COVER.versionId }),
+      freshResults: [live(false)],
+      coverSnapshot: COVER,
+      // Acknowledged with no message id: the image may have arrived, the instructions did not.
+      sendCover: async () => ({ messageId: null }),
+    });
+
+    await expect(request(test)).resolves.toBe("access_attempt_needs_review");
+
+    // Nothing that tells the parent what to do was sent, so this review must not be
+    // terminal — otherwise they hold a bare picture and every later message is refused.
+    expect(test.sendFollowerGate).not.toHaveBeenCalled();
+    expect(test.attempt()).toMatchObject({
+      state: "needs_review",
+      lastFollowResult: "unknown",
+    });
+  });
+
+  it("still delivers the gate copy on the parent's next message after that", async () => {
+    const test = createHarness({
+      initialAttempt: attempt({
+        state: "needs_review",
+        lastFollowResult: "unknown",
+        coverVersionId: COVER.versionId,
+      }),
+      freshResults: [live(false)],
+      coverSnapshot: COVER,
+    });
+
+    await test.service.startDirectDmGuideRequest(
+      {
+        id: CONVERSATION_ID,
+        igUserId: SENDER_ID,
+        resourceId: RESOURCE_ID,
+        guideName: "toddler sleep guide",
+      },
+      { id: "80000000-0000-4000-8000-000000000080", threadId: THREAD_ID, eventAt: EVENT_AT },
+    );
+
+    // The cover exposure is already claimed, so no second image — but the instructions
+    // finally arrive. That recovery is what the terminal marking took away.
+    expect(test.sendFollowerGate).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a DEFINITELY refused gate re-enterable when its bookkeeping then fails", async () => {
+    const rejected = new AxiosError("private payload", "ERR_BAD_REQUEST", undefined, undefined, {
+      status: 400,
+      statusText: "Bad Request",
+      headers: {},
+      config: { headers: {} } as never,
+      data: { error: { code: 100, fbtrace_id: "safe_trace_wedge" } },
+    });
+    const test = createHarness({
+      freshResults: [live(false)],
+      sendGate: vi.fn().mockRejectedValue(rejected),
+      repositoryFailures: { markAwaitingFollow: [new Error("checkpoint exploded")] },
+    });
+
+    await request(test);
+
+    // Meta definitively refused the gate, so the parent holds nothing. Marking the
+    // follow-up bookkeeping failure terminal would strand them over a message that
+    // provably never arrived — the same fault as the cover case above.
+    expect(test.attempt()).toMatchObject({
+      state: "needs_review",
+      lastFollowResult: "unknown",
+    });
+  });
+
+  it("drives handleUnavailable and proves it records NO follow answer", async () => {
+    // The existing test for this hand-builds a `needs_review`/`unknown` attempt, so it
+    // proves the re-entry predicate and never runs the code that must preserve `unknown`.
+    // Adding a follow answer at that checkpoint would wedge EVERY parent whose live check
+    // was unavailable, right after telling them "Please try again a little later" — and it
+    // passed the entire suite.
+    const test = createHarness({ freshResults: [unavailable] });
+
+    await expect(request(test)).resolves.toBe("follow_check_unavailable");
+
+    expect(test.repository.markNeedsReview).toHaveBeenCalledWith(
+      expect.not.objectContaining({ followResult: expect.anything() }),
+    );
+    expect(test.attempt()).toMatchObject({
+      state: "needs_review",
+      lastFollowResult: "unknown",
+    });
+    expect(test.sendText).toHaveBeenCalledWith({
+      recipientId: SENDER_ID,
+      text: "Unable to confirm right now. Please try again a little later.",
+    });
+  });
+
+  it("marks the checkpoint terminal when the gate DID reach Meta", async () => {
+    const test = createHarness({
+      freshResults: [live(false)],
+      repositoryFailures: { markAwaitingFollow: [new Error("checkpoint exploded")] },
+    });
+
+    await request(test);
+
+    // The gate went out. Re-entry here would send a second one.
+    expect(test.sendFollowerGate).toHaveBeenCalledTimes(1);
+    expect(test.attempt().lastFollowResult).toBe("non_follower");
+  });
+});

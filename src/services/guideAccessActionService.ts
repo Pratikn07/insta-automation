@@ -611,12 +611,16 @@ export function createGuideAccessActionService(
           now,
         });
       } catch {
+        // No follow result, though it makes no difference here: the lag branch is only
+        // reachable from `awaiting_follow` or `followResponseCount > 0`, and both already
+        // hold a definite answer — `guide_access_attempt_state_follow_result_check` pins
+        // `awaiting_follow` to `non_follower`. Omitted so this site does not read as the
+        // thing that makes the review terminal, because it never was.
         const review = await checkpointNeedsReview(
           context.attempt.id,
           "checking_follow",
           "follow_response_reservation_failed",
           checkedAt,
-          "non_follower",
         );
         return review.outcome;
       }
@@ -647,12 +651,17 @@ export function createGuideAccessActionService(
       // The cover belongs to the gate, which is the parent's first impression. The lag
       // response is a nudge and deliberately carries no image.
       if ((await exposeCoverForGate(context)) === "needs_review") {
+        // No follow result, and this one matters most. `exposeCoverForGate` returns here
+        // BEFORE `issueFollowToken` and the gate send, so the parent may be holding a cover
+        // image and nothing that tells them what to do with it. Marking this terminal left
+        // them with a bare picture and refused every later message for the rest of the
+        // window. Duplicate protection for the image is `coverExposure`, which is already
+        // one-shot and independent of this — nothing was bought by making it terminal.
         const review = await checkpointNeedsReview(
           context.attempt.id,
           "checking_follow",
           "cover_exposure_uncertain",
           checkedAt,
-          "non_follower",
         );
         return review.outcome;
       }
@@ -707,12 +716,15 @@ export function createGuideAccessActionService(
         now: dependencies.now(),
       });
     } catch {
+      // Terminal only if the gate PROVABLY reached Meta. On a definite refusal the parent
+      // has nothing, so stranding them over a bookkeeping failure for a message that never
+      // arrived would be the same fault as the cover case above.
       const review = await checkpointNeedsReview(
         context.attempt.id,
         ["checking_follow", "awaiting_follow"],
         "awaiting_follow_checkpoint_failed",
         checkedAt,
-        "non_follower",
+        sendResult === "sent" ? "non_follower" : undefined,
       );
       return review.outcome;
     }

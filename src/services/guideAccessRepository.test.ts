@@ -971,3 +971,56 @@ describe("releaseAttemptForConversation", () => {
     expect(test.tx.guideAccessAttempt.updateMany).not.toHaveBeenCalled();
   });
 });
+
+// Review round 3, Important. `markNeedsReview` gained a `followResult` write, and that ONE
+// line is what stops a parent being sent the follow gate twice. Deleting it passed the whole
+// 3367-test suite: the action-service harness re-implements the write in its own fake, so
+// those tests prove the CALL and are blind to the write. This file had the same gap for the
+// retryable-review fence one method over, and said so at the time.
+describe("markNeedsReview persists the follow answer it is given", () => {
+  it("writes the definite answer so the review stops being re-enterable", async () => {
+    const test = harness({
+      lockedAttempt: attempt({ state: "checking_follow", lastFollowResult: "unknown" }),
+    });
+
+    const result = await test.repository.markNeedsReview({
+      attemptId: ATTEMPT_ID,
+      expectedState: "checking_follow",
+      checkedAt: NOW,
+      followResult: "non_follower",
+    });
+
+    expect(test.tx.guideAccessAttempt.updateMany).toHaveBeenCalledWith({
+      where: { id: ATTEMPT_ID, state: "checking_follow" },
+      data: {
+        state: "needs_review",
+        lastFollowCheckedAt: NOW,
+        lastFollowResult: "non_follower",
+      },
+    });
+    // And returned, so a caller reasoning about the attempt sees the same fact the row holds.
+    expect(result).toMatchObject({
+      kind: "transitioned",
+      attempt: expect.objectContaining({ lastFollowResult: "non_follower" }),
+    });
+  });
+
+  it("leaves the answer alone when it was never found out", async () => {
+    const test = harness({
+      lockedAttempt: attempt({ state: "checking_follow", lastFollowResult: "unknown" }),
+    });
+
+    await test.repository.markNeedsReview({
+      attemptId: ATTEMPT_ID,
+      expectedState: "checking_follow",
+      checkedAt: NOW,
+    });
+
+    // `unknown` is the whole basis of `isRetryableReview`. Defaulting it to anything else
+    // here would permanently wedge every parent whose live follow check was unavailable.
+    expect(test.tx.guideAccessAttempt.updateMany).toHaveBeenCalledWith({
+      where: { id: ATTEMPT_ID, state: "checking_follow" },
+      data: { state: "needs_review", lastFollowCheckedAt: NOW },
+    });
+  });
+});
