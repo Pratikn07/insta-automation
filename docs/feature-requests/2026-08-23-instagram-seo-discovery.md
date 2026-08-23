@@ -346,21 +346,40 @@ Current bio, visible portion, in order:
 
 **Sleep does not appear anywhere in the profile.** It is 37.2% of all guide demand.
 
-Normalising for how often each topic was actually offered — because raw totals would
-simply reward whichever keyword was attached to the most posts — makes the gap wider,
-not narrower:
+### Correction: the sleep advantage was one viral reel
 
-| Cluster | Keyword rows | Distinct posts | Guide requests | **Per keyword offered** |
-|---|---:|---:|---:|---:|
-| **Sleep** | 14 | 10 | 2,949 | **211** |
-| Food | 51 | 40 | 3,978 | 78 |
-| Potty | 10 | 9 | 772 | 77 |
-| Play & learning | 13 | 8 | 165 | 13 |
+An earlier revision of this section reported sleep converting at 211 guide requests per
+keyword offered, against food's 78, and concluded sleep should lead the profile. **The
+owner challenged it on the grounds that one viral reel could be carrying the whole
+number. That challenge was correct and the conclusion is withdrawn.**
 
-**Sleep was offered the least and converted the best: 2.7× food and 16× play, per offer.**
-Ten posts carrying a sleep keyword produced nearly as many guide requests as forty
-carrying a food keyword. The best-performing post visible on the grid at audit was a
-bedtime reel at 10.1K views, against 967 and 2,705 for its neighbours.
+211-per-keyword was a *mean*, and a mean is exactly the statistic a single outlier
+destroys. Re-attributing every guide request to the post it actually happened on — via
+`event_log.keyword_matched`, which stamps both `mediaId` and `keyword`, so even the
+account-wide `SLEEP` keyword resolves to individual posts:
+
+| Cluster | Posts | Requests | Top post | **Top post's share** | **Median post** |
+|---|---:|---:|---:|---:|---:|
+| Food | 44 | 3,911 | 1,290 | 33.0% | **20** |
+| **Sleep** | 13 | 2,468 | **2,198** | **89.1%** | **13** |
+| Potty | 9 | 728 | 606 | 83.2% | **12** |
+| Play & learning | 8 | 163 | 69 | 42.3% | **11** |
+
+**One reel — "8 hours of sleep from 2 months old", 128K reach, 297K views — carries 89%
+of all sleep demand.** Strip it and sleep is an ordinary topic. On the median post the
+four clusters are nearly indistinguishable (20 / 13 / 12 / 11), and **food leads**.
+
+Food is also the only cluster whose demand is genuinely distributed: 44 posts with the
+top one contributing just 33%. Sleep, potty and play each depend on a single post for
+42–89% of their total. That makes food both the better performer on a typical post and
+the more repeatable bet; sleep's ceiling is real but demonstrably lottery-shaped.
+
+**Revised recommendation:** food should lead the profile, which is roughly what the
+current bio already does with *Easy meals, routines & real moments*. Sleep deserves a
+mention it currently lacks, but not top billing. The original "sleep is absent and that
+is the biggest miss" framing overstated a one-reel effect — the honest version is that
+sleep is missing from a profile where it is one of four comparable topics, and where one
+sleep reel has proven an unusually high ceiling.
 
 Meanwhile the bio's second line — the most prominent line after the opener — is
 *Independent play + No screens*, the **weakest-converting cluster in the account**.
@@ -378,6 +397,82 @@ Neither qualification explains a **complete absence of sleep** from a profile wh
 is the strongest converting topic by a factor of 2.7. Recommend surfacing sleep in both
 the name field and the first bio line, and demoting nothing else below where the evidence
 supports.
+
+---
+
+## Part 2E — Why 35 reels stopped being measured
+
+Diagnosed 2026-08-23. **There is no bug in the snapshot worker.** It is measuring exactly
+what Instagram tells it exists.
+
+### The mechanism
+
+`runSnapshotTick` builds its per-reel loop from `fetchAllReels()`, which filters the live
+Graph `/media` edge. A reel is snapshotted **only if Meta returns it on that tick**. Drop
+out of the media list and measurement stops silently — nothing errors, nothing logs, the
+`ReelMeta` row simply stops receiving snapshots.
+
+### Which of the two possible causes it is
+
+`reel_meta.updated_at` is rewritten by the upsert on every tick a reel appears in the
+list, so comparing it against the last snapshot separates the two candidate causes
+cleanly:
+
+| | Reels | Newest last snapshot | Newest media-list sighting |
+|---|---:|---|---|
+| Still in the media list, measured | 150 | 2026-08-23 | 2026-08-23 |
+| **Gone from the media list, stale** | **35** | 2026-08-20 | 2026-08-20 |
+
+The two dates move together perfectly. **Every stale reel stopped being snapshotted on
+exactly the day it left the media list**, which rules out the insights call failing and
+leaves only one explanation: Meta stopped returning the media. All 35 still carry a
+`/reel/` permalink and none has been reclassified into `feed_post_meta`, so this is not
+the `isReel()` classifier misfiring either.
+
+### They left in batches, on seven dates
+
+| Last seen | Reels vanished | Posts dated |
+|---|---:|---|
+| 2026-07-23 | 9 | 2025-03-16 → 2026-07-05 |
+| 2026-07-24 | 12 | 2026-05-06 → 2026-05-20 |
+| 2026-07-26 | 3 | 2026-06-28 → 2026-07-18 |
+| 2026-07-27 | 1 | 2026-07-27 |
+| 2026-08-14 | 1 | 2026-08-14 |
+| 2026-08-16 | 8 | 2025-04-11 → 2026-05-20 |
+| 2026-08-20 | 1 | 2026-08-01 |
+
+Clustered, not a trickle. The three large batches (21 reels across 23–24 July, 8 on 16
+August) are dominated by older posts, which reads as **deliberate archiving or deletion
+in the Instagram app**. Three singletons vanished on or within days of their own posting
+date — consistent with a post removed shortly after publishing, or with a **Trial Reel**
+that was never shared to followers.
+
+**None of this is recoverable.** Meta will not serve insights for media it no longer
+returns, so the missing history cannot be backfilled.
+
+### The actual defect, which is ours
+
+The worker is behaving correctly. The **app's handling of the aftermath is not**:
+
+- `ReelMeta` has no state for "Meta stopped returning this". The row persists unchanged.
+- The reel keeps appearing in the Leaderboard as though it were live.
+- Its frozen final snapshot silently enters any aggregate — and per `lateDiscoveryCore`,
+  a frozen lifetime reading **understates** the tail, so a reel that was archived while
+  still being found now reads as a reel that died.
+- Nobody is told. A creator archiving eight posts has no idea it moved a number.
+
+**Recommended fix, and it is small:** add a `disappearedAt` timestamp to `ReelMeta`,
+stamped when a reel that was previously in the list is absent from a *successful* media
+fetch. Then (a) exclude those reels from aggregates by default, (b) label them in the
+Leaderboard, and (c) never treat their last snapshot as a lifetime reading.
+
+**The guard that matters most:** only stamp on a fetch that actually succeeded. Meta
+returning an error, an empty page, or a truncated list must never be read as "the account
+deleted 35 posts". `fetchAllMedia` already logs when it hits `MAX_PAGES` with a cursor
+still open; that condition must suppress stamping entirely.
+
+Raise as its own correctness item. It is not SEO work — it is measurement integrity that
+everything else in this document depends on.
 
 ## Part 3 — Implementation in this app
 
