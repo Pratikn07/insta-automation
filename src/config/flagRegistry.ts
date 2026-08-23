@@ -80,9 +80,10 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
     group: "outbound",
     kind: "boolean",
     doesWhat: "Sends the guide itself, step by step, once someone has followed and replied.",
-    affectsWho: "Everyone who completes the unlock steps.",
+    affectsWho:
+      "Everyone who completes the unlock steps through the original path. Parents on the strict-access path are NOT governed by this switch.",
     ifOff:
-      "New guides stop being sent through this path, and anything already queued stops on the next check.",
+      "The original path returns to the previous sender and the retry worker stops on its next check. Strict-access sends are unaffected — use Strict guide access to stop those.",
     pageMayEnable: false,
     pageMayStop: true,
     experimentKey: "guide-delivery-rollout",
@@ -107,9 +108,9 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
     group: "outbound",
     kind: "boolean",
     doesWhat:
-      "Uses the verified Instagram action controls for requesting a guide and checking a follow.",
+      "Uses the verified Instagram action control on the first private reply that offers a guide.",
     affectsWho:
-      "Parents already selected for the controlled strict-access path on supported Instagram clients.",
+      "Parents already selected for the controlled strict-access path on supported Instagram clients. The follow gate and the follow-lag nudge are always plain text and are not affected.",
     ifOff:
       "Guide access uses the reviewed text fallback and never assumes a rich control is supported.",
     pageMayEnable: false,

@@ -26,11 +26,16 @@ export const GUIDE_ACCESS_OUTCOMES = {
   // `omitted_*` are decisions taken before any send.
   cover_gate: ["accepted", "failed", "uncertain", "omitted_not_selected", "omitted_mismatch"],
   // `cover_delivery`: the cover prepended as the first UNIT of a ledger delivery. This
-  // path records only its plan-time decision. The four outcomes partition every delivery
-  // that had a cover to consider, so that funnel adds up and a pairing bug cannot hide
-  // inside a routine rollout omission. The unit's own send outcome is not recorded here —
-  // it is the delivery ledger's business, and inventing a cover exposure for it would put
-  // two different events under one name again.
+  // path records only its plan-time decision. The four outcomes partition every plan
+  // COMPILATION that had a cover to consider, which is not quite per delivery: two
+  // concurrent calls for one trigger both reach the decision before `createOrLoadPlan`'s
+  // `ON CONFLICT DO NOTHING` picks a winner, so one delivery can produce two outcomes; and
+  // the write is fire-and-forget, so a dropped event produces none. Read the denominator as
+  // "decisions taken", not "deliveries created". It is still the right denominator for an
+  // inclusion share, and a pairing bug still cannot hide inside a routine rollout omission.
+  // The unit's own send outcome is not recorded here — it is the delivery ledger's
+  // business, and inventing a cover exposure for it would put two different events under
+  // one name again.
   cover_delivery: [
     "selected",
     "omitted_already_shown",

@@ -451,12 +451,22 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
   // latest-message guard; the action service owns sender, expiry, state, and
   // replay validation. Its visible title must never enter free-text automation.
   if (msg.quick_reply) {
-    await routeGuideAction({
+    const routed = await routeGuideAction({
       payload: msg.quick_reply.payload,
       senderId,
       inboundMessageId: inbound.messageId,
       eventAt: observedAt,
     });
+    // Returning either way is deliberate: falling through would let the reply's visible
+    // title reach keyword matching as if the parent had typed it. But a payload this router
+    // does not recognise was being dropped in total silence, which would make any future
+    // quick reply added elsewhere in the product vanish here with no trace. Say so.
+    if (routed.kind === "ignored") {
+      logger.warn(
+        { errorCode: "quick_reply_payload_unrouted", senderId, mid: msg.mid },
+        "Quick reply payload matched no guide action and was not routed anywhere else",
+      );
+    }
     return;
   }
 

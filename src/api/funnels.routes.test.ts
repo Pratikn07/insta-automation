@@ -88,6 +88,52 @@ describe("GET /api/funnels/:key", () => {
 });
 
 describe("GET /api/funnels/guide-access-metrics", () => {
+  // Parent-delivery Task 7, review round 2. Nothing at this boundary asserted that cover
+  // shares reach a client at all, which is why a SQL allowlist that discarded every cover
+  // row went unnoticed by 53 green backend tests.
+  it("serves both cover groups, JSON-serialized, with their own denominators", async () => {
+    queryRawUnsafe.mockResolvedValue(
+      [
+        ["cover_gate", "accepted", 17],
+        ["cover_gate", "failed", 2],
+        ["cover_gate", "uncertain", 1],
+        ["cover_delivery", "selected", 20],
+        ["cover_delivery", "omitted_not_selected", 80],
+      ].map(([stage, outcome, count]) => ({
+        stage,
+        outcome,
+        count,
+        latencySamples: 0,
+        averageLatencyMs: null,
+        p50LatencyMs: null,
+        p95LatencyMs: null,
+        maxLatencyMs: null,
+      })),
+    );
+
+    const res = await request(makeApp())
+      .get("/api/funnels/guide-access-metrics")
+      .query({ from: "2026-08-01", to: "2026-08-08" });
+
+    expect(res.status).toBe(200);
+    // 17 of the 20 the gate attempted, and 20 of the 100 deliveries that had one to
+    // consider. If these two were ever divided by each other the numbers would not be
+    // percentages of anything.
+    expect(res.body.coverRates.gate.accepted).toEqual({
+      numerator: 17,
+      denominator: 20,
+      pct: 85,
+      belowMinSample: false,
+    });
+    expect(res.body.coverRates.delivery.included).toMatchObject({
+      denominator: 100,
+      pct: 20,
+    });
+    // Aggregate-only all the way to the wire.
+    expect(JSON.stringify(res.body)).not.toMatch(/igUserId|username|http|token/i);
+  });
+
+
   it("returns only aggregate strict-gate counts and latencies", async () => {
     queryRawUnsafe.mockResolvedValueOnce([
       {

@@ -493,8 +493,9 @@ export function createGuideDeliveryService(dependencies: GuideDeliveryServiceDep
         coverResourceId: snapshot.resourceId,
         coverVersionId: snapshot.versionId,
       });
-      // Its own outcome, so the funnel accounts for every eligible delivery exactly once.
-      // Folded into `omitted_not_selected` a pairing bug would read as routine rollout.
+      // Its own outcome, so a pairing bug cannot read as a routine rollout omission.
+      // Counted per plan compilation rather than per delivery: this runs before
+      // `createOrLoadPlan` resolves a concurrent race, and the write is fire-and-forget.
       void recordCover("omitted_mismatch");
       return undefined;
     }

@@ -254,21 +254,26 @@ The three switches stop different things, and only one of them stops a cover.
 | --- | --- | --- |
 | Covers only; guides keep sending | `GUIDE_COVER_DELIVERY_ENABLED=false` | Next decision. Read per delivery through the flags service. |
 | The whole strict follower gate, including its deliveries | `GUIDE_FOLLOW_GATE_V2_ENABLED=false` | Next decision. |
-| The retry worker | `GUIDE_DELIVERY_ENABLED=false` | **Next process restart only.** |
+| The retry worker and the original (non-strict) send path | `GUIDE_DELIVERY_ENABLED=false` | Next worker tick. |
 
 Two things about that table are easy to get wrong under pressure.
 
 `GUIDE_DELIVERY_ENABLED=false` does **not** stop a strict-gate delivery.
 `guideAccessActionService` wires `startGuideDelivery` to `deliverGuideForTrigger`
-directly and never consults `guideDeliveryOwner`, so a V2 delivery sends inline
-regardless of that flag. The flag gates the scheduler in `src/server.ts:196` and the
-legacy-vs-ledger routing in `messageHandler`, and nothing else. To stop strict-gate
-sending, use `GUIDE_FOLLOW_GATE_V2_ENABLED`.
+directly and never consults `guideDeliveryOwner`, so a strict-gate delivery sends
+inline regardless of that flag. The flag gates the legacy-vs-ledger routing in
+`messageHandler` and the worker's own per-tick `isEnabled` check
+(`guideDeliveryWorker.ts:100`), and nothing else. To stop strict-gate sending, use
+`GUIDE_FOLLOW_GATE_V2_ENABLED`.
 
-That also means `GUIDE_DELIVERY_ENABLED=false` while V2 is on is a bad combination
-rather than a safe one: deliveries still start, but no worker exists to retry a unit
-that came back retryable, so they sit unfinished until their messaging window lapses.
-If you intend to stop sending, stop the gate, not the worker.
+One asymmetry: the scheduler is only *created* when `env.GUIDE_DELIVERY_ENABLED` is
+true at boot (`src/server.ts:196`), so turning the flag ON needs a restart while
+turning it OFF takes effect on the next tick. Stopping is immediate; starting is not.
+
+That also means `GUIDE_DELIVERY_ENABLED=false` while the strict gate is on is a bad
+combination rather than a safe one: deliveries still start, but the worker refuses to
+run, so a unit that came back retryable is never retried and the guide sits unfinished
+until its messaging window lapses. If you intend to stop sending, stop the gate.
 
 `GUIDE_COVER_DELIVERY_ROLLOUT_PERCENT` is display-only in the console
 (`pageMayEnable: false`), and `resolvePercent` discards any stored value for such a
@@ -302,7 +307,11 @@ considered while parents were receiving images.
 - `omitted_mismatch` — see "Reconcile" below.
 
 `cover_delivery` — the plan-time decision for a ledger delivery. These four partition
-every delivery that had a cover to consider, so they add up to the whole pool:
+every plan compilation that had a cover to consider, so they add up to the whole pool.
+Read that denominator as "decisions taken", not "deliveries created": two concurrent
+calls for one trigger both reach the decision before the insert picks a winner, and the
+counter write is fire-and-forget, so the count can run slightly above or below the
+delivery count.
 
 - `selected` — the cover went into the plan.
 - `omitted_already_shown` — the parent already accepted this cover during the gate.
