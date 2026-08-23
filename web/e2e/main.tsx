@@ -1188,6 +1188,68 @@ const EDITOR_MESSAGES = [
   },
 ];
 
+const GUIDE_COVER_CATEGORIES = [
+  {
+    id: "10000000-0000-4000-8000-000000000001",
+    slug: "bedtime",
+    name: "Bedtime",
+    collectionLabel: "SLEEP",
+    defaultKicker: "A TINY WIN FOR TONIGHT",
+    templateKey: "warm_editorial_corner_v1",
+    paletteKey: "bedtime_blush_v1",
+    illustrationKey: "bedtime_window_house_v1",
+    designStatus: "ready",
+    nextEditionNumber: 1,
+    sortOrder: 1,
+    createdBy: "creator@tinysoho.com",
+    updatedBy: "creator@tinysoho.com",
+    createdAt: "2026-08-22T12:00:00.000Z",
+    updatedAt: "2026-08-22T12:00:00.000Z",
+  },
+  {
+    id: "10000000-0000-4000-8000-000000000002",
+    slug: "recipes",
+    name: "Recipes",
+    collectionLabel: "RECIPES",
+    defaultKicker: "A LITTLE WIN AT THE TABLE",
+    templateKey: "warm_editorial_corner_v1",
+    paletteKey: "recipes_corner_table_v1",
+    illustrationKey: "recipes_corner_bowl_v1",
+    designStatus: "ready",
+    nextEditionNumber: 4,
+    sortOrder: 2,
+    createdBy: "creator@tinysoho.com",
+    updatedBy: "creator@tinysoho.com",
+    createdAt: "2026-08-22T12:00:00.000Z",
+    updatedAt: "2026-08-22T12:00:00.000Z",
+  },
+] as const;
+
+const GUIDE_COVER_SUGGESTED_COPY = {
+  headline: "Bedtime can feel softer",
+  supportingLine: "A calmer bedtime, one small shift at a time.",
+  closingLine: "Prepared for calmer evenings.",
+  alternativeDescription:
+    "Blush TinySoho sleep guide cover with a moonlit house illustration.",
+};
+
+let guideCoverVersion: Record<string, unknown> | null = null;
+const guideCoverMutations: string[] = [];
+
+function guideCoverPresentation() {
+  if (!guideCoverVersion) return { presentation: null, coverVersions: [] };
+  return {
+    presentation: {
+      resourceId: "resource-1",
+      categoryId: guideCoverVersion.categoryId,
+      editionNumber: guideCoverVersion.editionNumber,
+      createdAt: "2026-08-22T12:00:00.000Z",
+      updatedAt: "2026-08-22T12:00:00.000Z",
+    },
+    coverVersions: [guideCoverVersion],
+  };
+}
+
 const leaderboardRow = (
   mediaId: string,
   caption: string,
@@ -1257,6 +1319,11 @@ function installFetchStub(): void {
       });
     }
 
+    if (activeScenario() === "guide-cover-authoring" && method !== "GET") {
+      guideCoverMutations.push(`${method} ${path}`);
+      capture(JSON.stringify({ mutations: guideCoverMutations }));
+    }
+
     // Home. Added so the follower chart's paper palette can be inspected in a real
     // browser: the marks, the rolling mean, and the provisional dash are SVG
     // rendering decisions that a unit test can only assert about, not look at.
@@ -1292,6 +1359,112 @@ function installFetchStub(): void {
     if (path === "/resources/resource-1" && method === "GET") return json(EDITOR_RESOURCE);
     if (path === "/messages/by-resource/resource-1" && method === "GET") {
       return json(EDITOR_MESSAGES);
+    }
+    if (path === "/presentation-categories" && method === "GET") {
+      return activeScenario() === "guide-cover-authoring"
+        ? json({ categories: GUIDE_COVER_CATEGORIES })
+        : json({ error: "guide_cover_authoring_disabled" }, 403);
+    }
+    if (path === "/resources/resource-1/presentation" && method === "GET") {
+      return activeScenario() === "guide-cover-authoring"
+        ? json(guideCoverPresentation())
+        : json({ error: "guide_cover_authoring_disabled" }, 403);
+    }
+    if (
+      path === "/resources/resource-1/cover-suggestions" &&
+      method === "POST" &&
+      activeScenario() === "guide-cover-authoring"
+    ) {
+      return json({
+        replayed: false,
+        suggestion: { id: "40000000-0000-4000-8000-000000000001" },
+        draft: {
+          categoryId: GUIDE_COVER_CATEGORIES[0].id,
+          templateKey: GUIDE_COVER_CATEGORIES[0].templateKey,
+          paletteKey: GUIDE_COVER_CATEGORIES[0].paletteKey,
+          illustrationKey: GUIDE_COVER_CATEGORIES[0].illustrationKey,
+          ...GUIDE_COVER_SUGGESTED_COPY,
+        },
+      }, 201);
+    }
+    if (
+      path === "/resources/resource-1/cover-versions" &&
+      method === "POST" &&
+      activeScenario() === "guide-cover-authoring"
+    ) {
+      const body = JSON.parse(String(init?.body)) as {
+        id: string;
+        categoryId: string;
+        suggestionId: string | null;
+        copy: typeof GUIDE_COVER_SUGGESTED_COPY;
+      };
+      const category = GUIDE_COVER_CATEGORIES.find(
+        (candidate) => candidate.id === body.categoryId,
+      )!;
+      guideCoverVersion = {
+        id: body.id,
+        resourceId: "resource-1",
+        revision: 1,
+        status: "draft",
+        renderStatus: "not_rendered",
+        categoryId: category.id,
+        editionNumber: null,
+        templateKey: category.templateKey,
+        paletteKey: category.paletteKey,
+        illustrationKey: category.illustrationKey,
+        kicker: category.defaultKicker,
+        collectionLabel: category.collectionLabel,
+        ...body.copy,
+        suggestionId: body.suggestionId,
+        contentHash: null,
+        dmStoragePath: null,
+        genericStoragePath: null,
+        renderErrorCode: null,
+        approvedBy: null,
+        approvedAt: null,
+        publishedBy: null,
+        publishedAt: null,
+        createdAt: "2026-08-22T12:00:00.000Z",
+        updatedAt: "2026-08-22T12:00:00.000Z",
+      };
+      return json({ cover: guideCoverVersion, replayed: false }, 201);
+    }
+    const guideCoverLifecycle =
+      activeScenario() === "guide-cover-authoring"
+        ? /^\/resources\/resource-1\/cover-versions\/([^/]+)\/(approve|publish)$/u.exec(path)
+        : null;
+    if (guideCoverLifecycle && method === "POST" && guideCoverVersion) {
+      const [, coverId, action] = guideCoverLifecycle;
+      if (coverId !== guideCoverVersion.id) return json({ error: "not_found" }, 404);
+      if (action === "approve") {
+        guideCoverVersion = {
+          ...guideCoverVersion,
+          status: "approved",
+          approvedBy: "creator@tinysoho.com",
+          approvedAt: "2026-08-22T12:05:00.000Z",
+          updatedAt: "2026-08-22T12:05:00.000Z",
+        };
+        return json({ ok: true, outcome: "approved" });
+      }
+      guideCoverVersion = {
+        ...guideCoverVersion,
+        status: "published",
+        renderStatus: "ready",
+        editionNumber: 1,
+        contentHash: "a".repeat(64),
+        dmStoragePath: `guide-cover/resource-1/${coverId}/${"a".repeat(64)}/dm.png`,
+        genericStoragePath: `guide-cover/resource-1/${coverId}/${"a".repeat(64)}/generic.png`,
+        publishedBy: "creator@tinysoho.com",
+        publishedAt: "2026-08-22T12:06:00.000Z",
+        updatedAt: "2026-08-22T12:06:00.000Z",
+      };
+      return json({
+        ok: true,
+        outcome: "published",
+        contentHash: "a".repeat(64),
+        editionNumber: 1,
+        path: `guide-cover/resource-1/${coverId}/${"a".repeat(64)}/dm.png`,
+      });
     }
     if (path === "/insights/leaderboard" && method === "GET") {
       return json({ items: INSIGHTS_LEADERBOARD });
@@ -1790,6 +1963,19 @@ export function CapabilitiesScenario() {
   );
 }
 
+function GuideCoverAuthoringScenario() {
+  return (
+    <div className="p-4">
+      <Routes>
+        <Route path="/guides/:id" element={<SequenceEditor />} />
+      </Routes>
+      <pre className="sr-only" data-testid="guide-cover-mutation-log">
+        {useCapturedBody()}
+      </pre>
+    </div>
+  );
+}
+
 export function Harness() {
   const scenario = new URLSearchParams(window.location.search).get("scenario");
   if (scenario === "historical-dashboard") {
@@ -1851,6 +2037,7 @@ export function Harness() {
       </div>
     );
   }
+  if (scenario === "guide-cover-authoring") return <GuideCoverAuthoringScenario />;
   if (scenario === "insights") {
     return (
       <div className="p-4">
@@ -1918,7 +2105,7 @@ const harnessScenario = new URLSearchParams(window.location.search).get("scenari
 const initialEntry =
   harnessScenario?.startsWith("recovery-")
     ? "/dm-recovery"
-    : harnessScenario === "sequence-editor"
+    : harnessScenario === "sequence-editor" || harnessScenario === "guide-cover-authoring"
       ? "/guides/resource-1"
       : harnessScenario === "switch-detail"
         ? // The lone Stop now with no matching start — the safety model made visible.

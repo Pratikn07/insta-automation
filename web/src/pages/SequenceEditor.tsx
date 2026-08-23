@@ -40,6 +40,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { LoadFailed } from "@/components/EmptyState";
+import { GuideCoverPanel } from "@/features/guide-covers/GuideCoverPanel";
 import { MediaUpload } from "@/components/MediaUpload";
 import { PhoneMockup } from "@/components/PhoneMockup";
 import { SaveStatus } from "@/components/SaveStatus";
@@ -276,6 +277,8 @@ function SequenceEditorForm({
           />
         </div>
       </div>
+
+      <GuideCoverPanel resourceId={id} resourceName={name} />
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
         <div className="space-y-3">
