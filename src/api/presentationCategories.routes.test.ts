@@ -64,11 +64,11 @@ describe("presentation category API", () => {
     expect(list).toHaveBeenCalledWith(false);
   });
 
-  it("adds a future dropdown category as needs-review using an approved base direction", async () => {
+  it("derives a stable slug for a reusable category from its name", async () => {
     createOrLoad.mockResolvedValue({
       ok: true,
       replayed: false,
-      value: { id: CATEGORY_ID, slug: "travel" },
+      value: { id: CATEGORY_ID, slug: "feeding-tips" },
     });
 
     const response = await request(app())
@@ -76,11 +76,10 @@ describe("presentation category API", () => {
       .set("idempotency-key", CATEGORY_ID)
       .send({
         id: CATEGORY_ID,
-        slug: "travel",
-        name: "Travel",
-        collectionLabel: "OUTINGS",
-        defaultKicker: "A LITTLE WIN OUT AND ABOUT",
-        basedOnCategorySlug: "montessori-activities",
+        name: "Feeding Tips",
+        collectionLabel: "FEEDING",
+        defaultKicker: "A LITTLE WIN AT THE TABLE",
+        basedOnCategorySlug: "recipes",
         sortOrder: 50,
       })
       .expect(201);
@@ -89,11 +88,11 @@ describe("presentation category API", () => {
     expect(createOrLoad).toHaveBeenCalledWith(
       expect.objectContaining({
         id: CATEGORY_ID,
-        slug: "travel",
+        slug: "feeding-tips",
         designStatus: "needs_review",
-        templateKey: "editorial_right_panel_v1",
-        paletteKey: "montessori_discovery_v1",
-        illustrationKey: "discovery_tray_right_v1",
+        templateKey: "warm_editorial_corner_v1",
+        paletteKey: "recipes_corner_table_v1",
+        illustrationKey: "recipes_corner_bowl_v1",
         createdBy: "creator@tinysoho.com",
       }),
     );

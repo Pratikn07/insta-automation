@@ -21,7 +21,6 @@ const slugSchema = z
 
 const createSchema = z.object({
   id: z.string().uuid(),
-  slug: slugSchema,
   name: z.string().trim().min(1).max(64),
   collectionLabel: z.string(),
   defaultKicker: z.string(),
@@ -44,6 +43,16 @@ const updateSchema = z
   })
   .refine((value) => Object.keys(value).length > 0, { message: "empty_update" });
 
+function categorySlug(name: string): string | null {
+  const slug = name
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/gu, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, "-")
+    .replace(/^-|-$/gu, "");
+  return slugSchema.safeParse(slug).success ? slug : null;
+}
+
 function authoringEnabled(res: Response): boolean {
   if (flags.bool("GUIDE_COVER_AUTHORING_ENABLED")) return true;
   res.status(403).json({ error: "guide_cover_authoring_disabled" });
@@ -63,7 +72,9 @@ presentationCategoriesRouter.post("/", async (req, res) => {
   if (idempotencyKeyMismatch(req.headers["idempotency-key"], parsed.data.id)) {
     return res.status(400).json({ error: "idempotency_key_mismatch" });
   }
-  if (getGuideCoverCategory(parsed.data.slug)) {
+  const slug = categorySlug(parsed.data.name);
+  if (!slug) return res.status(400).json({ error: "invalid_category_slug" });
+  if (getGuideCoverCategory(slug)) {
     return res.status(409).json({ error: "presentation_category_reserved" });
   }
 
@@ -77,7 +88,7 @@ presentationCategoriesRouter.post("/", async (req, res) => {
 
   const result = await categories.createOrLoad({
     id: parsed.data.id,
-    slug: parsed.data.slug,
+    slug,
     name: parsed.data.name,
     collectionLabel: text.value.collectionLabel,
     defaultKicker: text.value.kicker,
