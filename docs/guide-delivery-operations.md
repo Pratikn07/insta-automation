@@ -202,3 +202,161 @@ Because the legacy branch is still present, rollback is a flag change, not a cod
 change. `sequenceSender` and that branch may only be removed after a separate,
 named-owner `LEGACY REMOVAL AUTHORIZED` decision that follows a formal
 declaration of controlled stability.
+
+## The guide cover in a parent's delivery
+
+A published cover image can be prepended to a guide as its first message. This is a
+separate, later feature layered onto the ledger above, with its own switches. Read
+this section as an addendum: everything above still applies.
+
+### What ships inert
+
+`GUIDE_COVER_DELIVERY_ENABLED` defaults false and the cohort defaults to nobody, so
+on any deployment that has not been configured the guide goes out exactly as it did
+before covers existed — only the image is withheld. The migration adds one enum
+value (`generated_cover` on `guide_delivery_unit_origin`) and nothing else; it is
+additive and inert while disabled.
+
+The fence lives in `eligibleCover` (`src/services/guideDeliveryService.ts`), which is
+consulted once, before the plan is compiled. It governs cover inclusion **only** —
+never follower authorization, never which service owns the guide send.
+
+### Safe initial configuration
+
+```text
+GUIDE_COVER_DELIVERY_ENABLED=false
+GUIDE_COVER_DELIVERY_RESOURCE_IDS=
+GUIDE_COVER_DELIVERY_ROLLOUT_PERCENT=0
+```
+
+Like `GUIDE_DELIVERY_ENABLED`, the boolean is parsed by `booleanFlag`. Audit the
+parsed value, never the raw string.
+
+Bucketing is per **trigger**, not per parent: an explicit redelivery draws
+independently of the original request. The percentage is therefore a share of
+triggers, which is the right denominator for "how many sends carried an image" and
+the wrong one for "how many parents saw one".
+
+### Stop
+
+The three switches stop different things, and only one of them stops a cover.
+
+| To stop | Set | Takes effect |
+| --- | --- | --- |
+| Covers only; guides keep sending | `GUIDE_COVER_DELIVERY_ENABLED=false` | Next decision. Read per delivery through the flags service. |
+| The whole strict follower gate, including its deliveries | `GUIDE_FOLLOW_GATE_V2_ENABLED=false` | Next decision. |
+| The retry worker | `GUIDE_DELIVERY_ENABLED=false` | **Next process restart only.** |
+
+Two things about that table are easy to get wrong under pressure.
+
+`GUIDE_DELIVERY_ENABLED=false` does **not** stop a strict-gate delivery.
+`guideAccessActionService` wires `startGuideDelivery` to `deliverGuideForTrigger`
+directly and never consults `guideDeliveryOwner`, so a V2 delivery sends inline
+regardless of that flag. The flag gates the scheduler in `src/server.ts:196` and the
+legacy-vs-ledger routing in `messageHandler`, and nothing else. To stop strict-gate
+sending, use `GUIDE_FOLLOW_GATE_V2_ENABLED`.
+
+That also means `GUIDE_DELIVERY_ENABLED=false` while V2 is on is a bad combination
+rather than a safe one: deliveries still start, but no worker exists to retry a unit
+that came back retryable, so they sit unfinished until their messaging window lapses.
+If you intend to stop sending, stop the gate, not the worker.
+
+`GUIDE_COVER_DELIVERY_ROLLOUT_PERCENT` is display-only in the console
+(`pageMayEnable: false`), and `resolvePercent` discards any stored value for such a
+key. Lowering the percentage in the UI does nothing. The stop is the boolean.
+
+### Inspect
+
+The Funnels page has a **Guide cover** panel. Every percentage there is computed
+server-side in `runGuideAccessMetrics`, so the page and the CLI cannot disagree about
+the arithmetic. An empty panel reading "no cover has been considered yet" is the
+expected state before the pilot starts — it is not a failure.
+
+Four outcomes partition every delivery that reached the cover decision, so they add
+up to the whole pool:
+
+- `selected` — the cover went into the plan. Denominator for the send outcomes below.
+- `omitted_already_shown` — the parent already accepted this cover during the gate.
+  Duplicate suppression working.
+- `omitted_not_selected` — the rollout fence held. Expected to be almost everything
+  during a pilot.
+- `omitted_mismatch` — the snapshot on the access attempt pointed at a *different*
+  guide's cover. See "Reconcile" below.
+
+Then, of `selected`: `accepted`, `failed`, `uncertain`.
+
+Aggregate rows only. Every payload is validated by a `.strict()` schema against a
+closed stage/outcome vocabulary, so a parent identifier, a URL, or a copy string
+cannot reach this surface even by mistake — privacy here is a schema constraint, not
+a convention. To read the raw rows:
+
+```sql
+SELECT payload->>'outcome' AS outcome, count(*)
+FROM event_log
+WHERE kind = 'guide_access_v2_metric'
+  AND payload->>'stage' = 'cover'
+  AND created_at >= now() - interval '7 days'
+GROUP BY 1 ORDER BY 2 DESC;
+```
+
+A mispairing also writes its own operator-visible event, which does carry the ids
+needed to chase it:
+
+```sql
+SELECT payload FROM event_log
+WHERE kind = 'guide_cover_resource_mismatch'
+ORDER BY created_at DESC LIMIT 20;
+```
+
+### Reconcile
+
+**An uncertain cover exposure is never retried automatically.** The exposure is
+fenced pessimistically: `guide_access_attempt.cover_exposure` moves
+`not_shown → uncertain` *before* the send and settles to `accepted` or `failed`
+after. A crash, a duplicate webhook, or a lost provider response therefore leaves
+`uncertain`, and `uncertain` counts as shown. The parent may or may not have received
+the image; sending it again to find out is the one thing that cannot be undone.
+
+The consequence to expect: a parent whose cover exposure is `uncertain` will not be
+sent that cover again on a later delivery in the same attempt. That is deliberate.
+
+An `omitted_mismatch` is a different kind of problem. The delivery went out without
+an image, which is the safe outcome, but the *pairing* is wrong — an attempt is
+carrying a snapshot belonging to another guide. Nothing is owed to the parent; the
+data needs fixing. Find the attempt from the mismatch event's `coverVersionId` and
+`deliveryResourceId`, and check whether the guide's published cover changed between
+the attempt being opened and the delivery running.
+
+To see where attempts stand:
+
+```sql
+SELECT state, cover_exposure, count(*)
+FROM guide_access_attempt
+WHERE created_at >= now() - interval '7 days'
+GROUP BY 1, 2 ORDER BY 3 DESC;
+```
+
+An attempt stuck in `delivering` is released lazily by the parent's next inbound
+message, not by a sweeper — there is no background job that expires one. Until then
+that conversation is treated as mid-flight and the parent's next request is refused.
+If a completion could not settle its attempt, the log carries
+`access_attempt_settle_failed` or `access_attempt_settle_refused`; the latter means
+the active attempt was not the one that delivery belonged to and was correctly left
+alone.
+
+### Rollback
+
+As above: rollback stops *new* sends and never deletes ledger rows.
+
+1. Set `GUIDE_COVER_DELIVERY_ENABLED=false`. Covers stop being attached on the next
+   decision; guides keep sending. No restart is needed.
+2. Leave `guide_access_attempt` rows in place. `cover_exposure = 'uncertain'` is the
+   only record that a parent may have received an image, and deleting it would let a
+   later delivery send that image again.
+3. Do not revert the enum migration. Existing `guide_delivery_unit` rows with
+   `origin = 'generated_cover'` are the record of what was sent; removing the value
+   would orphan them.
+4. A cover already in a `needs_review` delivery is resolved through the same three
+   owner actions as any other unit. The review card labels it "Guide cover" rather
+   than a numbered message, so the owner knows they are deciding about the image and
+   not about an authored step.

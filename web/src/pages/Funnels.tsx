@@ -2,7 +2,13 @@ import { useQuery } from "@tanstack/react-query";
 import { Filter, RefreshCw } from "lucide-react";
 import { useState } from "react";
 import { apiRead } from "@/lib/api";
-import type { DropOffSummary, GuideFollowResult } from "@/lib/types";
+import type {
+  DropOffSummary,
+  GuardedRate,
+  GuideAccessMetricsResult,
+  GuideCoverRates,
+  GuideFollowResult,
+} from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/EmptyState";
@@ -54,6 +60,14 @@ export function Funnels() {
   const dropOffQ = useQuery<DropOffSummary>({
     queryKey: ["funnels", "guide-follow", "no-reply", range.from, range.to],
     queryFn: ({ signal }) => apiRead<DropOffSummary>(`/funnels/guide-follow/drop-off/no-reply${query}`, { signal }),
+  });
+
+  // Cover shares. A separate query on purpose: this endpoint aggregates the guide-access
+  // event log rather than the cohort, and it must not be able to take the main funnel down.
+  const coverQ = useQuery<GuideAccessMetricsResult>({
+    queryKey: ["funnels", "guide-access-metrics", range.from, range.to],
+    queryFn: ({ signal }) =>
+      apiRead<GuideAccessMetricsResult>(`/funnels/guide-access-metrics${query}`, { signal }),
   });
 
   return (
@@ -123,6 +137,113 @@ export function Funnels() {
       ) : (
         <FunnelBody data={funnelQ.data} dropOff={dropOffQ.data} isDropOffLoading={dropOffQ.isLoading} />
       )}
+
+      <CoverPanel
+        rates={coverQ.data?.coverRates}
+        isLoading={coverQ.isLoading}
+        isError={coverQ.isError}
+      />
+    </div>
+  );
+}
+
+/**
+ * Cover delivery shares.
+ *
+ * Its own error and empty states, because the rollout ships OFF: an empty panel is the
+ * normal state for every deployment until someone turns the switch on. Rendering "0%" six
+ * times would read as a feature that is failing rather than one that has not started, and
+ * an operator acting on that would be acting on nothing.
+ */
+function CoverPanel({
+  rates,
+  isLoading,
+  isError,
+}: {
+  rates: GuideCoverRates | undefined;
+  isLoading: boolean;
+  isError: boolean;
+}) {
+  if (isError) {
+    return (
+      <section className="border-t-line border-t pt-8">
+        <SectionHead
+          eyebrow="Guide cover"
+          title="Cover numbers could not be loaded"
+          blurb="This panel aggregates the guide-access event log separately from the cohort above, so the funnel is still accurate. Narrow the window and reload if it keeps failing."
+        />
+      </section>
+    );
+  }
+  if (isLoading || !rates) {
+    return (
+      <section className="border-t-line border-t pt-8">
+        <Skeleton className="h-40 w-full rounded-lg" />
+      </section>
+    );
+  }
+
+  const considered = rates.included.denominator;
+
+  return (
+    <section className="border-t-line border-t pt-8">
+      <SectionHead
+        eyebrow="Guide cover"
+        title="How often the cover reaches a parent"
+        blurb="Inclusion is a share of every delivery that had a cover to consider. The three send outcomes are shares of the covers that actually entered a plan, which is a smaller pool — a cover never put into a plan cannot have been refused by Instagram."
+      />
+
+      {considered === 0 ? (
+        <p className="max-w-[64ch] text-sm text-muted-foreground">
+          No cover has been considered yet in this window. The cover rollout ships off and
+          selects nobody until a guide is allowlisted or a share is set, so this is what a
+          working system looks like before the pilot starts.
+        </p>
+      ) : (
+        <>
+          {rates.mispaired.numerator > 0 ? (
+            <Caveat className="mb-6">
+              <b className="font-medium">
+                {rates.mispaired.numerator.toLocaleString()} cover
+                {rates.mispaired.numerator === 1 ? "" : "s"} belonged to a different guide.
+              </b>{" "}
+              Those deliveries went out without an image, which is the safe outcome, but the
+              pairing itself is wrong — a snapshot on the access attempt points at another
+              guide&apos;s cover. That is a data fault to chase, not a rollout number to read.
+            </Caveat>
+          ) : null}
+
+          <div className="grid gap-8 md:grid-cols-[1.15fr_1fr] md:gap-14">
+            <div>
+              <p className="label-caps">Deliveries carrying a cover</p>
+              <GuardedNumber
+                className="mt-3"
+                rate={rates.included}
+                unit="of the deliveries that had one to consider"
+                size="hero"
+              />
+            </div>
+
+            <dl className="flex flex-col">
+              <CoverKpi label="Cover accepted by Instagram" rate={rates.accepted} />
+              <CoverKpi label="Cover send uncertain" rate={rates.uncertain} />
+              <CoverKpi label="Cover send failed" rate={rates.failed} />
+              <CoverKpi label="Already seen in the gate" rate={rates.duplicateSuppressed} />
+            </dl>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+function CoverKpi({ label, rate }: { label: string; rate: GuardedRate }) {
+  return (
+    <div className="flex items-baseline justify-between gap-4 border-b py-3 first:border-t">
+      <dt className="text-[13px] text-muted-foreground">{label}</dt>
+      <dd className="text-right">
+        <GuardedNumber rate={rate} size="inline" />
+      </dd>
     </div>
   );
 }

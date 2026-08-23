@@ -247,6 +247,7 @@ describe("GET /api/dm-threads/:threadId", () => {
               id: "unit-1",
               position: 0,
               kind: "text",
+              origin: "resource_step",
               status: "sent",
               textSnapshot: "PRIVATE-UNIT-SNAPSHOT",
               mediaUrlSnapshot: "https://private.example.test/media",
@@ -258,6 +259,7 @@ describe("GET /api/dm-threads/:threadId", () => {
               id: "unit-2",
               position: 1,
               kind: "image",
+              origin: "generated_cover",
               status: "uncertain",
               textSnapshot: null,
               mediaUrlSnapshot: "https://private.example.test/media",
@@ -274,7 +276,7 @@ describe("GET /api/dm-threads/:threadId", () => {
           failureCode: "messaging_window_closed",
           createdAt: new Date("2026-08-17T11:00:00.000Z"),
           units: [
-            { id: "unit-3", position: 0, kind: "file", status: "pending" },
+            { id: "unit-3", position: 0, kind: "file", origin: "resource_step", status: "pending" },
           ],
         },
       ],
@@ -292,8 +294,10 @@ describe("GET /api/dm-threads/:threadId", () => {
         sendWindowOpen: true,
         failureCode: null,
         units: [
-          { id: "unit-1", position: 0, kind: "text", status: "sent" },
-          { id: "unit-2", position: 1, kind: "image", status: "uncertain" },
+          { id: "unit-1", position: 0, kind: "text", origin: "resource_step", status: "sent" },
+          // A generated cover is not one of the owner's authored steps, and the review
+          // surface has to be able to say so without ever seeing the cover's URL.
+          { id: "unit-2", position: 1, kind: "image", origin: "generated_cover", status: "uncertain" },
         ],
       },
       {
@@ -304,7 +308,9 @@ describe("GET /api/dm-threads/:threadId", () => {
         sendWindowExpiresAt: "2026-08-17T11:59:59.000Z",
         sendWindowOpen: false,
         failureCode: "messaging_window_closed",
-        units: [{ id: "unit-3", position: 0, kind: "file", status: "pending" }],
+        units: [
+          { id: "unit-3", position: 0, kind: "file", origin: "resource_step", status: "pending" },
+        ],
       },
     ]);
     const serialized = JSON.stringify(response.body.deliveryReviews);
@@ -331,7 +337,7 @@ describe("GET /api/dm-threads/:threadId", () => {
               failureCode: true,
               units: {
                 orderBy: { position: "asc" },
-                select: { id: true, position: true, kind: true, status: true },
+                select: { id: true, position: true, kind: true, origin: true, status: true },
               },
             },
           },

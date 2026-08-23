@@ -31,6 +31,13 @@ describe("guide access safe event recording", () => {
     ["delivery", "failed"],
     ["delivery", "needs_review"],
     ["needs_review", "marked"],
+    ["cover", "selected"],
+    ["cover", "accepted"],
+    ["cover", "failed"],
+    ["cover", "uncertain"],
+    ["cover", "omitted_already_shown"],
+    ["cover", "omitted_not_selected"],
+    ["cover", "omitted_mismatch"],
   ] as const)("records the allowlisted %s/%s aggregate outcome", async (stage, outcome) => {
     const writeEvent = vi.fn().mockResolvedValue(undefined);
     const metrics = createGuideAccessMetrics({ writeEvent });
@@ -196,5 +203,115 @@ describe("guide access aggregate funnel metrics", () => {
       p95: null,
       max: null,
     });
+  });
+});
+
+// Parent-delivery Task 7. Percentages are computed here, not in the page, so the dashboard
+// and `npm run funnel` cannot disagree about the arithmetic.
+describe("guide cover rates", () => {
+  function coverRows(counts: Record<string, number>) {
+    return Object.entries(counts).map(([outcome, count]) => ({
+      stage: "cover",
+      outcome,
+      count: BigInt(count),
+      latencySamples: 0n,
+      averageLatencyMs: null,
+      p50LatencyMs: null,
+      p95LatencyMs: null,
+      maxLatencyMs: null,
+    }));
+  }
+
+  async function run(counts: Record<string, number>) {
+    const query = vi.fn().mockResolvedValue(coverRows(counts));
+    return runGuideAccessMetrics({ $queryRawUnsafe: query } as GuideAccessMetricsDb, {
+      from: FROM,
+      to: TO,
+    });
+  }
+
+  it("rates exposure against the covers that actually entered a plan", async () => {
+    const result = await run({
+      selected: 20,
+      accepted: 17,
+      failed: 2,
+      uncertain: 1,
+      omitted_already_shown: 4,
+      omitted_not_selected: 70,
+      omitted_mismatch: 6,
+    });
+
+    // `selected` is the denominator for exposure: a cover that was never put into a plan
+    // cannot have been accepted or refused by the provider.
+    expect(result.coverRates.accepted).toEqual({
+      numerator: 17,
+      denominator: 20,
+      pct: 85,
+      belowMinSample: false,
+    });
+    expect(result.coverRates.failed).toMatchObject({ denominator: 20, pct: 10 });
+    expect(result.coverRates.uncertain).toMatchObject({ denominator: 20, pct: 5 });
+  });
+
+  it("rates inclusion against every delivery that had a cover to consider", async () => {
+    const result = await run({
+      selected: 20,
+      accepted: 20,
+      failed: 0,
+      uncertain: 0,
+      omitted_already_shown: 4,
+      omitted_not_selected: 70,
+      omitted_mismatch: 6,
+    });
+
+    // 20 + 4 + 70 + 6. The four outcomes partition the pool, so this denominator is the
+    // whole of it and the shares below can be read against each other.
+    expect(result.coverRates.included).toMatchObject({ numerator: 20, denominator: 100, pct: 20 });
+    expect(result.coverRates.duplicateSuppressed).toMatchObject({
+      numerator: 4,
+      denominator: 100,
+      pct: 4,
+    });
+    expect(result.coverRates.mispaired).toMatchObject({ numerator: 6, denominator: 100, pct: 6 });
+  });
+
+  it("withholds a percentage the sample cannot support", async () => {
+    const result = await run({ selected: 3, accepted: 2, failed: 1, uncertain: 0 });
+
+    // A rate over three sends is an invitation to a decision the sample cannot carry.
+    expect(result.coverRates.accepted).toEqual({
+      numerator: 2,
+      denominator: 3,
+      pct: null,
+      belowMinSample: true,
+    });
+  });
+
+  it("reports nothing measured rather than zero when no cover was considered", async () => {
+    const result = await run({});
+
+    expect(result.coverRates.included).toEqual({
+      numerator: 0,
+      denominator: 0,
+      pct: null,
+      belowMinSample: true,
+    });
+  });
+
+  it("does not accumulate a duplicated stage row into an inflated count", async () => {
+    const query = vi.fn().mockResolvedValue([
+      ...coverRows({ selected: 10, accepted: 10 }),
+      // A replayed exposure is fenced by `claimCoverExposure`, so this row should not
+      // exist. If it ever does, the reader must not double it into a 200% acceptance rate.
+      ...coverRows({ accepted: 10 }),
+    ]);
+
+    const result = await runGuideAccessMetrics(
+      { $queryRawUnsafe: query } as GuideAccessMetricsDb,
+      { from: FROM, to: TO },
+    );
+
+    expect(result.counts.cover.accepted).toBe(10);
+    expect(result.coverRates.accepted.pct).toBe(100);
   });
 });

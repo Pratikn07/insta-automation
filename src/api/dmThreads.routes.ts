@@ -33,7 +33,7 @@ const DELIVERY_REVIEW_SELECT = {
   failureCode: true,
   units: {
     orderBy: { position: "asc" },
-    select: { id: true, position: true, kind: true, status: true },
+    select: { id: true, position: true, kind: true, status: true, origin: true },
   },
 } as const;
 
@@ -122,6 +122,10 @@ function serializeDeliveryReview(delivery: SelectedDeliveryReview) {
       position: unit.position,
       kind: unit.kind,
       status: unit.status,
+      // Origin only, so the owner can tell a generated cover from an authored step.
+      // Deliberately still no snapshot, caption, or media URL: a stored cover URL is
+      // immutable but there is no reason for a review surface to render one.
+      origin: unit.origin,
     })),
   };
 }

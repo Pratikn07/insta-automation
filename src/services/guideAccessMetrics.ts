@@ -1,5 +1,9 @@
 import { z } from "zod";
 import { logEvent } from "./eventLogger.js";
+// Same guard and the same minimum sample the rest of the funnels layer uses. One number,
+// so a cover share and a follow share cannot disagree about when a sample is too thin.
+import { guardedRate, type GuardedRate } from "./funnels/types.js";
+import { GUIDE_FOLLOW_MIN_SAMPLE } from "./funnels/guideFollowFunnel.js";
 
 export const GUIDE_ACCESS_METRIC_KIND = "guide_access_v2_metric";
 const MAX_LATENCY_MS = 7 * 24 * 60 * 60 * 1_000;
@@ -126,11 +130,31 @@ type GuideAccessCountMatrix = {
   >;
 };
 
+/**
+ * Cover shares, computed here rather than in the page.
+ *
+ * Two denominators, because they answer different questions. `included`,
+ * `duplicateSuppressed` and `mispaired` are shares of every delivery that HAD a cover to
+ * consider — the four cover omission-or-selection outcomes partition that pool, so the
+ * three read against each other. `accepted`, `failed` and `uncertain` are shares of
+ * `selected` only: a cover that never entered a plan cannot have been accepted or refused
+ * by the provider, and putting it in the denominator would understate every send outcome.
+ */
+export interface GuideCoverRates {
+  included: GuardedRate;
+  accepted: GuardedRate;
+  failed: GuardedRate;
+  uncertain: GuardedRate;
+  duplicateSuppressed: GuardedRate;
+  mispaired: GuardedRate;
+}
+
 export interface GuideAccessMetricsResult {
   key: "guide-access-v2";
   window: { from: string; to: string };
   counts: GuideAccessCountMatrix;
   latenciesMs: Record<GuideAccessMetricStage, GuideAccessLatencySummary>;
+  coverRates: GuideCoverRates;
   totalEvents: number;
   ownerReviewEvents: number;
 }
@@ -288,7 +312,28 @@ export async function runGuideAccessMetrics(
     window: { from: window.from.toISOString(), to: window.to.toISOString() },
     counts,
     latenciesMs,
+    coverRates: coverRates(counts.cover),
     totalEvents,
     ownerReviewEvents: counts.needs_review.marked,
+  };
+}
+
+function coverRates(cover: GuideAccessCountMatrix["cover"]): GuideCoverRates {
+  // Every delivery that reached the cover decision landed in exactly one of these four.
+  const considered =
+    cover.selected +
+    cover.omitted_already_shown +
+    cover.omitted_not_selected +
+    cover.omitted_mismatch;
+  const rate = (numerator: number, denominator: number): GuardedRate =>
+    guardedRate(numerator, denominator, GUIDE_FOLLOW_MIN_SAMPLE);
+
+  return {
+    included: rate(cover.selected, considered),
+    duplicateSuppressed: rate(cover.omitted_already_shown, considered),
+    mispaired: rate(cover.omitted_mismatch, considered),
+    accepted: rate(cover.accepted, cover.selected),
+    failed: rate(cover.failed, cover.selected),
+    uncertain: rate(cover.uncertain, cover.selected),
   };
 }

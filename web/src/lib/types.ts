@@ -729,12 +729,22 @@ export type GuideDeliveryReviewUnitStatus =
   | "uncertain"
   | "cancelled";
 
+export type GuideDeliveryReviewUnitOrigin =
+  | "resource_step"
+  | "redelivery_intro"
+  | "generated_cover";
+
 export interface GuideDeliveryReviewUnit {
   id: string;
   /** Zero-based on the wire; rendered one-based so the owner counts messages. */
   position: number;
   kind: GuideDeliveryReviewUnitKind;
   status: GuideDeliveryReviewUnitStatus;
+  /**
+   * Which part of the guide this unit is. Lets the review surface label a generated
+   * cover distinctly without ever receiving its URL or content.
+   */
+  origin: GuideDeliveryReviewUnitOrigin;
 }
 
 export interface GuideDeliveryReview {
@@ -1189,6 +1199,32 @@ export interface GuardedRate {
   denominator: number;
   pct: number | null;
   belowMinSample: boolean;
+}
+
+/**
+ * Cover shares from `/funnels/guide-access-metrics`.
+ *
+ * Deliberately narrower than the server's `GuideAccessMetricsResult`: the page reads the
+ * shares and nothing else. Every percentage is computed server-side, so this page and
+ * `npm run funnel` cannot disagree about the arithmetic — only about the rendering.
+ *
+ * `included`, `duplicateSuppressed` and `mispaired` are shares of every delivery that had
+ * a cover to consider. `accepted`, `failed` and `uncertain` are shares of the covers that
+ * actually entered a plan, which is a strictly smaller pool.
+ */
+export interface GuideCoverRates {
+  included: GuardedRate;
+  accepted: GuardedRate;
+  failed: GuardedRate;
+  uncertain: GuardedRate;
+  duplicateSuppressed: GuardedRate;
+  mispaired: GuardedRate;
+}
+
+export interface GuideAccessMetricsResult {
+  key: "guide-access-v2";
+  window: { from: string; to: string };
+  coverRates: GuideCoverRates;
 }
 
 export interface FunnelStageCount {

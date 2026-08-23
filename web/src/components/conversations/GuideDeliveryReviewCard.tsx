@@ -214,8 +214,14 @@ function UnitRow({
   return (
     <li className="flex items-center justify-between gap-3 rounded-md border bg-card/40 px-3 py-2">
       <div className="flex min-w-0 items-baseline gap-2">
-        {/* Wire positions are zero-based; owners count from one. */}
-        <span className="text-xs font-medium">Message {unit.position + 1}</span>
+        {/*
+          A generated cover is not one of the owner's authored messages, so numbering it
+          "Message 1" makes the guide look one step longer than it was written. Wire
+          positions are zero-based; authored steps are counted from one.
+        */}
+        <span className="text-xs font-medium">
+          {unit.origin === "generated_cover" ? "Guide cover" : `Message ${unit.position + 1}`}
+        </span>
         <span className="text-xs text-muted-foreground">{unit.kind}</span>
         <span className="truncate text-xs text-muted-foreground">
           {UNIT_STATUS_LABEL[unit.status]}

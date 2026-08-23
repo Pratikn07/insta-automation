@@ -36,6 +36,7 @@ const DELIVERY_ID = "22222222-2222-4222-8222-222222222222";
 
 function unit(overrides: Partial<GuideDeliveryReviewUnit> = {}): GuideDeliveryReviewUnit {
   return {
+    origin: "resource_step",
     id: "33333333-3333-4333-8333-333333333331",
     position: 0,
     kind: "text",
@@ -276,5 +277,62 @@ describe("GuideDeliveryReviewCard", () => {
     // Give any retry a chance to appear before asserting it never came.
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(apiCall).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Parent-delivery Task 7. A generated cover is not one of the owner's authored messages,
+// and the review surface must be able to say so without ever receiving its URL.
+describe("generated cover unit", () => {
+  it("labels a cover unit as a cover, not as a numbered message", () => {
+    renderCard(
+      review({
+        units: [
+          unit({ id: "unit-cover", position: 0, kind: "image", origin: "generated_cover" }),
+          unit({ id: "unit-one", position: 1, kind: "text", origin: "resource_step" }),
+        ],
+      }),
+    );
+
+    expect(screen.getByText("Guide cover")).toBeInTheDocument();
+    // The authored step keeps its own numbering rather than being renumbered by the cover.
+    expect(screen.getByText("Message 2")).toBeInTheDocument();
+    expect(screen.queryByText("Message 1")).not.toBeInTheDocument();
+  });
+
+  it("never renders a cover URL or any snapshot content", () => {
+    renderCard(
+      review({
+        units: [unit({ id: "unit-cover", position: 0, kind: "image", origin: "generated_cover" })],
+      }),
+    );
+
+    // A cover URL is a mutable public path that can be rotated or unpublished. The route
+    // never selects it, so the strongest assertion available here is that nothing
+    // URL-shaped reached the DOM at all.
+    expect(document.body.textContent ?? "").not.toMatch(/https?:\/\//);
+    expect(document.body.textContent ?? "").not.toContain("guide-cover/");
+  });
+
+  it("offers the same three resolutions for an uncertain cover, under the cover label", () => {
+    renderCard(
+      review({
+        units: [
+          unit({
+            id: "unit-cover",
+            position: 0,
+            kind: "image",
+            origin: "generated_cover",
+            status: "uncertain",
+          }),
+        ],
+      }),
+    );
+
+    // "Did the parent see the cover?" is a different judgement from "did they see message
+    // three?", and the owner cannot make it if the row is labelled like an authored step.
+    expect(screen.getByText("Guide cover")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Already delivered" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Retry unit" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Cancel delivery" })).toBeEnabled();
   });
 });
