@@ -1,5 +1,11 @@
 # Raising the Instagram messaging rate limit (Meta verification playbook)
 
+> Rich guide-access controls have a separate controlled-account verification gate.
+> Use the [Meta guide-gate capability verification runbook](meta-guide-gate-capability-runbook.md)
+> and its sanitized [result template](meta-verification/guide-gate-capability-results.template.json)
+> before enabling any quick-reply or generic-template path. Missing or `not_verified`
+> evidence keeps the text fallback in force.
+
 ## Why this matters
 
 Our comment→DM gate uses Instagram's **Private Replies API**. It fails ~92% of the
