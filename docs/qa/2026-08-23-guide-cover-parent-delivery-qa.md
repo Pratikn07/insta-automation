@@ -87,7 +87,7 @@ All executed against commit `64b67d6` on 2026-08-23.
 
 | Gate | Result |
 | --- | --- |
-| Backend suite | **3358 passed / 215 files / 0 skipped** |
+| Backend suite | **3366 passed / 215 files / 0 skipped** |
 | Web suite | **939 passed / 73 files** |
 | Playwright E2E | **120 passed** (desktop + mobile) |
 | Backend typecheck | clean |
@@ -216,6 +216,39 @@ through is deliberate (a reply's visible title must never reach keyword matching
 future quick reply added elsewhere would have vanished without a trace. It now warns.
 Fixed in `c8fd16b`.
 
+**Two more stages were declared and never written.** `gate` and `recheck` were admitted by
+the vocabulary AND by the SQL, and no code produced either — the same permanent zero as the
+`cover` stage, on the same page. `recheck` was the costly one: its outcomes were folded into
+`fresh_check`, so the funnel could not separate "was not following when they asked" from
+"says they followed and Instagram disagrees", which is the number a follow gate lives or
+dies by.
+
+They are now recorded in `guideAccessActionService.authorizeClaimed`, which is the only
+layer that can tell them apart — `context.falseResponse === "lag"` is exactly "this parent
+has already been asked to follow", and an outcome value alone carries no such information.
+Two consequences worth stating:
+
+- The three `fresh_check` entries were removed from `messageHandler`'s outcome map, so
+  nothing double-counts on the keyword branch.
+- The **token** path — a parent tapping "I'm following" — previously recorded no
+  follow-check metric at all, because that map was only consulted on the keyword branch.
+  Both callers of `authorizeClaimed` are now counted, so every follow check in the system is
+  measured for the first time.
+
+`gate.shown` counts only a provably delivered gate: an uncertain send is excluded because it
+would inflate the denominator of every downstream gate conversion, and the follow-lag nudge
+is excluded because it is not the gate.
+
+`gate.profile_action_offered` was **removed** rather than wired. The follower gate is
+unconditionally plain text by design until the capability spike runs, so nothing could ever
+produce it, and a declared-unwritable outcome is the same camouflage as an unread stage.
+
+The structural fix: a test now asserts every stage in the vocabulary has a production
+writer, matched on the two forms that actually record rather than on the bare string —
+`"gate"` also appears as a `falseResponse` value and would have passed a naive grep while
+the stage stayed dead. Verified end-to-end afterwards: all 29 declared (stage, outcome)
+pairs survive the real SQL against real PostgreSQL, and a hostile outcome is still dropped.
+
 ### Test and tooling hygiene
 
 - `guideCoverMigrationContract.test.ts` wrote fixed UUIDs with no cleanup, so against a
@@ -235,6 +268,12 @@ Fixed in `c8fd16b`.
   captured the panel's error state.
 - Nothing at the API boundary asserted that cover shares reach a client at all — which is
   precisely how the discarded-SQL bug survived 53 green backend tests. Added.
+- The **mobile** visual artifact was clipped 510px short, ending mid-blurb with the cover
+  panel's heading and none of its numbers. `fullPage: true` measures the document height
+  once, and the panel resolves on its own later query, so its content landed below the
+  measured height. The capture now waits for one of the panel's four terminal states. This
+  file already documents the same failure for animations, in the same words: a screenshot
+  that misrepresents the page is worse than no screenshot, because it gets believed.
 
 ## Privacy
 
@@ -263,16 +302,6 @@ flagging for a human — `visual-qa.spec.ts:17` hard-codes the dated artifact di
 so any run rewrites a previous report's evidence.
 
 ## Known gaps
-
-**The `gate` and `recheck` metric stages have no writers.** Both are declared in the
-vocabulary and admitted by the SQL, and neither is ever recorded: `recheck` outcomes
-are folded into `fresh_check`, so the funnel cannot distinguish "failed the first
-follow check" from "still not following after claiming to have followed" — the most
-decision-relevant number in a follow gate. This is an unfinished item from
-`2026-08-22-strict-follower-gate-v2` (its line 225), not from the parent-delivery plan.
-Wiring it means threading a distinction through the gate's core path, so it is reported
-rather than done. No surface displays those stages today, so no operator is currently
-misled by their zeroes.
 
 **No UI for the attempt release action.** The runbook gives the query that finds a stuck
 attempt and the curl that clears it, which is enough to run a pilot. A screen for it is
@@ -331,7 +360,7 @@ until the window lapses.
 
 **READY FOR CONTROLLED ROLLOUT**
 
-Every automated pre-production gate passes: 3358 backend tests with zero skips against
+Every automated pre-production gate passes: 3366 backend tests with zero skips against
 a disposable database, 939 web tests, 120 E2E, both typechecks, both builds, lint, the
 bypass detector, and a full migration deploy onto a pristine database.
 
