@@ -272,7 +272,7 @@ describe("generated cover unit", () => {
     expect(units.some((unit) => unit.origin === "generated_cover")).toBe(false);
   });
 
-  it("places the cover ahead of a redelivery intro", () => {
+  it("places the cover after a redelivery intro but before the guide", () => {
     const units = compiled({
       messages: [textStep({ id: "m1", order: 0, body: "Step one" })],
       triggerKind: "explicit_redelivery",
@@ -280,17 +280,19 @@ describe("generated cover unit", () => {
       cover: { versionId: COVER_VERSION, mediaUrl: COVER_URL },
     });
 
-    // Literal reading of the spec's "prepends one image unit". Recorded as an explicit
-    // choice: context-then-image may read better to a parent, and reversing this is a
-    // one-line move plus this assertion.
+    // The spec's "prepends" means ahead of the resource steps, which this satisfies.
+    // Context first: a redelivery that opens with a bare image gives the parent a picture
+    // before any explanation of why it arrived again.
     expect(units.map((unit) => [unit.position, unit.origin])).toEqual([
-      [0, "generated_cover"],
-      [1, "redelivery_intro"],
+      [0, "redelivery_intro"],
+      [1, "generated_cover"],
       [2, "resource_step"],
     ]);
   });
 
-  it.each([{ mediaUrl: "" }, { mediaUrl: null as unknown as string }])(
+  // Only the empty-string case is kept. A `null as unknown as string` variant exercised
+  // the cast, not a state the type system permits, so it proved less than it appeared to.
+  it.each([{ mediaUrl: "" }])(
     "refuses the whole plan when the cover URL is unusable (%o)",
     ({ mediaUrl }) => {
       const result = compileGuideDeliveryPlan({
@@ -340,15 +342,7 @@ describe("generated cover unit", () => {
     expect(first!.contentFingerprint).not.toBe(second!.contentFingerprint);
   });
 
-  it("still fingerprints the same cover identically", () => {
-    const input = {
-      messages: [],
-      triggerKind: "inbound_reply" as const,
-      cover: { versionId: COVER_VERSION, mediaUrl: COVER_URL },
-    };
-
-    expect(compiled(input)[0]!.contentFingerprint).toBe(
-      compiled(input)[0]!.contentFingerprint,
-    );
-  });
+  // Deliberately no "same input hashes the same" test: `contentFingerprint` is a pure
+  // SHA-256 over the same fields, so such a test cannot fail without the hash itself
+  // being non-deterministic. It would report coverage it does not provide.
 });

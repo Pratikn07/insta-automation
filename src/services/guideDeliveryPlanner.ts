@@ -83,19 +83,24 @@ type UnitWithoutPosition = Omit<CompiledGuideDeliveryUnit, "position" | "content
  * cover's version id, two cover versions that happen to resolve to one URL are
  * indistinguishable.
  *
+ * Fields are LENGTH-PREFIXED rather than separated by a sentinel byte. `textSnapshot` is
+ * owner-authored free text, so a NUL inside it could otherwise shift the field boundaries
+ * and let two different units hash alike. A length prefix is unambiguous for any content.
+ *
  * Changing this formula is safe: `content_fingerprint` is written to
  * `guide_delivery_unit` and never read back anywhere in `src/`, so no replay or
  * idempotency behaviour depends on its value.
  */
+function fingerprintField(value: string): string {
+  return `${value.length}:${value}`;
+}
+
 function contentFingerprint(unit: UnitWithoutPosition): string {
   return createHash("sha256")
-    .update(unit.kind)
-    .update("\0")
-    .update(unit.origin)
-    .update("\0")
-    .update(unit.fingerprintIdentity ?? "")
-    .update("\0")
-    .update(unit.textSnapshot ?? unit.mediaUrlSnapshot ?? "")
+    .update(fingerprintField(unit.kind))
+    .update(fingerprintField(unit.origin))
+    .update(fingerprintField(unit.fingerprintIdentity ?? ""))
+    .update(fingerprintField(unit.textSnapshot ?? unit.mediaUrlSnapshot ?? ""))
     .digest("hex");
 }
 
@@ -110,8 +115,22 @@ function appendUnit(units: CompiledGuideDeliveryUnit[], unit: UnitWithoutPositio
 function compileUnits(input: CompileGuideDeliveryPlanInput): CompiledGuideDeliveryUnit[] {
   const units: CompiledGuideDeliveryUnit[] = [];
 
-  // Spec: "the guide planner prepends one image unit". First, therefore ahead of a
-  // redelivery intro. Exactly one, because it is appended once here and nowhere else.
+  if (input.triggerKind === "explicit_redelivery") {
+    appendUnit(units, {
+      resourceMessageId: null,
+      authoredOrder: null,
+      origin: "redelivery_intro",
+      kind: "text",
+      textSnapshot: input.redeliveryIntro ?? null,
+      mediaUrlSnapshot: null,
+    });
+  }
+
+  // Spec: "the guide planner prepends one image unit" — ahead of the resource steps,
+  // which is satisfied here. Placed AFTER a redelivery intro on purpose: leading a
+  // redelivery with a bare image gives the parent a picture before any context, and the
+  // intro explains why they are receiving it again. Exactly one cover, because it is
+  // appended once here and nowhere else.
   if (input.cover && input.coverAlreadyShown !== true) {
     appendUnit(units, {
       resourceMessageId: null,
@@ -121,17 +140,6 @@ function compileUnits(input: CompileGuideDeliveryPlanInput): CompiledGuideDelive
       textSnapshot: null,
       mediaUrlSnapshot: input.cover.mediaUrl,
       fingerprintIdentity: input.cover.versionId,
-    });
-  }
-
-  if (input.triggerKind === "explicit_redelivery") {
-    appendUnit(units, {
-      resourceMessageId: null,
-      authoredOrder: null,
-      origin: "redelivery_intro",
-      kind: "text",
-      textSnapshot: input.redeliveryIntro ?? null,
-      mediaUrlSnapshot: null,
     });
   }
 

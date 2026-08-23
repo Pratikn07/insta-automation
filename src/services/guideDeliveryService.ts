@@ -5,7 +5,7 @@ import { logger } from "../lib/logger.js";
 import { prisma } from "../lib/prisma.js";
 import type { MetaSendResult } from "../types/meta.js";
 import { sendTrackedMedia, sendTrackedText } from "./dmDeliveryService.js";
-import { describeGraphError, type GraphErrorMetadata } from "./eventLogger.js";
+import { describeGraphError, logEvent, type GraphErrorMetadata } from "./eventLogger.js";
 import { finalizeGuideDelivery } from "./guideDeliveryCompletion.js";
 import {
   classifyDirectMessageSend,
@@ -107,6 +107,12 @@ type GuideDeliveryServiceDependencies = {
   ): Promise<"completed" | "already_completed" | "not_ready" | "lost_claim">;
   /** Resolves an immutable storage path to a public URL. No network work. */
   coverMediaUrl(path: string): string;
+  /** Operator-visible record that a snapshotted cover did not match its guide. */
+  recordCoverMismatch(input: {
+    deliveryResourceId: string;
+    coverResourceId: string;
+    coverVersionId: string;
+  }): Promise<void>;
   sleep(ms: number): Promise<void>;
   now(): Date;
   logger: DeliveryLogger;
@@ -467,6 +473,13 @@ export function createGuideDeliveryService(dependencies: GuideDeliveryServiceDep
         },
         "Guide cover belongs to a different guide — delivering without it",
       );
+      // A warn line alone means nobody learns the cover silently stopped being
+      // attached. Recorded as an event so it reaches a surface an operator reads.
+      void dependencies.recordCoverMismatch({
+        deliveryResourceId: input.resourceId,
+        coverResourceId: snapshot.resourceId,
+        coverVersionId: snapshot.versionId,
+      });
       return undefined;
     }
     return {
@@ -573,6 +586,7 @@ const defaultService = createGuideDeliveryService({
   sendMedia: sendTrackedMedia,
   finalizeGuideDelivery,
   coverMediaUrl: publicMediaUrl,
+  recordCoverMismatch: (details) => logEvent("guide_cover_resource_mismatch", details),
   sleep,
   now: () => new Date(),
   logger,

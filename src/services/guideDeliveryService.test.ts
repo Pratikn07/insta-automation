@@ -311,6 +311,7 @@ function harness(options: HarnessOptions = {}) {
   const sleep = vi.fn(async () => undefined);
   const logger = { error: vi.fn(), warn: vi.fn() };
   const coverMediaUrl = vi.fn((path: string) => `https://cdn.example.test/${path}`);
+  const recordCoverMismatch = vi.fn(async () => undefined);
 
   function service() {
     return createGuideDeliveryService({
@@ -320,6 +321,7 @@ function harness(options: HarnessOptions = {}) {
       sendMedia,
       finalizeGuideDelivery,
       coverMediaUrl,
+      recordCoverMismatch,
       sleep,
       now: () => now,
       logger,
@@ -337,6 +339,7 @@ function harness(options: HarnessOptions = {}) {
     sendMedia,
     finalizeGuideDelivery,
     coverMediaUrl,
+    recordCoverMismatch,
     sleep,
     logger,
     order,
@@ -757,6 +760,12 @@ describe("generated cover in the durable plan", () => {
     expect(test.sendMedia).not.toHaveBeenCalled();
     expect(test.sendText).toHaveBeenCalledTimes(1);
     expect(test.logger.warn).toHaveBeenCalled();
+    // A log line alone is not a surface anyone reads; the drop must be recorded.
+    expect(test.recordCoverMismatch).toHaveBeenCalledWith({
+      deliveryResourceId: input.resourceId,
+      coverResourceId: "99999999-9999-4999-8999-999999999999",
+      coverVersionId: COVER.versionId,
+    });
   });
 
   it("omits the cover when the parent already saw it in the gate", async () => {
