@@ -27,6 +27,13 @@ export type GuideCoverCleanupStorageResult =
         | "cover_cleanup_outcome_unknown";
     };
 
+export type GuideCoverCleanupProbeResult =
+  | { ok: true; exists: boolean }
+  | {
+      ok: false;
+      error: "cover_cleanup_invalid_path" | "cover_cleanup_outcome_unknown";
+    };
+
 export interface GuideCoverObjectIdentity {
   path: string;
   resourceId: string;
@@ -83,6 +90,20 @@ export function createGuideCoverCleanupStorage(options: {
   }
 
   return {
+    async probeExact(path: string): Promise<GuideCoverCleanupProbeResult> {
+      if (!exactPath(path)) {
+        return { ok: false, error: "cover_cleanup_invalid_path" };
+      }
+      try {
+        const probe = await bucket.download(path);
+        if (probe.data && !probe.error) return { ok: true, exists: true };
+        if (isNotFound(probe.error)) return { ok: true, exists: false };
+        return { ok: false, error: "cover_cleanup_outcome_unknown" };
+      } catch {
+        return { ok: false, error: "cover_cleanup_outcome_unknown" };
+      }
+    },
+
     async removeExact(path: string): Promise<GuideCoverCleanupStorageResult> {
       if (!exactPath(path)) {
         return { ok: false, error: "cover_cleanup_invalid_path" };

@@ -54,6 +54,29 @@ describe("guide cover cleanup storage", () => {
     expect(storageBucket.download).toHaveBeenCalledWith(PATH);
   });
 
+  it("probes an expired claim before allowing another delete attempt", async () => {
+    const storageBucket = bucket();
+    storageBucket.download.mockResolvedValue({ data: new Blob(["png"]), error: null });
+    const storage = createGuideCoverCleanupStorage({ bucket: storageBucket });
+
+    await expect(storage.probeExact(PATH)).resolves.toEqual({
+      ok: true,
+      exists: true,
+    });
+    expect(storageBucket.remove).not.toHaveBeenCalled();
+  });
+
+  it("reports a confirmed missing object from an exact-path probe", async () => {
+    const storageBucket = bucket();
+    storageBucket.download.mockResolvedValue({ data: null, error: { statusCode: 404 } });
+    const storage = createGuideCoverCleanupStorage({ bucket: storageBucket });
+
+    await expect(storage.probeExact(PATH)).resolves.toEqual({
+      ok: true,
+      exists: false,
+    });
+  });
+
   it("fails closed when deletion and the exact-object probe are both uncertain", async () => {
     const storageBucket = bucket();
     storageBucket.remove.mockRejectedValue(new Error("private provider body"));

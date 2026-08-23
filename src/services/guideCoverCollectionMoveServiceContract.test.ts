@@ -4,6 +4,7 @@ import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { createGuideCoverCollectionMoveService } from "./guideCoverCollectionMoveService.js";
+import { createGuideCoverRepository } from "./guideCoverRepository.js";
 
 const databaseUrl = process.env.MIGRATION_TEST_DATABASE_URL;
 const describeWithDatabase = databaseUrl ? describe.sequential : describe.skip;
@@ -12,6 +13,7 @@ const MONTESSORI_CATEGORY_ID = "10000000-0000-4000-8000-000000000004";
 const TARGET_EDITION = 721;
 const resourceId = randomUUID();
 const coverId = randomUUID();
+const targetDraftId = randomUUID();
 let prisma: PrismaClient;
 
 beforeAll(async () => {
@@ -84,7 +86,9 @@ describeWithDatabase("guide cover collection move PostgreSQL behavior", () => {
 
     const results = await Promise.all([service.move(input), service.move(input)]);
     expect(results.filter((result) => result.ok && result.outcome === "moved")).toHaveLength(1);
-    expect(results.filter((result) => result.ok && result.outcome === "replayed")).toHaveLength(1);
+    expect(results.filter((result) => !result.ok)).toEqual([
+      { ok: false, error: "cover_collection_move_conflict" },
+    ]);
 
     await expect(
       prisma.resourcePresentation.findUnique({ where: { resourceId } }),
@@ -101,6 +105,31 @@ describeWithDatabase("guide cover collection move PostgreSQL behavior", () => {
       categoryId: BEDTIME_CATEGORY_ID,
       editionNumber: 712,
       status: "retired",
+    });
+
+    const repository = createGuideCoverRepository({ database: prisma });
+    await expect(
+      repository.createOrLoadDraft({
+        id: targetDraftId,
+        resourceId,
+        categoryId: MONTESSORI_CATEGORY_ID,
+        templateKey: "editorial_right_panel_v1",
+        paletteKey: "montessori_discovery_v1",
+        illustrationKey: "discovery_tray_right_v1",
+        suggestionId: null,
+        copy: {
+          kicker: "PURPOSEFUL PLAY FOR TODAY",
+          collectionLabel: "LEARNING",
+          headline: "Little hands, growing minds",
+          supportingLine: "A calm invitation to focus, coordinate and discover.",
+          closingLine: "Prepared for curious little minds.",
+          alternativeDescription: "A TinySoho Montessori activity guide cover.",
+        },
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      replayed: false,
+      value: { id: targetDraftId, revision: 2, categoryId: MONTESSORI_CATEGORY_ID },
     });
   });
 });

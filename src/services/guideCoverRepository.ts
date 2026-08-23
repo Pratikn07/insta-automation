@@ -13,7 +13,7 @@ import { prisma } from "../lib/prisma.js";
 
 export type GuideCoverDatabase = Pick<
   PrismaClient,
-  "resourcePresentation" | "resourceCoverVersion"
+  "$transaction" | "resourcePresentation" | "resourceCoverVersion"
 >;
 
 type ReplayResult<T> =
@@ -79,8 +79,7 @@ function isExactPresentationReplay(
 ): boolean {
   return (
     stored.resourceId === input.resourceId &&
-    stored.categoryId === input.categoryId &&
-    stored.editionNumber === null
+    stored.categoryId === input.categoryId
   );
 }
 
@@ -92,7 +91,6 @@ function isExactDraftReplay(
   return (
     stored.id === input.id &&
     stored.resourceId === input.resourceId &&
-    stored.revision === 1 &&
     stored.status === "draft" &&
     stored.renderStatus === "not_rendered" &&
     stored.categoryId === input.categoryId &&
@@ -143,20 +141,80 @@ export function createGuideCoverRepository(options: {
       if (!copy) return { ok: false, error: "cover_invalid_input" };
 
       try {
-        const value = await database.resourceCoverVersion.create({
-          data: {
-            id: input.id,
-            resourceId: input.resourceId,
-            revision: 1,
-            categoryId: input.categoryId,
-            templateKey: input.templateKey,
-            paletteKey: input.paletteKey,
-            illustrationKey: input.illustrationKey,
-            suggestionId: input.suggestionId,
-            ...copy,
-          },
+        const existing = await database.resourceCoverVersion.findUnique({
+          where: { id: input.id },
         });
-        return { ok: true, value, replayed: false };
+        if (existing) {
+          if (!isExactDraftReplay(existing, input, copy)) {
+            return { ok: false, error: "cover_create_conflict" };
+          }
+          return { ok: true, value: existing, replayed: true };
+        }
+
+        return await database.$transaction(async (tx) => {
+          const resourceLock = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT "id"
+            FROM resources
+            WHERE "id" = ${input.resourceId}::uuid
+            FOR UPDATE
+          `;
+          if (resourceLock.length !== 1) {
+            return { ok: false, error: "cover_create_conflict" } as const;
+          }
+
+          // Every new revision for one resource serializes on its presentation.
+          // The edition is backend-owned and may already be allocated; only the
+          // resource/category identity is part of this create intent.
+          const presentationLock = await tx.$queryRaw<Array<{ resourceId: string }>>`
+            SELECT "resource_id" AS "resourceId"
+            FROM resource_presentation
+            WHERE "resource_id" = ${input.resourceId}::uuid
+            FOR UPDATE
+          `;
+          if (presentationLock.length !== 1) {
+            return { ok: false, error: "cover_create_conflict" } as const;
+          }
+          const presentation = await tx.resourcePresentation.findUnique({
+            where: { resourceId: input.resourceId },
+          });
+          if (!presentation || presentation.categoryId !== input.categoryId) {
+            return { ok: false, error: "cover_create_conflict" } as const;
+          }
+
+          const replay = await tx.resourceCoverVersion.findUnique({
+            where: { id: input.id },
+          });
+          if (replay) {
+            if (!isExactDraftReplay(replay, input, copy)) {
+              return { ok: false, error: "cover_create_conflict" } as const;
+            }
+            return { ok: true, value: replay, replayed: true } as const;
+          }
+
+          const allocated = await tx.$queryRaw<Array<{ revision: number }>>`
+            SELECT COALESCE(MAX("revision"), 0) + 1 AS "revision"
+            FROM resource_cover_version
+            WHERE "resource_id" = ${input.resourceId}::uuid
+          `;
+          const revision = allocated[0]?.revision;
+          if (!revision || !Number.isSafeInteger(revision)) {
+            return { ok: false, error: "cover_repository_unavailable" } as const;
+          }
+          const value = await tx.resourceCoverVersion.create({
+            data: {
+              id: input.id,
+              resourceId: input.resourceId,
+              revision,
+              categoryId: input.categoryId,
+              templateKey: input.templateKey,
+              paletteKey: input.paletteKey,
+              illustrationKey: input.illustrationKey,
+              suggestionId: input.suggestionId,
+              ...copy,
+            },
+          });
+          return { ok: true, value, replayed: false } as const;
+        });
       } catch (error) {
         if (!isUniqueViolation(error)) {
           return { ok: false, error: "cover_repository_unavailable" };
@@ -179,16 +237,61 @@ export function createGuideCoverRepository(options: {
       if (!copy) return { ok: false, error: "cover_invalid_input" };
 
       try {
-        const updated = await database.resourceCoverVersion.updateMany({
-          where: {
-            id: input.id,
-            resourceId: input.resourceId,
-            revision: input.expectedRevision,
-            status: "draft",
-          },
-          data: { revision: input.expectedRevision + 1, ...copy },
+        const nextRevision = await database.$transaction(async (tx) => {
+          const resourceLock = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT "id" FROM resources
+            WHERE "id" = ${input.resourceId}::uuid
+            FOR UPDATE
+          `;
+          const presentationLock = await tx.$queryRaw<Array<{ resourceId: string }>>`
+            SELECT "resource_id" AS "resourceId" FROM resource_presentation
+            WHERE "resource_id" = ${input.resourceId}::uuid
+            FOR UPDATE
+          `;
+          const coverLock = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT "id" FROM resource_cover_version
+            WHERE "id" = ${input.id}::uuid
+            FOR UPDATE
+          `;
+          if (
+            resourceLock.length !== 1 ||
+            presentationLock.length !== 1 ||
+            coverLock.length !== 1
+          ) {
+            return null;
+          }
+          const stored = await tx.resourceCoverVersion.findUnique({
+            where: { id: input.id },
+          });
+          if (
+            !stored ||
+            stored.resourceId !== input.resourceId ||
+            stored.revision !== input.expectedRevision ||
+            stored.status !== "draft"
+          ) {
+            return null;
+          }
+          const allocated = await tx.$queryRaw<Array<{ revision: number }>>`
+            SELECT COALESCE(MAX("revision"), 0) + 1 AS "revision"
+            FROM resource_cover_version
+            WHERE "resource_id" = ${input.resourceId}::uuid
+          `;
+          const revision = allocated[0]?.revision;
+          if (!revision || !Number.isSafeInteger(revision)) {
+            throw new Error("cover_revision_allocation_failed");
+          }
+          const updated = await tx.resourceCoverVersion.updateMany({
+            where: {
+              id: input.id,
+              resourceId: input.resourceId,
+              revision: input.expectedRevision,
+              status: "draft",
+            },
+            data: { revision, ...copy },
+          });
+          return updated.count === 1 ? revision : null;
         });
-        if (updated.count !== 1) {
+        if (nextRevision === null) {
           return { ok: false, error: "cover_revision_conflict" };
         }
         const value = await database.resourceCoverVersion.findUnique({
@@ -196,7 +299,10 @@ export function createGuideCoverRepository(options: {
         });
         if (!value) return { ok: false, error: "cover_repository_unavailable" };
         return { ok: true, value };
-      } catch {
+      } catch (error) {
+        if (isUniqueViolation(error)) {
+          return { ok: false, error: "cover_revision_conflict" };
+        }
         return { ok: false, error: "cover_repository_unavailable" };
       }
     },

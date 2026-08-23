@@ -40,7 +40,8 @@ const draft = {
 };
 
 function database() {
-  return {
+  const value = {
+    $queryRaw: vi.fn(),
     resourcePresentation: {
       create: vi.fn(),
       findUnique: vi.fn(),
@@ -51,7 +52,12 @@ function database() {
       findUnique: vi.fn(),
       updateMany: vi.fn(),
     },
+    $transaction: vi.fn(),
   };
+  value.$transaction.mockImplementation(async (operation: (tx: typeof value) => unknown) =>
+    operation(value),
+  );
+  return value;
 }
 
 describe("guide cover repository", () => {
@@ -61,6 +67,24 @@ describe("guide cover repository", () => {
       resourceId: RESOURCE_ID,
       categoryId: CATEGORY_ID,
       editionNumber: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    };
+    db.resourcePresentation.create.mockRejectedValue({ code: "P2002" });
+    db.resourcePresentation.findUnique.mockResolvedValue(presentation);
+    const repository = createGuideCoverRepository({ database: db });
+
+    await expect(
+      repository.createOrLoadPresentation({ resourceId: RESOURCE_ID, categoryId: CATEGORY_ID }),
+    ).resolves.toEqual({ ok: true, value: presentation, replayed: true });
+  });
+
+  it("replays the same assignment after its backend-owned edition was allocated", async () => {
+    const db = database();
+    const presentation = {
+      resourceId: RESOURCE_ID,
+      categoryId: CATEGORY_ID,
+      editionNumber: 17,
       createdAt: NOW,
       updatedAt: NOW,
     };
@@ -93,10 +117,50 @@ describe("guide cover repository", () => {
     ).resolves.toEqual({ ok: true, value: draft, replayed: true });
   });
 
+  it("allocates the next resource revision under the presentation lock", async () => {
+    const db = database();
+    db.resourceCoverVersion.findUnique.mockResolvedValue(null);
+    db.resourcePresentation.findUnique.mockResolvedValue({
+      resourceId: RESOURCE_ID,
+      categoryId: CATEGORY_ID,
+      editionNumber: 1,
+    });
+    db.$queryRaw
+      .mockResolvedValueOnce([{ id: RESOURCE_ID }])
+      .mockResolvedValueOnce([{ resourceId: RESOURCE_ID }])
+      .mockResolvedValueOnce([{ revision: 4 }]);
+    db.resourceCoverVersion.create.mockResolvedValue({ ...draft, revision: 4 });
+    const repository = createGuideCoverRepository({ database: db });
+
+    await expect(
+      repository.createOrLoadDraft({
+        id: COVER_ID,
+        resourceId: RESOURCE_ID,
+        categoryId: CATEGORY_ID,
+        templateKey: draft.templateKey,
+        paletteKey: draft.paletteKey,
+        illustrationKey: draft.illustrationKey,
+        suggestionId: null,
+        copy,
+      }),
+    ).resolves.toMatchObject({ ok: true, replayed: false, value: { revision: 4 } });
+
+    expect(db.resourceCoverVersion.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ id: COVER_ID, revision: 4 }),
+    });
+  });
+
   it("increments the draft revision behind an optimistic fence", async () => {
     const db = database();
+    db.$queryRaw
+      .mockResolvedValueOnce([{ id: RESOURCE_ID }])
+      .mockResolvedValueOnce([{ resourceId: RESOURCE_ID }])
+      .mockResolvedValueOnce([{ id: COVER_ID }])
+      .mockResolvedValueOnce([{ revision: 4 }]);
     db.resourceCoverVersion.updateMany.mockResolvedValue({ count: 1 });
-    db.resourceCoverVersion.findUnique.mockResolvedValue({ ...draft, revision: 2 });
+    db.resourceCoverVersion.findUnique
+      .mockResolvedValueOnce({ ...draft, revision: 1 })
+      .mockResolvedValueOnce({ ...draft, revision: 4 });
     const repository = createGuideCoverRepository({ database: db });
 
     await expect(
@@ -106,7 +170,7 @@ describe("guide cover repository", () => {
         expectedRevision: 1,
         copy: { ...copy, headline: "A gentler bedtime" },
       }),
-    ).resolves.toMatchObject({ ok: true, value: { revision: 2 } });
+    ).resolves.toMatchObject({ ok: true, value: { revision: 4 } });
     expect(db.resourceCoverVersion.updateMany).toHaveBeenCalledWith({
       where: {
         id: COVER_ID,
@@ -114,13 +178,17 @@ describe("guide cover repository", () => {
         revision: 1,
         status: "draft",
       },
-      data: expect.objectContaining({ revision: 2, headline: "A gentler bedtime" }),
+      data: expect.objectContaining({ revision: 4, headline: "A gentler bedtime" }),
     });
   });
 
   it("returns a stable conflict when the draft fence loses", async () => {
     const db = database();
-    db.resourceCoverVersion.updateMany.mockResolvedValue({ count: 0 });
+    db.$queryRaw
+      .mockResolvedValueOnce([{ id: RESOURCE_ID }])
+      .mockResolvedValueOnce([{ resourceId: RESOURCE_ID }])
+      .mockResolvedValueOnce([{ id: COVER_ID }]);
+    db.resourceCoverVersion.findUnique.mockResolvedValue({ ...draft, revision: 2 });
     const repository = createGuideCoverRepository({ database: db });
 
     await expect(

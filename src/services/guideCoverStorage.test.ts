@@ -49,6 +49,38 @@ describe("guide cover storage", () => {
     });
   });
 
+  it("canonicalizes UUID casing before deriving the database-constrained path", async () => {
+    const deps = dependencies();
+    const mixedResourceId = "2aaaaaaa-0000-4000-8000-000000000001";
+    const mixedCoverId = "3bbbbbbb-0000-4000-8000-000000000001";
+    const expectedPath = `guide-cover/${mixedResourceId}/${mixedCoverId}/${HASH}/dm.png`;
+    deps.bucket.upload.mockResolvedValue({ data: { path: expectedPath }, error: null });
+    const storage = createGuideCoverStorage(deps);
+
+    await expect(
+      storage.upload({
+        resourceId: mixedResourceId.toUpperCase(),
+        coverVersionId: mixedCoverId.toUpperCase(),
+        contentHash: HASH,
+        rendition: "dm_cover",
+        png: PNG,
+      }),
+    ).resolves.toMatchObject({ ok: true, value: { path: expectedPath } });
+    expect(deps.bucket.upload).toHaveBeenCalledWith(expectedPath, PNG, expect.any(Object));
+  });
+
+  it("verifies the one canonical immutable object for published replay", async () => {
+    const deps = dependencies();
+    deps.bucket.download.mockResolvedValue({ data: new Blob([PNG]), error: null });
+    const storage = createGuideCoverStorage(deps);
+
+    await expect(storage.verifyExact(PATH)).resolves.toEqual({
+      ok: true,
+      exists: true,
+    });
+    expect(deps.bucket.download).toHaveBeenCalledWith(PATH);
+  });
+
   it("reconciles an existing object only when its bytes match", async () => {
     const deps = dependencies();
     deps.bucket.upload.mockResolvedValue({

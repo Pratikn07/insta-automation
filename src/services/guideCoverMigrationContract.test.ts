@@ -266,12 +266,13 @@ describeWithDatabase("guide cover authoring PostgreSQL contract", () => {
         AND index_row.relname IN (
           'presentation_category_slug_ci_key',
           'presentation_category_name_ci_key',
+          'resource_cover_suggestion_resource_source_key',
           'resource_presentation_category_edition_key',
           'resource_cover_version_one_published_key'
         )
       ORDER BY index_row.relname
     `;
-    expect(indexes).toHaveLength(4);
+    expect(indexes).toHaveLength(5);
     expect(indexes.every((index) => index.unique)).toBe(true);
     expect(
       indexes.find(

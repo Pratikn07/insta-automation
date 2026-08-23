@@ -155,8 +155,8 @@ CREATE INDEX "resource_cover_suggestion_resource_id_idx"
   ON "resource_cover_suggestion" ("resource_id");
 CREATE INDEX "resource_cover_suggestion_category_id_idx"
   ON "resource_cover_suggestion" ("suggested_category_id");
-CREATE INDEX "resource_cover_suggestion_source_hash_idx"
-  ON "resource_cover_suggestion" ("normalized_source_hash");
+CREATE UNIQUE INDEX "resource_cover_suggestion_resource_source_key"
+  ON "resource_cover_suggestion" ("resource_id", "normalized_source_hash");
 
 CREATE TABLE "resource_cover_version" (
   "id" UUID NOT NULL,
@@ -353,7 +353,8 @@ CREATE TABLE "guide_cover_orphan" (
       "last_error_code" IS NULL OR "last_error_code" IN (
         'storage_delete_failed',
         'storage_outcome_unknown',
-        'storage_path_invalid'
+        'storage_path_invalid',
+        'storage_path_live'
       )
     )
 );

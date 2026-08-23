@@ -12,8 +12,11 @@ const NOW = new Date("2026-08-24T20:00:00.000Z");
 const resourceId = randomUUID();
 const firstCoverId = randomUUID();
 const secondCoverId = randomUUID();
+const liveCoverId = randomUUID();
 const firstOrphanId = randomUUID();
 const secondOrphanId = randomUUID();
+const liveOrphanId = randomUUID();
+const liveGenericOrphanId = randomUUID();
 let prisma: PrismaClient;
 
 function coverData(id: string, revision: number) {
@@ -59,8 +62,41 @@ beforeAll(async () => {
   await prisma.resourceCoverVersion.createMany({
     data: [coverData(firstCoverId, 1), coverData(secondCoverId, 2)],
   });
+  const liveHash = "c".repeat(64);
+  const livePath = `guide-cover/${resourceId}/${liveCoverId}/${liveHash}/dm.png`;
+  const liveGenericPath =
+    `guide-cover/${resourceId}/${liveCoverId}/${liveHash}/generic.png`;
+  await prisma.resourceCoverVersion.create({
+    data: {
+      ...coverData(liveCoverId, 3),
+      status: "published",
+      renderStatus: "ready",
+      editionNumber: 91,
+      contentHash: liveHash,
+      dmStoragePath: livePath,
+      genericStoragePath: liveGenericPath,
+      publishedBy: "contract-test",
+      publishedAt: NOW,
+    },
+  });
   await prisma.guideCoverOrphan.create({
     data: orphanData(firstOrphanId, firstCoverId, "a".repeat(64)),
+  });
+  await prisma.guideCoverOrphan.create({
+    data: {
+      ...orphanData(liveOrphanId, liveCoverId, liveHash),
+      storagePath: livePath,
+    },
+  });
+  await prisma.guideCoverOrphan.create({
+    data: {
+      id: liveGenericOrphanId,
+      resourceId,
+      coverVersionId: liveCoverId,
+      contentHash: liveHash,
+      rendition: "generic_card",
+      storagePath: liveGenericPath,
+    },
   });
   await prisma.guideCoverOrphan.create({
     data: {
@@ -84,9 +120,10 @@ afterAll(async () => {
 describeWithDatabase("guide cover orphan cleanup PostgreSQL behavior", () => {
   it("prevents two workers from claiming the same pending orphan", async () => {
     const removeExact = vi.fn(async () => ({ ok: true as const, outcome: "deleted" as const }));
+    const probeExact = vi.fn(async () => ({ ok: true as const, exists: true }));
     const options = {
       database: prisma,
-      storage: { removeExact },
+      storage: { probeExact, removeExact },
       batchSize: 1,
       now: () => NOW,
     };
@@ -98,9 +135,16 @@ describeWithDatabase("guide cover orphan cleanup PostgreSQL behavior", () => {
 
     expect(results.reduce((sum, result) => sum + result.claimed, 0)).toBe(2);
     expect(removeExact).toHaveBeenCalledTimes(2);
+    expect(probeExact).toHaveBeenCalledTimes(1);
     expect(new Set(removeExact.mock.calls.map(([path]) => path)).size).toBe(2);
     await expect(
       prisma.guideCoverOrphan.count({ where: { resourceId, status: "deleted" } }),
     ).resolves.toBe(2);
+    await expect(
+      prisma.guideCoverOrphan.findUnique({ where: { id: liveOrphanId } }),
+    ).resolves.toMatchObject({ status: "pending", storagePath: expect.any(String) });
+    await expect(
+      prisma.guideCoverOrphan.findUnique({ where: { id: liveGenericOrphanId } }),
+    ).resolves.toMatchObject({ status: "pending", storagePath: expect.any(String) });
   });
 });

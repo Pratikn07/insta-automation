@@ -10,6 +10,7 @@ const COVER_ID = "30000000-0000-4000-8000-000000000001";
 function fixture(overrides: Record<string, unknown> = {}) {
   const queryRaw = vi
     .fn()
+    .mockResolvedValueOnce([{ id: RESOURCE_ID }])
     .mockResolvedValueOnce([{ id: TARGET_CATEGORY_ID }])
     .mockResolvedValueOnce([{ resourceId: RESOURCE_ID }])
     .mockResolvedValueOnce([{ id: COVER_ID }])
@@ -61,7 +62,7 @@ const input = {
 };
 
 describe("guide cover collection move", () => {
-  it("locks in target-category, presentation, published-cover order and allocates once", async () => {
+  it("locks in resource, target-category, presentation, published-cover order and allocates once", async () => {
     const { database, tx } = fixture();
     const service = createGuideCoverCollectionMoveService({ database: database as never });
 
@@ -71,7 +72,7 @@ describe("guide cover collection move", () => {
       editionNumber: 4,
     });
 
-    expect(tx.$queryRaw).toHaveBeenCalledTimes(4);
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(5);
     expect(tx.resourcePresentation.updateMany).toHaveBeenCalledWith({
       where: {
         resourceId: RESOURCE_ID,
@@ -93,23 +94,23 @@ describe("guide cover collection move", () => {
     });
   });
 
-  it("returns an exact replay without allocating another edition", async () => {
+  it("fails closed after a completed move instead of guessing that a category cycle is a replay", async () => {
     const { database, tx, presentation, cover } = fixture();
     Object.assign(presentation, { categoryId: TARGET_CATEGORY_ID, editionNumber: 4 });
     Object.assign(cover, { status: "retired" });
     tx.$queryRaw.mockReset()
+      .mockResolvedValueOnce([{ id: RESOURCE_ID }])
       .mockResolvedValueOnce([{ id: TARGET_CATEGORY_ID }])
       .mockResolvedValueOnce([{ resourceId: RESOURCE_ID }])
       .mockResolvedValueOnce([{ id: COVER_ID }]);
     const service = createGuideCoverCollectionMoveService({ database: database as never });
 
     await expect(service.move(input)).resolves.toEqual({
-      ok: true,
-      outcome: "replayed",
-      editionNumber: 4,
+      ok: false,
+      error: "cover_collection_move_conflict",
     });
 
-    expect(tx.$queryRaw).toHaveBeenCalledTimes(3);
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(4);
     expect(tx.resourcePresentation.updateMany).not.toHaveBeenCalled();
     expect(tx.resourceCoverVersion.updateMany).not.toHaveBeenCalled();
   });

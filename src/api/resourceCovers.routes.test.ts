@@ -10,6 +10,7 @@ const findPublished = vi.fn();
 const approve = vi.fn();
 const publish = vi.fn();
 const move = vi.fn();
+const suggest = vi.fn();
 const findCategory = vi.fn();
 const findPresentation = vi.fn();
 const findCovers = vi.fn();
@@ -31,6 +32,9 @@ vi.mock("../services/guideCoverPublishService.js", () => ({
 }));
 vi.mock("../services/guideCoverCollectionMoveService.js", () => ({
   createGuideCoverCollectionMoveService: () => ({ move }),
+}));
+vi.mock("../services/guideCoverSuggestionService.js", () => ({
+  createGuideCoverSuggestionService: () => ({ suggest }),
 }));
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
@@ -99,6 +103,12 @@ beforeEach(() => {
   updatePresentation.mockResolvedValue({ count: 1 });
   findPublished.mockResolvedValue(null);
   move.mockResolvedValue({ ok: true, outcome: "moved", editionNumber: 4 });
+  suggest.mockResolvedValue({
+    ok: true,
+    replayed: false,
+    suggestion: { id: "40000000-0000-4000-8000-000000000001" },
+    draft: { categoryId: CATEGORY_ID, headline: copy.headline },
+  });
   createOrLoadPresentation.mockResolvedValue({
     ok: true,
     replayed: false,
@@ -115,7 +125,7 @@ describe("resource cover API", () => {
       status: "published",
       renderStatus: "ready",
       dmStoragePath:
-        `guide-covers/${RESOURCE_ID}/${COVER_ID}/${"a".repeat(64)}/dm_cover.png`,
+        `guide-cover/${RESOURCE_ID}/${COVER_ID}/${"a".repeat(64)}/dm.png`,
       contentHash: "a".repeat(64),
     });
 
@@ -124,6 +134,9 @@ describe("resource cover API", () => {
       .expect(200);
 
     expect(response.body.cover).toMatchObject({ id: COVER_ID, status: "published" });
+    expect(response.body.cover.publicUrl).toContain(
+      `/guide-cover/${RESOURCE_ID}/${COVER_ID}/${"a".repeat(64)}/dm.png`,
+    );
     expect(response.body.cover).not.toHaveProperty("approvedBy");
   });
 
@@ -136,6 +149,27 @@ describe("resource cover API", () => {
       .expect(403, { error: "guide_cover_authoring_disabled" });
 
     expect(createOrLoadPresentation).not.toHaveBeenCalled();
+  });
+
+  it("creates a bounded suggestion without approving or publishing it", async () => {
+    const suggestionId = "40000000-0000-4000-8000-000000000001";
+    const response = await request(app())
+      .post(`/api/resources/${RESOURCE_ID}/cover-suggestions`)
+      .set("idempotency-key", suggestionId)
+      .send({ id: suggestionId, selectedCategoryId: CATEGORY_ID })
+      .expect(201);
+
+    expect(response.body).toMatchObject({
+      replayed: false,
+      suggestion: { id: suggestionId },
+    });
+    expect(suggest).toHaveBeenCalledWith({
+      id: suggestionId,
+      resourceId: RESOURCE_ID,
+      selectedCategoryId: CATEGORY_ID,
+    });
+    expect(approve).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
   });
 
   it("assigns a ready category before a cover is published", async () => {

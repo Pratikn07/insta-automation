@@ -4,7 +4,7 @@
 
 **Goal:** Build the deterministic, reusable TinySoho cover system and a safe server-only publication pipeline for the four approved categories without exposing drafts or contacting parents.
 
-**Architecture:** Shared pure TypeScript policy, registry, layout, and SVG modules own the approved visual system. PostgreSQL stores reusable categories, resource presentation, immutable suggestions, versioned covers, and orphan cleanup. The server rasterizes approved SVG with pinned fonts and Resvg, uploads content-hashed public PNGs through the service credential, then performs a short concurrency-safe publication transaction.
+**Architecture:** Shared pure TypeScript policy, registry, layout, and SVG modules own the approved visual system. PostgreSQL stores reusable categories, resource presentation, immutable suggestions, versioned covers, and orphan cleanup. The server reserves a stable collection edition, rasterizes approved SVG with pinned fonts and Resvg, records the exact external-write intent, uploads a content-hashed public PNG through the service credential, then performs a short concurrency-safe publication transaction.
 
 **Tech Stack:** TypeScript, Node.js 22, Prisma 5/PostgreSQL/Supabase, `@resvg/resvg-js@2.6.2`, `fontkit@2.0.4`, Source Serif 4 and Inter OFL assets, Express, Zod, Vitest.
 
@@ -19,7 +19,7 @@
 - Never shrink text below the approved minimum to make invalid copy fit. Return `cover_text_overflow`.
 - Drafts remain local/browser-rendered. Only immutable published PNGs enter the existing public bucket.
 - Generated objects use new content-hashed paths and are never overwritten.
-- Rendering and Storage happen outside the short publication transaction. No external call occurs while database rows are locked.
+- Rendering and Storage happen outside all database transactions. Short transactions reserve the edition, record the exact upload intent, and finalize publication; no external call occurs while rows are locked.
 - All new database tables are server-owned: enable RLS, revoke `anon` and `authenticated`, index every foreign key, and expose no direct browser policy.
 - The authoring flag is assistive. All delivery/rich/follow flags remain off throughout this plan.
 
@@ -157,7 +157,7 @@
 - [ ] Write concurrent contract tests for first edition allocation and one-published-cover uniqueness.
 - [ ] Write failing Storage tests for exact path derivation, `upsert: false`, immutable cache control, existing-object reconciliation, non-PNG rejection, and safe errors without provider bodies.
 - [ ] Run focused tests and confirm expected failures.
-- [ ] Implement repositories with short transactions and consistent lock order: category, resource presentation, cover version.
+- [ ] Implement repositories with short transactions and consistent lock order: resource, category when needed, resource presentation, cover version, exact orphan row.
 - [ ] Implement a narrow generated-cover Storage boundary using the existing server Supabase client; do not export service credentials or accept a caller-supplied path.
 - [ ] Rerun unit/contract tests and build.
 - [ ] Commit with `feat: persist and store generated guide covers`.
@@ -173,10 +173,10 @@
 **Interfaces:**
 
 - `approveCoverVersion(input)` validates category readiness, policy/layout, expected revision/status, and owner identity without uploading.
-- `publishCoverVersion(input)` renders and uploads before a short transaction, then allocates an edition if needed and publishes exactly one version.
+- `publishCoverVersion(input)` reserves a stable edition, renders, records the exact pre-upload intent, uploads outside a transaction, and publishes exactly one version in a final short transaction.
 - Stable outcomes include published, exact replay, conflict, not approved, category not ready, overflow, render failed, and storage outcome unknown.
 
-- [ ] Write failing service tests proving render/upload happens before the database publication transaction and no external call occurs while a transaction is open.
+- [ ] Write failing service tests proving no renderer/Storage call occurs while a transaction is open and the durable intent exists before Storage is contacted.
 - [ ] Add tests for exact replay, concurrent first publish, prior-published preservation, failed upload, upload-success/database-failure orphan recording, and no second edition on retry.
 - [ ] Add contract tests proving a new publication atomically retires the previous version and a category move cannot happen through ordinary publish.
 - [ ] Run focused tests and confirm expected failures.
@@ -213,7 +213,7 @@
 - [ ] Add failing collection-move tests proving an explicit expected category/revision is required, the old published cover is retired, a new target-category edition is allocated exactly once, and historical cover snapshots keep their old category/edition.
 - [ ] Run focused route tests and confirm expected failures.
 - [ ] Implement authenticated routers using existing `apiRouter` protection and `asyncRouter` conventions.
-- [ ] Implement collection move as a dedicated short transaction with lock order target category, resource presentation, published cover; ordinary presentation update continues to reject a published category change.
+- [ ] Implement collection move as a dedicated short transaction with lock order resource, target category, resource presentation, published cover; ordinary presentation update continues to reject a published category change. A post-commit retry returns conflict and reconciles through canonical reads rather than an unsafe replay guess.
 - [ ] Add each mutation/reconciliation rule to `docs/client-operation-contracts.md`.
 - [ ] Rerun focused/full backend tests and build.
 - [ ] Commit with `feat: expose guide cover authoring APIs`.

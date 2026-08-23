@@ -976,19 +976,22 @@ sequenceDiagram
     participant S as Supabase Storage
 
     C->>A: Approve & publish expected revision
-    A->>D: Validate draft, category, and current status
+    A->>D: Reserve stable collection edition
     A->>R: Render normalized immutable snapshot
     R-->>A: PNG bytes, dimensions, content hash
+    A->>D: Record exact pre-upload intent and path
     A->>S: Upload new content-hashed paths
     S-->>A: Confirm objects
-    A->>D: Transaction: allocate edition if needed, retire old version, publish new version
+    A->>D: Transaction: retire old version, publish new version
     D-->>A: Published cover snapshot
     A-->>C: Published status and preview URL
 ```
 
 Rules:
 
-- Rendering and upload happen before the short database publication transaction.
+- Edition reservation, rendering, pre-upload intent, Storage upload, and final publication are separate phases. Rendering and Storage happen outside every database transaction.
+- Reserving the edition before rendering makes retries deterministic and prevents two concurrent guides from rendering the same collection number. A failed upload may leave a deliberate edition gap; an edition is never reused.
+- The exact content-hashed path is committed before Storage is contacted. Resource deletion locks the same resource row and refuses while that intent is active.
 - Repeating the same publish request reuses the same cover ID/content hash and
   proves the objects exist; it does not allocate a second edition.
 - The database transaction locks or conditionally updates the expected draft and

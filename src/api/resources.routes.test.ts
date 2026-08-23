@@ -11,7 +11,15 @@ const findKeywords = vi.fn();
 const deleteConversations = vi.fn();
 const deleteKeywords = vi.fn();
 const deleteResource = vi.fn();
+const lockResource = vi.fn();
+const countRenderingCovers = vi.fn();
 const countPublishedCovers = vi.fn();
+const countStoredCoverHistory = vi.fn();
+const countCoverVersions = vi.fn((args: { where?: Record<string, unknown> }) => {
+  if (args.where?.renderStatus === "rendering") return countRenderingCovers(args);
+  if (args.where?.status === "published") return countPublishedCovers(args);
+  return countStoredCoverHistory(args);
+});
 const countCoverOrphans = vi.fn();
 const deleteCoverOrphans = vi.fn();
 const deleteCoverVersions = vi.fn();
@@ -27,7 +35,7 @@ vi.mock("../lib/prisma.js", () => ({
     conversation: { deleteMany: deleteConversations },
     resource: { findMany, findUnique, create, delete: deleteResource },
     resourceCoverVersion: {
-      count: countPublishedCovers,
+      count: countCoverVersions,
       deleteMany: deleteCoverVersions,
     },
     resourceCoverSuggestion: { deleteMany: deleteCoverSuggestions },
@@ -97,13 +105,28 @@ beforeEach(() => {
   deleteConversations.mockReset().mockReturnValue({ operation: "delete-conversations" });
   deleteKeywords.mockReset().mockReturnValue({ operation: "delete-keywords" });
   deleteResource.mockReset().mockReturnValue({ operation: "delete-resource" });
+  lockResource.mockReset().mockResolvedValue([{ id: RESOURCE_ID }]);
+  countRenderingCovers.mockReset().mockResolvedValue(0);
   countPublishedCovers.mockReset().mockResolvedValue(0);
+  countStoredCoverHistory.mockReset().mockResolvedValue(0);
+  countCoverVersions.mockClear();
   countCoverOrphans.mockReset().mockResolvedValue(0);
   deleteCoverOrphans.mockReset().mockReturnValue({ operation: "delete-cover-orphans" });
   deleteCoverVersions.mockReset().mockReturnValue({ operation: "delete-cover-versions" });
   deleteCoverSuggestions.mockReset().mockReturnValue({ operation: "delete-cover-suggestions" });
   deletePresentation.mockReset().mockReturnValue({ operation: "delete-presentation" });
-  transaction.mockReset().mockResolvedValue([]);
+  transaction.mockReset().mockImplementation(async (operation) =>
+    operation({
+      $queryRaw: lockResource,
+      conversation: { deleteMany: deleteConversations },
+      keyword: { findMany: findKeywords, deleteMany: deleteKeywords },
+      guideCoverOrphan: { count: countCoverOrphans, deleteMany: deleteCoverOrphans },
+      resourceCoverVersion: { count: countCoverVersions, deleteMany: deleteCoverVersions },
+      resourceCoverSuggestion: { deleteMany: deleteCoverSuggestions },
+      resourcePresentation: { deleteMany: deletePresentation },
+      resource: { delete: deleteResource },
+    }),
+  );
 });
 
 // The browser cannot always know whether a create arrived. It owns the UUID and
@@ -185,7 +208,7 @@ describe("resource deletion", () => {
       .expect(409);
 
     expect(response.body).toEqual({ error: "resource_has_published_cover" });
-    expect(transaction).not.toHaveBeenCalled();
+    expect(transaction).toHaveBeenCalledOnce();
   });
 
   it("refuses deletion while an exact generated object still needs cleanup", async () => {
@@ -196,20 +219,29 @@ describe("resource deletion", () => {
       .expect(409);
 
     expect(response.body).toEqual({ error: "resource_has_cover_cleanup_pending" });
-    expect(transaction).not.toHaveBeenCalled();
+    expect(transaction).toHaveBeenCalledOnce();
   });
 
   it("preserves retired published-cover history and its immutable object", async () => {
-    countPublishedCovers
-      .mockResolvedValueOnce(0)
-      .mockResolvedValueOnce(1);
+    countStoredCoverHistory.mockResolvedValue(1);
 
     const response = await request(makeApp())
       .delete(`/api/resources/${RESOURCE_ID}`)
       .expect(409);
 
     expect(response.body).toEqual({ error: "resource_has_cover_history" });
-    expect(transaction).not.toHaveBeenCalled();
+    expect(transaction).toHaveBeenCalledOnce();
+  });
+
+  it("refuses deletion while a cover has a durable pre-upload intent", async () => {
+    countRenderingCovers.mockResolvedValue(1);
+
+    const response = await request(makeApp())
+      .delete(`/api/resources/${RESOURCE_ID}`)
+      .expect(409);
+
+    expect(response.body).toEqual({ error: "resource_cover_publish_in_progress" });
+    expect(deleteResource).not.toHaveBeenCalled();
   });
 
   it("rejects deletion before its transaction when immutable delivery history exists", async () => {
@@ -281,6 +313,14 @@ describe("resource deletion", () => {
     expect(deleteCoverSuggestions).toHaveBeenCalledWith({ where: { resourceId: RESOURCE_ID } });
     expect(deletePresentation).toHaveBeenCalledWith({ where: { resourceId: RESOURCE_ID } });
     expect(deleteResource).toHaveBeenCalledWith({ where: { id: RESOURCE_ID } });
+  });
+
+  it("treats deletion of an already-absent guide as an idempotent success", async () => {
+    lockResource.mockResolvedValue([]);
+
+    await request(makeApp()).delete(`/api/resources/${RESOURCE_ID}`).expect(204);
+
+    expect(deleteResource).not.toHaveBeenCalled();
   });
 
   // A restricting reference this route does not yet know about must still not reach

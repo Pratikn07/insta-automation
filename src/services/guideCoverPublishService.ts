@@ -15,14 +15,18 @@ import {
 } from "./guideCoverPngRenderer.js";
 import {
   createGuideCoverStorage,
+  guideCoverStoragePath,
   type GuideCoverStorage,
 } from "./guideCoverStorage.js";
+
+const PUBLICATION_ORPHAN_LEASE_MS = 10 * 60_000;
 
 export type GuideCoverPublishDatabase = Pick<
   PrismaClient,
   | "$transaction"
   | "guideCoverOrphan"
   | "presentationCategory"
+  | "resource"
   | "resourceCoverVersion"
   | "resourcePresentation"
 >;
@@ -128,7 +132,7 @@ function renderFailure(result: Exclude<RenderGuideCoverPngResult, { ok: true }>)
 function exactPublishedReplay(
   cover: ResourceCoverVersion,
   input: GuideCoverPublishInput,
-): PublishGuideCoverResult | null {
+): Extract<PublishGuideCoverResult, { ok: true }> | null {
   if (
     cover.resourceId !== input.resourceId ||
     cover.revision !== input.expectedRevision ||
@@ -260,7 +264,13 @@ export function createGuideCoverPublishService(options: {
         });
         if (!cover) return { ok: false, error: "cover_publish_conflict" };
         const replay = exactPublishedReplay(cover, input);
-        if (replay) return replay;
+        if (replay) {
+          const verified = await storage.verifyExact(replay.path);
+          if (!verified.ok || !verified.exists) {
+            return { ok: false, error: "cover_storage_outcome_unknown" };
+          }
+          return replay;
+        }
         preflight = await loadPreflight(database, input);
       } catch {
         return { ok: false, error: "cover_publish_conflict" };
@@ -270,14 +280,254 @@ export function createGuideCoverPublishService(options: {
         return { ok: false, error: "cover_not_approved" };
       }
 
-      const candidateEdition =
-        preflight.presentation.editionNumber ??
-        preflight.category.nextEditionNumber;
+      // Reserve the collection edition before rendering. This makes the number
+      // stable across concurrent publications and Storage retries; a failed
+      // upload may leave an intentional gap, but an edition is never reused or
+      // silently rendered into two different guides.
+      const editionReservedAt = now();
+      let candidateEdition: number;
+      try {
+        candidateEdition = await database.$transaction(async (tx) => {
+          const resourceLock = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT "id" FROM resources
+            WHERE "id" = ${input.resourceId}::uuid
+            FOR UPDATE
+          `;
+          const categoryLock = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT "id" FROM presentation_category
+            WHERE "id" = ${preflight.category.id}::uuid
+              AND "design_status" = 'ready'
+            FOR UPDATE
+          `;
+          const presentationLock = await tx.$queryRaw<Array<{ resourceId: string }>>`
+            SELECT "resource_id" AS "resourceId" FROM resource_presentation
+            WHERE "resource_id" = ${input.resourceId}::uuid
+            FOR UPDATE
+          `;
+          const coverLock = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT "id" FROM resource_cover_version
+            WHERE "id" = ${input.coverVersionId}::uuid
+            FOR UPDATE
+          `;
+          if (
+            resourceLock.length !== 1 ||
+            categoryLock.length !== 1 ||
+            presentationLock.length !== 1 ||
+            coverLock.length !== 1
+          ) {
+            throw new PublicationConflict();
+          }
+          const [lockedPresentation, lockedCover] = await Promise.all([
+            tx.resourcePresentation.findUnique({
+              where: { resourceId: input.resourceId },
+            }),
+            tx.resourceCoverVersion.findUnique({
+              where: { id: input.coverVersionId },
+            }),
+          ]);
+          if (
+            !lockedPresentation ||
+            lockedPresentation.categoryId !== preflight.category.id ||
+            !lockedCover ||
+            lockedCover.resourceId !== input.resourceId ||
+            lockedCover.categoryId !== preflight.category.id ||
+            lockedCover.revision !== input.expectedRevision ||
+            lockedCover.status !== "approved"
+          ) {
+            throw new PublicationConflict();
+          }
+
+          let editionNumber = lockedPresentation.editionNumber;
+          if (editionNumber === null) {
+            const allocated = await tx.$queryRaw<Array<{ editionNumber: number }>>`
+              UPDATE presentation_category
+              SET "next_edition_number" = "next_edition_number" + 1,
+                  "updated_at" = ${editionReservedAt}
+              WHERE "id" = ${preflight.category.id}::uuid
+                AND "design_status" = 'ready'
+              RETURNING "next_edition_number" - 1 AS "editionNumber"
+            `;
+            editionNumber = allocated[0]?.editionNumber ?? null;
+            if (editionNumber === null) throw new PublicationConflict();
+            const assigned = await tx.resourcePresentation.updateMany({
+              where: {
+                resourceId: input.resourceId,
+                categoryId: preflight.category.id,
+                editionNumber: null,
+              },
+              data: { editionNumber },
+            });
+            if (assigned.count !== 1) throw new PublicationConflict();
+          }
+          if (
+            lockedCover.editionNumber !== null &&
+            lockedCover.editionNumber !== editionNumber
+          ) {
+            throw new PublicationConflict();
+          }
+          const snapped = await tx.resourceCoverVersion.updateMany({
+            where: {
+              id: input.coverVersionId,
+              resourceId: input.resourceId,
+              revision: input.expectedRevision,
+              status: "approved",
+            },
+            data: { editionNumber },
+          });
+          if (snapped.count !== 1) throw new PublicationConflict();
+          return editionNumber;
+        });
+      } catch {
+        try {
+          const reconciled = await database.resourceCoverVersion.findUnique({
+            where: { id: input.coverVersionId },
+          });
+          const replay = reconciled ? exactPublishedReplay(reconciled, input) : null;
+          if (replay) {
+            const verified = await storage.verifyExact(replay.path);
+            if (verified.ok && verified.exists) return replay;
+            return { ok: false, error: "cover_storage_outcome_unknown" };
+          }
+        } catch {
+          return { ok: false, error: "cover_storage_outcome_unknown" };
+        }
+        return { ok: false, error: "cover_publish_conflict" };
+      }
       const rendered = await renderer(
         renderInput(preflight.cover, preflight.category, candidateEdition),
         "dm_cover",
       );
       if (!rendered.ok) return renderFailure(rendered);
+
+      const intendedPath = guideCoverStoragePath({
+        resourceId: input.resourceId,
+        coverVersionId: input.coverVersionId,
+        contentHash: rendered.value.contentHash,
+        rendition: "dm_cover",
+      });
+      if (!intendedPath) {
+        return { ok: false, error: "cover_storage_invalid_identity" };
+      }
+
+      // Persist the exact external-write intent before contacting Storage. The
+      // resource row is the common fence shared with resource deletion, so a
+      // delete either commits first (and this stops before upload) or observes a
+      // rendering cover and refuses. No uploaded object can lose its database
+      // owner in the check-then-upload gap.
+      const publicationClaimedAt = now();
+      let claimedExistingOrphan = false;
+      try {
+        claimedExistingOrphan = await database.$transaction(async (tx) => {
+          const resourceLock = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT "id"
+            FROM resources
+            WHERE "id" = ${input.resourceId}::uuid
+            FOR UPDATE
+          `;
+          if (resourceLock.length !== 1) throw new PublicationConflict();
+
+          const coverLock = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT "id"
+            FROM resource_cover_version
+            WHERE "id" = ${input.coverVersionId}::uuid
+            FOR UPDATE
+          `;
+          if (coverLock.length !== 1) throw new PublicationConflict();
+
+          const [lockedCover, lockedPresentation] = await Promise.all([
+            tx.resourceCoverVersion.findUnique({
+              where: { id: input.coverVersionId },
+            }),
+            tx.resourcePresentation.findUnique({
+              where: { resourceId: input.resourceId },
+            }),
+          ]);
+          if (
+            !lockedCover ||
+            lockedCover.resourceId !== input.resourceId ||
+            lockedCover.categoryId !== preflight.category.id ||
+            lockedCover.revision !== input.expectedRevision ||
+            lockedCover.status !== "approved" ||
+            lockedCover.editionNumber !== candidateEdition ||
+            !lockedPresentation ||
+            lockedPresentation.categoryId !== preflight.category.id ||
+            lockedPresentation.editionNumber !== candidateEdition ||
+            (lockedCover.contentHash !== null &&
+              lockedCover.contentHash !== rendered.value.contentHash) ||
+            (lockedCover.dmStoragePath !== null &&
+              lockedCover.dmStoragePath !== intendedPath)
+          ) {
+            throw new PublicationConflict();
+          }
+
+          const reserved = await tx.resourceCoverVersion.updateMany({
+            where: {
+              id: input.coverVersionId,
+              resourceId: input.resourceId,
+              revision: input.expectedRevision,
+              status: "approved",
+            },
+            data: {
+              renderStatus: "rendering",
+              contentHash: rendered.value.contentHash,
+              dmStoragePath: intendedPath,
+              renderErrorCode: null,
+            },
+          });
+          if (reserved.count !== 1) throw new PublicationConflict();
+
+          const orphanLock = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT "id"
+            FROM guide_cover_orphan
+            WHERE "storage_path" = ${intendedPath}
+            FOR UPDATE
+          `;
+          if (orphanLock.length === 0) return false;
+
+          const orphan = await tx.guideCoverOrphan.findUnique({
+            where: { storagePath: intendedPath },
+          });
+          if (
+            !orphan ||
+            orphan.resourceId !== input.resourceId ||
+            orphan.coverVersionId !== input.coverVersionId ||
+            orphan.contentHash !== rendered.value.contentHash ||
+            orphan.rendition !== "dm_cover" ||
+            orphan.status === "claimed"
+          ) {
+            throw new PublicationConflict();
+          }
+          const claimed = await tx.guideCoverOrphan.updateMany({
+            where: { id: orphan.id, status: orphan.status },
+            data: {
+              status: "claimed",
+              claimedAt: publicationClaimedAt,
+              claimExpiresAt: new Date(
+                publicationClaimedAt.getTime() + PUBLICATION_ORPHAN_LEASE_MS,
+              ),
+              deletedAt: null,
+              lastErrorCode: null,
+            },
+          });
+          if (claimed.count !== 1) throw new PublicationConflict();
+          return true;
+        });
+      } catch {
+        try {
+          const reconciled = await database.resourceCoverVersion.findUnique({
+            where: { id: input.coverVersionId },
+          });
+          const replay = reconciled ? exactPublishedReplay(reconciled, input) : null;
+          if (replay && replay.contentHash === rendered.value.contentHash) {
+            const verified = await storage.verifyExact(replay.path);
+            if (verified.ok && verified.exists) return replay;
+            return { ok: false, error: "cover_storage_outcome_unknown" };
+          }
+        } catch {
+          return { ok: false, error: "cover_storage_outcome_unknown" };
+        }
+        return { ok: false, error: "cover_publish_conflict" };
+      }
 
       const stored = await storage.upload({
         resourceId: input.resourceId,
@@ -286,11 +536,54 @@ export function createGuideCoverPublishService(options: {
         rendition: "dm_cover",
         png: rendered.value.png,
       });
-      if (!stored.ok) return stored;
+      if (!stored.ok) {
+        if (claimedExistingOrphan) {
+          try {
+            await database.guideCoverOrphan.updateMany({
+              where: {
+                storagePath: intendedPath,
+                status: "claimed",
+                claimedAt: publicationClaimedAt,
+              },
+              data: {
+                status: "pending",
+                claimedAt: null,
+                claimExpiresAt: null,
+              },
+            });
+          } catch {
+            return { ok: false, error: "cover_storage_outcome_unknown" };
+          }
+        } else if (stored.error === "cover_storage_outcome_unknown") {
+          try {
+            await database.guideCoverOrphan.create({
+              data: {
+                id: randomUUID(),
+                resourceId: input.resourceId,
+                coverVersionId: input.coverVersionId,
+                contentHash: rendered.value.contentHash,
+                rendition: "dm_cover",
+                storagePath: intendedPath,
+              },
+            });
+          } catch {
+            return { ok: false, error: "cover_storage_outcome_unknown" };
+          }
+        }
+        return stored;
+      }
 
       const publishedAt = now();
       try {
         const result = await database.$transaction(async (tx) => {
+          const resourceLock = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT "id"
+            FROM resources
+            WHERE "id" = ${input.resourceId}::uuid
+            FOR UPDATE
+          `;
+          if (resourceLock.length !== 1) throw new PublicationConflict();
+
           const categoryLock = await tx.$queryRaw<Array<{ id: string }>>`
             SELECT "id"
             FROM presentation_category
@@ -329,36 +622,38 @@ export function createGuideCoverPublishService(options: {
             lockedCover.resourceId !== input.resourceId ||
             lockedCover.categoryId !== preflight.category.id ||
             lockedCover.revision !== input.expectedRevision ||
-            lockedCover.status !== "approved"
+            lockedCover.status !== "approved" ||
+            lockedCover.renderStatus !== "rendering" ||
+            lockedCover.contentHash !== rendered.value.contentHash ||
+            lockedCover.dmStoragePath !== stored.value.path
           ) {
             throw new PublicationConflict();
           }
 
-          let editionNumber = lockedPresentation.editionNumber;
-          if (editionNumber === null) {
-            const allocated = await tx.$queryRaw<Array<{ editionNumber: number }>>`
-              UPDATE presentation_category
-              SET "next_edition_number" = "next_edition_number" + 1,
-                  "updated_at" = ${publishedAt}
-              WHERE "id" = ${preflight.category.id}::uuid
-                AND "next_edition_number" = ${candidateEdition}
-              RETURNING "next_edition_number" - 1 AS "editionNumber"
-            `;
-            if (allocated.length !== 1 || !allocated[0]) {
-              throw new PublicationConflict();
-            }
-            editionNumber = allocated[0].editionNumber;
-            const assigned = await tx.resourcePresentation.updateMany({
-              where: {
-                resourceId: input.resourceId,
-                categoryId: preflight.category.id,
-                editionNumber: null,
-              },
-              data: { editionNumber },
-            });
-            if (assigned.count !== 1) throw new PublicationConflict();
-          }
+          const editionNumber = lockedPresentation.editionNumber;
           if (editionNumber !== candidateEdition) throw new PublicationConflict();
+
+          if (claimedExistingOrphan) {
+            const orphanLock = await tx.$queryRaw<Array<{ id: string }>>`
+              SELECT "id"
+              FROM guide_cover_orphan
+              WHERE "storage_path" = ${stored.value.path}
+              FOR UPDATE
+            `;
+            if (orphanLock.length !== 1) throw new PublicationConflict();
+            const removedClaim = await tx.guideCoverOrphan.deleteMany({
+              where: {
+                storagePath: stored.value.path,
+                resourceId: input.resourceId,
+                coverVersionId: input.coverVersionId,
+                contentHash: rendered.value.contentHash,
+                rendition: "dm_cover",
+                status: "claimed",
+                claimedAt: publicationClaimedAt,
+              },
+            });
+            if (removedClaim.count !== 1) throw new PublicationConflict();
+          }
 
           await tx.resourceCoverVersion.updateMany({
             where: {
@@ -375,6 +670,9 @@ export function createGuideCoverPublishService(options: {
               categoryId: preflight.category.id,
               revision: input.expectedRevision,
               status: "approved",
+              renderStatus: "rendering",
+              contentHash: rendered.value.contentHash,
+              dmStoragePath: stored.value.path,
             },
             data: {
               status: "published",
@@ -411,7 +709,9 @@ export function createGuideCoverPublishService(options: {
             replay.contentHash === rendered.value.contentHash &&
             replay.path === stored.value.path
           ) {
-            return replay;
+            const verified = await storage.verifyExact(replay.path);
+            if (verified.ok && verified.exists) return replay;
+            return { ok: false, error: "cover_storage_outcome_unknown" };
           }
         } catch (error) {
           if (isUniqueViolation(error)) {
@@ -435,16 +735,34 @@ export function createGuideCoverPublishService(options: {
         }
 
         try {
-          await database.guideCoverOrphan.create({
-            data: {
-              id: randomUUID(),
-              resourceId: input.resourceId,
-              coverVersionId: input.coverVersionId,
-              contentHash: rendered.value.contentHash,
-              rendition: "dm_cover",
-              storagePath: stored.value.path,
-            },
-          });
+          if (claimedExistingOrphan) {
+            const released = await database.guideCoverOrphan.updateMany({
+              where: {
+                storagePath: stored.value.path,
+                status: "claimed",
+                claimedAt: publicationClaimedAt,
+              },
+              data: {
+                status: "pending",
+                claimedAt: null,
+                claimExpiresAt: null,
+              },
+            });
+            if (released.count !== 1) {
+              return { ok: false, error: "cover_storage_outcome_unknown" };
+            }
+          } else {
+            await database.guideCoverOrphan.create({
+              data: {
+                id: randomUUID(),
+                resourceId: input.resourceId,
+                coverVersionId: input.coverVersionId,
+                contentHash: rendered.value.contentHash,
+                rendition: "dm_cover",
+                storagePath: stored.value.path,
+              },
+            });
+          }
         } catch {
           return { ok: false, error: "cover_storage_outcome_unknown" };
         }

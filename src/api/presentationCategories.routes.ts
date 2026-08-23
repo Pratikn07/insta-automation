@@ -22,7 +22,7 @@ const slugSchema = z
 const createSchema = z.object({
   id: z.string().uuid(),
   slug: slugSchema,
-  name: z.string().trim().min(1).max(80),
+  name: z.string().trim().min(1).max(64),
   collectionLabel: z.string(),
   defaultKicker: z.string(),
   basedOnCategorySlug: z.enum(
@@ -36,7 +36,7 @@ const createSchema = z.object({
 
 const updateSchema = z
   .object({
-    name: z.string().trim().min(1).max(80).optional(),
+    name: z.string().trim().min(1).max(64).optional(),
     collectionLabel: z.string().optional(),
     defaultKicker: z.string().optional(),
     sortOrder: z.number().int().min(0).max(10_000).nullable().optional(),

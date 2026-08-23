@@ -14,7 +14,7 @@ export interface GuideCoverCollectionMoveInput {
 }
 
 export type GuideCoverCollectionMoveResult =
-  | { ok: true; outcome: "moved" | "replayed"; editionNumber: number }
+  | { ok: true; outcome: "moved"; editionNumber: number }
   | {
       ok: false;
       error:
@@ -53,8 +53,16 @@ export function createGuideCoverCollectionMoveService(options: {
 
       try {
         return await database.$transaction(async (tx) => {
-          // Keep this order stable across every publication mutation: target
-          // category, resource presentation, then the historical cover row.
+          const resourceLock = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT "id"
+            FROM resources
+            WHERE "id" = ${input.resourceId}::uuid
+            FOR UPDATE
+          `;
+          if (resourceLock.length !== 1) throw new CollectionMoveConflict();
+
+          // Keep this order stable across every publication mutation: resource,
+          // target category, presentation, then the historical cover row.
           const targetLock = await tx.$queryRaw<Array<{ id: string }>>`
             SELECT "id"
             FROM presentation_category
@@ -95,24 +103,6 @@ export function createGuideCoverCollectionMoveService(options: {
           ]);
           if (!target || target.designStatus !== "ready" || !presentation || !historicalCover) {
             throw new CollectionMoveConflict();
-          }
-
-          // The first request may have committed while its HTTP response was
-          // lost. The historical cover snapshot is the proof: it kept the old
-          // category/edition and became retired while the presentation moved.
-          if (
-            presentation.categoryId === input.targetCategoryId &&
-            presentation.editionNumber !== null &&
-            historicalCover.resourceId === input.resourceId &&
-            historicalCover.categoryId === input.expectedCategoryId &&
-            historicalCover.revision === input.expectedPublishedCoverRevision &&
-            historicalCover.status === "retired"
-          ) {
-            return {
-              ok: true,
-              outcome: "replayed",
-              editionNumber: presentation.editionNumber,
-            } as const;
           }
 
           if (

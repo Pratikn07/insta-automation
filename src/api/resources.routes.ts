@@ -153,50 +153,71 @@ resourcesRouter.delete("/:id", async (req, res, next) => {
     });
   }
 
-  // A published cover is immutable public history. Deleting the resource would
-  // either strand its public PNG or require a broad Storage cleanup, neither of
-  // which is an acceptable side effect of an ordinary guide delete.
-  const publishedCoverCount = await prisma.resourceCoverVersion.count({
-    where: { resourceId: id, status: "published" },
-  });
-  if (publishedCoverCount > 0) {
-    return res.status(409).json({ error: "resource_has_published_cover" });
-  }
-
-  const storedCoverHistoryCount = await prisma.resourceCoverVersion.count({
-    where: { resourceId: id, dmStoragePath: { not: null } },
-  });
-  if (storedCoverHistoryCount > 0) {
-    return res.status(409).json({ error: "resource_has_cover_history" });
-  }
-
-  // Orphans name exact uploaded objects that the cleanup worker must reconcile.
-  // Keep their resource/cover foreign keys intact until that exact-path cleanup
-  // has settled; never replace this with a bucket-prefix delete.
-  const pendingCoverCleanupCount = await prisma.guideCoverOrphan.count({
-    where: { resourceId: id, status: { not: "deleted" } },
-  });
-  if (pendingCoverCleanupCount > 0) {
-    return res.status(409).json({ error: "resource_has_cover_cleanup_pending" });
-  }
-
-  const keywordIds = (
-    await prisma.keyword.findMany({ where: { resourceId: id }, select: { id: true } })
-  ).map((k) => k.id);
   try {
-    await prisma.$transaction([
-      prisma.conversation.deleteMany({ where: { keywordId: { in: keywordIds } } }),
-      prisma.keyword.deleteMany({ where: { resourceId: id } }),
-      prisma.guideCoverOrphan.deleteMany({
+    const deletion = await prisma.$transaction(async (tx) => {
+      // Publication reserves this same row before any Storage write. Whichever
+      // operation obtains the lock first determines the safe outcome: a delete
+      // that commits makes publication stop before upload; a publication intent
+      // makes deletion observe `rendering` and refuse.
+      const locked = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id"
+        FROM resources
+        WHERE "id" = ${id}::uuid
+        FOR UPDATE
+      `;
+      if (locked.length === 0) return { error: null } as const;
+      if (locked.length !== 1) throw new Error("resource_lock_identity_conflict");
+
+      const renderingCoverCount = await tx.resourceCoverVersion.count({
+        where: { resourceId: id, renderStatus: "rendering" },
+      });
+      if (renderingCoverCount > 0) {
+        return { error: "resource_cover_publish_in_progress" } as const;
+      }
+
+      // A published cover is immutable public history. Stored retired covers are
+      // history too: an ordinary guide delete never removes their exact objects.
+      const publishedCoverCount = await tx.resourceCoverVersion.count({
+        where: { resourceId: id, status: "published" },
+      });
+      if (publishedCoverCount > 0) {
+        return { error: "resource_has_published_cover" } as const;
+      }
+      const storedCoverHistoryCount = await tx.resourceCoverVersion.count({
+        where: { resourceId: id, dmStoragePath: { not: null } },
+      });
+      if (storedCoverHistoryCount > 0) {
+        return { error: "resource_has_cover_history" } as const;
+      }
+
+      // Orphans name exact uploaded objects that the cleanup worker must
+      // reconcile. Keep their foreign keys intact until cleanup has settled.
+      const pendingCoverCleanupCount = await tx.guideCoverOrphan.count({
+        where: { resourceId: id, status: { not: "deleted" } },
+      });
+      if (pendingCoverCleanupCount > 0) {
+        return { error: "resource_has_cover_cleanup_pending" } as const;
+      }
+
+      const keywordIds = (
+        await tx.keyword.findMany({ where: { resourceId: id }, select: { id: true } })
+      ).map((keyword) => keyword.id);
+      await tx.conversation.deleteMany({ where: { keywordId: { in: keywordIds } } });
+      await tx.keyword.deleteMany({ where: { resourceId: id } });
+      await tx.guideCoverOrphan.deleteMany({
         where: { resourceId: id, status: "deleted" },
-      }),
-      // Only unpublished database drafts are removed. Generated Storage objects
-      // are never created for drafts, and no Storage call belongs in this route.
-      prisma.resourceCoverVersion.deleteMany({ where: { resourceId: id } }),
-      prisma.resourceCoverSuggestion.deleteMany({ where: { resourceId: id } }),
-      prisma.resourcePresentation.deleteMany({ where: { resourceId: id } }),
-      prisma.resource.delete({ where: { id } }),
-    ]);
+      });
+      // Only drafts without any Storage intent reach here. No bucket-prefix or
+      // other Storage call belongs in this route.
+      await tx.resourceCoverVersion.deleteMany({ where: { resourceId: id } });
+      await tx.resourceCoverSuggestion.deleteMany({ where: { resourceId: id } });
+      await tx.resourcePresentation.deleteMany({ where: { resourceId: id } });
+      await tx.resource.delete({ where: { id } });
+      return { error: null } as const;
+    });
+    if (deletion.error) {
+      return res.status(409).json({ error: deletion.error });
+    }
   } catch (error) {
     // Backstop for a restricting reference this route does not yet know about, so
     // the next one is a refusal that says "something still points at this" rather

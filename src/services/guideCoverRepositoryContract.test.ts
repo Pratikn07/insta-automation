@@ -22,6 +22,8 @@ let prisma: PrismaClient;
 let repository: ReturnType<typeof createGuideCoverRepository>;
 const resourceId = randomUUID();
 const coverId = randomUUID();
+const replacementCoverId = randomUUID();
+const siblingDraftId = randomUUID();
 
 beforeAll(async () => {
   if (!databaseUrl) return;
@@ -63,6 +65,17 @@ describeWithDatabase("guide cover repository PostgreSQL behavior", () => {
         categoryId: POTTY_CATEGORY_ID,
       }),
     ).resolves.toEqual({ ok: false, error: "cover_create_conflict" });
+
+    await prisma.resourcePresentation.update({
+      where: { resourceId },
+      data: { editionNumber: 17 },
+    });
+    await expect(
+      repository.createOrLoadPresentation({
+        resourceId,
+        categoryId: BEDTIME_CATEGORY_ID,
+      }),
+    ).resolves.toMatchObject({ ok: true, replayed: true, value: { editionNumber: 17 } });
   });
 
   it("creates and exactly replays one UUID-owned draft", async () => {
@@ -117,7 +130,7 @@ describeWithDatabase("guide cover repository PostgreSQL behavior", () => {
       data: {
         status: "published",
         renderStatus: "ready",
-        editionNumber: 1,
+        editionNumber: 17,
         contentHash,
         dmStoragePath: `guide-cover/${resourceId}/${coverId}/${contentHash}/dm.png`,
         approvedBy: "contract-test",
@@ -141,5 +154,58 @@ describeWithDatabase("guide cover repository PostgreSQL behavior", () => {
         copy,
       }),
     ).resolves.toEqual({ ok: false, error: "cover_revision_conflict" });
+  });
+
+  it("allocates a replacement revision after the first cover is published", async () => {
+    await expect(
+      repository.createOrLoadDraft({
+        id: replacementCoverId,
+        resourceId,
+        categoryId: BEDTIME_CATEGORY_ID,
+        templateKey: "warm_editorial_corner_v1",
+        paletteKey: "bedtime_blush_v1",
+        illustrationKey: "bedtime_window_house_v1",
+        suggestionId: null,
+        copy: { ...copy, headline: "A gentler evening" },
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      replayed: false,
+      value: { id: replacementCoverId, revision: 3, status: "draft" },
+    });
+  });
+
+  it("saves an older draft at the next free resource revision", async () => {
+    await expect(
+      repository.createOrLoadDraft({
+        id: siblingDraftId,
+        resourceId,
+        categoryId: BEDTIME_CATEGORY_ID,
+        templateKey: "warm_editorial_corner_v1",
+        paletteKey: "bedtime_blush_v1",
+        illustrationKey: "bedtime_window_house_v1",
+        suggestionId: null,
+        copy: { ...copy, headline: "A quieter bedtime" },
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      replayed: false,
+      value: { id: siblingDraftId, revision: 4, status: "draft" },
+    });
+
+    await expect(
+      repository.saveDraft({
+        id: replacementCoverId,
+        resourceId,
+        expectedRevision: 3,
+        copy: { ...copy, headline: "A softer bedtime ritual" },
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: { id: replacementCoverId, revision: 5, status: "draft" },
+    });
+    await expect(
+      prisma.resourceCoverVersion.findUnique({ where: { id: siblingDraftId } }),
+    ).resolves.toMatchObject({ revision: 4 });
   });
 });

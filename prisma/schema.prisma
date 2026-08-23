@@ -188,7 +188,7 @@ model ResourceCoverSuggestion {
 
   @@index([resourceId])
   @@index([suggestedCategoryId])
-  @@index([normalizedSourceHash])
+  @@unique([resourceId, normalizedSourceHash], map: "resource_cover_suggestion_resource_source_key")
   @@map("resource_cover_suggestion")
 }
 

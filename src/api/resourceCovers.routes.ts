@@ -3,10 +3,12 @@ import type { Response } from "express";
 
 import type { GuideCoverDraft } from "../../shared/guideCoverPolicy.js";
 import { prisma } from "../lib/prisma.js";
+import { publicMediaUrl } from "../lib/supabase.js";
 import { flags } from "../services/flagService.js";
 import { createGuideCoverCollectionMoveService } from "../services/guideCoverCollectionMoveService.js";
 import { createGuideCoverPublishService } from "../services/guideCoverPublishService.js";
 import { createGuideCoverRepository } from "../services/guideCoverRepository.js";
+import { createGuideCoverSuggestionService } from "../services/guideCoverSuggestionService.js";
 import { asyncRouter } from "./asyncRouter.js";
 import { idempotencyKeyMismatch } from "./createReplay.js";
 
@@ -14,6 +16,7 @@ export const resourceCoversRouter = asyncRouter();
 const covers = createGuideCoverRepository();
 const publishing = createGuideCoverPublishService();
 const collectionMoves = createGuideCoverCollectionMoveService();
+const suggestions = createGuideCoverSuggestionService();
 
 const uuid = z.string().uuid();
 const copySchema = z.object({
@@ -28,6 +31,10 @@ const createDraftSchema = z.object({
   categoryId: z.string().uuid(),
   suggestionId: z.string().uuid().nullable().optional(),
   copy: copySchema,
+});
+const createSuggestionSchema = z.object({
+  id: z.string().uuid(),
+  selectedCategoryId: z.string().uuid().nullable().optional(),
 });
 const saveDraftSchema = z.object({
   expectedRevision: z.number().int().min(1),
@@ -100,6 +107,7 @@ resourceCoversRouter.get("/:resourceId/published-cover", async (req, res) => {
       editionNumber: cover.editionNumber,
       contentHash: cover.contentHash,
       dmStoragePath: cover.dmStoragePath,
+      publicUrl: publicMediaUrl(cover.dmStoragePath!),
       publishedAt: cover.publishedAt,
     },
   });
@@ -208,6 +216,36 @@ resourceCoversRouter.post("/:resourceId/presentation/move", async (req, res) => 
     return res.status(status).json({ error: result.error });
   }
   res.json(result);
+});
+
+resourceCoversRouter.post("/:resourceId/cover-suggestions", async (req, res) => {
+  if (!authoringEnabled(res)) return;
+  if (!validResourceAndCoverIds(req.params.resourceId)) {
+    return res.status(400).json({ error: "invalid_resource_id" });
+  }
+  const parsed = createSuggestionSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  if (idempotencyKeyMismatch(req.headers["idempotency-key"], parsed.data.id)) {
+    return res.status(400).json({ error: "idempotency_key_mismatch" });
+  }
+  const result = await suggestions.suggest({
+    id: parsed.data.id,
+    resourceId: req.params.resourceId,
+    selectedCategoryId: parsed.data.selectedCategoryId ?? null,
+  });
+  if (!result.ok) {
+    const status =
+      result.error === "resource_not_found"
+        ? 404
+        : result.error === "presentation_category_not_ready" ||
+            result.error === "cover_suggestion_conflict"
+          ? 409
+          : result.error === "cover_suggestion_invalid_input"
+            ? 422
+            : 503;
+    return res.status(status).json({ error: result.error });
+  }
+  res.status(result.replayed ? 200 : 201).json(result);
 });
 
 resourceCoversRouter.post("/:resourceId/cover-versions", async (req, res) => {

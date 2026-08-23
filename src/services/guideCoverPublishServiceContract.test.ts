@@ -38,6 +38,7 @@ function rendererFor(contentHash: string) {
 function storageFor(coverVersionId: string, contentHash: string) {
   const path = `guide-cover/${resourceId}/${coverVersionId}/${contentHash}/dm.png`;
   return {
+    verifyExact: vi.fn(async () => ({ ok: true as const, exists: true })),
     upload: vi.fn(async () => ({
       ok: true as const,
       value: {
@@ -117,10 +118,16 @@ describeWithDatabase("guide cover publication PostgreSQL behavior", () => {
     };
 
     const results = await Promise.all([service.publish(input), service.publish(input)]);
-    expect(results.filter((result) => result.ok && result.outcome === "published")).toHaveLength(
+    expect(
+      results.filter((result) => result.ok && result.outcome === "published"),
+      JSON.stringify(results),
+    ).toHaveLength(
       1,
     );
-    expect(results.filter((result) => result.ok && result.outcome === "replayed")).toHaveLength(
+    expect(
+      results.filter((result) => result.ok && result.outcome === "replayed"),
+      JSON.stringify(results),
+    ).toHaveLength(
       1,
     );
 
@@ -162,6 +169,7 @@ describeWithDatabase("guide cover publication PostgreSQL behavior", () => {
       database: prisma,
       renderer: rendererFor(secondHash),
       storage: {
+        verifyExact: vi.fn(async () => ({ ok: true as const, exists: false })),
         upload: vi.fn(async () => ({
           ok: false as const,
           error: "cover_storage_failed" as const,
@@ -183,6 +191,11 @@ describeWithDatabase("guide cover publication PostgreSQL behavior", () => {
     ).resolves.toMatchObject({ status: "published", contentHash: firstHash });
     await expect(
       prisma.resourceCoverVersion.findUnique({ where: { id: secondCoverId } }),
-    ).resolves.toMatchObject({ status: "approved", renderStatus: "not_rendered" });
+    ).resolves.toMatchObject({
+      status: "approved",
+      renderStatus: "rendering",
+      contentHash: secondHash,
+      dmStoragePath: `guide-cover/${resourceId}/${secondCoverId}/${secondHash}/dm.png`,
+    });
   });
 });

@@ -66,36 +66,62 @@ function setup(overrides: {
   cover?: typeof cover | null;
   presentation?: typeof presentation | null;
   category?: typeof category | null;
+  orphan?: Record<string, unknown> | null;
 } = {}) {
   const order: string[] = [];
   let inTransaction = false;
-  let queryCount = 0;
-  const currentCover = overrides.cover === undefined ? cover : overrides.cover;
+  let transactionCount = 0;
+  let transactionQueryCount = 0;
+  const currentCover =
+    overrides.cover === undefined ? { ...cover } : overrides.cover && { ...overrides.cover };
   const currentPresentation =
-    overrides.presentation === undefined ? presentation : overrides.presentation;
+    overrides.presentation === undefined
+      ? { ...presentation }
+      : overrides.presentation && { ...overrides.presentation };
   const currentCategory =
     overrides.category === undefined ? category : overrides.category;
+  const currentOrphan = overrides.orphan ?? null;
   const tx = {
     $executeRaw: vi.fn(async () => 1),
     $queryRaw: vi.fn(async () => {
-      queryCount += 1;
-      if (queryCount === 4) {
-        return [{ editionNumber: 1 }];
+      transactionQueryCount += 1;
+      if (transactionCount === 1) {
+        if (transactionQueryCount === 5) return [{ editionNumber: 1 }];
+        return [{ id: COVER_ID, resourceId: RESOURCE_ID }];
       }
-      return [{ id: COVER_ID }];
+      if (transactionCount === 2) {
+        if (transactionQueryCount === 3) {
+          return currentOrphan ? [{ id: currentOrphan.id }] : [];
+        }
+        return [{ id: transactionQueryCount === 1 ? RESOURCE_ID : COVER_ID }];
+      }
+      return [{ id: COVER_ID, resourceId: RESOURCE_ID }];
     }),
     resourcePresentation: {
       findUnique: vi.fn(async () => currentPresentation),
-      updateMany: vi.fn(async () => ({ count: 1 })),
+      updateMany: vi.fn(async (args: { data?: Record<string, unknown> }) => {
+        if (currentPresentation && args.data) Object.assign(currentPresentation, args.data);
+        return { count: 1 };
+      }),
     },
     resourceCoverVersion: {
       findUnique: vi.fn(async () => currentCover),
+      updateMany: vi.fn(async (args: { data?: Record<string, unknown> }) => {
+        if (currentCover && args.data) Object.assign(currentCover, args.data);
+        return { count: 1 };
+      }),
+    },
+    guideCoverOrphan: {
+      findUnique: vi.fn(async () => currentOrphan),
       updateMany: vi.fn(async () => ({ count: 1 })),
+      deleteMany: vi.fn(async () => ({ count: 1 })),
     },
   };
   const database = {
     $transaction: vi.fn(async (operation: (client: typeof tx) => Promise<unknown>) => {
       order.push("transaction");
+      transactionCount += 1;
+      transactionQueryCount = 0;
       inTransaction = true;
       try {
         return await operation(tx);
@@ -103,7 +129,11 @@ function setup(overrides: {
         inTransaction = false;
       }
     }),
-    guideCoverOrphan: { create: vi.fn(), findUnique: vi.fn() },
+    guideCoverOrphan: {
+      create: vi.fn(),
+      findUnique: vi.fn(),
+      updateMany: vi.fn(async () => ({ count: 1 })),
+    },
     presentationCategory: {
       findUnique: vi.fn(async () => currentCategory),
     },
@@ -114,6 +144,7 @@ function setup(overrides: {
       findUnique: vi.fn(async () => currentCover),
       updateMany: vi.fn(async () => ({ count: 1 })),
     },
+    resource: { findUnique: vi.fn() },
   };
   const renderer = vi.fn(async () => {
     order.push("render");
@@ -134,6 +165,7 @@ function setup(overrides: {
     };
   });
   const storage = {
+    verifyExact: vi.fn(async () => ({ ok: true as const, exists: true })),
     upload: vi.fn(async () => {
       order.push("upload");
       expect(inTransaction).toBe(false);
@@ -183,7 +215,7 @@ describe("guide cover publish service", () => {
     });
   });
 
-  it("renders and uploads before entering the publication transaction", async () => {
+  it("persists the upload intent before Storage and publishes in a second transaction", async () => {
     const { order, service, storage, tx } = setup();
 
     const result = await service.publish({
@@ -200,7 +232,13 @@ describe("guide cover publish service", () => {
       path: `guide-cover/${RESOURCE_ID}/${COVER_ID}/${contentHash}/dm.png`,
       publicUrl: "https://cdn.example/dm.png",
     });
-    expect(order).toEqual(["render", "upload", "transaction"]);
+    expect(order).toEqual([
+      "transaction",
+      "render",
+      "transaction",
+      "upload",
+      "transaction",
+    ]);
     expect(storage.upload).toHaveBeenCalledWith({
       resourceId: RESOURCE_ID,
       coverVersionId: COVER_ID,
@@ -216,6 +254,15 @@ describe("guide cover publish service", () => {
           renderStatus: "ready",
           editionNumber: 1,
           contentHash,
+        }),
+      }),
+    );
+    expect(tx.resourceCoverVersion.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          renderStatus: "rendering",
+          contentHash,
+          dmStoragePath: `guide-cover/${RESOURCE_ID}/${COVER_ID}/${contentHash}/dm.png`,
         }),
       }),
     );
@@ -244,7 +291,32 @@ describe("guide cover publish service", () => {
     ).resolves.toMatchObject({ ok: true, outcome: "replayed", editionNumber: 1 });
     expect(renderer).not.toHaveBeenCalled();
     expect(storage.upload).not.toHaveBeenCalled();
+    expect(storage.verifyExact).toHaveBeenCalledWith(published.dmStoragePath);
     expect(database.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when a published replay points to a missing object", async () => {
+    const published = {
+      ...cover,
+      status: "published",
+      renderStatus: "ready",
+      editionNumber: 1,
+      contentHash,
+      dmStoragePath: `guide-cover/${RESOURCE_ID}/${COVER_ID}/${contentHash}/dm.png`,
+      publishedBy: "owner",
+      publishedAt: NOW,
+    };
+    const { service, storage } = setup({ cover: published });
+    storage.verifyExact.mockResolvedValue({ ok: true, exists: false });
+
+    await expect(
+      service.publish({
+        coverVersionId: COVER_ID,
+        resourceId: RESOURCE_ID,
+        expectedRevision: 2,
+        actorId: "owner",
+      }),
+    ).resolves.toEqual({ ok: false, error: "cover_storage_outcome_unknown" });
   });
 
   it("preserves the database when upload fails", async () => {
@@ -259,12 +331,17 @@ describe("guide cover publish service", () => {
         actorId: "owner",
       }),
     ).resolves.toEqual({ ok: false, error: "cover_storage_failed" });
-    expect(database.$transaction).not.toHaveBeenCalled();
+    expect(database.$transaction).toHaveBeenCalledTimes(2);
   });
 
   it("records the exact uploaded object when the database publish fails", async () => {
     const { database, service } = setup();
-    database.$transaction.mockRejectedValue(new Error("private database body"));
+    const successfulTransaction = database.$transaction.getMockImplementation();
+    if (!successfulTransaction) throw new Error("missing transaction fixture");
+    database.$transaction
+      .mockImplementationOnce(successfulTransaction)
+      .mockImplementationOnce(successfulTransaction)
+      .mockRejectedValueOnce(new Error("private database body"));
 
     await expect(
       service.publish({
@@ -300,5 +377,64 @@ describe("guide cover publish service", () => {
     ).resolves.toEqual({ ok: false, error: "cover_not_approved" });
     expect(renderer).not.toHaveBeenCalled();
     expect(storage.upload).not.toHaveBeenCalled();
+  });
+
+  it("does not upload while cleanup holds the exact orphan claim", async () => {
+    const path = `guide-cover/${RESOURCE_ID}/${COVER_ID}/${contentHash}/dm.png`;
+    const { service, storage } = setup({
+      orphan: {
+        id: "40000000-0000-4000-8000-000000000001",
+        resourceId: RESOURCE_ID,
+        coverVersionId: COVER_ID,
+        contentHash,
+        rendition: "dm_cover",
+        storagePath: path,
+        status: "claimed",
+      },
+    });
+
+    await expect(
+      service.publish({
+        coverVersionId: COVER_ID,
+        resourceId: RESOURCE_ID,
+        expectedRevision: 2,
+        actorId: "owner",
+      }),
+    ).resolves.toEqual({ ok: false, error: "cover_publish_conflict" });
+    expect(storage.upload).not.toHaveBeenCalled();
+  });
+
+  it("claims a pending exact orphan and removes that row atomically with publication", async () => {
+    const path = `guide-cover/${RESOURCE_ID}/${COVER_ID}/${contentHash}/dm.png`;
+    const { service, tx } = setup({
+      orphan: {
+        id: "40000000-0000-4000-8000-000000000001",
+        resourceId: RESOURCE_ID,
+        coverVersionId: COVER_ID,
+        contentHash,
+        rendition: "dm_cover",
+        storagePath: path,
+        status: "pending",
+      },
+    });
+
+    await expect(
+      service.publish({
+        coverVersionId: COVER_ID,
+        resourceId: RESOURCE_ID,
+        expectedRevision: 2,
+        actorId: "owner",
+      }),
+    ).resolves.toMatchObject({ ok: true, outcome: "published" });
+    expect(tx.guideCoverOrphan.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: "claimed" }) }),
+    );
+    expect(tx.guideCoverOrphan.deleteMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        storagePath: path,
+        status: "claimed",
+        contentHash,
+      }),
+    });
   });
 });
