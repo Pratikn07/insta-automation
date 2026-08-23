@@ -169,7 +169,9 @@ different reason, is what makes this measurable.
   interpretation already follows.
 - **Snapshot coverage must be stable first.** The backlog records coverage drifting 441 → 392
   reels in five days. LDS is a ratio of two points on one curve; if a reel silently stops
-  being snapshotted, LDS is not merely missing, it is *wrong in a direction that flatters us*.
+  being snapshotted, LDS is not merely missing, it is *wrong in one direction* —
+  it understates the tail, so a reel that is still being found looks like one
+  that died.
   Fixing coverage is a hard prerequisite, not a nice-to-have.
 
 ---

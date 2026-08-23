@@ -146,8 +146,10 @@ function perReach(numerator: number | null, reach: number | null): number | null
  * thin. A reel that stopped being snapshotted mid-life is the dangerous case:
  * its last snapshot is stale, so lifetime views are understated and LDS reads
  * LOWER than the truth. That is why `no_day_seven_snapshot` and a stale lifetime
- * reading are surfaced as gaps and not quietly folded into an average — the
- * failure mode of this metric flatters us, so it has to be visible.
+ * reading are surfaced as gaps and not quietly folded into an average. The
+ * failure is silent and one-directional: it makes content look WORSE at holding
+ * an audience than it is, so a real evergreen reel can be mistaken for a dead
+ * one. That is a reason to show the gap, never to average over it.
  */
 export function computeLateDiscovery(
   mediaId: string,

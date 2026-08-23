@@ -150,7 +150,7 @@ describe("computeLateDiscovery", () => {
     expect(unmeasured.savesPerReachPct).toBeNull();
   });
 
-  it("understates a reel whose snapshots stopped early — the flattering failure", () => {
+  it("understates a reel whose snapshots stopped early — the silent one-way error", () => {
     // 35 of 185 live reels had gone stale on 2026-08-23, one posted only nine
     // days earlier. A stale lifetime reading understates the tail, so LDS reads
     // LOW. The reading still carries lifetimeAt so a caller can see its age and
