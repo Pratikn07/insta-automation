@@ -27,8 +27,12 @@ function reviewedGuideName(value: string): string {
  *   was not asked. Nothing on the original path conflicts, since it has no
  *   opening step.
  *
- * Neither word is REQUIRED: the router accepts any genuine reply to the current
- * access attempt. These are asks, not parsers.
+ * Neither word is REQUIRED while a gate is still open: any genuine reply to the current
+ * access attempt is accepted. One caveat worth knowing, because it is the only place a word
+ * is actually matched — once the internal gate window has lapsed, `messageHandler`'s
+ * `DONE_RE` is what recovers the latest request, so after that cutoff a parent who replies
+ * `YES` to the opening cannot recover and one who replies `DONE` can. That is a reason the
+ * follow ask says DONE, not an argument for the opening to.
  *
  * Only the call-to-action clause differs between the pairs; the substance is the
  * same copy, as the spec requires. These remain reviewed application constants.

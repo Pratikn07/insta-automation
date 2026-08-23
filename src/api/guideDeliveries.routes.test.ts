@@ -190,3 +190,17 @@ describe("POST /api/guide-deliveries/access/:conversationId/release", () => {
     expect(releaseAttemptForConversation).not.toHaveBeenCalled();
   });
 });
+
+// Review round 3, Minor. Mount-level `requireAdmin` protects this in production, but the
+// route's own `owner()` call is what puts the actor in the audit trail. Replacing it with a
+// fallback passed every route test, so a silently wrong `actor` was undetectable.
+describe("release requires an authenticated owner for its audit trail", () => {
+  it("refuses without authentication and records nothing", async () => {
+    await request(makeApp(false))
+      .post(`/api/guide-deliveries/access/${randomUUID()}/release`)
+      .send({ acknowledgeDuplicateRisk: true })
+      .expect(401, { error: "owner_auth_required" });
+
+    expect(releaseAttemptForConversation).not.toHaveBeenCalled();
+  });
+});

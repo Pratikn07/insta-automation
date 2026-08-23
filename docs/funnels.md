@@ -59,6 +59,10 @@ Each latency summary contains `samples`, rounded `average`, `p50`, `p95`, and
 `max` milliseconds. Missing samples return zero plus `null` latency values. The
 response also includes `totalEvents` and `ownerReviewEvents`.
 
+`totalEvents` counts EVENTS, not journeys, and `recheck.attempted` is a sibling outcome of the
+three it denominates — so every recheck contributes twice. That is correct for what the field
+says it is; do not read it as a count of parents.
+
 The underlying `guide_access_v2_metric` event is aggregate-safe by construction.
 Its payload contains only `version`, an allowlisted `stage`, an allowlisted
 `outcome`, and an optional bounded latency. It rejects extra fields. Never add
