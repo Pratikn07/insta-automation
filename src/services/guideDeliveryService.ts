@@ -2,6 +2,7 @@ import type { DmMessageSource } from "@prisma/client";
 import { env } from "../config/env.js";
 import { publicMediaUrl } from "../lib/supabase.js";
 import { guideCoverDeliverySelector } from "./guideCoverDeliveryRollout.js";
+import { guideAccessMetrics } from "./guideAccessMetrics.js";
 import { logger } from "../lib/logger.js";
 import { prisma } from "../lib/prisma.js";
 import type { MetaSendResult } from "../types/meta.js";
@@ -114,6 +115,10 @@ type GuideDeliveryServiceDependencies = {
    * which service owns the guide send.
    */
   coverDecision(input: { resourceId: string; triggerId: string }): "include" | "omit";
+  /** Aggregate-only cover counter. Never receives an identifier, URL, or copy. */
+  recordCoverMetric(
+    outcome: "selected" | "omitted_already_shown" | "omitted_not_selected" | "omitted_mismatch",
+  ): Promise<void>;
   /** Operator-visible record that a snapshotted cover did not match its guide. */
   recordCoverMismatch(input: {
     deliveryResourceId: string;
@@ -468,19 +473,10 @@ export function createGuideDeliveryService(dependencies: GuideDeliveryServiceDep
   ): { versionId: string; mediaUrl: string } | undefined {
     const snapshot = input.cover;
     if (!snapshot) return undefined;
-    // Short-circuit before resolving a URL nobody will use. The planner keeps its own
-    // already-shown guard for callers that reach it directly.
-    if (input.coverAlreadyShown === true) return undefined;
-    // The rollout fence. Off or unselected means the guide still goes out, exactly as it
-    // did before covers existed — only the image is withheld.
-    if (
-      dependencies.coverDecision({
-        resourceId: input.resourceId,
-        triggerId: input.triggerId,
-      }) !== "include"
-    ) {
-      return undefined;
-    }
+    // Integrity BEFORE policy. A snapshot paired with a different guide is a fault in how
+    // the attempt was built, and it is equally a fault whether or not this delivery would
+    // have attached the image. Checking the rollout fence first would silence the signal
+    // for the whole pre-rollout period — every deployment that exists today.
     if (snapshot.resourceId !== input.resourceId) {
       dependencies.logger.warn(
         {
@@ -497,12 +493,40 @@ export function createGuideDeliveryService(dependencies: GuideDeliveryServiceDep
         coverResourceId: snapshot.resourceId,
         coverVersionId: snapshot.versionId,
       });
+      // Its own outcome, so the funnel accounts for every eligible delivery exactly once.
+      // Folded into `omitted_not_selected` a pairing bug would read as routine rollout.
+      void recordCover("omitted_mismatch");
       return undefined;
     }
+    // Short-circuit before resolving a URL nobody will use. The planner keeps its own
+    // already-shown guard for callers that reach it directly.
+    if (input.coverAlreadyShown === true) {
+      void recordCover("omitted_already_shown");
+      return undefined;
+    }
+    // The rollout fence. Off or unselected means the guide still goes out, exactly as it
+    // did before covers existed — only the image is withheld.
+    if (
+      dependencies.coverDecision({
+        resourceId: input.resourceId,
+        triggerId: input.triggerId,
+      }) !== "include"
+    ) {
+      void recordCover("omitted_not_selected");
+      return undefined;
+    }
+    void recordCover("selected");
     return {
       versionId: snapshot.versionId,
       mediaUrl: dependencies.coverMediaUrl(snapshot.dmStoragePath),
     };
+  }
+
+  /** Measurement must never fail a delivery. */
+  function recordCover(
+    outcome: "selected" | "omitted_already_shown" | "omitted_not_selected" | "omitted_mismatch",
+  ): Promise<void> {
+    return dependencies.recordCoverMetric(outcome).catch(() => undefined);
   }
 
   const deliverGuideForTrigger = async function deliverGuideForTrigger(
@@ -604,6 +628,9 @@ const defaultService = createGuideDeliveryService({
   finalizeGuideDelivery,
   coverMediaUrl: publicMediaUrl,
   coverDecision: (decision) => guideCoverDeliverySelector.decide(decision),
+  recordCoverMetric: async (outcome) => {
+    await guideAccessMetrics.record({ stage: "cover", outcome });
+  },
   recordCoverMismatch: (details) => logEvent("guide_cover_resource_mismatch", details),
   sleep,
   now: () => new Date(),

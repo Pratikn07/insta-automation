@@ -30,7 +30,33 @@ beforeAll(() => {
   prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
 });
 
+// Every fixture id in this file is a fixed literal under one prefix, and the contract
+// database persists between runs. Without this the suite passes exactly once and then
+// fails forever on duplicate keys — which reads like a schema regression and is not one.
+const FIXTURE_ID_PREFIX = "20000000-0000-4000-8000-%";
+
 afterAll(async () => {
+  if (prisma) {
+    // Children before parents: resource_cover_version and resource_presentation both
+    // reference resources, and resource_cover_version also references a category.
+    await prisma.$executeRawUnsafe(
+      `DELETE FROM resource_cover_version WHERE id::text LIKE $1 OR resource_id::text LIKE $1`,
+      FIXTURE_ID_PREFIX,
+    );
+    // Keyed on resource_id — no surrogate id column.
+    await prisma.$executeRawUnsafe(
+      `DELETE FROM resource_presentation WHERE resource_id::text LIKE $1 OR category_id::text LIKE $1`,
+      FIXTURE_ID_PREFIX,
+    );
+    await prisma.$executeRawUnsafe(
+      `DELETE FROM presentation_category WHERE id::text LIKE $1`,
+      FIXTURE_ID_PREFIX,
+    );
+    await prisma.$executeRawUnsafe(
+      `DELETE FROM resources WHERE id::text LIKE $1`,
+      FIXTURE_ID_PREFIX,
+    );
+  }
   await prisma?.$disconnect();
 });
 

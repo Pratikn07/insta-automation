@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { env, guideFollowGateV2Ids } from "../config/env.js";
+import { env, parseIdentifierSet } from "../config/env.js";
 import { flags } from "./flagService.js";
 
 export type GuideCoverDeliveryDecision = "include" | "omit";
@@ -63,7 +63,7 @@ export function createGuideCoverDeliverySelector(
       try {
         const ids = dependencies.resourceIds();
         if (ids === null || ids === undefined) return "omit";
-        const has = ids?.has;
+        const has = ids.has;
         if (typeof has !== "function") return "omit";
         allowlisted = has.call(ids, input.resourceId);
       } catch {
@@ -91,6 +91,6 @@ export function createGuideCoverDeliverySelector(
 /** Runtime selector. Reads the switch per decision so a stop is immediate. */
 export const guideCoverDeliverySelector = createGuideCoverDeliverySelector({
   isEnabled: () => flags.bool("GUIDE_COVER_DELIVERY_ENABLED"),
-  resourceIds: () => guideFollowGateV2Ids(env.GUIDE_COVER_DELIVERY_RESOURCE_IDS),
+  resourceIds: () => parseIdentifierSet(env.GUIDE_COVER_DELIVERY_RESOURCE_IDS),
   rolloutPercent: () => flags.percent("GUIDE_COVER_DELIVERY_ROLLOUT_PERCENT"),
 });

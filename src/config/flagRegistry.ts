@@ -138,8 +138,12 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
       "Share of new guide requests whose delivery includes the cover image.",
     affectsWho: "New requests only. A journey already under way keeps its original decision.",
     ifOff: "Zero means only explicitly allowlisted guides include a cover.",
+    // Display-only, like the other two percentages the console may not set. A stored value
+    // for a percentage `pageMayEnable` forbids is discarded outright by `resolvePercent`,
+    // so claiming `pageMayStop` here would offer an operator a stop that does nothing. The
+    // real stop for this feature is `GUIDE_COVER_DELIVERY_ENABLED`, which the page can set.
     pageMayEnable: false,
-    pageMayStop: true,
+    pageMayStop: false,
   },
   {
     key: "GUIDE_DELIVERY_ROLLOUT_PERCENT",

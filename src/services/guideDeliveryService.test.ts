@@ -313,6 +313,7 @@ function harness(options: HarnessOptions = {}) {
   const coverMediaUrl = vi.fn((path: string) => `https://cdn.example.test/${path}`);
   const recordCoverMismatch = vi.fn(async () => undefined);
   const coverDecision = vi.fn(() => "include" as "include" | "omit");
+  const recordCoverMetric = vi.fn(async () => undefined);
 
   function service() {
     return createGuideDeliveryService({
@@ -323,6 +324,7 @@ function harness(options: HarnessOptions = {}) {
       finalizeGuideDelivery,
       coverMediaUrl,
       coverDecision,
+      recordCoverMetric,
       recordCoverMismatch,
       sleep,
       now: () => now,
@@ -342,6 +344,7 @@ function harness(options: HarnessOptions = {}) {
     finalizeGuideDelivery,
     coverMediaUrl,
     coverDecision,
+    recordCoverMetric,
     recordCoverMismatch,
     sleep,
     logger,
@@ -846,5 +849,76 @@ describe("cover delivery rollout fence", () => {
     await test.service()(input);
 
     expect(test.coverDecision).not.toHaveBeenCalled();
+  });
+});
+
+// Parent-delivery Task 7. The three omit/include reasons are counted separately because
+// they mean different things to an operator: suppression working, the fence holding, or a
+// cover genuinely going out.
+describe("cover delivery measurement", () => {
+  const COVER = {
+    versionId: "70000000-0000-4000-8000-000000000007",
+    resourceId: input.resourceId,
+    dmStoragePath: "guide-cover/sleep/dm.png",
+  };
+  const oneStep = [{ id: "first", order: 0, type: "text" as const, body: "One", mediaUrl: null }];
+
+  it("counts a cover that goes into the plan", async () => {
+    const test = harness({ messages: oneStep });
+
+    await test.service()({ ...input, cover: COVER });
+
+    expect(test.recordCoverMetric).toHaveBeenCalledWith("selected");
+  });
+
+  it("counts duplicate suppression separately from the rollout fence", async () => {
+    const suppressed = harness({ messages: oneStep });
+    await suppressed.service()({ ...input, cover: COVER, coverAlreadyShown: true });
+    expect(suppressed.recordCoverMetric).toHaveBeenCalledWith("omitted_already_shown");
+
+    const fenced = harness({ messages: oneStep });
+    fenced.coverDecision.mockReturnValue("omit");
+    await fenced.service()({ ...input, cover: COVER });
+    expect(fenced.recordCoverMetric).toHaveBeenCalledWith("omitted_not_selected");
+  });
+
+  it("still reports a mismatched cover while the rollout fence is closed", async () => {
+    // Review round 1. A cover paired with the wrong guide is a data-integrity fault, not a
+    // rollout decision. Checking the fence first meant the signal was dead for the entire
+    // pre-rollout period — which is every deployment that exists today.
+    const test = harness({ messages: oneStep });
+    test.coverDecision.mockReturnValue("omit");
+
+    await expect(
+      test.service()({
+        ...input,
+        cover: { ...COVER, resourceId: "99999999-9999-4999-8999-999999999999" },
+      }),
+    ).resolves.toBe("completed");
+
+    expect(test.recordCoverMismatch).toHaveBeenCalledWith({
+      deliveryResourceId: input.resourceId,
+      coverResourceId: "99999999-9999-4999-8999-999999999999",
+      coverVersionId: COVER.versionId,
+    });
+    // Counted as its own outcome. Folding it into `omitted_not_selected` would make a
+    // pairing bug read as a routine rollout omission in the funnel.
+    expect(test.recordCoverMetric).toHaveBeenCalledWith("omitted_mismatch");
+    expect(test.recordCoverMetric).not.toHaveBeenCalledWith("omitted_not_selected");
+  });
+
+  it("never lets a failed counter break a delivery", async () => {
+    const test = harness({ messages: oneStep });
+    test.recordCoverMetric.mockRejectedValue(new Error("metrics down"));
+
+    await expect(test.service()({ ...input, cover: COVER })).resolves.toBe("completed");
+  });
+
+  it("counts nothing when there was no cover at all", async () => {
+    const test = harness({ messages: oneStep });
+
+    await test.service()(input);
+
+    expect(test.recordCoverMetric).not.toHaveBeenCalled();
   });
 });

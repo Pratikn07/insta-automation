@@ -94,11 +94,17 @@ describe("guide cover delivery selector", () => {
     expect(included).toBeLessThan(260);
   });
 
+  // `percent: 100` on the non-percent cases is load-bearing. With the helper default of 0
+  // these would return `omit` from the `percent <= 0` guard even with the guard under test
+  // deleted, so they would pass against a broken selector.
   it.each([
-    { label: "a throwing switch", over: { enabled: () => { throw new Error("flag"); } } },
+    {
+      label: "a throwing switch",
+      over: { percent: 100, enabled: () => { throw new Error("flag"); } },
+    },
     { label: "a throwing percent", over: { percent: () => { throw new Error("percent"); } } },
-    { label: "a malformed id set", over: { resourceIds: { has: "nope" } } },
-    { label: "an absent id set", over: { resourceIds: null as never } },
+    { label: "a malformed id set", over: { percent: 100, resourceIds: { has: "nope" } } },
+    { label: "an absent id set", over: { percent: 100, resourceIds: null as never } },
     { label: "a fractional percent", over: { percent: 12.5 } },
     { label: "a negative percent", over: { percent: -1 } },
     { label: "an over-100 percent", over: { percent: 101 } },

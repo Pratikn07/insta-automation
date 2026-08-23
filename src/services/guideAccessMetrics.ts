@@ -11,6 +11,21 @@ export const GUIDE_ACCESS_OUTCOMES = {
   gate: ["shown", "profile_action_offered"],
   recheck: ["attempted", "confirmed", "not_confirmed", "unavailable"],
   delivery: ["planned", "completed", "failed", "needs_review"],
+  // Cover outcomes. `selected` counts a cover actually put into a plan, so it is the
+  // denominator for `accepted`/`failed`/`uncertain`. The three `omitted_*` outcomes are
+  // kept apart because they mean very different things operationally: duplicate
+  // suppression working, the rollout fence holding, and a snapshot paired with the wrong
+  // guide. Together with `selected` they partition every delivery that had a cover to
+  // consider, so the funnel adds up and a pairing bug cannot hide inside a routine one.
+  cover: [
+    "selected",
+    "accepted",
+    "failed",
+    "uncertain",
+    "omitted_already_shown",
+    "omitted_not_selected",
+    "omitted_mismatch",
+  ],
   needs_review: ["marked"],
 } as const;
 

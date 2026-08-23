@@ -3,7 +3,7 @@ import {
   envSchema,
   FORBIDDEN_SETTINGS_SIGNATURE,
   guideDeliveryCohortIgUserIds,
-  guideFollowGateV2Ids,
+  parseIdentifierSet,
 } from "./env.js";
 
 const baseEnv = {
@@ -27,7 +27,7 @@ describe("env configuration schema for DM recovery", () => {
   });
 
   it("parses strict-gate allowlists as exact, trimmed, de-duplicated IDs", () => {
-    expect([...guideFollowGateV2Ids(" account-1, , account-2,account-1 ")]).toEqual([
+    expect([...parseIdentifierSet(" account-1, , account-2,account-1 ")]).toEqual([
       "account-1",
       "account-2",
     ]);
@@ -40,11 +40,11 @@ describe("env configuration schema for DM recovery", () => {
     });
 
     expect(parsed.GUIDE_FOLLOW_GATE_V2_ENABLED).toBe(true);
-    expect(guideFollowGateV2Ids(parsed.GUIDE_FOLLOW_GATE_V2_COHORT_IG_USER_IDS)).toHaveProperty(
+    expect(parseIdentifierSet(parsed.GUIDE_FOLLOW_GATE_V2_COHORT_IG_USER_IDS)).toHaveProperty(
       "size",
       0,
     );
-    expect(guideFollowGateV2Ids(parsed.GUIDE_FOLLOW_GATE_V2_RESOURCE_IDS)).toHaveProperty(
+    expect(parseIdentifierSet(parsed.GUIDE_FOLLOW_GATE_V2_RESOURCE_IDS)).toHaveProperty(
       "size",
       0,
     );

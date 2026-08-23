@@ -25,6 +25,7 @@ import {
   type GuideDeliveryResult,
 } from "./guideDeliveryService.js";
 import { guideRichGateEnabled } from "./guideFollowGateV2Rollout.js";
+import { guideAccessMetrics } from "./guideAccessMetrics.js";
 
 const STANDARD_DM_WINDOW_MS = 24 * 60 * 60 * 1_000;
 const ACTION_TOKEN_TTL_MS = 10 * 60 * 1_000;
@@ -127,6 +128,8 @@ export type GuideAccessActionDependencies = {
   sendCover(input: { recipientId: string; mediaUrl: string }): Promise<MetaSendResult>;
   /** Resolves an immutable storage path to a public URL. No network work. */
   coverMediaUrl(path: string): string;
+  /** Aggregate-only. Never receives an identifier, token, URL, or copy. */
+  recordCoverMetric(outcome: "accepted" | "failed" | "uncertain"): Promise<void>;
   loadGuideName(resourceId: string): Promise<string>;
   loadThreadId(inboundMessageId: string): Promise<string | null>;
   findAttemptIdByToken(tokenId: string): Promise<string | null>;
@@ -440,6 +443,17 @@ export function createGuideAccessActionService(
     }
   }
 
+  /** Measurement must never be able to fail a parent-facing operation. */
+  async function recordCover(
+    outcome: "accepted" | "failed" | "uncertain",
+  ): Promise<void> {
+    try {
+      await dependencies.recordCoverMetric(outcome);
+    } catch {
+      // Aggregate counters are not worth losing an exposure outcome over.
+    }
+  }
+
   async function exposeCoverForGate(
     context: AuthorizationContext,
   ): Promise<"none" | "accepted" | "failed" | "needs_review"> {
@@ -494,9 +508,11 @@ export function createGuideAccessActionService(
         exposure: "accepted",
         providerMessageId: receipt.messageId,
       });
+      await recordCover("accepted");
       return "accepted";
     } catch (error) {
       if (classifyDirectMessageSend(describeGraphError(error)) === "uncertain") {
+        await recordCover("uncertain");
         return "needs_review";
       }
       await dependencies.repository.settleCoverExposure({
@@ -504,6 +520,7 @@ export function createGuideAccessActionService(
         exposure: "failed",
         providerMessageId: null,
       });
+      await recordCover("failed");
       return "failed";
     }
   }
@@ -1086,9 +1103,9 @@ const defaultService = createGuideAccessActionService({
   repository: guideAccessRepository,
   resolveFollowStatusFresh,
   startGuideDelivery: deliverGuideForTrigger,
-  // Cover exposure is deliberately absent from this slice. The reviewed sender
-  // defaults to text-only, so the placeholder is never serialized. The dependent
-  // parent-delivery plan adds the separately fenced cover snapshot/exposure.
+  // The generic (rich) gate template is still text-only until the capability rows say
+  // otherwise, so this placeholder is never serialized. The cover now reaches the parent
+  // as its own fenced exposure ahead of the gate, not embedded in the gate payload.
   sendFollowerGate: (input) => sendGuideFollowerGate({ ...input, coverUrl: "" }),
   sendText: (input) =>
     sendTrackedText({
@@ -1106,6 +1123,9 @@ const defaultService = createGuideAccessActionService({
       source: "keyword_automation",
     }),
   coverMediaUrl: publicMediaUrl,
+  recordCoverMetric: async (outcome) => {
+    await guideAccessMetrics.record({ stage: "cover", outcome });
+  },
   // The switch is the operator's assertion that the reviewed capability rows are
   // `supported`; it is read per action so a stop applies to the next opening.
   richCapabilities: () =>

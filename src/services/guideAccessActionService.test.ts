@@ -425,6 +425,7 @@ function createHarness(input: {
     return input.sendCover ? input.sendCover() : { messageId: "cover-mid" };
   });
   const coverMediaUrl = vi.fn((path: string) => `https://cdn.example.test/${path}`);
+  const recordCoverMetric = vi.fn(async () => undefined);
   const loadGuideName = vi.fn(
     input.loadGuideName ?? (async () => "toddler sleep guide"),
   );
@@ -445,6 +446,7 @@ function createHarness(input: {
     richCapabilities,
     sendCover,
     coverMediaUrl,
+    recordCoverMetric,
     loadGuideName,
     loadThreadId,
     findAttemptIdByToken,
@@ -465,6 +467,7 @@ function createHarness(input: {
     richCapabilities,
     sendCover,
     coverMediaUrl,
+    recordCoverMetric,
     loadGuideName,
     loadThreadId,
     cancelledTokens,
@@ -2137,5 +2140,86 @@ describe("cover exposure feeds the durable plan", () => {
     expect(test.startGuideDelivery).toHaveBeenCalledWith(
       expect.not.objectContaining({ cover: expect.anything() }),
     );
+  });
+});
+
+// Parent-delivery Task 7. Aggregate-only: the recorder receives a stage and an outcome and
+// nothing else — no attempt id, no token, no URL, no copy.
+describe("cover exposure measurement", () => {
+  const COVER = {
+    versionId: "b0000000-0000-4000-8000-00000000000b",
+    resourceId: RESOURCE_ID,
+    dmStoragePath: "guide-cover/sleep/dm.png",
+  };
+
+  function gateHarness(over: Parameters<typeof createHarness>[0] = {}) {
+    return createHarness({
+      initialAttempt: attempt({ coverVersionId: COVER.versionId }),
+      freshResults: [live(false)],
+      coverSnapshot: COVER,
+      ...over,
+    });
+  }
+
+  it("records an accepted exposure and nothing identifying", async () => {
+    const test = gateHarness();
+
+    await request(test);
+
+    expect(test.recordCoverMetric).toHaveBeenCalledWith("accepted");
+    const recorded = JSON.stringify(test.recordCoverMetric.mock.calls);
+    for (const secret of [ATTEMPT_ID, SENDER_ID, COVER.versionId, COVER.dmStoragePath]) {
+      expect(recorded).not.toContain(secret);
+    }
+  });
+
+  it("records an uncertain exposure", async () => {
+    const test = gateHarness({
+      sendCover: async () => {
+        throw new AxiosError("cover", "ETIMEDOUT");
+      },
+    });
+
+    await request(test);
+
+    expect(test.recordCoverMetric).toHaveBeenCalledWith("uncertain");
+  });
+
+  it("records a definitely failed exposure", async () => {
+    const test = gateHarness({
+      sendCover: async () => {
+        throw new AxiosError("cover", "ERR_BAD_REQUEST", undefined, undefined, {
+          status: 400,
+          statusText: "Bad Request",
+          headers: {},
+          config: { headers: {} } as never,
+          data: { error: { code: 100, fbtrace_id: "safe" } },
+        });
+      },
+    });
+
+    await request(test);
+
+    expect(test.recordCoverMetric).toHaveBeenCalledWith("failed");
+  });
+
+  it("never lets a failed counter break the parent-facing outcome", async () => {
+    const test = gateHarness();
+    test.recordCoverMetric.mockRejectedValue(new Error("metrics down"));
+
+    // Measurement is not worth losing an exposure over.
+    await expect(request(test)).resolves.toBe("follow_not_confirmed");
+    expect(test.attempt().coverExposure).toBe("accepted");
+  });
+
+  it("records nothing when no cover was exposed", async () => {
+    const test = createHarness({
+      initialAttempt: attempt({ coverVersionId: null }),
+      freshResults: [live(false)],
+    });
+
+    await request(test);
+
+    expect(test.recordCoverMetric).not.toHaveBeenCalled();
   });
 });

@@ -25,10 +25,11 @@ export function guideDeliveryCohortIgUserIds(value: string): ReadonlySet<string>
 }
 
 /**
- * Exact identifiers used by the strict-guide pilot. They stay as an unlogged
- * source string in configuration and become a set only at the rollout fence.
+ * Parses a comma-separated allowlist of exact identifiers. Feature-neutral on purpose:
+ * several rollout fences keep their cohort as an unlogged source string in configuration
+ * and turn it into a set only at the point of the decision.
  */
-export function guideFollowGateV2Ids(value: string): ReadonlySet<string> {
+export function parseIdentifierSet(value: string): ReadonlySet<string> {
   return new Set(
     value
       .split(",")

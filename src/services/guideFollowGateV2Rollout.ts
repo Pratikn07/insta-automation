@@ -1,4 +1,4 @@
-import { env, guideFollowGateV2Ids } from "../config/env.js";
+import { env, parseIdentifierSet } from "../config/env.js";
 import { flags } from "./flagService.js";
 
 export type GuideFollowGateOwner = "v1" | "v2";
@@ -67,8 +67,8 @@ export function createGuideFollowGateV2Selector(
 /** Runtime selector consumed by Task 7 handler branches. */
 export const guideFollowGateV2Selector = createGuideFollowGateV2Selector({
   isEnabled: () => flags.bool("GUIDE_FOLLOW_GATE_V2_ENABLED"),
-  cohortIgUserIds: guideFollowGateV2Ids(env.GUIDE_FOLLOW_GATE_V2_COHORT_IG_USER_IDS),
-  resourceIds: guideFollowGateV2Ids(env.GUIDE_FOLLOW_GATE_V2_RESOURCE_IDS),
+  cohortIgUserIds: parseIdentifierSet(env.GUIDE_FOLLOW_GATE_V2_COHORT_IG_USER_IDS),
+  resourceIds: parseIdentifierSet(env.GUIDE_FOLLOW_GATE_V2_RESOURCE_IDS),
 });
 
 /** Rich controls are also read per outbound action, so the stop is immediate. */
