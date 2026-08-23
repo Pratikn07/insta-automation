@@ -1790,25 +1790,89 @@ describe("failed opening surfaces recovery evidence", () => {
   });
 
   it.each([
-    { label: "a closed window", build: () => createHarness({}) },
+    { label: "a closed window", build: () => createHarness({}), want: "action_expired" },
     {
       label: "an attempt already past its opening",
       build: () => createHarness({ initialAttempt: attempt({ state: "delivering" }) }),
+      want: "guide_delivery_already_started",
     },
-  ])("reports no send failure when nothing was sent for $label", async ({ label, build }) => {
-    const test = build();
-    const result =
-      label === "a closed window"
-        ? await test.service.startCommentGuideRequest({
-            conversationId: CONVERSATION_ID,
-            igUserId: SENDER_ID,
-            resourceId: RESOURCE_ID,
-            commentId: COMMENT_ID,
-            observedAt: EVENT_AT,
-            messagingWindowExpiresAt: new Date(NOW.getTime() - 1),
-          })
-        : await commentAgain(test);
+  ])(
+    "reports no send failure when nothing was sent for $label",
+    async ({ label, build, want }) => {
+      const test = build();
+      const result =
+        label === "a closed window"
+          ? await test.service.startCommentGuideRequest({
+              conversationId: CONVERSATION_ID,
+              igUserId: SENDER_ID,
+              resourceId: RESOURCE_ID,
+              commentId: COMMENT_ID,
+              observedAt: EVENT_AT,
+              messagingWindowExpiresAt: new Date(NOW.getTime() - 1),
+            })
+          : await commentAgain(test);
 
+      // Assert the outcome too: without it, a regression that actually sent the
+      // opening would still satisfy the undefined-failure expectation.
+      expect(result.outcome).toBe(want);
+      expect(test.sendInitialPrivateReply).not.toHaveBeenCalled();
+      expect(result.openingSendFailure).toBeUndefined();
+    },
+  );
+});
+
+// Fix round 1 for Task 9. `sendMetaMessage` returns `{ messageId: null }` WITHOUT
+// throwing when Meta answers 2xx with no `message_id`. `sendAfterFence` then falls
+// through to needs_review, so a catch-only failure report skipped the recovery ladder
+// entirely — the one uncertain class producing zero evidence, and invisible to the
+// `dm_failed` baseline the task calibrates against.
+describe("opening with no provider message id", () => {
+  function commentOnce(test: ReturnType<typeof createHarness>) {
+    return test.service.startCommentGuideRequest({
+      conversationId: CONVERSATION_ID,
+      igUserId: SENDER_ID,
+      resourceId: RESOURCE_ID,
+      commentId: COMMENT_ID,
+      observedAt: EVENT_AT,
+    });
+  }
+
+  it("reports recovery evidence when Meta acknowledges without a message id", async () => {
+    const test = createHarness({
+      sendInitialPrivateReply: async () => ({ messageId: null }),
+    });
+
+    const result = await commentOnce(test);
+
+    expect(result.outcome).toBe("access_attempt_needs_review");
+    expect(result.openingSendFailure).toBeDefined();
+    expect(result.openingSendFailure?.retryText).toBe(
+      guideAccessOpeningText("toddler sleep guide"),
+    );
+  });
+
+  it("reports nothing when Meta returns a real message id", async () => {
+    const test = createHarness({
+      sendInitialPrivateReply: async () => ({ messageId: "mid-real" }),
+    });
+
+    const result = await commentOnce(test);
+
+    expect(result.outcome).toBe("guide_opening_sent");
     expect(result.openingSendFailure).toBeUndefined();
+  });
+
+  it("keeps recovery evidence intact when the guide name cannot form reviewed copy", async () => {
+    // `guideAccessOpeningText` throws above 56 characters. Computing it inside the
+    // catch would replace the provider error and skip the ladder, so it must be
+    // resolved before the send is attempted.
+    const test = createHarness({
+      loadGuideName: async () => "g".repeat(57),
+      sendInitialPrivateReply: async () => ({ messageId: null }),
+    });
+
+    await expect(commentOnce(test)).rejects.toThrow("invalid_guide_access_copy");
+    // Nothing was sent, so no opening escaped with unreviewed copy.
+    expect(test.sendInitialPrivateReply).not.toHaveBeenCalled();
   });
 });

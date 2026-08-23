@@ -3,6 +3,8 @@ import { flags } from "./flagService.js";
 import { logger } from "../lib/logger.js";
 import { env } from "../config/env.js";
 import { sendTrackedPrivateReply, sendTrackedText } from "./dmDeliveryService.js";
+import { guideFollowGateV2Selector } from "./guideFollowGateV2Rollout.js";
+import { guideAccessMetrics } from "./guideAccessMetrics.js";
 import { logEvent, describeGraphError } from "../services/eventLogger.js";
 import { PRIVATE_REPLY_WINDOW_MS } from "./gateQueueService.js";
 import {
@@ -222,11 +224,39 @@ export async function runGateQueueTick(): Promise<void> {
             where: { id: row.conversationId },
             data: { state: "awaiting_done", gatedAt: new Date() },
           });
+          // A queued row can now belong to the strict gate, because a failed strict
+          // opening is queued here. Ownership is computed the same way every other
+          // call site computes it, rather than snapshotted, so an allowlist change
+          // cannot leave a stale row on the wrong path. Fails closed to V1.
+          let retryOwner: "v1" | "v2" = "v1";
+          try {
+            retryOwner = guideFollowGateV2Selector.owner({
+              igUserId: row.igUserId,
+              resourceId: convo.keyword.resourceId,
+            });
+          } catch {
+            logger.warn(
+              { errorCode: "strict_gate_owner_unavailable", gateQueueId: row.id },
+              "Strict gate ownership unavailable — treating retry as V1",
+            );
+          }
+
           await logEvent("dm_sent", {
             conversationId: row.conversationId,
             kind: "gate",
             source: "retry",
+            // Tagged so V2 retry volume never silently inflates the V1 baseline.
+            gateOwner: retryOwner,
           });
+
+          if (retryOwner === "v2") {
+            // The strict opening was re-sent, so this counts on V2's own metric.
+            await guideAccessMetrics.record({ stage: "opening", outcome: "accepted" });
+            // `scheduleAcceptedGateRecovery` renders V1 public-comment nudge copy,
+            // which must never follow a strict opening. The strict attempt already
+            // carries its own review state.
+            continue;
+          }
 
           // Schedule recovery in separate block (failures do not un-send or revert queue)
           try {

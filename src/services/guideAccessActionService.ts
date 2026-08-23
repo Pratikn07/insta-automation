@@ -878,19 +878,32 @@ export function createGuideAccessActionService(
     if (issued.kind === "replayed") return "guide_opening_already_sent";
 
     const capabilities = dependencies.richCapabilities();
+    // Resolved before the send: computing it inside the catch would let a copy
+    // validation error replace the provider error and skip the recovery ladder.
+    const retryText = guideAccessOpeningText(guideName);
     const disposition = await sendAfterFence(attempt.id, "awaiting_request", async () => {
       try {
-        return await dependencies.sendInitialPrivateReply({
+        const receipt = await dependencies.sendInitialPrivateReply({
           commentId: input.commentId,
           guideName,
           actionToken: issued.token.id,
           capabilities,
         });
+        // Meta can answer 2xx with no `message_id`, which never throws. That is an
+        // uncertain outcome like any other and must still produce evidence, or it
+        // becomes the one silent drop this recovery path exists to remove.
+        if (!receipt.messageId) {
+          onSendFailure({
+            error: new Error("guide_opening_missing_provider_message_id"),
+            retryText,
+          });
+        }
+        return receipt;
       } catch (error) {
         // Report, then rethrow so `sendAfterFence` classifies exactly as before.
         // A definite failure and an uncertain one both need recovery evidence; only
         // the caller's ladder decides what to do with it.
-        onSendFailure({ error, retryText: guideAccessOpeningText(guideName) });
+        onSendFailure({ error, retryText });
         throw error;
       }
     });

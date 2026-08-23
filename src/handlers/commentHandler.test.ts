@@ -934,8 +934,10 @@ describe("strict opening failure recovery", () => {
       commentId: COMMENT.id,
       gateMessage: RETRY_TEXT,
     });
-    // The V1 gate copy must never reach a V2 parent.
-    expect(queued.gateMessage).not.toBe("PRIVATE-DM-SENTINEL");
+    // Deliberately no `not.toBe(V1 copy)` assertion here: RETRY_TEXT is a literal
+    // this test feeds through the mock, so such a check could never fail. The real
+    // provenance — that the retry copy IS `guideAccessOpeningText` — is proven at the
+    // service boundary in guideAccessActionService.test.ts.
   });
 
   it("routes a settings-blocked failure to the settings recovery and queues nothing", async () => {
