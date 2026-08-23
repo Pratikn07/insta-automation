@@ -218,7 +218,14 @@ export interface GuideAccessRepository {
   settleAttemptForConversation(input: {
     conversationId: string;
     outcome: "delivered" | "needs_review";
-  }): Promise<"settled" | "already_settled" | "not_found">;
+    /**
+     * The caller's own send window. A guide delivery built from an attempt copies that
+     * attempt's `messagingWindowExpiresAt` verbatim into its `sendWindowExpiresAt`, so
+     * this is an exact identity handle: it lets the database refuse a stale callback
+     * whose attempt was already force-expired and replaced by a newer one.
+     */
+    expectedWindowExpiresAt: Date;
+  }): Promise<"settled" | "already_settled" | "not_found" | "window_mismatch">;
   settleCoverExposure(input: SettleCoverExposureInput): Promise<void>;
   findCoverSnapshot(coverVersionId: string): Promise<GuideAccessCoverSnapshot | null>;
 }
@@ -911,13 +918,23 @@ export function createGuideAccessRepository(
             state: { in: [...ACTIVE_ATTEMPT_STATES] },
           },
           orderBy: { createdAt: "desc" },
-          select: { id: true, state: true },
+          select: { id: true, state: true, messagingWindowExpiresAt: true },
         });
         if (!attempt) return "not_found" as const;
         // Only an attempt still mid-delivery may be settled from a ledger outcome. Any
         // other state was already resolved by the action service, and a stale worker
         // callback must not overwrite it.
         if (attempt.state !== "delivering") return "already_settled" as const;
+        // The attempt that is active now may not be the one this delivery was built from.
+        // Once a window lapses the parent can message again, force-expiring the old
+        // attempt and opening a new one that reaches `delivering` under its own, strictly
+        // later window. Settling that one would release the conversation mid-flight and
+        // permit a duplicate send, so refuse rather than guess.
+        if (
+          attempt.messagingWindowExpiresAt.getTime() !== input.expectedWindowExpiresAt.getTime()
+        ) {
+          return "window_mismatch" as const;
+        }
         const updated = await tx.guideAccessAttempt.updateMany({
           where: { id: attempt.id, state: "delivering" },
           data: { state: input.outcome },

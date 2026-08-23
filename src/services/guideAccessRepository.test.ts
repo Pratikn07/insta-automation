@@ -815,3 +815,83 @@ describe("cover snapshot on attempt creation", () => {
     expect(result.cover).toBeNull();
   });
 });
+
+// Parent-delivery Task 5, review round 1. A delivery's completion callback identifies its
+// attempt only by conversation. Nothing stops a *stale* callback from arriving after its
+// own attempt was force-expired and a newer one took its place, so the settle needs a
+// handle on the attempt it actually belongs to.
+describe("settleAttemptForConversation", () => {
+  it("settles a delivering attempt whose window matches the delivery's", async () => {
+    const test = harness({
+      activeAttempt: attempt({ state: "delivering", lastFollowResult: "follower" }),
+    });
+
+    await expect(
+      test.repository.settleAttemptForConversation({
+        conversationId: CONVERSATION_ID,
+        outcome: "delivered",
+        expectedWindowExpiresAt: WINDOW_EXPIRES_AT,
+      }),
+    ).resolves.toBe("settled");
+
+    expect(test.tx.guideAccessAttempt.updateMany).toHaveBeenCalledWith({
+      where: { id: ATTEMPT_ID, state: "delivering" },
+      data: { state: "delivered" },
+    });
+  });
+
+  it("refuses to settle an attempt from a different messaging window", async () => {
+    // The interleaving: every unit of delivery D1 goes out, D1's window lapses, the parent
+    // messages again, attempt A is force-expired, attempt B is created and reaches
+    // `delivering`. D1's late completion must not close B — B's guide is still in flight.
+    const newerWindow = new Date(WINDOW_EXPIRES_AT.getTime() + 24 * 60 * 60 * 1000);
+    const test = harness({
+      activeAttempt: attempt({
+        id: "10000000-0000-4000-8000-00000000000b",
+        state: "delivering",
+        lastFollowResult: "follower",
+        messagingWindowExpiresAt: newerWindow,
+      }),
+    });
+
+    await expect(
+      test.repository.settleAttemptForConversation({
+        conversationId: CONVERSATION_ID,
+        outcome: "delivered",
+        expectedWindowExpiresAt: WINDOW_EXPIRES_AT,
+      }),
+    ).resolves.toBe("window_mismatch");
+
+    expect(test.tx.guideAccessAttempt.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("reports no attempt for a delivery that never went through the strict gate", async () => {
+    const test = harness({ activeAttempt: null });
+
+    await expect(
+      test.repository.settleAttemptForConversation({
+        conversationId: CONVERSATION_ID,
+        outcome: "delivered",
+        expectedWindowExpiresAt: WINDOW_EXPIRES_AT,
+      }),
+    ).resolves.toBe("not_found");
+
+    expect(test.tx.guideAccessAttempt.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("leaves an attempt the action service already resolved alone", async () => {
+    const test = harness({
+      activeAttempt: attempt({ state: "needs_review", lastFollowResult: "follower" }),
+    });
+
+    await expect(
+      test.repository.settleAttemptForConversation({
+        conversationId: CONVERSATION_ID,
+        outcome: "delivered",
+        expectedWindowExpiresAt: WINDOW_EXPIRES_AT,
+      }),
+    ).resolves.toBe("already_settled");
+
+    expect(test.tx.guideAccessAttempt.updateMany).not.toHaveBeenCalled();
+  });
+});

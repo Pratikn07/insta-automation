@@ -64,15 +64,11 @@ type CompletionDependencies = {
   markConversationCompleted(conversationId: string): Promise<{ completedAt: Date | null }>;
   scheduleEngagementFollowUp(input: ScheduleEngagementFollowUpInput): Promise<unknown>;
   markThreadResolved(input: { threadId: string; inboundMessageId: string }): Promise<void>;
-  /**
-   * Settles the guide-access attempt this delivery belongs to. Non-throwing at the call
-   * site: an attempt left in `delivering` is an operator problem, not a reason to fail a
-   * delivery whose units all provably went out.
-   */
   settleAccessAttempt(input: {
     conversationId: string;
     outcome: "delivered" | "needs_review";
-  }): Promise<"settled" | "already_settled" | "not_found">;
+    expectedWindowExpiresAt: Date;
+  }): Promise<"settled" | "already_settled" | "not_found" | "window_mismatch">;
   followUpsEnabled(): boolean;
   logger: CompletionLogger;
   now(): Date;
@@ -195,6 +191,51 @@ export function createGuideDeliveryCompletionRepository(
   };
 }
 
+/**
+ * Closes the guide-access attempt this delivery belongs to. Never throws to the caller: a
+ * delivery whose units all provably went out must not be failed because its attempt could
+ * not be closed. An attempt stuck in `delivering` is released lazily by the parent's next
+ * inbound, so the cost of a miss is bounded — but it has to be visible.
+ */
+async function settleAttempt(
+  dependencies: CompletionDependencies,
+  delivery: GuideDeliveryCompletionRecord,
+): Promise<void> {
+  let outcome: Awaited<ReturnType<CompletionDependencies["settleAccessAttempt"]>>;
+  try {
+    outcome = await dependencies.settleAccessAttempt({
+      conversationId: delivery.conversationId,
+      outcome: "delivered",
+      expectedWindowExpiresAt: delivery.sendWindowExpiresAt,
+    });
+  } catch {
+    dependencies.logger.error(
+      {
+        errorCode: "access_attempt_settle_failed",
+        deliveryId: delivery.id,
+        conversationId: delivery.conversationId,
+      },
+      "Guide access attempt could not be settled after delivery completion",
+    );
+    return;
+  }
+
+  // `not_found` is the normal shape for every delivery that predates the strict gate or
+  // was triggered outside it. The other two mean an attempt exists but is not the one this
+  // delivery was built from, or was moved by some path that should not have.
+  if (outcome === "settled" || outcome === "not_found") return;
+  dependencies.logger.error(
+    {
+      errorCode: "access_attempt_settle_refused",
+      outcome,
+      deliveryId: delivery.id,
+      conversationId: delivery.conversationId,
+      sendWindowExpiresAt: delivery.sendWindowExpiresAt.toISOString(),
+    },
+    "Guide access attempt was not the one this delivery belonged to",
+  );
+}
+
 export function createGuideDeliveryCompletionService(
   dependencies: CompletionDependencies,
 ) {
@@ -217,26 +258,6 @@ export function createGuideDeliveryCompletionService(
       }
 
       const conversation = await dependencies.markConversationCompleted(delivery.conversationId);
-
-      // Every unit is provably sent and the ledger state is durable, so the access
-      // attempt can be closed. `delivering` is an ACTIVE attempt state, so leaving it
-      // unsettled would keep `createOrLoadAttempt` loading this attempt and block the
-      // parent's next request until the messaging window expired.
-      try {
-        await dependencies.settleAccessAttempt({
-          conversationId: delivery.conversationId,
-          outcome: "delivered",
-        });
-      } catch {
-        dependencies.logger.error(
-          {
-            errorCode: "access_attempt_settle_failed",
-            deliveryId: delivery.id,
-            conversationId: delivery.conversationId,
-          },
-          "Guide access attempt could not be settled after delivery completion",
-        );
-      }
 
       const completionTime = conversation.completedAt ?? dependencies.now();
       const inboundTrigger = hasInboundTrigger(delivery.triggerKind);
@@ -284,11 +305,25 @@ export function createGuideDeliveryCompletionService(
         });
       }
 
-      return dependencies.repository.finalizeAtomically({
+      const finalized = await dependencies.repository.finalizeAtomically({
         deliveryId,
         claimToken,
         completedAt: completionTime,
       });
+
+      // Only after the ledger is durably `completed`. `delivering` is an ACTIVE attempt
+      // state, so leaving it unsettled would keep `createOrLoadAttempt` loading this
+      // attempt and block the parent's next request for the rest of the messaging
+      // window. But settling FIRST is worse than settling late: a crash in between would
+      // release the conversation while the delivery is still `sending`, letting the
+      // parent open a fresh attempt and authorizing a duplicate send. A settle that never
+      // happens leaves the attempt in `delivering`, which the next inbound expires
+      // lazily. Order accordingly, and only when this worker really did finalize.
+      if (finalized === "completed") {
+        await settleAttempt(dependencies, delivery);
+      }
+
+      return finalized;
     },
   };
 }
