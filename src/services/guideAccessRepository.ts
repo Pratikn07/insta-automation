@@ -539,7 +539,18 @@ export function createGuideAccessRepository(
           return { kind: "token_conflict" as const };
         }
 
-        if (attempt.state !== "awaiting_request" && attempt.state !== "awaiting_follow") {
+        // A review reached without a definitive follow answer is retryable: the
+        // parent was told to try again later, so their next reply must be able to
+        // re-check. MAX_FOLLOW_CHECKS below still bounds it. A review that holds a
+        // definitive answer (follow-lag limit, or a fault after delivery began)
+        // stays terminal and belongs to the owner.
+        const retryableReview =
+          attempt.state === "needs_review" && attempt.lastFollowResult === "unknown";
+        if (
+          attempt.state !== "awaiting_request" &&
+          attempt.state !== "awaiting_follow" &&
+          !retryableReview
+        ) {
           return { kind: "state_conflict" as const, actualState: attempt.state };
         }
         if (attempt.messagingWindowExpiresAt <= input.now) {
@@ -555,6 +566,9 @@ export function createGuideAccessRepository(
           where: {
             id: attempt.id,
             state: expectedState,
+            // Pin the discriminator too, so a concurrent writer that supplies a
+            // definitive answer cannot have its terminal review reopened here.
+            ...(retryableReview ? { lastFollowResult: "unknown" as const } : {}),
             followCheckCount: { lt: MAX_FOLLOW_CHECKS },
             messagingWindowExpiresAt: { gt: input.now },
           },

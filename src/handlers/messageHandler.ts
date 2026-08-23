@@ -48,6 +48,10 @@ const DIRECT_STRICT_METRIC = new Map<
   { stage: "action" | "fresh_check" | "delivery" | "needs_review"; outcome: string }
 >([
   ["guide_delivery_started", { stage: "delivery", outcome: "planned" }],
+  // Currently unreachable: `handleFollower` returns `guide_delivery_started`, not
+  // this. Kept because it is a declared outcome and the mapping would be correct
+  // if a future path returns it — but do not read its presence as evidence that a
+  // confirmed follow is measured separately today.
   ["follow_confirmed", { stage: "fresh_check", outcome: "follower" }],
   ["follow_not_confirmed", { stage: "fresh_check", outcome: "non_follower" }],
   ["follow_check_unavailable", { stage: "fresh_check", outcome: "unavailable" }],

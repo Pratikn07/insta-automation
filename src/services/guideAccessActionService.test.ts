@@ -217,7 +217,14 @@ function createHarness(input: {
       }
       directClaims.add(request.inboundMessageId);
       tokenAttempt.set(request.inboundMessageId, ATTEMPT_ID);
-      if (current.state !== "awaiting_request" && current.state !== "awaiting_follow") {
+      // Mirrors the repository fence: an inconclusive review is retryable.
+      const retryableReview =
+        current.state === "needs_review" && current.lastFollowResult === "unknown";
+      if (
+        current.state !== "awaiting_request" &&
+        current.state !== "awaiting_follow" &&
+        !retryableReview
+      ) {
         return { kind: "state_conflict", actualState: current.state } as const;
       }
       current = {
@@ -1463,7 +1470,13 @@ describe("comment guide request", () => {
     expect(test.sendText).not.toHaveBeenCalled();
   });
 
-  it("sends nothing when the messaging window is already closed", async () => {
+  // Honest scope: this covers a CALLER-SUPPLIED closed window only. Neither
+  // production caller can currently reach it, because both derive the window from
+  // `observedAt` (= now). It is not what protects the current callers — the
+  // repository already fences the window at `issueToken` (which also marks the
+  // attempt expired) and at `claimDirectInbound`. So the deferred Task 3 minor is
+  // moot for these callers rather than closed by this guard.
+  it("sends nothing when a caller supplies an already-closed messaging window", async () => {
     const test = createHarness({});
 
     await expect(
@@ -1521,5 +1534,104 @@ describe("comment guide request", () => {
     expect(evidence).not.toContain(COMMENT_ID);
     expect(evidence).not.toContain(REQUEST_TOKEN_ID);
     expect(evidence).not.toContain("toddler sleep guide");
+  });
+});
+
+// Fix round 1, Critical 1. `handleUnavailable` tells the parent "Please try again
+// a little later", but `needs_review` is an ACTIVE_ATTEMPT_STATE, so their retry
+// loaded the same attempt and was discarded with nothing sent — for the whole 24h
+// window, with no sweeper (markExpired has no caller). A review reached WITHOUT a
+// definitive follow answer must stay retryable, bounded by MAX_FOLLOW_CHECKS. A
+// review reached WITH one (the lag limit) stays terminal on purpose.
+describe("retry after an inconclusive review", () => {
+  function direct(test: ReturnType<typeof createHarness>, inboundId = DIRECT_INBOUND_ID) {
+    return test.service.startDirectDmGuideRequest(
+      {
+        id: CONVERSATION_ID,
+        igUserId: SENDER_ID,
+        resourceId: RESOURCE_ID,
+        guideName: "toddler sleep guide",
+      },
+      { id: inboundId, threadId: THREAD_ID, eventAt: EVENT_AT },
+    );
+  }
+
+  it("re-checks when the review followed an unavailable check", async () => {
+    const test = createHarness({
+      initialAttempt: attempt({ state: "needs_review", lastFollowResult: "unknown" }),
+      freshResults: [live(true)],
+    });
+
+    await expect(direct(test)).resolves.toBe("guide_delivery_started");
+
+    expect(test.resolveFresh).toHaveBeenCalledTimes(1);
+    expect(test.startGuideDelivery).toHaveBeenCalledTimes(1);
+  });
+
+  it("still gates a retry that comes back a confirmed non-follower", async () => {
+    const test = createHarness({
+      initialAttempt: attempt({ state: "needs_review", lastFollowResult: "unknown" }),
+      freshResults: [live(false)],
+    });
+
+    await expect(direct(test)).resolves.toBe("follow_not_confirmed");
+
+    expect(test.startGuideDelivery).not.toHaveBeenCalled();
+    expect(test.sendFollowerGate).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a lag-limit review terminal and sends nothing", async () => {
+    const test = createHarness({
+      initialAttempt: attempt({
+        state: "needs_review",
+        lastFollowResult: "non_follower",
+        followResponseCount: 2,
+      }),
+    });
+
+    await expect(direct(test)).resolves.toBe("access_attempt_needs_review");
+
+    expect(test.resolveFresh).not.toHaveBeenCalled();
+    expect(test.startGuideDelivery).not.toHaveBeenCalled();
+    expect(test.sendFollowerGate).not.toHaveBeenCalled();
+    expect(test.sendFollowLag).not.toHaveBeenCalled();
+  });
+
+  it("keeps a review terminal once a follow was definitively confirmed", async () => {
+    const test = createHarness({
+      initialAttempt: attempt({ state: "needs_review", lastFollowResult: "follower" }),
+    });
+
+    await expect(direct(test)).resolves.toBe("access_attempt_needs_review");
+
+    expect(test.resolveFresh).not.toHaveBeenCalled();
+    expect(test.startGuideDelivery).not.toHaveBeenCalled();
+  });
+
+  it("stops retrying once the bounded check limit is reached", async () => {
+    const test = createHarness({
+      initialAttempt: attempt({ state: "needs_review", lastFollowResult: "unknown" }),
+      consumeResults: [],
+    });
+    test.repository.claimDirectInbound.mockResolvedValueOnce({
+      kind: "check_limit_reached",
+    } as never);
+
+    await expect(direct(test)).resolves.toBe("access_attempt_needs_review");
+
+    expect(test.resolveFresh).not.toHaveBeenCalled();
+  });
+
+  it("a duplicate retry webhook re-checks only once", async () => {
+    const test = createHarness({
+      initialAttempt: attempt({ state: "needs_review", lastFollowResult: "unknown" }),
+      freshResults: [live(true)],
+    });
+
+    await direct(test);
+    await expect(direct(test)).resolves.toBe("action_replayed");
+
+    expect(test.resolveFresh).toHaveBeenCalledTimes(1);
+    expect(test.startGuideDelivery).toHaveBeenCalledTimes(1);
   });
 });

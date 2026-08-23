@@ -166,6 +166,20 @@ function tokenExpiry(now: Date, windowExpiresAt: Date, ttlMs: number): Date {
   return new Date(Math.min(now.getTime() + ttlMs, windowExpiresAt.getTime()));
 }
 
+/**
+ * A review reached WITHOUT a definitive follow answer is the parent's fault-free
+ * case: `handleUnavailable` told them "Please try again a little later", so their
+ * next reply must be able to re-check. Re-entry stays bounded by
+ * MAX_FOLLOW_CHECKS inside `claimDirectInbound`.
+ *
+ * A review that already holds a definitive answer stays terminal on purpose — the
+ * two-response follow-lag limit, or a fault once delivery had begun. Those belong
+ * to the owner, not to another automatic attempt.
+ */
+function isRetryableReview(attempt: GuideAccessAttempt): boolean {
+  return attempt.state === "needs_review" && attempt.lastFollowResult === "unknown";
+}
+
 export function createGuideAccessActionService(
   dependencies: GuideAccessActionDependencies,
 ) {
@@ -700,8 +714,8 @@ export function createGuideAccessActionService(
     if (
       attempt.state === "delivering" ||
       attempt.state === "delivered" ||
-      attempt.state === "needs_review" ||
-      attempt.state === "expired"
+      attempt.state === "expired" ||
+      (attempt.state === "needs_review" && !isRetryableReview(attempt))
     ) {
       return outcomeForState(attempt.state);
     }
