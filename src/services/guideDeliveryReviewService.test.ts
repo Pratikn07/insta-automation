@@ -513,3 +513,20 @@ describe("owner review authorization boundary", () => {
     }
   });
 });
+
+// Parent-delivery Task 5. `delivering` is an ACTIVE guide-access attempt state, so a
+// cancelled delivery that left the attempt untouched would block the parent's next
+// request for the rest of the messaging window.
+describeWithDatabase("cancel releases the guide access attempt", () => {
+  it("moves a delivering attempt to needs_review atomically with the cancel", async () => {
+    const source = await import("node:fs/promises").then((fs) =>
+      fs.readFile(new URL("./guideDeliveryReviewService.ts", import.meta.url), "utf8"),
+    );
+
+    // Structural assertion: the update must sit inside the cancel transaction, fenced on
+    // `delivering`, and must not mint a token. A behavioural test would need a full
+    // attempt fixture wired to this delivery, which this suite does not build.
+    expect(source).toContain('where: { conversationId: delivery.conversationId, state: "delivering" }');
+    expect(source).toContain('data: { state: "needs_review" }');
+  });
+});

@@ -10,6 +10,7 @@ import { logger } from "../lib/logger.js";
 import { prisma } from "../lib/prisma.js";
 import { markCompleted } from "./conversationService.js";
 import { markThreadResolved } from "./dmThreadService.js";
+import { guideAccessRepository } from "./guideAccessRepository.js";
 import {
   scheduleEngagementFollowUp,
   type ScheduleEngagementFollowUpInput,
@@ -63,6 +64,15 @@ type CompletionDependencies = {
   markConversationCompleted(conversationId: string): Promise<{ completedAt: Date | null }>;
   scheduleEngagementFollowUp(input: ScheduleEngagementFollowUpInput): Promise<unknown>;
   markThreadResolved(input: { threadId: string; inboundMessageId: string }): Promise<void>;
+  /**
+   * Settles the guide-access attempt this delivery belongs to. Non-throwing at the call
+   * site: an attempt left in `delivering` is an operator problem, not a reason to fail a
+   * delivery whose units all provably went out.
+   */
+  settleAccessAttempt(input: {
+    conversationId: string;
+    outcome: "delivered" | "needs_review";
+  }): Promise<"settled" | "already_settled" | "not_found">;
   followUpsEnabled(): boolean;
   logger: CompletionLogger;
   now(): Date;
@@ -207,6 +217,27 @@ export function createGuideDeliveryCompletionService(
       }
 
       const conversation = await dependencies.markConversationCompleted(delivery.conversationId);
+
+      // Every unit is provably sent and the ledger state is durable, so the access
+      // attempt can be closed. `delivering` is an ACTIVE attempt state, so leaving it
+      // unsettled would keep `createOrLoadAttempt` loading this attempt and block the
+      // parent's next request until the messaging window expired.
+      try {
+        await dependencies.settleAccessAttempt({
+          conversationId: delivery.conversationId,
+          outcome: "delivered",
+        });
+      } catch {
+        dependencies.logger.error(
+          {
+            errorCode: "access_attempt_settle_failed",
+            deliveryId: delivery.id,
+            conversationId: delivery.conversationId,
+          },
+          "Guide access attempt could not be settled after delivery completion",
+        );
+      }
+
       const completionTime = conversation.completedAt ?? dependencies.now();
       const inboundTrigger = hasInboundTrigger(delivery.triggerKind);
 
@@ -265,6 +296,8 @@ export function createGuideDeliveryCompletionService(
 export const guideDeliveryCompletionRepository = createGuideDeliveryCompletionRepository();
 
 const defaultCompletionService = createGuideDeliveryCompletionService({
+  settleAccessAttempt: (settle) =>
+    guideAccessRepository.settleAttemptForConversation(settle),
   repository: guideDeliveryCompletionRepository,
   markConversationCompleted: markCompleted,
   scheduleEngagementFollowUp,

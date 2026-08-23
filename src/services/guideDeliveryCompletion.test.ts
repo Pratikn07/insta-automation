@@ -57,11 +57,16 @@ function completionHarness(record = completionRecord()) {
     order.push("thread-resolved");
   });
   const logger = { error: vi.fn() };
+  const settleAccessAttempt = vi.fn(async () => {
+    order.push("attempt-settled");
+    return "settled" as const;
+  });
   const service = createGuideDeliveryCompletionService({
     repository,
     markConversationCompleted,
     scheduleEngagementFollowUp,
     markThreadResolved,
+    settleAccessAttempt,
     followUpsEnabled: () => true,
     logger,
     now: () => COMPLETED_AT,
@@ -72,6 +77,7 @@ function completionHarness(record = completionRecord()) {
     markConversationCompleted,
     scheduleEngagementFollowUp,
     markThreadResolved,
+    settleAccessAttempt,
     logger,
     order,
   };
@@ -100,6 +106,9 @@ describe("finalizeGuideDelivery", () => {
 
     expect(harness.order).toEqual([
       "conversation-completed",
+      // The access attempt is settled straight after the ledger state is durable, so it
+      // can never be closed before the delivery it belongs to.
+      "attempt-settled",
       "follow-up-scheduled",
       "thread-resolved",
       "delivery-finalized",
@@ -147,6 +156,7 @@ describe("finalizeGuideDelivery", () => {
   it("skips follow-up scheduling when the feature is disabled", async () => {
     const harness = completionHarness();
     const service = createGuideDeliveryCompletionService({
+      settleAccessAttempt: async () => "settled" as const,
       repository: harness.repository,
       markConversationCompleted: harness.markConversationCompleted,
       scheduleEngagementFollowUp: harness.scheduleEngagementFollowUp,
@@ -301,5 +311,63 @@ describe("guide delivery completion repository", () => {
     ).resolves.toBe("already_completed");
     expect(tx.guideDelivery.updateMany).not.toHaveBeenCalled();
     expect(tx.eventLog.create).not.toHaveBeenCalled();
+  });
+});
+
+// Parent-delivery Task 5. `delivering` is an ACTIVE guide-access attempt state, so an
+// attempt left unsettled keeps `createOrLoadAttempt` loading it and blocks the parent's
+// next request until the messaging window expires. Completion has to close it.
+describe("guide access attempt settlement", () => {
+  it("settles the attempt as delivered once every unit is provably sent", async () => {
+    const test = completionHarness();
+
+    await expect(test.service.finalizeGuideDelivery(DELIVERY_ID, CLAIM_TOKEN)).resolves.toBe(
+      "completed",
+    );
+
+    expect(test.settleAccessAttempt).toHaveBeenCalledWith({
+      conversationId: CONVERSATION_ID,
+      outcome: "delivered",
+    });
+    // Only after the ledger state is durable — never before.
+    expect(test.order.indexOf("conversation-completed")).toBeLessThan(
+      test.order.indexOf("attempt-settled"),
+    );
+  });
+
+  it("still completes the delivery when the attempt cannot be settled", async () => {
+    const test = completionHarness();
+    test.settleAccessAttempt.mockRejectedValue(new Error("attempt settle exploded"));
+
+    await expect(test.service.finalizeGuideDelivery(DELIVERY_ID, CLAIM_TOKEN)).resolves.toBe(
+      "completed",
+    );
+
+    // A stuck attempt is an operator problem; it is not a reason to fail a delivery whose
+    // units all provably went out. But it must be visible.
+    expect(test.logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ errorCode: "access_attempt_settle_failed" }),
+      expect.any(String),
+    );
+  });
+
+  it("settles nothing when the delivery is not ready to complete", async () => {
+    const test = completionHarness(completionRecord({ sentUnitCount: 1, totalUnitCount: 2 }));
+
+    await expect(test.service.finalizeGuideDelivery(DELIVERY_ID, CLAIM_TOKEN)).resolves.toBe(
+      "not_ready",
+    );
+
+    expect(test.settleAccessAttempt).not.toHaveBeenCalled();
+  });
+
+  it("settles nothing on a repeated completion", async () => {
+    const test = completionHarness(completionRecord({ status: "completed" }));
+
+    await expect(test.service.finalizeGuideDelivery(DELIVERY_ID, CLAIM_TOKEN)).resolves.toBe(
+      "already_completed",
+    );
+
+    expect(test.settleAccessAttempt).not.toHaveBeenCalled();
   });
 });

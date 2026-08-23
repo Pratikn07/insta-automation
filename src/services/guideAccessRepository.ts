@@ -207,6 +207,18 @@ export interface GuideAccessRepository {
     input: ReserveGuideFollowResponseInput,
   ): Promise<ReserveGuideFollowResponseResult>;
   claimCoverExposure(input: { attemptId: string }): Promise<ClaimCoverExposureResult>;
+  /**
+   * Settle the attempt that a durable delivery belongs to, found by conversation.
+   *
+   * There is no foreign key from `guide_delivery` to `guide_access_attempt`; the partial
+   * unique index permits one non-terminal attempt per conversation, so the conversation is
+   * an unambiguous handle. Both are idempotent and fenced on `delivering`, so a repeated
+   * completion or a late cancel cannot move an attempt that already settled.
+   */
+  settleAttemptForConversation(input: {
+    conversationId: string;
+    outcome: "delivered" | "needs_review";
+  }): Promise<"settled" | "already_settled" | "not_found">;
   settleCoverExposure(input: SettleCoverExposureInput): Promise<void>;
   findCoverSnapshot(coverVersionId: string): Promise<GuideAccessCoverSnapshot | null>;
 }
@@ -889,6 +901,29 @@ export function createGuideAccessRepository(
 
     findCoverSnapshot(coverVersionId) {
       return database.$transaction((tx) => resolveSnapshotById(tx, coverVersionId));
+    },
+
+    async settleAttemptForConversation(input) {
+      return database.$transaction(async (tx) => {
+        const attempt = await tx.guideAccessAttempt.findFirst({
+          where: {
+            conversationId: input.conversationId,
+            state: { in: [...ACTIVE_ATTEMPT_STATES] },
+          },
+          orderBy: { createdAt: "desc" },
+          select: { id: true, state: true },
+        });
+        if (!attempt) return "not_found" as const;
+        // Only an attempt still mid-delivery may be settled from a ledger outcome. Any
+        // other state was already resolved by the action service, and a stale worker
+        // callback must not overwrite it.
+        if (attempt.state !== "delivering") return "already_settled" as const;
+        const updated = await tx.guideAccessAttempt.updateMany({
+          where: { id: attempt.id, state: "delivering" },
+          data: { state: input.outcome },
+        });
+        return updated.count === 1 ? ("settled" as const) : ("already_settled" as const);
+      });
     },
 
     async markExpired(input) {

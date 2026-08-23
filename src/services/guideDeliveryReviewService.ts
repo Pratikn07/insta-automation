@@ -422,6 +422,18 @@ export function createGuideDeliveryReviewService(dependencies: ReviewDependencie
             updatedAt: input.now,
           },
         });
+        // Release the guide-access attempt in the SAME transaction as the cancel.
+        //
+        // `delivering` is an ACTIVE attempt state, so a cancelled delivery that left the
+        // attempt untouched would keep `createOrLoadAttempt` loading it and silently block
+        // the parent's next request for the rest of the messaging window. `needs_review`
+        // rather than `expired`: an owner cancelled this deliberately and should see it.
+        // Fenced on `delivering` so a stale cancel cannot move an attempt that already
+        // settled, and no new action token is invented.
+        await tx.guideAccessAttempt.updateMany({
+          where: { conversationId: delivery.conversationId, state: "delivering" },
+          data: { state: "needs_review" },
+        });
         await writeOwnerAction(tx, delivery, {
           actor: input.actor,
           action: "cancel_delivery",
