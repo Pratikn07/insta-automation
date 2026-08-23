@@ -249,34 +249,37 @@ export async function runGateQueueTick(): Promise<void> {
             gateOwner: retryOwner,
           });
 
+          // if/else rather than `continue`: the shared tail below owns the tick
+          // counter and the inter-send pacing, and a strict retry must not skip
+          // either. Skipping the pacing would fire private replies back to back in a
+          // worker that aborts its whole tick on a rate limit.
           if (retryOwner === "v2") {
             // The strict opening was re-sent, so this counts on V2's own metric.
             await guideAccessMetrics.record({ stage: "opening", outcome: "accepted" });
             // `scheduleAcceptedGateRecovery` renders V1 public-comment nudge copy,
             // which must never follow a strict opening. The strict attempt already
             // carries its own review state.
-            continue;
-          }
-
-          // Schedule recovery in separate block (failures do not un-send or revert queue)
-          try {
-            await scheduleAcceptedGateRecovery({
-              conversationId: row.conversationId,
-              igUserId: row.igUserId,
-              keywordId: convo.keywordId,
-              keywordSnapshot: convo.keyword.keyword,
-              commentId: row.commentId,
-              mediaId: row.mediaId,
-              gateDmMessageId: receipt.dmMessageId,
-              instagramGateMessageId: receipt.instagramMessageId,
-              acceptedAt: receipt.acceptedAt,
-            });
-          } catch {
-            await logEvent("dm_recovery_schedule_failed", {
-              conversationId: row.conversationId,
-              commentId: row.commentId,
-              triggerKind: "no_confirmed_read",
-            });
+          } else {
+            // Schedule recovery in separate block (failures do not un-send or revert queue)
+            try {
+              await scheduleAcceptedGateRecovery({
+                conversationId: row.conversationId,
+                igUserId: row.igUserId,
+                keywordId: convo.keywordId,
+                keywordSnapshot: convo.keyword.keyword,
+                commentId: row.commentId,
+                mediaId: row.mediaId,
+                gateDmMessageId: receipt.dmMessageId,
+                instagramGateMessageId: receipt.instagramMessageId,
+                acceptedAt: receipt.acceptedAt,
+              });
+            } catch {
+              await logEvent("dm_recovery_schedule_failed", {
+                conversationId: row.conversationId,
+                commentId: row.commentId,
+                triggerKind: "no_confirmed_read",
+              });
+            }
           }
 
           sent++;

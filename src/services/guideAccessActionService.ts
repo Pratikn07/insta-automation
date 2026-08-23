@@ -882,23 +882,14 @@ export function createGuideAccessActionService(
     // validation error replace the provider error and skip the recovery ladder.
     const retryText = guideAccessOpeningText(guideName);
     const disposition = await sendAfterFence(attempt.id, "awaiting_request", async () => {
+      let receipt: MetaSendResult;
       try {
-        const receipt = await dependencies.sendInitialPrivateReply({
+        receipt = await dependencies.sendInitialPrivateReply({
           commentId: input.commentId,
           guideName,
           actionToken: issued.token.id,
           capabilities,
         });
-        // Meta can answer 2xx with no `message_id`, which never throws. That is an
-        // uncertain outcome like any other and must still produce evidence, or it
-        // becomes the one silent drop this recovery path exists to remove.
-        if (!receipt.messageId) {
-          onSendFailure({
-            error: new Error("guide_opening_missing_provider_message_id"),
-            retryText,
-          });
-        }
-        return receipt;
       } catch (error) {
         // Report, then rethrow so `sendAfterFence` classifies exactly as before.
         // A definite failure and an uncertain one both need recovery evidence; only
@@ -906,6 +897,18 @@ export function createGuideAccessActionService(
         onSendFailure({ error, retryText });
         throw error;
       }
+
+      // Reported outside the try: Meta can answer 2xx with no `message_id`, which
+      // never throws, and that is the one uncertain outcome that would otherwise
+      // produce no evidence at all. Kept out of the try so a fault in the report
+      // itself can never be re-reported as a provider failure.
+      if (!receipt.messageId) {
+        onSendFailure({
+          error: new Error("guide_opening_missing_provider_message_id"),
+          retryText,
+        });
+      }
+      return receipt;
     });
     if (disposition === "sent") return "guide_opening_sent";
     if (disposition === "needs_review") return "access_attempt_needs_review";

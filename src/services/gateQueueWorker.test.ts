@@ -623,3 +623,40 @@ describe("strict-gate ownership of a queued retry", () => {
     expect(recordGuideAccessMetric).not.toHaveBeenCalled();
   });
 });
+
+// Fix round 2 for Task 9. The V2 branch used `continue`, which jumped past the shared
+// tail of the send loop — `sent++` and the 4-second PER_SEND_GAP_MS spacing. A tick
+// holding several V2 rows would have fired private replies back to back in a worker
+// that otherwise aborts the whole tick on a rate limit.
+describe("strict retries keep the shared send tail", () => {
+  it("counts a V2 retry in the tick total like any other send", async () => {
+    gateOwner.mockReturnValue("v2");
+    sendTrackedPrivateReply.mockResolvedValue({
+      dmMessageId: "dm-1",
+      instagramMessageId: "mid-1",
+    });
+
+    await runGateQueueTick();
+
+    // `sent` drives the tick summary and the rate-limit backoff arithmetic, so a V2
+    // row must increment it exactly as a V1 row does.
+    expect(logger.info).toHaveBeenCalledWith(
+      { sent: 1 },
+      "Gate retry worker delivered queued gates",
+    );
+  });
+
+  it("counts a V1 retry the same way", async () => {
+    sendTrackedPrivateReply.mockResolvedValue({
+      dmMessageId: "dm-1",
+      instagramMessageId: "mid-1",
+    });
+
+    await runGateQueueTick();
+
+    expect(logger.info).toHaveBeenCalledWith(
+      { sent: 1 },
+      "Gate retry worker delivered queued gates",
+    );
+  });
+});
