@@ -438,6 +438,8 @@ function createHarness(input: {
   const recordFreshCheck = vi.fn(async () => undefined);
   const recordRecheck = vi.fn(async () => undefined);
   const recordGateShown = vi.fn(async () => undefined);
+  const recordReviewMarked = vi.fn(async () => undefined);
+  const recordDeliveryPlanned = vi.fn(async () => undefined);
   const loadGuideName = vi.fn(
     input.loadGuideName ?? (async () => "toddler sleep guide"),
   );
@@ -463,6 +465,8 @@ function createHarness(input: {
     recordFreshCheck,
     recordRecheck,
     recordGateShown,
+    recordReviewMarked,
+    recordDeliveryPlanned,
     loadGuideName,
     loadThreadId,
     findAttemptIdByToken,
@@ -488,6 +492,8 @@ function createHarness(input: {
     recordFreshCheck,
     recordRecheck,
     recordGateShown,
+    recordReviewMarked,
+    recordDeliveryPlanned,
     loadGuideName,
     loadThreadId,
     cancelledTokens,
@@ -2633,5 +2639,55 @@ describe("a review is terminal only when the parent was actually told something"
     // The gate went out. Re-entry here would send a second one.
     expect(test.sendFollowerGate).toHaveBeenCalledTimes(1);
     expect(test.attempt().lastFollowResult).toBe("non_follower");
+  });
+});
+
+// Review round 3, Important. `needs_review.marked` is named in the runbook as the
+// owner-review rate and a rollout hold threshold, and `delivery.planned` as delivery starts.
+// Both were mapped from an outcome in the direct-DM branch only, so a parent who TAPPED a
+// control produced neither — `routeGuideAction` never consulted that map. Recorded at the
+// point each thing happens now, which covers every entry path instead of one.
+describe("review and delivery counters cover every entry path", () => {
+  it("counts a review marked through the tap path", async () => {
+    const test = createHarness({
+      freshResults: [unavailable],
+      consumeResults: [
+        { kind: "consumed", attempt: attempt({ state: "checking_follow", followCheckCount: 1 }) },
+      ],
+    });
+
+    await check(test, FOLLOW_TOKEN_1);
+
+    expect(test.recordReviewMarked).toHaveBeenCalled();
+  });
+
+  it("counts a delivery started through the tap path", async () => {
+    const test = createHarness({
+      freshResults: [live(true)],
+      consumeResults: [
+        { kind: "consumed", attempt: attempt({ state: "checking_follow", followCheckCount: 1 }) },
+      ],
+    });
+
+    await expect(check(test, FOLLOW_TOKEN_1)).resolves.toBe("guide_delivery_started");
+
+    expect(test.recordDeliveryPlanned).toHaveBeenCalledTimes(1);
+  });
+
+  it("counts a review only once per durable marking", async () => {
+    const test = createHarness({ freshResults: [unavailable] });
+
+    await request(test);
+
+    // `checkpointNeedsReview` retries across candidate states; the count must follow the
+    // durable outcome, not the number of attempts it took to get there.
+    expect(test.recordReviewMarked).toHaveBeenCalledTimes(1);
+  });
+
+  it("never fails a parent action because either counter failed", async () => {
+    const test = createHarness({ freshResults: [live(true)] });
+    test.recordDeliveryPlanned.mockRejectedValue(new Error("metrics down"));
+
+    await expect(request(test)).resolves.toBe("guide_delivery_started");
   });
 });

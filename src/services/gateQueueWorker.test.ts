@@ -59,7 +59,7 @@ vi.mock("./guideFollowGateV2Rollout.js", () => ({
   guideFollowGateV2Selector: { owner: gateOwner },
 }));
 vi.mock("./guideAccessMetrics.js", () => ({
-  guideAccessMetrics: { record: recordGuideAccessMetric },
+  recordGuideAccessMetric,
 }));
 vi.mock("./dmRecoveryService.js", () => ({
   scheduleAcceptedGateRecovery,
@@ -606,10 +606,7 @@ describe("strict-gate ownership of a queued retry", () => {
 
     await runGateQueueTick();
 
-    expect(recordGuideAccessMetric).toHaveBeenCalledWith({
-      stage: "opening",
-      outcome: "accepted",
-    });
+    expect(recordGuideAccessMetric).toHaveBeenCalledWith("opening", "accepted");
   });
 
   it("records no V2 metric for a V1-owned retry", async () => {

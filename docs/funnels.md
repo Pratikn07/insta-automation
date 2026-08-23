@@ -25,7 +25,7 @@ The strict-access endpoint returns stable, zero-filled `counts` and
 | `recheck` | `attempted`, `confirmed`, `not_confirmed`, `unavailable` |
 | `cover_gate` | `accepted`, `failed`, `uncertain`, `omitted_not_selected`, `omitted_mismatch` |
 | `cover_delivery` | `selected`, `omitted_already_shown`, `omitted_not_selected`, `omitted_mismatch` |
-| `delivery` | `planned`, `completed`, `failed`, `needs_review` |
+| `delivery` | `planned` |
 | `needs_review` | `marked` |
 
 `fresh_check` and `recheck` are the same measurement taken at two different moments, and
@@ -37,10 +37,23 @@ as `fresh_check`, which made that number unreadable.
 
 `recheck.attempted` is the denominator for the other three.
 
-Every stage in this table has a production writer, asserted by a test. A declared stage
-that nothing writes reads as a permanent zero, which is indistinguishable from "this has
-not started yet" — `cover`, `gate` and `recheck` were all in that state at some point
-during the guide-cover work.
+Every stage in this table has a production writer, asserted by a test that matches on the
+typed `recordGuideAccessMetric("stage", …)` call. A declared stage or outcome that nothing
+writes reads as a permanent zero, which is indistinguishable from "this has not started yet"
+— `cover`, `gate` and `recheck` were all in that state at some point during the guide-cover
+work, as were `gate.profile_action_offered` and three `delivery` outcomes. All are either
+written now or removed.
+
+Two removals worth naming. `gate.profile_action_offered` went because the follower gate is
+unconditionally plain text until the capability spike runs, so nothing could produce it.
+`delivery.completed`, `delivery.failed` and `delivery.needs_review` went because the delivery
+ledger already emits `sequence_completed`, which the cohort funnel reads to measure delivered
+guides — a second, worse measurement of the same thing under a different name is how two
+numbers start disagreeing. What this stage adds that the cohort funnel cannot see is delivery
+STARTS, which is why `planned` stays.
+
+The test proves a literal call site exists for every stage. It cannot prove the call is
+reachable, so read it as a floor rather than a guarantee.
 
 Each latency summary contains `samples`, rounded `average`, `p50`, `p95`, and
 `max` milliseconds. Missing samples return zero plus `null` latency values. The

@@ -37,26 +37,24 @@ import { env, guideDeliveryCohortIgUserIds } from "../config/env.js";
 import { routeGuideAction } from "./guideActionRouter.js";
 import { guideFollowGateV2Selector } from "../services/guideFollowGateV2Rollout.js";
 import { startDirectDmGuideRequest } from "../services/guideAccessActionService.js";
-import { guideAccessMetrics } from "../services/guideAccessMetrics.js";
+import { recordGuideAccessMetric } from "../services/guideAccessMetrics.js";
 
-// Outcome-to-aggregate mapping for the direct-DM strict path. Kept next to its
-// only call site because the same service outcome means a different stage here
-// than it does for a comment opening. Absent keys did no new work and must not
-// enter a denominator.
-const DIRECT_STRICT_METRIC = new Map<
-  string,
-  { stage: "action" | "delivery" | "needs_review"; outcome: string }
->([
-  ["guide_delivery_started", { stage: "delivery", outcome: "planned" }],
-  // The follow-check outcomes are NOT mapped here. They are recorded inside
-  // `guideAccessActionService`, which is the only layer that knows whether the check was
-  // a first check or a re-check after the parent said they had followed — an outcome value
-  // alone cannot distinguish those, which is why they used to be conflated. Mapping them
-  // here as well would double-count every check.
-  ["access_attempt_needs_review", { stage: "needs_review", outcome: "marked" }],
-  ["action_replayed", { stage: "action", outcome: "replayed" }],
-  ["action_expired", { stage: "action", outcome: "expired" }],
-]);
+/**
+ * The only outcomes this branch still measures itself.
+ *
+ * Everything else moved into `guideAccessActionService`, because this map could only ever
+ * see the direct-DM branch: a parent who taps a control reaches the same outcomes through
+ * `routeGuideAction`, which never consulted this and so recorded nothing at all. The
+ * follow checks, the review marking and the delivery start are all recorded at the point
+ * they happen now, which covers every entry path instead of one.
+ *
+ * A token replay or expiry, though, is genuinely about THIS inbound message rather than
+ * about the attempt, so it stays here.
+ */
+async function recordDirectStrictOutcome(outcome: string): Promise<void> {
+  if (outcome === "action_replayed") await recordGuideAccessMetric("action", "replayed");
+  if (outcome === "action_expired") await recordGuideAccessMetric("action", "expired");
+}
 
 /**
  * One ownership decision per call site, failing closed to V1 so a flag-read
@@ -107,8 +105,7 @@ async function runStrictGuideRequest(input: {
         eventAt: input.observedAt,
       },
     );
-    const measured = DIRECT_STRICT_METRIC.get(outcome);
-    if (measured) await guideAccessMetrics.record(measured);
+    await recordDirectStrictOutcome(outcome);
   } catch (err) {
     logger.error(
       { ...graphFailureMetadata(err), conversationId: input.conversationId },

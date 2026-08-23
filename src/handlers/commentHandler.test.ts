@@ -91,7 +91,7 @@ vi.mock("../services/guideFollowGateV2Rollout.js", () => ({
 }));
 vi.mock("../services/guideAccessActionService.js", () => ({ startCommentGuideRequest }));
 vi.mock("../services/guideAccessMetrics.js", () => ({
-  guideAccessMetrics: { record: recordGuideAccessMetric },
+  recordGuideAccessMetric,
 }));
 
 const { handleComment } = await import("./commentHandler.js");
@@ -843,10 +843,7 @@ describe("strict follower gate v2 — comment path", () => {
 
     await handleComment(COMMENT);
 
-    expect(recordGuideAccessMetric).toHaveBeenCalledWith({
-      stage: "opening",
-      outcome: want,
-    });
+    expect(recordGuideAccessMetric).toHaveBeenCalledWith("opening", want);
   });
 
   it("records no opening metric when no opening was sent", async () => {

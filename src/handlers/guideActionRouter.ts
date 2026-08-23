@@ -1,6 +1,7 @@
 import type { GuideActionTokenAction } from "@prisma/client";
 import { logger } from "../lib/logger.js";
 import { prisma } from "../lib/prisma.js";
+import { recordGuideAccessMetric } from "../services/guideAccessMetrics.js";
 import {
   checkFollowFromAction,
   requestGuideFromAction,
@@ -27,6 +28,14 @@ type GuideActionRouterDependencies = {
   logger: {
     error(bindings: Record<string, unknown>, message: string): void;
   };
+  /**
+   * Aggregate-only. `received` is every guide control a parent actually operated;
+   * `unsupported` is a payload this router could not parse. Recorded here because this is
+   * the only place that sees the difference — and because both outcomes were declared in the
+   * vocabulary with nothing writing them, which reads as a permanent zero rather than as
+   * "no parent has tapped a control yet".
+   */
+  recordAction(outcome: "received" | "unsupported"): Promise<void>;
 };
 
 export type GuideActionRouteInput = {
@@ -47,12 +56,28 @@ export function parseGuideActionPayload(payload: unknown): { tokenId: string } |
   return match ? { tokenId: match[1]! } : null;
 }
 
+/** Measurement must never fail a parent's tap. */
+async function countAction(
+  dependencies: GuideActionRouterDependencies,
+  outcome: "received" | "unsupported",
+): Promise<void> {
+  try {
+    await dependencies.recordAction(outcome);
+  } catch {
+    // Aggregate counter only.
+  }
+}
+
 export function createGuideActionRouter(dependencies: GuideActionRouterDependencies) {
   return async function routeGuideAction(
     input: GuideActionRouteInput,
   ): Promise<GuideActionRouteResult> {
     const parsed = parseGuideActionPayload(input.payload);
-    if (!parsed) return { kind: "ignored" };
+    if (!parsed) {
+      await countAction(dependencies, "unsupported");
+      return { kind: "ignored" };
+    }
+    await countAction(dependencies, "received");
 
     let action: GuideActionTokenAction | null;
     try {
@@ -96,6 +121,9 @@ export const routeGuideAction = createGuideActionRouter({
       select: { action: true },
     });
     return token?.action ?? null;
+  },
+  recordAction: async (outcome) => {
+    await recordGuideAccessMetric("action", outcome);
   },
   requestGuideFromAction,
   checkFollowFromAction,

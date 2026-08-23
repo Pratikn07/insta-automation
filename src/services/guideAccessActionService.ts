@@ -161,6 +161,14 @@ export type GuideAccessActionDependencies = {
     outcome: "attempted" | "confirmed" | "not_confirmed" | "unavailable",
   ): Promise<void>;
   recordGateShown(): Promise<void>;
+  /**
+   * Recorded where a review is actually marked, and where a delivery actually starts,
+   * rather than by a caller. Both used to be mapped from an outcome in the direct-DM
+   * branch only, so a parent who tapped a control produced neither — and the runbook names
+   * the review count as the owner-review rate a rollout hold depends on.
+   */
+  recordReviewMarked(): Promise<void>;
+  recordDeliveryPlanned(): Promise<void>;
   loadGuideName(resourceId: string): Promise<string>;
   loadThreadId(inboundMessageId: string): Promise<string | null>;
   findAttemptIdByToken(tokenId: string): Promise<string | null>;
@@ -272,6 +280,11 @@ export function createGuideAccessActionService(
           ...(checkedAt ? { checkedAt } : {}),
         });
         if (result.kind === "transitioned") {
+          try {
+            await dependencies.recordReviewMarked();
+          } catch {
+            // Aggregate counter. Never worth failing a review checkpoint for.
+          }
           return { outcome: "access_attempt_needs_review", durable: true };
         }
         if (result.kind === "state_conflict" && result.actualState === "needs_review") {
@@ -832,6 +845,11 @@ export function createGuideAccessActionService(
       }
       if (delivered.kind !== "transitioned") return outcomeForTransition(delivered);
     }
+    try {
+      await dependencies.recordDeliveryPlanned();
+    } catch {
+      // Aggregate counter only.
+    }
     return "guide_delivery_started";
   }
 
@@ -1271,6 +1289,12 @@ const defaultService = createGuideAccessActionService({
   },
   recordGateShown: async () => {
     await recordGuideAccessMetric("gate", "shown");
+  },
+  recordReviewMarked: async () => {
+    await recordGuideAccessMetric("needs_review", "marked");
+  },
+  recordDeliveryPlanned: async () => {
+    await recordGuideAccessMetric("delivery", "planned");
   },
   // The switch is the operator's assertion that the reviewed capability rows are
   // `supported`; it is read per action so a stop applies to the next opening.

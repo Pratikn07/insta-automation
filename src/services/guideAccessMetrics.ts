@@ -11,6 +11,7 @@ const MAX_LATENCY_MS = 7 * 24 * 60 * 60 * 1_000;
 export const GUIDE_ACCESS_OUTCOMES = {
   opening: ["accepted", "failed", "uncertain"],
   action: ["received", "replayed", "expired", "unsupported"],
+  // NOTE: every outcome above and below must have a writer. See the test that enforces it.
   fresh_check: ["follower", "non_follower", "unavailable"],
   // `shown` only. `profile_action_offered` was declared here and could never be written:
   // the follower gate is unconditionally plain text (`sendFollowerGate` is wired with no
@@ -19,7 +20,12 @@ export const GUIDE_ACCESS_OUTCOMES = {
   // that looks like a finding. It comes back when the capability spike proves the control.
   gate: ["shown"],
   recheck: ["attempted", "confirmed", "not_confirmed", "unavailable"],
-  delivery: ["planned", "completed", "failed", "needs_review"],
+  // `planned` only. `completed`, `failed` and `needs_review` were declared here and never
+  // written, and they should not be: the delivery ledger emits its own `sequence_completed`
+  // event, which the cohort funnel already reads to measure delivered guides. A second,
+  // worse measurement of the same thing under a different name is how two numbers start
+  // disagreeing. What this stage adds that the cohort funnel cannot see is delivery STARTS.
+  delivery: ["planned"],
   // TWO cover stages, not one, because there are two cover paths and they measure
   // different things. Folding them together let a rate divide one path's numerator by the
   // other path's denominator — a panel that could read "accepted 100%" and "failed 100%"

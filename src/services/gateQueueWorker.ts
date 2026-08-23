@@ -4,7 +4,7 @@ import { logger } from "../lib/logger.js";
 import { env } from "../config/env.js";
 import { sendTrackedPrivateReply, sendTrackedText } from "./dmDeliveryService.js";
 import { guideFollowGateV2Selector } from "./guideFollowGateV2Rollout.js";
-import { guideAccessMetrics } from "./guideAccessMetrics.js";
+import { recordGuideAccessMetric } from "./guideAccessMetrics.js";
 import { logEvent, describeGraphError } from "../services/eventLogger.js";
 import { PRIVATE_REPLY_WINDOW_MS } from "./gateQueueService.js";
 import {
@@ -255,7 +255,7 @@ export async function runGateQueueTick(): Promise<void> {
           // worker that aborts its whole tick on a rate limit.
           if (retryOwner === "v2") {
             // The strict opening was re-sent, so this counts on V2's own metric.
-            await guideAccessMetrics.record({ stage: "opening", outcome: "accepted" });
+            await recordGuideAccessMetric("opening", "accepted");
             // `scheduleAcceptedGateRecovery` renders V1 public-comment nudge copy,
             // which must never follow a strict opening. The strict attempt already
             // carries its own review state.

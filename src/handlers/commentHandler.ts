@@ -30,7 +30,7 @@ import {
 import { bindUpcomingAutomationFromComment } from "../services/upcomingAutomationCommentBinding.js";
 import { guideFollowGateV2Selector } from "../services/guideFollowGateV2Rollout.js";
 import { startCommentGuideRequest } from "../services/guideAccessActionService.js";
-import { guideAccessMetrics } from "../services/guideAccessMetrics.js";
+import { recordGuideAccessMetric } from "../services/guideAccessMetrics.js";
 
 /**
  * Human-readable scope for a media-attached keyword, from the webhook's
@@ -397,7 +397,7 @@ export async function handleComment(comment: CommentValue): Promise<void> {
       });
       const measured = OPENING_METRIC_OUTCOME.get(result.outcome);
       if (measured) {
-        await guideAccessMetrics.record({ stage: "opening", outcome: measured });
+        await recordGuideAccessMetric("opening", measured);
       }
       // Same ladder V1 runs, so a parent whose opening never arrived is queued,
       // recovered, or escalated rather than dropped. Only the retry copy differs.

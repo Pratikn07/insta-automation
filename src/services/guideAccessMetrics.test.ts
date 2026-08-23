@@ -31,9 +31,6 @@ describe("guide access safe event recording", () => {
     ["recheck", "not_confirmed"],
     ["recheck", "unavailable"],
     ["delivery", "planned"],
-    ["delivery", "completed"],
-    ["delivery", "failed"],
-    ["delivery", "needs_review"],
     ["needs_review", "marked"],
     ["cover_gate", "accepted"],
     ["cover_gate", "failed"],
@@ -84,7 +81,7 @@ describe("guide access safe event recording", () => {
     });
 
     await expect(
-      metrics.record({ stage: "delivery", outcome: "completed", latencyMs: 800 }),
+      metrics.record({ stage: "delivery", outcome: "planned", latencyMs: 800 }),
     ).resolves.toBe("failed");
   });
 });
@@ -104,7 +101,7 @@ describe("guide access aggregate funnel metrics", () => {
       },
       {
         stage: "delivery",
-        outcome: "completed",
+        outcome: "planned",
         count: 2n,
         latencySamples: 2n,
         averageLatencyMs: 1000,
@@ -138,7 +135,7 @@ describe("guide access aggregate funnel metrics", () => {
         fresh_check: { follower: 3, non_follower: 0, unavailable: 0 },
         gate: { shown: 0 },
         recheck: { attempted: 0, confirmed: 0, not_confirmed: 0, unavailable: 0 },
-        delivery: { planned: 0, completed: 2, failed: 0, needs_review: 0 },
+        delivery: { planned: 2 },
         needs_review: { marked: 0 },
       },
       latenciesMs: {
@@ -450,13 +447,16 @@ describe("every declared stage has a production writer", () => {
     }
     const corpus = sources.join("\n");
 
-    // Matched on the two forms that actually RECORD, not on the bare string: `"gate"`
-    // also appears as a `falseResponse` value, which would have passed this test while the
-    // stage stayed unwritten.
+    // Matched ONLY on the typed entry point. Two weaker forms were tried and defeated:
+    // a bare `"gate"` grep passes on `falseResponse: "gate"`, and matching `stage: "..."`
+    // passes on a TYPE ANNOTATION listing the stage — both leave the stage dead while the
+    // test is green. `recordGuideAccessMetric("x"` cannot be produced by a type.
+    //
+    // What this proves: a literal recording call site exists for every declared stage. What
+    // it CANNOT prove: that the call is reachable. A writer behind an impossible condition
+    // still passes, so read this as a floor, not a guarantee.
     const unwritten = Object.keys(GUIDE_ACCESS_OUTCOMES).filter(
-      (stage) =>
-        !corpus.includes(`stage: "${stage}"`) &&
-        !corpus.includes(`recordGuideAccessMetric("${stage}"`),
+      (stage) => !corpus.includes(`recordGuideAccessMetric("${stage}"`),
     );
 
     expect(unwritten).toEqual([]);

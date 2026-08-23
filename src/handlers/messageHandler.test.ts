@@ -85,7 +85,7 @@ vi.mock("../services/guideFollowGateV2Rollout.js", () => ({
 }));
 vi.mock("../services/guideAccessActionService.js", () => ({ startDirectDmGuideRequest }));
 vi.mock("../services/guideAccessMetrics.js", () => ({
-  guideAccessMetrics: { record: recordGuideAccessMetric },
+  recordGuideAccessMetric,
 }));
 vi.mock("../services/eventLogger.js", () => ({
   logEvent,
@@ -1484,18 +1484,32 @@ describe("strict follower gate v2 — direct DM and redelivery", () => {
   });
 
   it.each([
-    { outcome: "guide_delivery_started", stage: "delivery", want: "planned" },
-    { outcome: "access_attempt_needs_review", stage: "needs_review", want: "marked" },
-    { outcome: "action_replayed", stage: "action", want: "replayed" },
-    { outcome: "action_expired", stage: "action", want: "expired" },
-  ])("records $outcome as $stage/$want", async ({ outcome, stage, want }) => {
+    { outcome: "action_replayed", want: "replayed" },
+    { outcome: "action_expired", want: "expired" },
+  ])("records $outcome as action/$want", async ({ outcome, want }) => {
     gateOwner.mockReturnValue("v2");
     startDirectDmGuideRequest.mockResolvedValue(outcome);
 
     await handleMessage(inbound("SLEEP"));
 
-    expect(recordGuideAccessMetric).toHaveBeenCalledWith({ stage, outcome: want });
+    expect(recordGuideAccessMetric).toHaveBeenCalledWith("action", want);
   });
+
+  it.each(["guide_delivery_started", "access_attempt_needs_review"])(
+    "does not record %s here, because a tap reaches it too",
+    async (outcome) => {
+      gateOwner.mockReturnValue("v2");
+      startDirectDmGuideRequest.mockResolvedValue(outcome);
+
+      await handleMessage(inbound("SLEEP"));
+
+      // These moved into the action service, at the point the review is marked and the
+      // delivery starts. Mapped from an outcome here they were invisible to a parent who
+      // tapped a control, because `routeGuideAction` never consulted this branch's map — and
+      // the runbook names the review count as a rollout hold threshold.
+      expect(recordGuideAccessMetric).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(["follow_confirmed", "follow_not_confirmed", "follow_check_unavailable"])(
     "does not record %s here, because only the service knows which check ran",
