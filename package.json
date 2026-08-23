@@ -17,6 +17,7 @@
     "seed": "tsx scripts/seed-keywords.ts",
     "standardize:public-replies": "tsx scripts/standardize-public-replies.ts",
     "audit:guide-message-lengths": "tsx scripts/audit-guide-message-lengths.ts",
+    "verify:meta-guide-gate": "tsx scripts/meta-guide-gate-capability-spike.ts",
     "check:guide-delivery-bypasses": "node scripts/check-guide-delivery-bypasses.mjs",
     "funnel": "tsx scripts/funnel-report.ts",
     "recovery:select-expanded": "tsx scripts/select-expanded-historical-recovery.ts",

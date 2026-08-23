@@ -52,6 +52,7 @@
 - Create: `src/meta/guideGateCapabilitySpike.ts`
 - Create: `src/meta/guideGateCapabilitySpike.test.ts`
 - Create: `scripts/meta-guide-gate-capability-spike.ts`
+- Modify: `src/meta/graphClient.ts`
 - Modify: `package.json`
 
 **Interfaces:**

@@ -1,11 +1,14 @@
 import { z } from "zod";
 
-export type GuideGateCapabilityCase =
-  | "private_text"
-  | "private_quick_reply"
-  | "private_generic"
-  | "dm_quick_reply"
-  | "dm_generic_gate";
+export const GUIDE_GATE_CAPABILITY_CASES = [
+  "private_text",
+  "private_quick_reply",
+  "private_generic",
+  "dm_quick_reply",
+  "dm_generic_gate",
+] as const;
+
+export type GuideGateCapabilityCase = (typeof GUIDE_GATE_CAPABILITY_CASES)[number];
 
 export const GUIDE_GATE_BUTTON_LABELS = {
   requestGuide: "Yes, send it",
@@ -89,7 +92,13 @@ const inputSchema = z.discriminatedUnion("case", [
   }),
 ]);
 
-export type GuideGateCapabilityInput = z.input<typeof inputSchema>;
+export type GuideGateCapabilityInput = z.output<typeof inputSchema>;
+
+export function parseGuideGateCapabilityInput(rawInput: unknown): GuideGateCapabilityInput {
+  const parsed = inputSchema.safeParse(rawInput);
+  if (!parsed.success) throw new Error("invalid_guide_gate_payload");
+  return parsed.data;
+}
 
 function actionPayload(token: string): string {
   return `ts:guide:${token}`;
@@ -117,11 +126,9 @@ function genericMessage(element: GenericElement): GuideGateCapabilityPayload["me
 }
 
 export function buildGuideGateCapabilityPayload(
-  rawInput: GuideGateCapabilityInput,
+  rawInput: unknown,
 ): GuideGateCapabilityPayload {
-  const parsed = inputSchema.safeParse(rawInput);
-  if (!parsed.success) throw new Error("invalid_guide_gate_payload");
-  const input = parsed.data;
+  const input = parseGuideGateCapabilityInput(rawInput);
   const text = openingText(input.guideName);
 
   switch (input.case) {

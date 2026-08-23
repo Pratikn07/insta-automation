@@ -3,7 +3,7 @@ import { logger } from "../lib/logger.js";
 import { describeGraphError } from "../services/eventLogger.js";
 import { getAccessToken } from "./tokenStore.js";
 
-const GRAPH_VERSION = "v21.0";
+export const GRAPH_VERSION = "v21.0";
 const BASE_URL = `https://graph.instagram.com/${GRAPH_VERSION}`;
 
 export const graph: AxiosInstance = axios.create({
