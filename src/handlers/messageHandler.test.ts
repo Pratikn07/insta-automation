@@ -384,6 +384,66 @@ describe("handleMessage — inbound capture", () => {
     expect(findActiveAwaitingDone).not.toHaveBeenCalled();
   });
 
+  it("routes a valid delayed quick reply even when it is not the latest thread message", async () => {
+    recordInboundMessage.mockResolvedValue({
+      duplicate: false,
+      becameLatest: false,
+      threadId: "thread-1",
+      messageId: "message-delayed-action",
+    });
+
+    await handleMessage(guideQuickReplyEvent());
+
+    expect(routeGuideAction).toHaveBeenCalledOnce();
+    expect(routeGuideAction).toHaveBeenCalledWith({
+      payload: GUIDE_ACTION_PAYLOAD,
+      senderId: "controlled-recipient",
+      inboundMessageId: "message-delayed-action",
+      eventAt: new Date(GUIDE_ACTION_TIMESTAMP),
+    });
+    expect(resolveUsername).not.toHaveBeenCalled();
+    expect(findKeywordInMessage).not.toHaveBeenCalled();
+    expect(findActiveAwaitingDone).not.toHaveBeenCalled();
+  });
+
+  it("still skips ordinary delayed text when it is not the latest thread message", async () => {
+    recordInboundMessage.mockResolvedValue({
+      duplicate: false,
+      becameLatest: false,
+      threadId: "thread-1",
+      messageId: "message-delayed-text",
+    });
+
+    await handleMessage(inbound("SLEEP"));
+
+    expect(routeGuideAction).not.toHaveBeenCalled();
+    expect(resolveUsername).not.toHaveBeenCalled();
+    expect(findKeywordInMessage).not.toHaveBeenCalled();
+    expect(findActiveAwaitingDone).not.toHaveBeenCalled();
+  });
+
+  it.each([[undefined], [""]])(
+    "records a quick-reply object with payload %j as quick-reply recovery evidence",
+    async (payload) => {
+      const entry = guideQuickReplyEvent();
+      entry.message = {
+        ...entry.message!,
+        quick_reply: payload === undefined ? {} : { payload },
+      };
+
+      await handleMessage(entry);
+
+      expect(recordRecoveryInbound).toHaveBeenCalledWith({
+        igUserId: "controlled-recipient",
+        eventAt: new Date(GUIDE_ACTION_TIMESTAMP),
+        receivedAt: expect.any(Date),
+        kind: "quick_reply",
+      });
+      expect(routeGuideAction).toHaveBeenCalledOnce();
+      expect(findKeywordInMessage).not.toHaveBeenCalled();
+    },
+  );
+
   it("acknowledges an unknown quick-reply action without treating its title as a keyword", async () => {
     const entry = guideQuickReplyEvent();
     entry.message = {

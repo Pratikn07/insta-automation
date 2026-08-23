@@ -337,7 +337,7 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
   }
 
   // Record recovery inbound evidence for any newly captured inbound message (even if delayed)
-  const recoveryKind = msg.quick_reply?.payload
+  const recoveryKind = msg.quick_reply
     ? "quick_reply"
     : msg.attachments?.length
       ? "attachment"
@@ -363,17 +363,10 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     kind: "inbound",
   });
 
-  if (!inbound.becameLatest) {
-    logger.debug(
-      { senderId, mid: msg.mid, duplicate: false, becameLatest: false },
-      "Inbound webhook ignored for conversation routing (not latest)",
-    );
-    return;
-  }
-
-  // Quick replies are action intent, never free-form copy. Route them before
-  // profile enrichment, keyword matching, or open-gate reply handling so a
-  // button title cannot accidentally trigger a second automation branch.
+  // A quick-reply token is durable action intent even when a later ordinary DM
+  // reached the thread first. Route it after capture/evidence but before the
+  // latest-message guard; the action service owns sender, expiry, state, and
+  // replay validation. Its visible title must never enter free-text automation.
   if (msg.quick_reply) {
     await routeGuideAction({
       payload: msg.quick_reply.payload,
@@ -381,6 +374,14 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
       inboundMessageId: inbound.messageId,
       eventAt: observedAt,
     });
+    return;
+  }
+
+  if (!inbound.becameLatest) {
+    logger.debug(
+      { senderId, mid: msg.mid, duplicate: false, becameLatest: false },
+      "Inbound webhook ignored for conversation routing (not latest)",
+    );
     return;
   }
 
