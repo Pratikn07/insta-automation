@@ -174,6 +174,104 @@ different reason, is what makes this measurable.
 
 ---
 
+---
+
+## Part 2A — Validation log, 2026-08-23
+
+Run against production over the read-only Supabase connection before any of the
+proposals below were built. **Three of the assumptions in this document changed
+as a result.**
+
+### The catalog and its snapshot history
+
+| Fact | Value |
+|---|---|
+| Reels in `reel_meta` | 185, all with `posted_at` |
+| Performance snapshots | 21,833 rows, covering all 185 reels at some point |
+| Snapshot history begins | **2026-06-30** |
+| Post history begins | 2025-03-16 |
+
+**Consequence, and it is permanent:** no reel posted before roughly 2026-06-23
+can ever have a day-seven reading, because nothing was being snapshotted yet.
+Late Discovery Share cannot be backfilled across the full catalog — only from
+late June 2026 forward. Caption term coverage (`SEO-004`) is unaffected and can
+still be scored retroactively across all 185 reels.
+
+### Snapshot coverage: the defect is real, but it is not the shape the backlog recorded
+
+The backlog describes coverage drifting 441 → 392 reels over five days. That
+shape is not present, and the magnitude cannot be — there are only 185 reels.
+What is present is a slow leak:
+
+| Last snapshot | Reels | Oldest post | Newest post |
+|---|---|---|---|
+| Within 2 days | 150 | 2025-05-18 | 2026-08-22 |
+| 2–7 days ago | 9 | 2025-04-11 | 2026-08-01 |
+| 7–30 days ago | 17 | 2026-05-06 | **2026-08-14** |
+| Over 30 days ago | 9 | 2025-03-16 | 2026-07-05 |
+
+**35 of 185 reels have silently stopped being measured**, and it is not simply
+old reels ageing out: one in the 7–30-day-stale bucket was posted 2026-08-14.
+Meanwhile the distinct-reels-per-day count is *rising* (98 → 150 over 30 days)
+because new reels are added faster than old ones drop out, which is exactly why
+the leak is invisible on a coverage chart. No null `views` or `reach` values
+appear anywhere in the last 30 days, so this is reels dropping out of the tick
+entirely, not metrics failing within it.
+
+This remains a prerequisite for trusting LDS, and it should be raised as its own
+correctness item rather than carried inside an SEO feature.
+
+### Late Discovery Share is computable, and it discriminates
+
+Applying every proposed gate — posted since 2026-06-20, at least 10 days old, a
+real snapshot within ±36h of the day-seven mark, and ≥500 lifetime reach:
+
+| | |
+|---|---|
+| Candidate reels | 96 |
+| With a day-seven snapshot inside ±36h | 88 |
+| **Also clearing the 500-reach floor** | **79** |
+| Median distance to the day-seven target | 20.9h |
+
+**Distribution (n = 79):** p10 **0.2%** · median **8.9%** · p90 **23.2%** ·
+max **41.8%** · negative readings **0**.
+
+A ~100× spread between p10 and p90 means the metric separates posts rather than
+measuring the account. Median sends per reach is 0.26%; median saves per reach
+is 0.34%. **This is the baseline** required by `SEO-002`.
+
+### The result that validates the metric
+
+| Correlation with LDS | r |
+|---|---|
+| **Post age** | **−0.002** |
+| Lifetime reach | 0.194 |
+| Saves per reach | 0.195 |
+| Sends per reach | 0.057 |
+| Likes per reach | −0.206 |
+
+Age correlating at essentially zero is the finding that matters. The obvious
+objection to LDS is that it just measures elapsed time — an older reel has had
+longer to accrue a tail. It does not. Two reels posted on the same day sit at
+0.1% and 41.8%, and reels posted in August already reach 23–27%. **LDS is a
+property of the content, not of the calendar**, which is what makes it usable as
+a content metric at all.
+
+The saves-positive / likes-negative split points the way the theory predicted —
+reference-value content keeps being found, emotional-resonance content does not.
+At |r| ≈ 0.2 on n = 79 that is **suggestive only**. It sits right at the edge of
+conventional significance, it is not a finding, and it must not be printed in the
+console as one. It is a hypothesis for `SEO-007` to test, and nothing more.
+
+### What it looks like by eye
+
+Reading the eight highest and eight lowest captions, the top band is dominated by
+saveable reference content — three of the top eight carry an explicit "save
+this" instruction, and the rest are scripts, shopping lists, and activities. The
+bottom band is dominated by relatable and confessional posts. **This is an
+observation about 16 captions, not a measurement**, and it is recorded here only
+because it is the hypothesis `SEO-007` should be pre-registered against.
+
 ## Part 3 — Implementation in this app
 
 ### 3.1 Terminology guard (read before writing any code)
