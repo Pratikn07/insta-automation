@@ -226,6 +226,91 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
     });
   });
 
+  it("claims one direct inbound UUID exactly once under concurrent replay", async () => {
+    const fixture = await createFixture();
+    const attempt = await createAttempt(fixture);
+    const inboundMessageId = randomUUID();
+    const input = { attemptId: attempt.id, inboundMessageId, now: NOW };
+
+    const results = await Promise.all([
+      firstRepository.claimDirectInbound(input),
+      secondRepository.claimDirectInbound(input),
+    ]);
+
+    expect(results.map((result) => result.kind).sort()).toEqual([
+      "already_consumed",
+      "consumed",
+    ]);
+    await expect(
+      firstClient.guideAccessAttempt.findUniqueOrThrow({ where: { id: attempt.id } }),
+    ).resolves.toMatchObject({ state: "checking_follow", followCheckCount: 1 });
+    await expect(
+      firstClient.guideActionToken.findUniqueOrThrow({ where: { id: inboundMessageId } }),
+    ).resolves.toMatchObject({
+      attemptId: attempt.id,
+      action: "request_guide",
+      status: "consumed",
+      consumedAt: NOW,
+    });
+  });
+
+  it("rotates a follow token and makes the previous opaque token unspendable", async () => {
+    const fixture = await createFixture();
+    const attempt = await createAttempt(fixture);
+    const directClaim = await firstRepository.claimDirectInbound({
+      attemptId: attempt.id,
+      inboundMessageId: randomUUID(),
+      now: NOW,
+    });
+    if (directClaim.kind !== "consumed") throw new Error("expected direct claim");
+
+    const firstToken = await firstRepository.replaceToken({
+      attemptId: attempt.id,
+      action: "check_follow",
+      expectedState: "checking_follow",
+      now: NOW,
+      expiresAt: new Date(NOW.getTime() + 10 * 60_000),
+    });
+    if (firstToken.kind !== "issued") throw new Error("expected first replacement");
+    await firstRepository.markAwaitingFollow({
+      attemptId: attempt.id,
+      expectedState: "checking_follow",
+      checkedAt: NOW,
+      now: NOW,
+    });
+    const secondClaim = await firstRepository.claimDirectInbound({
+      attemptId: attempt.id,
+      inboundMessageId: randomUUID(),
+      now: new Date(NOW.getTime() + 1_000),
+    });
+    if (secondClaim.kind !== "consumed") throw new Error("expected second direct claim");
+
+    const secondToken = await firstRepository.replaceToken({
+      attemptId: attempt.id,
+      action: "check_follow",
+      expectedState: "checking_follow",
+      now: new Date(NOW.getTime() + 1_000),
+      expiresAt: new Date(NOW.getTime() + 11 * 60_000),
+    });
+    if (secondToken.kind !== "issued") throw new Error("expected second replacement");
+
+    expect(secondToken.token.id).not.toBe(firstToken.token.id);
+    await expect(
+      firstClient.guideActionToken.findUniqueOrThrow({ where: { id: firstToken.token.id } }),
+    ).resolves.toMatchObject({ status: "cancelled" });
+    await expect(
+      firstClient.guideActionToken.findUniqueOrThrow({ where: { id: secondToken.token.id } }),
+    ).resolves.toMatchObject({ status: "active" });
+    await expect(
+      firstRepository.consumeToken({
+        tokenId: firstToken.token.id,
+        action: "check_follow",
+        senderId: fixture.senderId,
+        now: new Date(NOW.getTime() + 2_000),
+      }),
+    ).resolves.toEqual({ kind: "expired" });
+  });
+
   it("expires token consumption at the exact messaging-window boundary", async () => {
     const fixture = await createFixture();
     const attempt = await createAttempt(fixture, NOW);

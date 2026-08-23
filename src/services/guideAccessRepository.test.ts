@@ -95,7 +95,10 @@ function harness(input: {
     guideActionToken: {
       findUnique: vi.fn(async () => input.tokenIdentity ?? { attemptId: ATTEMPT_ID }),
       findFirst: vi.fn(async () => input.activeToken ?? null),
-      create: vi.fn(async () => createdToken),
+      create: vi.fn(async (request?: { data?: Partial<GuideActionToken> }) => ({
+        ...createdToken,
+        ...request?.data,
+      })),
       updateMany: vi.fn(async () => ({ count: input.tokenUpdateCount ?? 1 })),
     },
   };
@@ -168,6 +171,92 @@ describe("guide access repository", () => {
       }),
     ).resolves.toEqual({ kind: "replayed", token: existing });
     expect(test.tx.guideActionToken.create).not.toHaveBeenCalled();
+  });
+
+  it("replaces every prior active follow token while the attempt is checking", async () => {
+    const checking = attempt({ state: "checking_follow", followCheckCount: 1 });
+    const oldToken = token({ action: "check_follow" });
+    const test = harness({ lockedAttempt: checking, activeToken: oldToken });
+
+    await expect(
+      test.repository.replaceToken({
+        attemptId: ATTEMPT_ID,
+        action: "check_follow",
+        expectedState: "checking_follow",
+        now: NOW,
+        expiresAt: TOKEN_EXPIRES_AT,
+      }),
+    ).resolves.toMatchObject({ kind: "issued" });
+
+    expect(test.locks[0]).toBe("attempt");
+    expect(test.tx.guideActionToken.updateMany).toHaveBeenCalledWith({
+      where: { attemptId: ATTEMPT_ID, action: "check_follow", status: "active" },
+      data: { status: "cancelled" },
+    });
+    expect(test.tx.guideActionToken.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        attemptId: ATTEMPT_ID,
+        action: "check_follow",
+        expiresAt: TOKEN_EXPIRES_AT,
+      }),
+    });
+  });
+
+  it("claims a direct inbound UUID atomically with the checking transition", async () => {
+    const test = harness({ lockedToken: null });
+
+    await expect(
+      test.repository.claimDirectInbound({
+        attemptId: ATTEMPT_ID,
+        inboundMessageId: TOKEN_ID,
+        now: NOW,
+      }),
+    ).resolves.toMatchObject({
+      kind: "consumed",
+      attempt: { state: "checking_follow", followCheckCount: 1 },
+    });
+
+    expect(test.locks).toEqual(["attempt", "token"]);
+    expect(test.tx.guideAccessAttempt.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: ATTEMPT_ID,
+        state: "awaiting_request",
+        followCheckCount: { lt: 3 },
+        messagingWindowExpiresAt: { gt: NOW },
+      },
+      data: {
+        state: "checking_follow",
+        lastFollowResult: "unknown",
+        lastFollowCheckedAt: null,
+        followCheckCount: { increment: 1 },
+      },
+    });
+    expect(test.tx.guideActionToken.create).toHaveBeenCalledWith({
+      data: {
+        id: TOKEN_ID,
+        attemptId: ATTEMPT_ID,
+        action: "request_guide",
+        status: "consumed",
+        expiresAt: WINDOW_EXPIRES_AT,
+        consumedAt: NOW,
+      },
+    });
+  });
+
+  it("returns replay for an already-claimed direct inbound before inspecting attempt state", async () => {
+    const test = harness({
+      lockedAttempt: attempt({ state: "awaiting_follow", lastFollowResult: "non_follower" }),
+      lockedToken: token({ status: "consumed", consumedAt: NOW }),
+    });
+
+    await expect(
+      test.repository.claimDirectInbound({
+        attemptId: ATTEMPT_ID,
+        inboundMessageId: TOKEN_ID,
+        now: NOW,
+      }),
+    ).resolves.toEqual({ kind: "already_consumed" });
+    expect(test.tx.guideAccessAttempt.updateMany).not.toHaveBeenCalled();
   });
 
   it("rejects token consumption by a sender other than the conversation sender", async () => {

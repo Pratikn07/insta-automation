@@ -56,6 +56,16 @@ export type IssueGuideActionTokenResult =
   | { kind: "attempt_expired" }
   | { kind: "state_conflict"; actualState: GuideAccessAttemptState };
 
+export type ReplaceGuideActionTokenInput = IssueGuideActionTokenInput & {
+  expectedState: "checking_follow";
+};
+
+export type ReplaceGuideActionTokenResult =
+  | { kind: "issued"; token: GuideActionToken }
+  | { kind: "attempt_not_found" }
+  | { kind: "attempt_expired" }
+  | { kind: "state_conflict"; actualState: GuideAccessAttemptState };
+
 export type ConsumeGuideActionTokenInput = {
   tokenId: string;
   action: GuideActionTokenAction;
@@ -69,6 +79,21 @@ export type ConsumeGuideActionTokenResult =
   | { kind: "not_found" }
   | { kind: "wrong_sender" }
   | { kind: "wrong_action" }
+  | { kind: "expired" }
+  | { kind: "check_limit_reached" }
+  | { kind: "state_conflict"; actualState: GuideAccessAttemptState };
+
+export type ClaimDirectInboundInput = {
+  attemptId: string;
+  inboundMessageId: string;
+  now: Date;
+};
+
+export type ClaimDirectInboundResult =
+  | { kind: "consumed"; attempt: GuideAccessAttempt }
+  | { kind: "already_consumed" }
+  | { kind: "attempt_not_found" }
+  | { kind: "token_conflict" }
   | { kind: "expired" }
   | { kind: "check_limit_reached" }
   | { kind: "state_conflict"; actualState: GuideAccessAttemptState };
@@ -113,7 +138,7 @@ export type MarkGuideAccessExpiredInput = {
 
 export type ReserveGuideFollowResponseInput = {
   attemptId: string;
-  expectedState: "awaiting_follow";
+  expectedState: "checking_follow" | "awaiting_follow";
   now: Date;
 };
 
@@ -129,7 +154,9 @@ export interface GuideAccessRepository {
     input: CreateGuideAccessAttemptInput,
   ): Promise<CreateGuideAccessAttemptResult>;
   issueToken(input: IssueGuideActionTokenInput): Promise<IssueGuideActionTokenResult>;
+  replaceToken(input: ReplaceGuideActionTokenInput): Promise<ReplaceGuideActionTokenResult>;
   consumeToken(input: ConsumeGuideActionTokenInput): Promise<ConsumeGuideActionTokenResult>;
+  claimDirectInbound(input: ClaimDirectInboundInput): Promise<ClaimDirectInboundResult>;
   beginChecking(input: BeginGuideAccessCheckingInput): Promise<GuideAccessTransitionResult>;
   markAwaitingFollow(
     input: MarkGuideAccessAwaitingFollowInput,
@@ -376,6 +403,41 @@ export function createGuideAccessRepository(
       });
     },
 
+    async replaceToken(input) {
+      requireValidDate(input.now, "guide action replacement time");
+      requireValidDate(input.expiresAt, "guide action replacement expiry");
+      if (input.expiresAt <= input.now) throw new Error("invalid guide action token expiry");
+
+      return database.$transaction(async (tx) => {
+        const attempt = await lockAttempt(tx, input.attemptId);
+        if (!attempt) return { kind: "attempt_not_found" as const };
+        if (attempt.state !== input.expectedState) {
+          return { kind: "state_conflict" as const, actualState: attempt.state };
+        }
+        if (attempt.messagingWindowExpiresAt <= input.now) {
+          await expireLockedAttempt(tx, attempt, input.now);
+          return { kind: "attempt_expired" as const };
+        }
+        if (input.expiresAt > attempt.messagingWindowExpiresAt) {
+          throw new Error("guide action token exceeds messaging window");
+        }
+
+        await tx.guideActionToken.updateMany({
+          where: { attemptId: attempt.id, action: input.action, status: "active" },
+          data: { status: "cancelled" },
+        });
+        const created = await tx.guideActionToken.create({
+          data: {
+            id: idFactory(),
+            attemptId: attempt.id,
+            action: input.action,
+            expiresAt: input.expiresAt,
+          },
+        });
+        return { kind: "issued" as const, token: created };
+      });
+    },
+
     async consumeToken(input) {
       requireValidDate(input.now, "guide action consumption time");
       try {
@@ -457,6 +519,76 @@ export function createGuideAccessRepository(
         }
         throw error;
       }
+    },
+
+    async claimDirectInbound(input) {
+      requireValidDate(input.now, "direct guide inbound claim time");
+      return database.$transaction(async (tx) => {
+        const attempt = await lockAttempt(tx, input.attemptId);
+        if (!attempt) return { kind: "attempt_not_found" as const };
+
+        const existing = await lockToken(tx, input.inboundMessageId);
+        if (existing) {
+          if (
+            existing.attemptId === attempt.id &&
+            existing.action === "request_guide" &&
+            existing.status === "consumed"
+          ) {
+            return { kind: "already_consumed" as const };
+          }
+          return { kind: "token_conflict" as const };
+        }
+
+        if (attempt.state !== "awaiting_request" && attempt.state !== "awaiting_follow") {
+          return { kind: "state_conflict" as const, actualState: attempt.state };
+        }
+        if (attempt.messagingWindowExpiresAt <= input.now) {
+          await expireLockedAttempt(tx, attempt, input.now);
+          return { kind: "expired" as const };
+        }
+        if (attempt.followCheckCount >= MAX_FOLLOW_CHECKS) {
+          return { kind: "check_limit_reached" as const };
+        }
+
+        const expectedState = attempt.state;
+        const attemptUpdate = await tx.guideAccessAttempt.updateMany({
+          where: {
+            id: attempt.id,
+            state: expectedState,
+            followCheckCount: { lt: MAX_FOLLOW_CHECKS },
+            messagingWindowExpiresAt: { gt: input.now },
+          },
+          data: {
+            state: "checking_follow",
+            lastFollowResult: "unknown",
+            lastFollowCheckedAt: null,
+            followCheckCount: { increment: 1 },
+          },
+        });
+        if (attemptUpdate.count !== 1) {
+          return { kind: "state_conflict" as const, actualState: attempt.state };
+        }
+
+        await tx.guideActionToken.create({
+          data: {
+            id: input.inboundMessageId,
+            attemptId: attempt.id,
+            action: "request_guide",
+            status: "consumed",
+            expiresAt: attempt.messagingWindowExpiresAt,
+            consumedAt: input.now,
+          },
+        });
+        return {
+          kind: "consumed" as const,
+          attempt: withAttemptUpdate(attempt, {
+            state: "checking_follow",
+            lastFollowResult: "unknown",
+            lastFollowCheckedAt: null,
+            followCheckCount: attempt.followCheckCount + 1,
+          }),
+        };
+      });
     },
 
     async beginChecking(input) {

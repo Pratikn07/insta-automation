@@ -4,7 +4,12 @@ const sendMetaMessage = vi.fn();
 
 vi.mock("./sendMessage.js", () => ({ sendMetaMessage }));
 
-const { GUIDE_PROFILE_URL, sendGuideFollowerGate, sendGuideInitialPrivateReply } =
+const {
+  GUIDE_PROFILE_URL,
+  sendGuideFollowerGate,
+  sendGuideFollowLag,
+  sendGuideInitialPrivateReply,
+} =
   await import("./sendGuideAction.js");
 
 const COMMENT_ID = "17890000000000001";
@@ -120,6 +125,63 @@ describe("sendGuideFollowerGate", () => {
     expect(sendMetaMessage).toHaveBeenCalledWith(
       { recipient: { id: RECIPIENT_ID }, messaging_type: "RESPONSE", message: { text } },
       { recipientId: RECIPIENT_ID, mode: "dm_text_gate", messageLength: text.length },
+    );
+  });
+});
+
+describe("sendGuideFollowLag", () => {
+  it("keeps the replacement token at the sender boundary while capability is text-only", async () => {
+    const text =
+      "Almost there 💛 Instagram may take a moment to update. Check that you're following @tinysoho, wait a little, then tap I'm following once more.";
+
+    await sendGuideFollowLag({
+      recipientId: RECIPIENT_ID,
+      actionToken: ACTION_TOKEN,
+    });
+
+    expect(sendMetaMessage).toHaveBeenCalledWith(
+      {
+        recipient: { id: RECIPIENT_ID },
+        messaging_type: "RESPONSE",
+        message: { text },
+      },
+      { recipientId: RECIPIENT_ID, mode: "dm_text_follow_lag", messageLength: text.length },
+    );
+  });
+
+  it("exposes only the replacement opaque token when DM quick replies are proven", async () => {
+    await sendGuideFollowLag({
+      recipientId: RECIPIENT_ID,
+      actionToken: ACTION_TOKEN,
+      capabilities: {
+        privateQuickReply: false,
+        dmGenericGate: false,
+        dmQuickReply: true,
+      },
+    });
+
+    expect(sendMetaMessage).toHaveBeenCalledWith(
+      {
+        recipient: { id: RECIPIENT_ID },
+        messaging_type: "RESPONSE",
+        message: {
+          text:
+            "Almost there 💛 Instagram may take a moment to update. Check that you're following @tinysoho, wait a little, then tap I'm following once more.",
+          quick_replies: [
+            {
+              content_type: "text",
+              title: "I'm following ✓",
+              payload: ACTION_PAYLOAD,
+            },
+          ],
+        },
+      },
+      {
+        recipientId: RECIPIENT_ID,
+        mode: "dm_quick_reply_follow_lag",
+        messageLength:
+          "Almost there 💛 Instagram may take a moment to update. Check that you're following @tinysoho, wait a little, then tap I'm following once more.".length,
+      },
     );
   });
 });

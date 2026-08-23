@@ -89,20 +89,48 @@ function createHarness(input: {
     | "retry_scheduled"
     | "already_processing"
   >;
+  startDelivery?: () => Promise<
+    | "completed"
+    | "preflight_failed"
+    | "needs_review"
+    | "retry_scheduled"
+    | "already_processing"
+  >;
   sendGate?: () => Promise<{ messageId: string | null }>;
   sendText?: (input: { recipientId: string; text: string }) => Promise<{ messageId: string | null }>;
+  sendFollowLag?: (input: {
+    recipientId: string;
+    actionToken: string;
+  }) => Promise<{ messageId: string | null }>;
   loadGuideName?: (resourceId: string) => Promise<string>;
   loadThreadId?: (inboundMessageId: string) => Promise<string | null>;
+  repositoryFailures?: Partial<Record<
+    | "claimDirectInbound"
+    | "markAwaitingFollow"
+    | "markDelivered"
+    | "markDelivering"
+    | "markNeedsReview"
+    | "replaceToken"
+    | "reserveFollowResponse",
+    Error[]
+  >>;
 }) {
   let current = input.initialAttempt ?? attempt();
   let nextToken = 0;
   const followTokens = [FOLLOW_TOKEN_1, FOLLOW_TOKEN_2, FOLLOW_TOKEN_3];
   const consumed = new Set<string>();
+  const directClaims = new Set<string>();
+  const cancelledTokens = new Set<string>();
+  let activeFollowToken: string | null = null;
   const tokenAttempt = new Map<string, string>([
     [REQUEST_TOKEN_ID, ATTEMPT_ID],
     ...followTokens.map((id) => [id, ATTEMPT_ID] as const),
   ]);
   const order: string[] = [];
+  function fail(stage: keyof NonNullable<typeof input.repositoryFailures>): void {
+    const error = input.repositoryFailures?.[stage]?.shift();
+    if (error) throw error;
+  }
 
   const repository = {
     createOrLoadAttempt: vi.fn(async () => {
@@ -116,8 +144,32 @@ function createHarness(input: {
         if (forced.kind === "consumed") current = { ...forced.attempt };
         return forced;
       }
+      if (cancelledTokens.has(request.tokenId)) return { kind: "expired" } as const;
       if (consumed.has(request.tokenId)) return { kind: "already_consumed" } as const;
+      if (request.action === "check_follow" && current.state !== "awaiting_follow") {
+        return { kind: "state_conflict", actualState: current.state } as const;
+      }
       consumed.add(request.tokenId);
+      current = {
+        ...current,
+        state: "checking_follow",
+        lastFollowResult: "unknown",
+        lastFollowCheckedAt: null,
+        followCheckCount: current.followCheckCount + 1,
+      };
+      return { kind: "consumed", attempt: { ...current } } as const;
+    }),
+    claimDirectInbound: vi.fn(async (request: { inboundMessageId: string }) => {
+      order.push("claim:direct_inbound");
+      fail("claimDirectInbound");
+      if (directClaims.has(request.inboundMessageId)) {
+        return { kind: "already_consumed" } as const;
+      }
+      directClaims.add(request.inboundMessageId);
+      tokenAttempt.set(request.inboundMessageId, ATTEMPT_ID);
+      if (current.state !== "awaiting_request" && current.state !== "awaiting_follow") {
+        return { kind: "state_conflict", actualState: current.state } as const;
+      }
       current = {
         ...current,
         state: "checking_follow",
@@ -143,6 +195,7 @@ function createHarness(input: {
     }),
     markAwaitingFollow: vi.fn(async () => {
       order.push("mark:awaiting_follow");
+      fail("markAwaitingFollow");
       if (current.state !== "checking_follow") {
         return { kind: "state_conflict", actualState: current.state } as const;
       }
@@ -156,6 +209,7 @@ function createHarness(input: {
     }),
     markDelivering: vi.fn(async () => {
       order.push("mark:delivering");
+      fail("markDelivering");
       if (current.state !== "checking_follow") {
         return { kind: "state_conflict", actualState: current.state } as const;
       }
@@ -169,6 +223,7 @@ function createHarness(input: {
     }),
     markNeedsReview: vi.fn(async (request: { expectedState: GuideAccessAttempt["state"] }) => {
       order.push("mark:needs_review");
+      fail("markNeedsReview");
       if (current.state !== request.expectedState) {
         return { kind: "state_conflict", actualState: current.state } as const;
       }
@@ -180,14 +235,31 @@ function createHarness(input: {
       const id = followTokens[nextToken++]!;
       return { kind: "issued", token: actionToken(id, "check_follow") } as const;
     }),
+    replaceToken: vi.fn(async () => {
+      order.push("replace:check_follow");
+      fail("replaceToken");
+      if (activeFollowToken) cancelledTokens.add(activeFollowToken);
+      const id = followTokens[nextToken++]!;
+      activeFollowToken = id;
+      return { kind: "issued", token: actionToken(id, "check_follow") } as const;
+    }),
     reserveFollowResponse: vi.fn(async () => {
       order.push("reserve:follow_response");
+      fail("reserveFollowResponse");
       if (current.followResponseCount >= 2) return { kind: "limit_reached" } as const;
       const responseNumber = (current.followResponseCount + 1) as 1 | 2;
       current = { ...current, followResponseCount: responseNumber };
       return { kind: "reserved", responseNumber } as const;
     }),
-    markDelivered: vi.fn(),
+    markDelivered: vi.fn(async () => {
+      order.push("mark:delivered");
+      fail("markDelivered");
+      if (current.state !== "delivering") {
+        return { kind: "state_conflict", actualState: current.state } as const;
+      }
+      current = { ...current, state: "delivered" };
+      return { kind: "transitioned", attempt: { ...current } } as const;
+    }),
     markExpired: vi.fn(),
   };
 
@@ -197,6 +269,7 @@ function createHarness(input: {
   });
   const startGuideDelivery = vi.fn(async () => {
     order.push("external:delivery");
+    if (input.startDelivery) return input.startDelivery();
     return input.deliveryResults?.shift() ?? "completed";
   });
   const sendFollowerGate = vi.fn(async () => {
@@ -204,15 +277,26 @@ function createHarness(input: {
     return input.sendGate ? input.sendGate() : { messageId: "gate-mid" };
   });
   const sendText = vi.fn(async (message: { recipientId: string; text: string }) => {
-    order.push(
-      message.text === guideAccessCopy.followLag ? "external:lag" : "external:unavailable",
-    );
+    order.push("external:unavailable");
     return input.sendText ? input.sendText(message) : { messageId: "text-mid" };
+  });
+  const sendFollowLag = vi.fn(async (message: {
+    recipientId: string;
+    actionToken: string;
+  }) => {
+    order.push("external:lag");
+    return input.sendFollowLag
+      ? input.sendFollowLag(message)
+      : { messageId: "lag-mid" };
   });
   const loadGuideName = vi.fn(
     input.loadGuideName ?? (async () => "toddler sleep guide"),
   );
   const loadThreadId = vi.fn(input.loadThreadId ?? (async () => THREAD_ID));
+  const logger = { error: vi.fn() };
+  const findAttemptIdByToken = vi.fn(
+    async (tokenId: string) => tokenAttempt.get(tokenId) ?? null,
+  );
 
   const service = createGuideAccessActionService({
     repository: repository as never,
@@ -220,9 +304,11 @@ function createHarness(input: {
     startGuideDelivery,
     sendFollowerGate,
     sendText,
+    sendFollowLag,
     loadGuideName,
     loadThreadId,
-    findAttemptIdByToken: vi.fn(async (tokenId: string) => tokenAttempt.get(tokenId) ?? null),
+    findAttemptIdByToken,
+    logger,
     now: () => NOW,
     actionTokenTtlMs: 10 * 60_000,
   });
@@ -234,8 +320,11 @@ function createHarness(input: {
     startGuideDelivery,
     sendFollowerGate,
     sendText,
+    sendFollowLag,
     loadGuideName,
     loadThreadId,
+    cancelledTokens,
+    logger,
     order,
     attempt: () => current,
   };
@@ -383,9 +472,10 @@ describe("request and follow action orchestration", () => {
 
     await expect(request(test)).resolves.toBe("follow_not_confirmed");
 
-    expect(test.repository.issueToken).toHaveBeenCalledWith({
+    expect(test.repository.replaceToken).toHaveBeenCalledWith({
       attemptId: ATTEMPT_ID,
       action: "check_follow",
+      expectedState: "checking_follow",
       now: NOW,
       expiresAt: new Date(NOW.getTime() + 10 * 60_000),
     });
@@ -398,9 +488,9 @@ describe("request and follow action orchestration", () => {
     expect(test.order).toEqual([
       "consume:request_guide",
       "external:verify",
-      "mark:awaiting_follow",
-      "issue:check_follow",
+      "replace:check_follow",
       "external:gate",
+      "mark:awaiting_follow",
     ]);
   });
 
@@ -413,7 +503,7 @@ describe("request and follow action orchestration", () => {
       recipientId: SENDER_ID,
       text: guideAccessCopy.unavailable,
     });
-    expect(test.repository.issueToken).not.toHaveBeenCalled();
+    expect(test.repository.replaceToken).not.toHaveBeenCalled();
     expect(test.startGuideDelivery).not.toHaveBeenCalled();
     expect(test.attempt().state).toBe("needs_review");
     expect(test.order).toEqual([
@@ -431,9 +521,9 @@ describe("request and follow action orchestration", () => {
     await expect(check(test, FOLLOW_TOKEN_1)).resolves.toBe("follow_not_confirmed");
     await expect(check(test, FOLLOW_TOKEN_2)).resolves.toBe("guide_delivery_started");
 
-    expect(test.sendText).toHaveBeenCalledWith({
+    expect(test.sendFollowLag).toHaveBeenCalledWith({
       recipientId: SENDER_ID,
-      text: guideAccessCopy.followLag,
+      actionToken: FOLLOW_TOKEN_2,
     });
     expect(test.startGuideDelivery).toHaveBeenCalledOnce();
     expect(test.startGuideDelivery).toHaveBeenCalledWith(
@@ -466,6 +556,7 @@ describe("request and follow action orchestration", () => {
       "external:verify",
       "mark:delivering",
       "external:delivery",
+      "mark:delivered",
     ]);
   });
 
@@ -523,14 +614,14 @@ describe("request and follow action orchestration", () => {
       "access_attempt_needs_review",
     );
 
-    expect(test.sendText).toHaveBeenCalledTimes(2);
-    expect(test.sendText).toHaveBeenNthCalledWith(1, {
+    expect(test.sendFollowLag).toHaveBeenCalledTimes(2);
+    expect(test.sendFollowLag).toHaveBeenNthCalledWith(1, {
       recipientId: SENDER_ID,
-      text: guideAccessCopy.followLag,
+      actionToken: FOLLOW_TOKEN_2,
     });
-    expect(test.sendText).toHaveBeenNthCalledWith(2, {
+    expect(test.sendFollowLag).toHaveBeenNthCalledWith(2, {
       recipientId: SENDER_ID,
-      text: guideAccessCopy.followLag,
+      actionToken: FOLLOW_TOKEN_3,
     });
     expect(test.attempt().state).toBe("needs_review");
     expect(test.startGuideDelivery).not.toHaveBeenCalled();
@@ -562,11 +653,80 @@ describe("request and follow action orchestration", () => {
     ).resolves.toBe("follow_not_confirmed");
 
     expect(test.sendFollowerGate).toHaveBeenCalledOnce();
-    expect(test.sendText).toHaveBeenCalledOnce();
-    expect(test.sendText).toHaveBeenCalledWith({
+    expect(test.sendFollowLag).toHaveBeenCalledOnce();
+    expect(test.sendFollowLag).toHaveBeenCalledWith({
       recipientId: SENDER_ID,
-      text: guideAccessCopy.followLag,
+      actionToken: FOLLOW_TOKEN_2,
     });
+  });
+
+  it("does not spend a lag allowance or repeat external work for the same direct inbound UUID", async () => {
+    const test = createHarness({ freshResults: [live(false)] });
+    const conversation = {
+      id: CONVERSATION_ID,
+      igUserId: SENDER_ID,
+      resourceId: RESOURCE_ID,
+      guideName: "toddler sleep guide",
+    };
+    const inbound = {
+      id: DIRECT_INBOUND_ID,
+      threadId: THREAD_ID,
+      eventAt: EVENT_AT,
+      messagingWindowExpiresAt: WINDOW_END,
+    };
+
+    await expect(
+      test.service.startDirectDmGuideRequest(conversation, inbound),
+    ).resolves.toBe("follow_not_confirmed");
+    await expect(
+      test.service.startDirectDmGuideRequest(conversation, inbound),
+    ).resolves.toBe("action_replayed");
+
+    expect(test.resolveFresh).toHaveBeenCalledOnce();
+    expect(test.sendFollowerGate).toHaveBeenCalledOnce();
+    expect(test.sendFollowLag).not.toHaveBeenCalled();
+    expect(test.attempt().followResponseCount).toBe(0);
+    expect(test.repository.createOrLoadAttempt).toHaveBeenCalledOnce();
+    expect(test.repository.claimDirectInbound).toHaveBeenCalledOnce();
+  });
+
+  it("does not create a new attempt when a completed direct inbound UUID replays", async () => {
+    const test = createHarness({ freshResults: [live(true)] });
+    const conversation = {
+      id: CONVERSATION_ID,
+      igUserId: SENDER_ID,
+      resourceId: RESOURCE_ID,
+      guideName: "toddler sleep guide",
+    };
+    const inbound = {
+      id: DIRECT_INBOUND_ID,
+      threadId: THREAD_ID,
+      eventAt: EVENT_AT,
+      messagingWindowExpiresAt: WINDOW_END,
+    };
+
+    await expect(
+      test.service.startDirectDmGuideRequest(conversation, inbound),
+    ).resolves.toBe("guide_delivery_started");
+    await expect(
+      test.service.startDirectDmGuideRequest(conversation, inbound),
+    ).resolves.toBe("action_replayed");
+
+    expect(test.repository.createOrLoadAttempt).toHaveBeenCalledOnce();
+    expect(test.startGuideDelivery).toHaveBeenCalledOnce();
+  });
+
+  it("rotates the follow token and prevents the previous token from being spent", async () => {
+    const test = createHarness({ freshResults: [live(false), live(false)] });
+
+    await expect(request(test)).resolves.toBe("follow_not_confirmed");
+    await expect(check(test, FOLLOW_TOKEN_1)).resolves.toBe("follow_not_confirmed");
+    await expect(check(test, FOLLOW_TOKEN_1)).resolves.toBe("action_expired");
+
+    expect(test.cancelledTokens).toContain(FOLLOW_TOKEN_1);
+    expect(test.resolveFresh).toHaveBeenCalledTimes(2);
+    expect(test.sendFollowerGate).toHaveBeenCalledOnce();
+    expect(test.sendFollowLag).toHaveBeenCalledOnce();
   });
 });
 
@@ -616,6 +776,33 @@ describe("stable duplicate and invalid-action outcomes", () => {
     await expect(request(test)).resolves.toBe("guide_delivery_already_started");
     expect(test.startGuideDelivery).toHaveBeenCalledOnce();
   });
+
+  it("marks the access attempt delivered when durable delivery completes synchronously", async () => {
+    const test = createHarness({ freshResults: [live(true)], deliveryResults: ["completed"] });
+
+    await expect(request(test)).resolves.toBe("guide_delivery_started");
+
+    expect(test.repository.markDelivered).toHaveBeenCalledWith({
+      attemptId: ATTEMPT_ID,
+      expectedState: "delivering",
+    });
+    expect(test.attempt().state).toBe("delivered");
+  });
+
+  it.each(["retry_scheduled", "already_processing"] as const)(
+    "preserves delivering for a genuinely pending durable outcome: %s",
+    async (deliveryResult) => {
+      const test = createHarness({
+        freshResults: [live(true)],
+        deliveryResults: [deliveryResult],
+      });
+
+      await request(test);
+
+      expect(test.repository.markDelivered).not.toHaveBeenCalled();
+      expect(test.attempt().state).toBe("delivering");
+    },
+  );
 });
 
 describe("provider error boundary", () => {
@@ -647,7 +834,7 @@ describe("provider error boundary", () => {
     expect(test.sendFollowerGate).toHaveBeenCalledOnce();
     expect(test.repository.markNeedsReview).toHaveBeenCalledWith({
       attemptId: ATTEMPT_ID,
-      expectedState: "awaiting_follow",
+      expectedState: "checking_follow",
     });
     expect(test.attempt().state).toBe("needs_review");
   });
@@ -685,5 +872,179 @@ describe("provider error boundary", () => {
     await expect(request(test)).resolves.toBe("action_consumed");
     expect(test.attempt().state).toBe("awaiting_follow");
     expect(test.repository.markNeedsReview).not.toHaveBeenCalled();
+  });
+});
+
+describe("post-consumption checkpoint failures", () => {
+  it("fences a rolled-back direct-inbound claim from the attempt's original state", async () => {
+    const test = createHarness({
+      repositoryFailures: {
+        claimDirectInbound: [new Error("private repository detail")],
+      },
+    });
+
+    await expect(
+      test.service.startDirectDmGuideRequest(
+        {
+          id: CONVERSATION_ID,
+          igUserId: SENDER_ID,
+          resourceId: RESOURCE_ID,
+          guideName: "toddler sleep guide",
+        },
+        {
+          id: DIRECT_INBOUND_ID,
+          threadId: THREAD_ID,
+          eventAt: EVENT_AT,
+          messagingWindowExpiresAt: WINDOW_END,
+        },
+      ),
+    ).resolves.toBe("access_attempt_needs_review");
+
+    expect(test.repository.markNeedsReview).toHaveBeenCalledWith({
+      attemptId: ATTEMPT_ID,
+      expectedState: "awaiting_request",
+    });
+    expect(test.attempt().state).toBe("needs_review");
+    expect(test.resolveFresh).not.toHaveBeenCalled();
+  });
+
+  it("contains token-rotation failure, records review, and never sends on replay", async () => {
+    const test = createHarness({
+      freshResults: [live(false)],
+      repositoryFailures: { replaceToken: [new Error("private repository detail")] },
+    });
+
+    await expect(request(test)).resolves.toBe("access_attempt_needs_review");
+    await expect(request(test)).resolves.toBe("action_replayed");
+
+    expect(test.attempt().state).toBe("needs_review");
+    expect(test.sendFollowerGate).not.toHaveBeenCalled();
+    expect(test.resolveFresh).toHaveBeenCalledOnce();
+  });
+
+  it("contains response-reservation failure and does not send a lag on replay", async () => {
+    const test = createHarness({
+      freshResults: [live(false), live(false)],
+      repositoryFailures: {
+        reserveFollowResponse: [new Error("private repository detail")],
+      },
+    });
+    await expect(request(test)).resolves.toBe("follow_not_confirmed");
+
+    await expect(check(test, FOLLOW_TOKEN_1)).resolves.toBe(
+      "access_attempt_needs_review",
+    );
+    await expect(check(test, FOLLOW_TOKEN_1)).resolves.toBe("action_replayed");
+
+    expect(test.sendFollowLag).not.toHaveBeenCalled();
+    expect(test.attempt().state).toBe("needs_review");
+  });
+
+  it("contains the post-send awaiting-follow checkpoint failure and never repeats the send", async () => {
+    const test = createHarness({
+      freshResults: [live(false)],
+      repositoryFailures: {
+        markAwaitingFollow: [new Error("private repository detail")],
+      },
+    });
+
+    await expect(request(test)).resolves.toBe("access_attempt_needs_review");
+    await expect(request(test)).resolves.toBe("action_replayed");
+
+    expect(test.sendFollowerGate).toHaveBeenCalledOnce();
+    expect(test.attempt().state).toBe("needs_review");
+  });
+
+  it("contains delivering-claim failure before durable delivery and never starts on replay", async () => {
+    const test = createHarness({
+      freshResults: [live(true)],
+      repositoryFailures: { markDelivering: [new Error("private repository detail")] },
+    });
+
+    await expect(request(test)).resolves.toBe("access_attempt_needs_review");
+    await expect(request(test)).resolves.toBe("action_replayed");
+
+    expect(test.startGuideDelivery).not.toHaveBeenCalled();
+    expect(test.attempt().state).toBe("needs_review");
+  });
+
+  it("contains unavailable-review checkpoint failure and sends nothing without a durable fence", async () => {
+    const test = createHarness({
+      freshResults: [unavailable],
+      repositoryFailures: {
+        markNeedsReview: [
+          new Error("private repository detail one"),
+          new Error("private repository detail two"),
+        ],
+      },
+    });
+
+    await expect(request(test)).resolves.toBe("access_attempt_needs_review");
+
+    expect(test.sendText).not.toHaveBeenCalled();
+    expect(test.attempt().state).toBe("checking_follow");
+    expect(test.logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        errorCode: "guide_access_review_checkpoint_failed",
+        attemptId: ATTEMPT_ID,
+      }),
+      expect.any(String),
+    );
+    expect(JSON.stringify(test.logger.error.mock.calls)).not.toContain("private repository detail");
+  });
+
+  it("contains a failed uncertainty checkpoint with a non-spendable token and no repeated external work", async () => {
+    const ambiguous = new AxiosError("private payload", "ETIMEDOUT");
+    const test = createHarness({
+      freshResults: [live(false)],
+      sendGate: vi.fn().mockRejectedValue(ambiguous),
+      repositoryFailures: {
+        markNeedsReview: [
+          new Error("private repository detail one"),
+          new Error("private repository detail two"),
+        ],
+      },
+    });
+
+    await expect(request(test)).resolves.toBe("access_attempt_needs_review");
+    await expect(check(test, FOLLOW_TOKEN_1)).resolves.toBe("action_replayed");
+
+    expect(test.sendFollowerGate).toHaveBeenCalledOnce();
+    expect(test.resolveFresh).toHaveBeenCalledOnce();
+    expect(test.attempt().state).toBe("checking_follow");
+    expect(test.logger.error).toHaveBeenCalled();
+  });
+
+  it("contains starter failure plus review-checkpoint failure and never calls delivery twice", async () => {
+    const test = createHarness({
+      freshResults: [live(true)],
+      startDelivery: vi.fn().mockRejectedValue(new Error("private starter detail")),
+      repositoryFailures: {
+        markNeedsReview: [
+          new Error("private repository detail one"),
+          new Error("private repository detail two"),
+        ],
+      },
+    });
+
+    await expect(request(test)).resolves.toBe("access_attempt_needs_review");
+    await expect(request(test)).resolves.toBe("action_replayed");
+
+    expect(test.startGuideDelivery).toHaveBeenCalledOnce();
+    expect(test.attempt().state).toBe("delivering");
+    expect(test.logger.error).toHaveBeenCalled();
+  });
+
+  it("contains a completed-delivery checkpoint failure by moving the attempt to review", async () => {
+    const test = createHarness({
+      freshResults: [live(true)],
+      deliveryResults: ["completed"],
+      repositoryFailures: { markDelivered: [new Error("private repository detail")] },
+    });
+
+    await expect(request(test)).resolves.toBe("access_attempt_needs_review");
+
+    expect(test.startGuideDelivery).toHaveBeenCalledOnce();
+    expect(test.attempt().state).toBe("needs_review");
   });
 });

@@ -10,6 +10,7 @@ export const GUIDE_GATE_CAPABILITY_CASES = [
   "private_quick_reply",
   "private_generic",
   "dm_quick_reply",
+  "dm_follow_lag",
   "dm_generic_gate",
 ] as const;
 
@@ -88,6 +89,11 @@ const inputSchema = z.discriminatedUnion("case", [
     actionToken,
   }),
   z.object({
+    case: z.literal("dm_follow_lag"),
+    recipientId: providerId,
+    actionToken,
+  }),
+  z.object({
     case: z.literal("dm_generic_gate"),
     recipientId: providerId,
     guideName,
@@ -117,6 +123,14 @@ function quickReply(token: string): QuickReply {
   };
 }
 
+function followQuickReply(token: string): QuickReply {
+  return {
+    content_type: "text",
+    title: GUIDE_GATE_BUTTON_LABELS.confirmFollow,
+    payload: actionPayload(token),
+  };
+}
+
 function genericMessage(element: GenericElement): GuideGateCapabilityPayload["message"] {
   return {
     attachment: {
@@ -130,19 +144,22 @@ export function buildGuideGateCapabilityPayload(
   rawInput: unknown,
 ): GuideGateCapabilityPayload {
   const input = parseGuideGateCapabilityInput(rawInput);
-  const text = guideAccessOpening(input.guideName);
 
   switch (input.case) {
-    case "private_text":
+    case "private_text": {
+      const text = guideAccessOpening(input.guideName);
       return {
         recipient: { comment_id: input.commentId },
         message: { text },
       };
-    case "private_quick_reply":
+    }
+    case "private_quick_reply": {
+      const text = guideAccessOpening(input.guideName);
       return {
         recipient: { comment_id: input.commentId },
         message: { text, quick_replies: [quickReply(input.actionToken)] },
       };
+    }
     case "private_generic":
       return {
         recipient: { comment_id: input.commentId },
@@ -160,11 +177,22 @@ export function buildGuideGateCapabilityPayload(
           ],
         }),
       };
-    case "dm_quick_reply":
+    case "dm_quick_reply": {
+      const text = guideAccessOpening(input.guideName);
       return {
         recipient: { id: input.recipientId },
         messaging_type: "RESPONSE",
         message: { text, quick_replies: [quickReply(input.actionToken)] },
+      };
+    }
+    case "dm_follow_lag":
+      return {
+        recipient: { id: input.recipientId },
+        messaging_type: "RESPONSE",
+        message: {
+          text: guideAccessCopy.followLag,
+          quick_replies: [followQuickReply(input.actionToken)],
+        },
       };
     case "dm_generic_gate":
       return {

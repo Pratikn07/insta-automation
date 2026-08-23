@@ -113,6 +113,30 @@ describe("guide gate capability payloads", () => {
     });
   });
 
+  it("builds a follow-lag quick reply with the replacement opaque token", () => {
+    expect(
+      buildGuideGateCapabilityPayload({
+        case: "dm_follow_lag",
+        recipientId: RECIPIENT_ID,
+        actionToken: ACTION_TOKEN,
+      }),
+    ).toEqual({
+      recipient: { id: RECIPIENT_ID },
+      messaging_type: "RESPONSE",
+      message: {
+        text:
+          "Almost there 💛 Instagram may take a moment to update. Check that you're following @tinysoho, wait a little, then tap I'm following once more.",
+        quick_replies: [
+          {
+            content_type: "text",
+            title: "I'm following ✓",
+            payload: ACTION_PAYLOAD,
+          },
+        ],
+      },
+    });
+  });
+
   it("builds a post-response generic follower gate with profile and recheck actions", () => {
     expect(
       buildGuideGateCapabilityPayload({

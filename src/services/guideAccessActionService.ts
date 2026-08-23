@@ -1,6 +1,10 @@
 import type { GuideAccessAttempt, GuideAccessAttemptState } from "@prisma/client";
+import { logger } from "../lib/logger.js";
 import { prisma } from "../lib/prisma.js";
-import { sendGuideFollowerGate } from "../meta/sendGuideAction.js";
+import {
+  sendGuideFollowerGate,
+  sendGuideFollowLag,
+} from "../meta/sendGuideAction.js";
 import type { MetaSendResult } from "../types/meta.js";
 import { sendTrackedText } from "./dmDeliveryService.js";
 import { describeGraphError } from "./eventLogger.js";
@@ -64,9 +68,16 @@ export type GuideAccessActionDependencies = {
     actionToken: string;
   }): Promise<MetaSendResult>;
   sendText(input: { recipientId: string; text: string }): Promise<MetaSendResult>;
+  sendFollowLag(input: {
+    recipientId: string;
+    actionToken: string;
+  }): Promise<MetaSendResult>;
   loadGuideName(resourceId: string): Promise<string>;
   loadThreadId(inboundMessageId: string): Promise<string | null>;
   findAttemptIdByToken(tokenId: string): Promise<string | null>;
+  logger: {
+    error(bindings: Record<string, unknown>, message: string): void;
+  };
   now(): Date;
   actionTokenTtlMs: number;
 };
@@ -82,6 +93,11 @@ type AuthorizationContext = {
   guideName?: string;
   threadId?: string | null;
   redeliveryIntro?: string;
+};
+
+type ReviewCheckpoint = {
+  outcome: GuideAccessActionOutcome;
+  durable: boolean;
 };
 
 function validateDependencies(dependencies: GuideAccessActionDependencies): void {
@@ -119,18 +135,36 @@ export function createGuideAccessActionService(
 ) {
   validateDependencies(dependencies);
 
-  async function markNeedsReview(
+  async function checkpointNeedsReview(
     attemptId: string,
     expectedState: Exclude<GuideAccessAttemptState, "delivered" | "expired">,
+    errorCode: string,
     checkedAt?: Date,
-  ): Promise<GuideAccessActionOutcome> {
-    const result = await dependencies.repository.markNeedsReview({
-      attemptId,
-      expectedState,
-      ...(checkedAt ? { checkedAt } : {}),
-    });
-    if (result.kind === "transitioned") return "access_attempt_needs_review";
-    return outcomeForTransition(result);
+  ): Promise<ReviewCheckpoint> {
+    for (let checkpointAttempt = 1; checkpointAttempt <= 2; checkpointAttempt += 1) {
+      try {
+        const result = await dependencies.repository.markNeedsReview({
+          attemptId,
+          expectedState,
+          ...(checkedAt ? { checkedAt } : {}),
+        });
+        if (result.kind === "transitioned") {
+          return { outcome: "access_attempt_needs_review", durable: true };
+        }
+        if (result.kind === "state_conflict" && result.actualState === "needs_review") {
+          return { outcome: "access_attempt_needs_review", durable: true };
+        }
+        return { outcome: outcomeForTransition(result), durable: false };
+      } catch {
+        // The checkpoint is idempotent and fenced. One bounded retry can recover
+        // a transient database error without repeating Graph or Meta work.
+      }
+    }
+    dependencies.logger.error(
+      { errorCode: "guide_access_review_checkpoint_failed", stage: errorCode, attemptId },
+      "Guide access review checkpoint failed",
+    );
+    return { outcome: "access_attempt_needs_review", durable: false };
   }
 
   async function sendAfterFence(
@@ -147,7 +181,11 @@ export function createGuideAccessActionService(
     }
 
     if (expectedState !== "needs_review") {
-      await markNeedsReview(attemptId, expectedState);
+      await checkpointNeedsReview(
+        attemptId,
+        expectedState,
+        "provider_outcome_uncertain",
+      );
     }
     return "needs_review";
   }
@@ -159,7 +197,11 @@ export function createGuideAccessActionService(
     try {
       return await dependencies.loadGuideName(context.attempt.resourceId);
     } catch {
-      await markNeedsReview(context.attempt.id, "awaiting_follow");
+      await checkpointNeedsReview(
+        context.attempt.id,
+        "checking_follow",
+        "guide_context_load_failed",
+      );
       return null;
     }
   }
@@ -171,7 +213,11 @@ export function createGuideAccessActionService(
     try {
       return { ok: true, threadId: await dependencies.loadThreadId(context.threadLookupId) };
     } catch {
-      await markNeedsReview(context.attempt.id, "delivering");
+      await checkpointNeedsReview(
+        context.attempt.id,
+        "delivering",
+        "thread_context_load_failed",
+      );
       return { ok: false };
     }
   }
@@ -190,15 +236,24 @@ export function createGuideAccessActionService(
     );
     if (expiresAt <= now) return { kind: "outcome", outcome: "action_expired" };
 
-    const result = await dependencies.repository.issueToken({
-      attemptId: attempt.id,
-      action: "check_follow",
-      now,
-      expiresAt,
-    });
-    if (result.kind === "issued" || result.kind === "replayed") {
-      return { kind: "ready", tokenId: result.token.id };
+    let result;
+    try {
+      result = await dependencies.repository.replaceToken({
+        attemptId: attempt.id,
+        action: "check_follow",
+        expectedState: "checking_follow",
+        now,
+        expiresAt,
+      });
+    } catch {
+      const review = await checkpointNeedsReview(
+        attempt.id,
+        "checking_follow",
+        "follow_token_replacement_failed",
+      );
+      return { kind: "outcome", outcome: review.outcome };
     }
+    if (result.kind === "issued") return { kind: "ready", tokenId: result.token.id };
     if (result.kind === "attempt_expired") {
       return { kind: "outcome", outcome: "action_expired" };
     }
@@ -212,12 +267,13 @@ export function createGuideAccessActionService(
     context: AuthorizationContext,
     checkedAt: Date,
   ): Promise<GuideAccessActionOutcome> {
-    const review = await dependencies.repository.markNeedsReview({
-      attemptId: context.attempt.id,
-      expectedState: "checking_follow",
+    const review = await checkpointNeedsReview(
+      context.attempt.id,
+      "checking_follow",
+      "follow_check_unavailable",
       checkedAt,
-    });
-    if (review.kind !== "transitioned") return outcomeForTransition(review);
+    );
+    if (!review.durable) return review.outcome;
 
     const sendResult = await sendAfterFence(
       context.attempt.id,
@@ -238,55 +294,89 @@ export function createGuideAccessActionService(
     checkedAt: Date,
   ): Promise<GuideAccessActionOutcome> {
     const now = dependencies.now();
-    const awaiting = await dependencies.repository.markAwaitingFollow({
-      attemptId: context.attempt.id,
-      expectedState: "checking_follow",
-      checkedAt,
-      now,
-    });
-    if (awaiting.kind !== "transitioned") return outcomeForTransition(awaiting);
 
     if (context.falseResponse === "lag") {
-      const reservation = await dependencies.repository.reserveFollowResponse({
-        attemptId: context.attempt.id,
-        expectedState: "awaiting_follow",
-        now,
-      });
+      let reservation;
+      try {
+        reservation = await dependencies.repository.reserveFollowResponse({
+          attemptId: context.attempt.id,
+          expectedState: "checking_follow",
+          now,
+        });
+      } catch {
+        const review = await checkpointNeedsReview(
+          context.attempt.id,
+          "checking_follow",
+          "follow_response_reservation_failed",
+          checkedAt,
+        );
+        return review.outcome;
+      }
       if (reservation.kind !== "reserved") {
         if (reservation.kind === "expired") return "action_expired";
         if (reservation.kind === "state_conflict") {
           return outcomeForState(reservation.actualState);
         }
         if (reservation.kind === "limit_reached") {
-          return markNeedsReview(context.attempt.id, "awaiting_follow", checkedAt);
+          const review = await checkpointNeedsReview(
+            context.attempt.id,
+            "checking_follow",
+            "follow_response_limit_reached",
+            checkedAt,
+          );
+          return review.outcome;
         }
         return "action_consumed";
       }
     }
 
-    const issued = await issueFollowToken(awaiting.attempt, now);
+    let guideName: string | null = null;
+    if (context.falseResponse === "gate") {
+      guideName = await loadGuideName(context);
+      if (guideName === null) return "access_attempt_needs_review";
+    }
+
+    const issued = await issueFollowToken(context.attempt, now);
     if (issued.kind === "outcome") return issued.outcome;
 
     let send: () => Promise<MetaSendResult>;
     if (context.falseResponse === "lag") {
       send = () =>
-        dependencies.sendText({
+        dependencies.sendFollowLag({
           recipientId: context.senderId,
-          text: guideAccessCopy.followLag,
+          actionToken: issued.tokenId,
         });
     } else {
-      const guideName = await loadGuideName({ ...context, attempt: awaiting.attempt });
-      if (guideName === null) return "access_attempt_needs_review";
       send = () =>
         dependencies.sendFollowerGate({
           recipientId: context.senderId,
-          guideName,
+          guideName: guideName!,
           actionToken: issued.tokenId,
         });
     }
 
-    const sendResult = await sendAfterFence(context.attempt.id, "awaiting_follow", send);
+    const sendResult = await sendAfterFence(context.attempt.id, "checking_follow", send);
     if (sendResult === "needs_review") return "access_attempt_needs_review";
+
+    let awaiting;
+    try {
+      awaiting = await dependencies.repository.markAwaitingFollow({
+        attemptId: context.attempt.id,
+        expectedState: "checking_follow",
+        checkedAt,
+        now: dependencies.now(),
+      });
+    } catch {
+      const review = await checkpointNeedsReview(
+        context.attempt.id,
+        "checking_follow",
+        "awaiting_follow_checkpoint_failed",
+        checkedAt,
+      );
+      return review.outcome;
+    }
+    if (awaiting.kind !== "transitioned") return outcomeForTransition(awaiting);
+
     if (sendResult === "definite_failure") return "action_consumed";
     return "follow_not_confirmed";
   }
@@ -295,12 +385,23 @@ export function createGuideAccessActionService(
     context: AuthorizationContext,
     checkedAt: Date,
   ): Promise<GuideAccessActionOutcome> {
-    const delivering = await dependencies.repository.markDelivering({
-      attemptId: context.attempt.id,
-      expectedState: "checking_follow",
-      checkedAt,
-      now: dependencies.now(),
-    });
+    let delivering;
+    try {
+      delivering = await dependencies.repository.markDelivering({
+        attemptId: context.attempt.id,
+        expectedState: "checking_follow",
+        checkedAt,
+        now: dependencies.now(),
+      });
+    } catch {
+      const review = await checkpointNeedsReview(
+        context.attempt.id,
+        "checking_follow",
+        "delivering_claim_failed",
+        checkedAt,
+      );
+      return review.outcome;
+    }
     if (delivering.kind !== "transitioned") return outcomeForTransition(delivering);
 
     const thread = await loadThreadId({ ...context, attempt: delivering.attempt });
@@ -321,14 +422,44 @@ export function createGuideAccessActionService(
         ...(context.redeliveryIntro ? { redeliveryIntro: context.redeliveryIntro } : {}),
       });
     } catch {
-      return markNeedsReview(context.attempt.id, "delivering", checkedAt);
+      const review = await checkpointNeedsReview(
+        context.attempt.id,
+        "delivering",
+        "durable_delivery_start_failed",
+        checkedAt,
+      );
+      return review.outcome;
     }
 
     if (deliveryResult === "already_processing") {
       return "guide_delivery_already_started";
     }
     if (deliveryResult === "needs_review" || deliveryResult === "preflight_failed") {
-      return markNeedsReview(context.attempt.id, "delivering", checkedAt);
+      const review = await checkpointNeedsReview(
+        context.attempt.id,
+        "delivering",
+        "durable_delivery_needs_review",
+        checkedAt,
+      );
+      return review.outcome;
+    }
+    if (deliveryResult === "completed") {
+      let delivered;
+      try {
+        delivered = await dependencies.repository.markDelivered({
+          attemptId: context.attempt.id,
+          expectedState: "delivering",
+        });
+      } catch {
+        const review = await checkpointNeedsReview(
+          context.attempt.id,
+          "delivering",
+          "delivered_checkpoint_failed",
+          checkedAt,
+        );
+        return review.outcome;
+      }
+      if (delivered.kind !== "transitioned") return outcomeForTransition(delivered);
     }
     return "guide_delivery_started";
   }
@@ -360,12 +491,21 @@ export function createGuideAccessActionService(
     inboundMessageId: string,
     eventAt: Date,
   ): Promise<GuideAccessActionOutcome> {
-    const consumed = await dependencies.repository.consumeToken({
-      tokenId,
-      action,
-      senderId,
-      now: dependencies.now(),
-    });
+    let consumed;
+    try {
+      consumed = await dependencies.repository.consumeToken({
+        tokenId,
+        action,
+        senderId,
+        now: dependencies.now(),
+      });
+    } catch {
+      dependencies.logger.error(
+        { errorCode: "guide_action_consumption_failed", tokenId },
+        "Guide action consumption failed",
+      );
+      return "access_attempt_needs_review";
+    }
 
     if (consumed.kind === "already_consumed") return "action_replayed";
     if (
@@ -380,20 +520,44 @@ export function createGuideAccessActionService(
       return outcomeForState(consumed.actualState);
     }
     if (consumed.kind === "check_limit_reached") {
-      const attemptId = await dependencies.findAttemptIdByToken(tokenId);
+      let attemptId: string | null;
+      try {
+        attemptId = await dependencies.findAttemptIdByToken(tokenId);
+      } catch {
+        dependencies.logger.error(
+          { errorCode: "guide_action_limit_lookup_failed", tokenId },
+          "Guide action limit lookup failed",
+        );
+        return "access_attempt_needs_review";
+      }
       if (!attemptId) return "action_expired";
-      return markNeedsReview(attemptId, "awaiting_follow", dependencies.now());
+      const review = await checkpointNeedsReview(
+        attemptId,
+        "awaiting_follow",
+        "follow_check_limit_reached",
+        dependencies.now(),
+      );
+      return review.outcome;
     }
 
-    return authorizeClaimed({
-      attempt: consumed.attempt,
-      senderId,
-      triggerKind: action === "check_follow" ? "follow_recovery" : "inbound_reply",
-      triggerId: action === "check_follow" ? tokenId : inboundMessageId,
-      threadLookupId: inboundMessageId,
-      triggeredAt: eventAt,
-      falseResponse: action === "check_follow" ? "lag" : "gate",
-    });
+    try {
+      return await authorizeClaimed({
+        attempt: consumed.attempt,
+        senderId,
+        triggerKind: action === "check_follow" ? "follow_recovery" : "inbound_reply",
+        triggerId: action === "check_follow" ? tokenId : inboundMessageId,
+        threadLookupId: inboundMessageId,
+        triggeredAt: eventAt,
+        falseResponse: action === "check_follow" ? "lag" : "gate",
+      });
+    } catch {
+      const review = await checkpointNeedsReview(
+        consumed.attempt.id,
+        "checking_follow",
+        "post_consumption_orchestration_failed",
+      );
+      return review.outcome;
+    }
   }
 
   async function requestGuideFromAction(
@@ -418,6 +582,18 @@ export function createGuideAccessActionService(
     conversation: DirectDmGuideConversation,
     inbound: DirectDmGuideInbound,
   ): Promise<GuideAccessActionOutcome> {
+    try {
+      if (await dependencies.findAttemptIdByToken(inbound.id)) {
+        return "action_replayed";
+      }
+    } catch {
+      dependencies.logger.error(
+        { errorCode: "direct_inbound_replay_lookup_failed", inboundMessageId: inbound.id },
+        "Direct guide inbound replay lookup failed",
+      );
+      return "access_attempt_needs_review";
+    }
+
     const now = dependencies.now();
     const created = await dependencies.repository.createOrLoadAttempt({
       conversationId: conversation.id,
@@ -440,27 +616,60 @@ export function createGuideAccessActionService(
       return outcomeForState(attempt.state);
     }
 
-    const checking = await dependencies.repository.beginChecking({
-      attemptId: attempt.id,
-      expectedState: attempt.state,
-      now,
-    });
-    if (checking.kind !== "transitioned") return outcomeForTransition(checking);
+    let checking;
+    try {
+      checking = await dependencies.repository.claimDirectInbound({
+        attemptId: attempt.id,
+        inboundMessageId: inbound.id,
+        now,
+      });
+    } catch {
+      const review = await checkpointNeedsReview(
+        attempt.id,
+        attempt.state,
+        "direct_inbound_claim_failed",
+      );
+      return review.outcome;
+    }
+    if (checking.kind === "already_consumed" || checking.kind === "token_conflict") {
+      return "action_replayed";
+    }
+    if (checking.kind === "expired") return "action_expired";
+    if (checking.kind === "attempt_not_found") return "action_expired";
+    if (checking.kind === "check_limit_reached") {
+      const review = await checkpointNeedsReview(
+        attempt.id,
+        attempt.state,
+        "direct_follow_check_limit_reached",
+        now,
+      );
+      return review.outcome;
+    }
+    if (checking.kind === "state_conflict") return outcomeForState(checking.actualState);
 
-    return authorizeClaimed({
-      attempt: checking.attempt,
-      senderId: conversation.igUserId,
-      triggerKind: conversation.deliveryTriggerKind ?? "inbound_reply",
-      triggerId: inbound.id,
-      threadLookupId: inbound.id,
-      triggeredAt: inbound.eventAt,
-      falseResponse: attempt.state === "awaiting_follow" ? "lag" : "gate",
-      guideName: conversation.guideName,
-      threadId: inbound.threadId,
-      ...(conversation.redeliveryIntro
-        ? { redeliveryIntro: conversation.redeliveryIntro }
-        : {}),
-    });
+    try {
+      return await authorizeClaimed({
+        attempt: checking.attempt,
+        senderId: conversation.igUserId,
+        triggerKind: conversation.deliveryTriggerKind ?? "inbound_reply",
+        triggerId: inbound.id,
+        threadLookupId: inbound.id,
+        triggeredAt: inbound.eventAt,
+        falseResponse: attempt.state === "awaiting_follow" ? "lag" : "gate",
+        guideName: conversation.guideName,
+        threadId: inbound.threadId,
+        ...(conversation.redeliveryIntro
+          ? { redeliveryIntro: conversation.redeliveryIntro }
+          : {}),
+      });
+    } catch {
+      const review = await checkpointNeedsReview(
+        attempt.id,
+        "checking_follow",
+        "post_direct_claim_orchestration_failed",
+      );
+      return review.outcome;
+    }
   }
 
   return {
@@ -484,6 +693,7 @@ const defaultService = createGuideAccessActionService({
       text: input.text,
       source: "keyword_automation",
     }),
+  sendFollowLag: sendGuideFollowLag,
   async loadGuideName(resourceId) {
     const resource = await prisma.resource.findUnique({
       where: { id: resourceId },
@@ -508,6 +718,7 @@ const defaultService = createGuideAccessActionService({
   },
   now: () => new Date(),
   actionTokenTtlMs: ACTION_TOKEN_TTL_MS,
+  logger,
 });
 
 export const requestGuideFromAction = defaultService.requestGuideFromAction;

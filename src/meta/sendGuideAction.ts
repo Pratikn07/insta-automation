@@ -23,11 +23,13 @@ const opaqueActionToken = z.string().uuid();
 export type GuideActionCapabilities = {
   privateQuickReply: boolean;
   dmGenericGate: boolean;
+  dmQuickReply?: boolean;
 };
 
 const TEXT_ONLY_CAPABILITIES: GuideActionCapabilities = {
   privateQuickReply: false,
   dmGenericGate: false,
+  dmQuickReply: false,
 };
 
 function requiredOpaqueActionToken(value: string): string {
@@ -106,5 +108,39 @@ export async function sendGuideFollowerGate(input: {
       message: { text },
     },
     { recipientId: input.recipientId, mode: "dm_text_gate", messageLength: text.length },
+  );
+}
+
+export async function sendGuideFollowLag(input: {
+  recipientId: string;
+  actionToken: string;
+  capabilities?: GuideActionCapabilities;
+}): Promise<MetaSendResult> {
+  const capabilities = input.capabilities ?? TEXT_ONLY_CAPABILITIES;
+  const actionToken = requiredOpaqueActionToken(input.actionToken);
+  const text = guideAccessCopy.followLag;
+
+  if (capabilities.dmQuickReply) {
+    return sendCapabilityPayload(
+      buildGuideGateCapabilityPayload({
+        case: "dm_follow_lag",
+        recipientId: input.recipientId,
+        actionToken,
+      }),
+      {
+        recipientId: input.recipientId,
+        mode: "dm_quick_reply_follow_lag",
+        messageLength: text.length,
+      },
+    );
+  }
+
+  return sendMetaMessage(
+    {
+      recipient: { id: input.recipientId },
+      messaging_type: "RESPONSE",
+      message: { text },
+    },
+    { recipientId: input.recipientId, mode: "dm_text_follow_lag", messageLength: text.length },
   );
 }
