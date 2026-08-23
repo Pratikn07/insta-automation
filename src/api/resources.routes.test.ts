@@ -13,6 +13,7 @@ const deleteKeywords = vi.fn();
 const deleteResource = vi.fn();
 const countPublishedCovers = vi.fn();
 const countCoverOrphans = vi.fn();
+const deleteCoverOrphans = vi.fn();
 const deleteCoverVersions = vi.fn();
 const deleteCoverSuggestions = vi.fn();
 const deletePresentation = vi.fn();
@@ -31,7 +32,7 @@ vi.mock("../lib/prisma.js", () => ({
     },
     resourceCoverSuggestion: { deleteMany: deleteCoverSuggestions },
     resourcePresentation: { deleteMany: deletePresentation },
-    guideCoverOrphan: { count: countCoverOrphans },
+    guideCoverOrphan: { count: countCoverOrphans, deleteMany: deleteCoverOrphans },
     $transaction: transaction,
   },
 }));
@@ -98,6 +99,7 @@ beforeEach(() => {
   deleteResource.mockReset().mockReturnValue({ operation: "delete-resource" });
   countPublishedCovers.mockReset().mockResolvedValue(0);
   countCoverOrphans.mockReset().mockResolvedValue(0);
+  deleteCoverOrphans.mockReset().mockReturnValue({ operation: "delete-cover-orphans" });
   deleteCoverVersions.mockReset().mockReturnValue({ operation: "delete-cover-versions" });
   deleteCoverSuggestions.mockReset().mockReturnValue({ operation: "delete-cover-suggestions" });
   deletePresentation.mockReset().mockReturnValue({ operation: "delete-presentation" });
@@ -273,6 +275,9 @@ describe("resource deletion", () => {
 
     expect(transaction).toHaveBeenCalledOnce();
     expect(deleteCoverVersions).toHaveBeenCalledWith({ where: { resourceId: RESOURCE_ID } });
+    expect(deleteCoverOrphans).toHaveBeenCalledWith({
+      where: { resourceId: RESOURCE_ID, status: "deleted" },
+    });
     expect(deleteCoverSuggestions).toHaveBeenCalledWith({ where: { resourceId: RESOURCE_ID } });
     expect(deletePresentation).toHaveBeenCalledWith({ where: { resourceId: RESOURCE_ID } });
     expect(deleteResource).toHaveBeenCalledWith({ where: { id: RESOURCE_ID } });

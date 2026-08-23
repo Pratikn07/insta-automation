@@ -147,6 +147,12 @@ export const envSchema = z.object({
   // Creator-only cover drafting and publication. It never changes an existing
   // published cover when off; it only closes the authoring mutation surface.
   GUIDE_COVER_AUTHORING_ENABLED: booleanFlag(false),
+  GUIDE_COVER_ORPHAN_BATCH: z.coerce.number().int().min(1).max(50).default(10),
+  GUIDE_COVER_ORPHAN_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .min(60_000)
+    .default(15 * 60_000),
   AI_BRAND_VOICE: z
     .string()
     .max(4000)

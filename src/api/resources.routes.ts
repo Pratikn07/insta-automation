@@ -174,7 +174,7 @@ resourcesRouter.delete("/:id", async (req, res, next) => {
   // Keep their resource/cover foreign keys intact until that exact-path cleanup
   // has settled; never replace this with a bucket-prefix delete.
   const pendingCoverCleanupCount = await prisma.guideCoverOrphan.count({
-    where: { resourceId: id },
+    where: { resourceId: id, status: { not: "deleted" } },
   });
   if (pendingCoverCleanupCount > 0) {
     return res.status(409).json({ error: "resource_has_cover_cleanup_pending" });
@@ -187,6 +187,9 @@ resourcesRouter.delete("/:id", async (req, res, next) => {
     await prisma.$transaction([
       prisma.conversation.deleteMany({ where: { keywordId: { in: keywordIds } } }),
       prisma.keyword.deleteMany({ where: { resourceId: id } }),
+      prisma.guideCoverOrphan.deleteMany({
+        where: { resourceId: id, status: "deleted" },
+      }),
       // Only unpublished database drafts are removed. Generated Storage objects
       // are never created for drafts, and no Storage call belongs in this route.
       prisma.resourceCoverVersion.deleteMany({ where: { resourceId: id } }),

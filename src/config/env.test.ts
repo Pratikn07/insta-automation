@@ -26,6 +26,23 @@ describe("env configuration schema for DM recovery", () => {
     ).toBe(true);
   });
 
+  it("uses conservative bounded guide-cover orphan cleanup settings", () => {
+    expect(envSchema.parse(baseEnv)).toMatchObject({
+      GUIDE_COVER_ORPHAN_BATCH: 10,
+      GUIDE_COVER_ORPHAN_INTERVAL_MS: 900_000,
+    });
+    expect(
+      envSchema.safeParse({ ...baseEnv, GUIDE_COVER_ORPHAN_BATCH: "0" }).success,
+    ).toBe(false);
+    expect(
+      envSchema.safeParse({ ...baseEnv, GUIDE_COVER_ORPHAN_BATCH: "51" }).success,
+    ).toBe(false);
+    expect(
+      envSchema.safeParse({ ...baseEnv, GUIDE_COVER_ORPHAN_INTERVAL_MS: "59999" })
+        .success,
+    ).toBe(false);
+  });
+
   it("defaults guide delivery to a disabled, bounded rollout", () => {
     const parsed = envSchema.parse(baseEnv);
     expect(parsed).toMatchObject({
