@@ -310,6 +310,7 @@ function harness(options: HarnessOptions = {}) {
   });
   const sleep = vi.fn(async () => undefined);
   const logger = { error: vi.fn(), warn: vi.fn() };
+  const coverMediaUrl = vi.fn((path: string) => `https://cdn.example.test/${path}`);
 
   function service() {
     return createGuideDeliveryService({
@@ -318,6 +319,7 @@ function harness(options: HarnessOptions = {}) {
       sendText,
       sendMedia,
       finalizeGuideDelivery,
+      coverMediaUrl,
       sleep,
       now: () => now,
       logger,
@@ -334,6 +336,7 @@ function harness(options: HarnessOptions = {}) {
     sendText,
     sendMedia,
     finalizeGuideDelivery,
+    coverMediaUrl,
     sleep,
     logger,
     order,
@@ -702,5 +705,86 @@ describe("deliverGuideForTrigger", () => {
       traceId: "safe_trace_1",
       transportCode: null,
     });
+  });
+});
+
+// Parent-delivery Task 3, service side. The cover joins the SAME durable plan, so it
+// must share one claim and one checkpoint sequence with the authored guide. It also has
+// to be proven to belong to the guide being compiled — Task 2's snapshot carries its own
+// resourceId precisely so this layer can refuse a mismatch.
+describe("generated cover in the durable plan", () => {
+  const COVER = {
+    versionId: "70000000-0000-4000-8000-000000000007",
+    resourceId: input.resourceId,
+    dmStoragePath: "guide-cover/sleep/dm.png",
+  };
+
+  it("sends the cover first, through the same claim and checkpoints as the guide", async () => {
+    const test = harness({
+      messages: [{ id: "first", order: 0, type: "text", body: "One", mediaUrl: null }],
+    });
+
+    await expect(test.service()({ ...input, cover: COVER })).resolves.toBe("completed");
+
+    expect(test.coverMediaUrl).toHaveBeenCalledWith(COVER.dmStoragePath);
+    expect(test.sendMedia).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "image",
+        url: `https://cdn.example.test/${COVER.dmStoragePath}`,
+      }),
+    );
+    // One claim for both, and the cover's send precedes the authored text.
+    expect(test.repository.claimById).toHaveBeenCalledTimes(1);
+    expect(test.order.filter((step) => step.startsWith("provider:"))).toEqual([
+      "provider:media",
+      "provider:text",
+    ]);
+  });
+
+  it("refuses a cover belonging to a different guide and still delivers the guide", async () => {
+    const test = harness({
+      messages: [{ id: "first", order: 0, type: "text", body: "One", mediaUrl: null }],
+    });
+
+    await expect(
+      test.service()({
+        ...input,
+        cover: { ...COVER, resourceId: "99999999-9999-4999-8999-999999999999" },
+      }),
+    ).resolves.toBe("completed");
+
+    // Never prepend one guide's cover to another guide's messages.
+    expect(test.sendMedia).not.toHaveBeenCalled();
+    expect(test.sendText).toHaveBeenCalledTimes(1);
+    expect(test.logger.warn).toHaveBeenCalled();
+  });
+
+  it("omits the cover when the parent already saw it in the gate", async () => {
+    const test = harness({
+      messages: [{ id: "first", order: 0, type: "text", body: "One", mediaUrl: null }],
+    });
+
+    await expect(
+      test.service()({ ...input, cover: COVER, coverAlreadyShown: true }),
+    ).resolves.toBe("completed");
+
+    expect(test.sendMedia).not.toHaveBeenCalled();
+    expect(test.coverMediaUrl).not.toHaveBeenCalled();
+  });
+
+  it("sends nothing at all when a later authored unit fails preflight", async () => {
+    const test = harness({
+      messages: [
+        { id: "first", order: 0, type: "text", body: "Valid", mediaUrl: null },
+        { id: "later", order: 1, type: "image", body: null, mediaUrl: "" },
+      ],
+    });
+
+    await expect(test.service()({ ...input, cover: COVER })).resolves.toBe("preflight_failed");
+
+    // The cover must not escape ahead of a plan that was rejected as a whole.
+    expect(test.sendMedia).not.toHaveBeenCalled();
+    expect(test.sendText).not.toHaveBeenCalled();
+    expect(test.repository.claimById).not.toHaveBeenCalled();
   });
 });

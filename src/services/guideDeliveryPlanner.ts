@@ -48,17 +48,52 @@ export type CompileGuideDeliveryPlanInput = {
   messages: readonly AuthoredGuideMessage[];
   triggerKind: GuideDeliveryTriggerKind;
   redeliveryIntro?: string;
+  /**
+   * The immutable published cover snapshotted onto this access attempt. `mediaUrl` is a
+   * resolved public URL, never a bucket path — the planner performs no storage work.
+   *
+   * The caller is responsible for having checked that this cover belongs to the same
+   * guide as `messages`; the planner cannot see the resource and will happily prepend
+   * whatever it is handed.
+   */
+  cover?: { versionId: string; mediaUrl: string };
+  /**
+   * True when the parent already accepted this cover during the follower gate. The cover
+   * is then omitted so nobody receives it twice.
+   */
+  coverAlreadyShown?: boolean;
 };
 
 type CompiledGuideDeliveryUnit = PlannedGuideDeliveryUnit & {
   authoredOrder: number | null;
+  /**
+   * Extra identity folded into the fingerprint and nothing else. Stripped before the
+   * plan is returned and never persisted.
+   */
+  fingerprintIdentity?: string | null;
 };
 
 type UnitWithoutPosition = Omit<CompiledGuideDeliveryUnit, "position" | "contentFingerprint">;
 
+/**
+ * Origin and identity are part of the hash, not just kind and content.
+ *
+ * Without origin, an authored image and a generated cover pointing at the same URL
+ * produce the same fingerprint despite being structurally different units. Without the
+ * cover's version id, two cover versions that happen to resolve to one URL are
+ * indistinguishable.
+ *
+ * Changing this formula is safe: `content_fingerprint` is written to
+ * `guide_delivery_unit` and never read back anywhere in `src/`, so no replay or
+ * idempotency behaviour depends on its value.
+ */
 function contentFingerprint(unit: UnitWithoutPosition): string {
   return createHash("sha256")
     .update(unit.kind)
+    .update("\0")
+    .update(unit.origin)
+    .update("\0")
+    .update(unit.fingerprintIdentity ?? "")
     .update("\0")
     .update(unit.textSnapshot ?? unit.mediaUrlSnapshot ?? "")
     .digest("hex");
@@ -74,6 +109,20 @@ function appendUnit(units: CompiledGuideDeliveryUnit[], unit: UnitWithoutPositio
 
 function compileUnits(input: CompileGuideDeliveryPlanInput): CompiledGuideDeliveryUnit[] {
   const units: CompiledGuideDeliveryUnit[] = [];
+
+  // Spec: "the guide planner prepends one image unit". First, therefore ahead of a
+  // redelivery intro. Exactly one, because it is appended once here and nowhere else.
+  if (input.cover && input.coverAlreadyShown !== true) {
+    appendUnit(units, {
+      resourceMessageId: null,
+      authoredOrder: null,
+      origin: "generated_cover",
+      kind: "image",
+      textSnapshot: null,
+      mediaUrlSnapshot: input.cover.mediaUrl,
+      fingerprintIdentity: input.cover.versionId,
+    });
+  }
 
   if (input.triggerKind === "explicit_redelivery") {
     appendUnit(units, {
@@ -177,6 +226,8 @@ export function compileGuideDeliveryPlan(
 
   return {
     ok: true,
-    units: compiledUnits.map(({ authoredOrder: _authoredOrder, ...unit }) => unit),
+    units: compiledUnits.map(
+      ({ authoredOrder: _authoredOrder, fingerprintIdentity: _identity, ...unit }) => unit,
+    ),
   };
 }

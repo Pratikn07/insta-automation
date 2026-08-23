@@ -222,3 +222,133 @@ describe("compileGuideDeliveryPlan", () => {
     expect(serialized).not.toContain("PRIVATE-URL-SENTINEL");
   });
 });
+
+// Parent-delivery Task 3. The published cover becomes one more unit in the SAME durable
+// plan, so it inherits the existing claim lease, checkpoints, retry policy and
+// uncertain-send review rather than getting a sender of its own.
+describe("generated cover unit", () => {
+  const COVER_VERSION = "70000000-0000-4000-8000-000000000007";
+  const COVER_URL = "https://cdn.example.test/guide-cover/sleep/dm.png";
+
+  it("prepends exactly one image unit at position 0", () => {
+    const units = compiled({
+      messages: [textStep({ id: "m1", order: 0, body: "Step one" })],
+      triggerKind: "inbound_reply",
+      cover: { versionId: COVER_VERSION, mediaUrl: COVER_URL },
+    });
+
+    expect(units[0]).toMatchObject({
+      position: 0,
+      origin: "generated_cover",
+      kind: "image",
+      resourceMessageId: null,
+      textSnapshot: null,
+      mediaUrlSnapshot: COVER_URL,
+    });
+    expect(units.filter((unit) => unit.origin === "generated_cover")).toHaveLength(1);
+    // The authored steps follow unmodified, just shifted.
+    expect(units[1]).toMatchObject({ position: 1, origin: "resource_step", kind: "text" });
+  });
+
+  it("adds nothing when no cover is supplied", () => {
+    const units = compiled({
+      messages: [textStep({ id: "m1", order: 0, body: "Step one" })],
+      triggerKind: "inbound_reply",
+    });
+
+    expect(units.some((unit) => unit.origin === "generated_cover")).toBe(false);
+    expect(units[0]).toMatchObject({ position: 0, origin: "resource_step" });
+  });
+
+  it("omits the cover when the parent already saw it in the gate", () => {
+    const units = compiled({
+      messages: [textStep({ id: "m1", order: 0, body: "Step one" })],
+      triggerKind: "inbound_reply",
+      cover: { versionId: COVER_VERSION, mediaUrl: COVER_URL },
+      coverAlreadyShown: true,
+    });
+
+    // A non-follower who accepted the cover during the gate must not receive it twice.
+    expect(units.some((unit) => unit.origin === "generated_cover")).toBe(false);
+  });
+
+  it("places the cover ahead of a redelivery intro", () => {
+    const units = compiled({
+      messages: [textStep({ id: "m1", order: 0, body: "Step one" })],
+      triggerKind: "explicit_redelivery",
+      redeliveryIntro: "Here it is again",
+      cover: { versionId: COVER_VERSION, mediaUrl: COVER_URL },
+    });
+
+    // Literal reading of the spec's "prepends one image unit". Recorded as an explicit
+    // choice: context-then-image may read better to a parent, and reversing this is a
+    // one-line move plus this assertion.
+    expect(units.map((unit) => [unit.position, unit.origin])).toEqual([
+      [0, "generated_cover"],
+      [1, "redelivery_intro"],
+      [2, "resource_step"],
+    ]);
+  });
+
+  it.each([{ mediaUrl: "" }, { mediaUrl: null as unknown as string }])(
+    "refuses the whole plan when the cover URL is unusable (%o)",
+    ({ mediaUrl }) => {
+      const result = compileGuideDeliveryPlan({
+        messages: [textStep({ id: "m1", order: 0, body: "Step one" })],
+        triggerKind: "inbound_reply",
+        cover: { versionId: COVER_VERSION, mediaUrl },
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected a preflight failure");
+      expect(result.error).toMatchObject({
+        code: "media_url_missing",
+        resourceMessageId: null,
+        unitKind: "image",
+      });
+    },
+  );
+
+  it("fingerprints a cover differently from an authored image with the same URL", () => {
+    const [cover] = compiled({
+      messages: [],
+      triggerKind: "inbound_reply",
+      cover: { versionId: COVER_VERSION, mediaUrl: COVER_URL },
+    });
+    const [authored] = compiled({
+      messages: [imageStep({ id: "m1", order: 0, body: null, mediaUrl: COVER_URL })],
+      triggerKind: "inbound_reply",
+    });
+
+    // Without origin in the hash these collide, and two structurally different units
+    // would claim identical content.
+    expect(cover!.contentFingerprint).not.toBe(authored!.contentFingerprint);
+  });
+
+  it("fingerprints two cover versions differently even at the same URL", () => {
+    const [first] = compiled({
+      messages: [],
+      triggerKind: "inbound_reply",
+      cover: { versionId: COVER_VERSION, mediaUrl: COVER_URL },
+    });
+    const [second] = compiled({
+      messages: [],
+      triggerKind: "inbound_reply",
+      cover: { versionId: "80000000-0000-4000-8000-000000000008", mediaUrl: COVER_URL },
+    });
+
+    expect(first!.contentFingerprint).not.toBe(second!.contentFingerprint);
+  });
+
+  it("still fingerprints the same cover identically", () => {
+    const input = {
+      messages: [],
+      triggerKind: "inbound_reply" as const,
+      cover: { versionId: COVER_VERSION, mediaUrl: COVER_URL },
+    };
+
+    expect(compiled(input)[0]!.contentFingerprint).toBe(
+      compiled(input)[0]!.contentFingerprint,
+    );
+  });
+});
