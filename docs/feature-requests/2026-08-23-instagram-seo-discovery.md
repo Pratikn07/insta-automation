@@ -312,6 +312,73 @@ of every guide request this account has ever served, and they are what the profi
 **Still required before this register is complete:** the autocomplete pass for phrasing. The
 table gives clusters and priority; it does not give the words parents type.
 
+---
+
+## Part 2D — Phase 0 audit result, 2026-08-23
+
+Verified from owner screenshots of the live account.
+
+| Check | State |
+|---|---|
+| Private account | **Off** — account is public |
+| "Allow public photos and videos to appear in search engine results" | **On** |
+| Account Status → Content and messages | Clear |
+| Account Status → **Reach** | **"You don't have limits to your reach"** |
+| Account Status → Features | Clear |
+| Account Status → Monetization | Eligible |
+| Professional account | Confirmed (Professional dashboard present) |
+
+**The external channel was already open and the account is unrestricted.** Nothing is
+being suppressed, so every discovery number in this document reflects content and
+positioning rather than a penalty. That closes the highest-risk unknown in `SEO-001`.
+
+Account scale at audit: 168 posts, 10.3K followers, **2.0M views in the trailing 30 days**.
+
+### The profile contradicts the account's own demand data
+
+Current name field: `Tiny Soho | Toddler Parenting` (29 of 30 chars).
+Current bio, visible portion, in order:
+
+1. Toddler Parenting Tips
+2. **Independent play + No screens**
+3. Calm, realistic motherhood
+4. Easy meals, routines & real moments…
+
+**Sleep does not appear anywhere in the profile.** It is 37.2% of all guide demand.
+
+Normalising for how often each topic was actually offered — because raw totals would
+simply reward whichever keyword was attached to the most posts — makes the gap wider,
+not narrower:
+
+| Cluster | Keyword rows | Distinct posts | Guide requests | **Per keyword offered** |
+|---|---:|---:|---:|---:|
+| **Sleep** | 14 | 10 | 2,949 | **211** |
+| Food | 51 | 40 | 3,978 | 78 |
+| Potty | 10 | 9 | 772 | 77 |
+| Play & learning | 13 | 8 | 165 | 13 |
+
+**Sleep was offered the least and converted the best: 2.7× food and 16× play, per offer.**
+Ten posts carrying a sleep keyword produced nearly as many guide requests as forty
+carrying a food keyword. The best-performing post visible on the grid at audit was a
+bedtime reel at 10.1K views, against 967 and 2,705 for its neighbours.
+
+Meanwhile the bio's second line — the most prominent line after the opener — is
+*Independent play + No screens*, the **weakest-converting cluster in the account**.
+
+**Two honest qualifications before anyone rewrites anything:**
+
+1. Guide requests are not the only job a post does. Play and no-screens content may earn
+   reach, followers, and brand trust that never shows up as a keyword comment. This table
+   measures conversion to a guide, not value.
+2. *No screens* and *independent play* read as positioning — a statement about what kind
+   of parenting account this is — which may be attracting the right audience precisely
+   because it is not a demand keyword.
+
+Neither qualification explains a **complete absence of sleep** from a profile where sleep
+is the strongest converting topic by a factor of 2.7. Recommend surfacing sleep in both
+the name field and the first bio line, and demoting nothing else below where the evidence
+supports.
+
 ## Part 3 — Implementation in this app
 
 ### 3.1 Terminology guard (read before writing any code)
