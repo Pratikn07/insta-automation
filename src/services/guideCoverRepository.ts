@@ -107,6 +107,28 @@ function isExactDraftReplay(
   );
 }
 
+/**
+ * The single definition of "a cover a parent may actually be sent".
+ *
+ * `published` alone is not enough: the row must also have rendered, and it must have a
+ * stored DM path and content hash, or there is nothing immutable to send. This lives
+ * here and is shared with the guide-access attempt transaction so the two cannot drift
+ * on what counts as sendable — a second, subtly different copy of this predicate is how
+ * a draft cover would eventually reach a parent.
+ *
+ * `resource_cover_version_one_published_key` permits one published row per resource, so
+ * a `findFirst` on this predicate is deterministic rather than arbitrary.
+ */
+export function publishedCoverWhere(resourceId: string) {
+  return {
+    resourceId,
+    status: "published",
+    renderStatus: "ready",
+    contentHash: { not: null },
+    dmStoragePath: { not: null },
+  } as const;
+}
+
 export function createGuideCoverRepository(options: {
   database?: GuideCoverDatabase;
 } = {}) {
@@ -309,13 +331,7 @@ export function createGuideCoverRepository(options: {
 
     findPublished(resourceId: string): Promise<ResourceCoverVersion | null> {
       return database.resourceCoverVersion.findFirst({
-        where: {
-          resourceId,
-          status: "published",
-          renderStatus: "ready",
-          contentHash: { not: null },
-          dmStoragePath: { not: null },
-        },
+        where: publishedCoverWhere(resourceId),
       });
     },
   };

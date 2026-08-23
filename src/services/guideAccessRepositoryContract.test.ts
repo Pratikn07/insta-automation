@@ -85,6 +85,36 @@ async function createFixture(): Promise<Fixture> {
   return { conversationId, coverVersionId, resourceId, senderId };
 }
 
+
+/**
+ * The fixture cover is deliberately left as a draft, so a test must opt in.
+ *
+ * Publishing is heavily constrained by design and all of it has to be satisfied at once:
+ * `resource_cover_version_approval_check` demands approval evidence,
+ * `..._published_check` demands an edition number, a content hash and a published-by,
+ * and `..._ready_render_check` demands the DM path equal
+ * `guide-cover/{resource_id}/{id}/{content_hash}/dm.png` exactly. The path is therefore
+ * derived, never chosen.
+ */
+async function publishFixtureCover(fixture: Fixture, contentHash = "f".repeat(64)) {
+  const dmStoragePath = `guide-cover/${fixture.resourceId}/${fixture.coverVersionId}/${contentHash}/dm.png`;
+  await firstClient.resourceCoverVersion.update({
+    where: { id: fixture.coverVersionId },
+    data: {
+      status: "published",
+      renderStatus: "ready",
+      editionNumber: 1,
+      contentHash,
+      dmStoragePath,
+      approvedAt: NOW,
+      approvedBy: "contract",
+      publishedAt: NOW,
+      publishedBy: "contract",
+    },
+  });
+  return dmStoragePath;
+}
+
 async function createAttempt(
   fixture: Fixture,
   messagingWindowExpiresAt = new Date(NOW.getTime() + 24 * 60 * 60_000),
@@ -92,7 +122,6 @@ async function createAttempt(
   const result = await firstRepository.createOrLoadAttempt({
     conversationId: fixture.conversationId,
     resourceId: fixture.resourceId,
-    coverVersionId: fixture.coverVersionId,
     messagingWindowExpiresAt,
   });
   return result.attempt;
@@ -134,8 +163,7 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
     const input = {
       conversationId: fixture.conversationId,
       resourceId: fixture.resourceId,
-      coverVersionId: fixture.coverVersionId,
-      messagingWindowExpiresAt: new Date(NOW.getTime() + 24 * 60 * 60_000),
+        messagingWindowExpiresAt: new Date(NOW.getTime() + 24 * 60 * 60_000),
     };
 
     const [left, right] = await Promise.all([
@@ -146,6 +174,10 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
     expect(left.attempt.id).toBe(right.attempt.id);
     expect(left.attempt).toMatchObject(input);
     expect(right.attempt).toMatchObject(input);
+    // Both racers resolved the same snapshot, and the fixture cover is a draft, so the
+    // correct answer is "no sendable cover" rather than the draft's id.
+    expect(left.attempt.coverVersionId).toBe(right.attempt.coverVersionId);
+    expect(left.cover).toEqual(right.cover);
     await expect(
       firstClient.guideAccessAttempt.count({ where: { conversationId: fixture.conversationId } }),
     ).resolves.toBe(1);
@@ -158,8 +190,7 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
     const replay = await firstRepository.createOrLoadAttempt({
       conversationId: fixture.conversationId,
       resourceId: fixture.resourceId,
-      coverVersionId: fixture.coverVersionId,
-      messagingWindowExpiresAt: new Date(NOW.getTime() + 24 * 60 * 60_000),
+        messagingWindowExpiresAt: new Date(NOW.getTime() + 24 * 60 * 60_000),
       now: NOW,
     });
 
@@ -465,5 +496,143 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
     await expect(
       firstClient.guideAccessAttempt.findUniqueOrThrow({ where: { id: attempt.id } }),
     ).resolves.toMatchObject({ state: "expired", followResponseCount: 0 });
+  });
+
+  // Parent-delivery Task 2. Real PostgreSQL is the only place the published predicate is
+  // genuinely exercised: a unit test with a mocked client proves the where clause was
+  // passed, not that the database honours it.
+  it.each([
+    { label: "the only version is a draft", status: undefined },
+    { label: "the version is approved but not published", status: "approved" as const },
+    { label: "the published version was retired", status: "retired" as const },
+  ])("stores no cover snapshot when $label", async ({ status }) => {
+    const fixture = await createFixture();
+    if (status) {
+      await publishFixtureCover(fixture);
+      await firstClient.resourceCoverVersion.update({
+        where: { id: fixture.coverVersionId },
+        data: { status },
+      });
+    }
+
+    const created = await firstRepository.createOrLoadAttempt({
+      conversationId: fixture.conversationId,
+      resourceId: fixture.resourceId,
+      messagingWindowExpiresAt: new Date(NOW.getTime() + 24 * 60 * 60_000),
+    });
+
+    expect(created.kind).toBe("created");
+    expect(created.attempt.coverVersionId).toBeNull();
+    expect(created.cover).toBeNull();
+  });
+
+  it("stores the published cover and its derived immutable DM path", async () => {
+    const fixture = await createFixture();
+    const dmStoragePath = await publishFixtureCover(fixture);
+
+    const created = await firstRepository.createOrLoadAttempt({
+      conversationId: fixture.conversationId,
+      resourceId: fixture.resourceId,
+      messagingWindowExpiresAt: new Date(NOW.getTime() + 24 * 60 * 60_000),
+    });
+
+    expect(created.attempt.coverVersionId).toBe(fixture.coverVersionId);
+    expect(created.cover).toEqual({ versionId: fixture.coverVersionId, dmStoragePath });
+  });
+
+  // The predicate also filters on render status, content hash and DM path. Those cannot
+  // be tested as exclusions, because the schema makes a published row without them
+  // unrepresentable — which is a stronger guarantee than the predicate. Proven here so
+  // the redundancy is on record rather than assumed.
+  it.each([
+    { label: "an unrendered publish", data: { renderStatus: "not_rendered" as const } },
+    { label: "a publish with no DM path", data: { dmStoragePath: null } },
+    { label: "a publish with no content hash", data: { contentHash: null } },
+  ])("the database itself refuses $label", async ({ data }) => {
+    const fixture = await createFixture();
+    await publishFixtureCover(fixture);
+
+    await expect(
+      firstClient.resourceCoverVersion.update({
+        where: { id: fixture.coverVersionId },
+        data,
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("keeps the original snapshot when a newer cover publishes mid-attempt", async () => {
+    const fixture = await createFixture();
+    const originalPath = await publishFixtureCover(fixture);
+    const created = await firstRepository.createOrLoadAttempt({
+      conversationId: fixture.conversationId,
+      resourceId: fixture.resourceId,
+      messagingWindowExpiresAt: new Date(NOW.getTime() + 24 * 60 * 60_000),
+    });
+    expect(created.attempt.coverVersionId).toBe(fixture.coverVersionId);
+
+    // The creator publishes a replacement. Only one row per resource may be published,
+    // so the original is retired in the same transaction.
+    const newerId = randomUUID();
+    const newerHash = "a".repeat(64);
+    const original = await firstClient.resourceCoverVersion.findUniqueOrThrow({
+      where: { id: fixture.coverVersionId },
+    });
+    await firstClient.$transaction([
+      firstClient.resourceCoverVersion.update({
+        where: { id: fixture.coverVersionId },
+        data: { status: "retired" },
+      }),
+      firstClient.resourceCoverVersion.create({
+        data: {
+          ...original,
+          id: newerId,
+          revision: original.revision + 1,
+          editionNumber: 2,
+          status: "published",
+          renderStatus: "ready",
+          contentHash: newerHash,
+          dmStoragePath: `guide-cover/${fixture.resourceId}/${newerId}/${newerHash}/dm.png`,
+        },
+      }),
+    ]);
+
+    const replay = await firstRepository.createOrLoadAttempt({
+      conversationId: fixture.conversationId,
+      resourceId: fixture.resourceId,
+      messagingWindowExpiresAt: new Date(NOW.getTime() + 24 * 60 * 60_000),
+    });
+
+    expect(replay.kind).toBe("loaded");
+    expect(replay.attempt.id).toBe(created.attempt.id);
+    // The in-flight attempt still sends what it snapshotted. The original is retired and
+    // a newer cover is live, and neither changes this attempt.
+    expect(replay.attempt.coverVersionId).toBe(fixture.coverVersionId);
+    expect(replay.cover).toEqual({
+      versionId: fixture.coverVersionId,
+      dmStoragePath: originalPath,
+    });
+  });
+
+  it("resolves exactly one cover snapshot across two concurrent creators", async () => {
+    const fixture = await createFixture();
+    await publishFixtureCover(fixture);
+    const input = {
+      conversationId: fixture.conversationId,
+      resourceId: fixture.resourceId,
+      messagingWindowExpiresAt: new Date(NOW.getTime() + 24 * 60 * 60_000),
+    };
+
+    const [left, right] = await Promise.all([
+      firstRepository.createOrLoadAttempt(input),
+      secondRepository.createOrLoadAttempt(input),
+    ]);
+
+    expect(left.attempt.id).toBe(right.attempt.id);
+    expect(left.attempt.coverVersionId).toBe(fixture.coverVersionId);
+    expect(right.attempt.coverVersionId).toBe(fixture.coverVersionId);
+    expect(left.cover).toEqual(right.cover);
+    await expect(
+      firstClient.guideAccessAttempt.count({ where: { conversationId: fixture.conversationId } }),
+    ).resolves.toBe(1);
   });
 });

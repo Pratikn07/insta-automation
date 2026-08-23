@@ -81,7 +81,6 @@ export type DirectDmGuideConversation = {
   igUserId: string;
   resourceId: string;
   guideName: string;
-  coverVersionId?: string | null;
   /** Metadata is accepted but never used as authorization evidence. */
   createdAt?: Date;
   deliveryTriggerKind?: "inbound_reply" | "explicit_redelivery";
@@ -722,7 +721,6 @@ export function createGuideAccessActionService(
     const created = await dependencies.repository.createOrLoadAttempt({
       conversationId: conversation.id,
       resourceId: conversation.resourceId,
-      coverVersionId: conversation.coverVersionId ?? null,
       messagingWindowExpiresAt:
         inbound.messagingWindowExpiresAt ??
         new Date(inbound.eventAt.getTime() + STANDARD_DM_WINDOW_MS),
@@ -825,7 +823,6 @@ export function createGuideAccessActionService(
       created = await dependencies.repository.createOrLoadAttempt({
         conversationId: input.conversationId,
         resourceId: input.resourceId,
-        coverVersionId: null,
         messagingWindowExpiresAt: windowExpiresAt,
         now,
       });

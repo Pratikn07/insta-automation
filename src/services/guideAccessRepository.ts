@@ -8,6 +8,7 @@ import {
   type PrismaClient,
 } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
+import { publishedCoverWhere } from "./guideCoverRepository.js";
 
 const MAX_FOLLOW_CHECKS = 3;
 const MAX_FOLLOW_RESPONSES = 2;
@@ -33,14 +34,31 @@ class TransactionFenceConflict extends Error {
 export type CreateGuideAccessAttemptInput = {
   conversationId: string;
   resourceId: string;
-  coverVersionId: string | null;
   messagingWindowExpiresAt: Date;
   now?: Date;
 };
 
+/**
+ * What a parent can actually be sent for this attempt. Resolved inside the attempt
+ * transaction so a caller never has to query covers itself and can never substitute a
+ * different one.
+ */
+export type GuideAccessCoverSnapshot = {
+  versionId: string;
+  dmStoragePath: string;
+};
+
 export type CreateGuideAccessAttemptResult =
-  | { kind: "created"; attempt: GuideAccessAttempt }
-  | { kind: "loaded"; attempt: GuideAccessAttempt };
+  | {
+      kind: "created";
+      attempt: GuideAccessAttempt;
+      cover: GuideAccessCoverSnapshot | null;
+    }
+  | {
+      kind: "loaded";
+      attempt: GuideAccessAttempt;
+      cover: GuideAccessCoverSnapshot | null;
+    };
 
 export type IssueGuideActionTokenInput = {
   attemptId: string;
@@ -168,6 +186,31 @@ export interface GuideAccessRepository {
   reserveFollowResponse(
     input: ReserveGuideFollowResponseInput,
   ): Promise<ReserveGuideFollowResponseResult>;
+}
+
+
+/**
+ * A snapshot is only usable when the row still carries a DM path. Keeping the id on the
+ * attempt while returning a null snapshot preserves owner evidence about which cover was
+ * chosen, without ever handing the sender something it cannot send.
+ */
+function toSnapshot(
+  row: { id: string; dmStoragePath: string | null } | null,
+): GuideAccessCoverSnapshot | null {
+  if (!row || row.dmStoragePath === null) return null;
+  return { versionId: row.id, dmStoragePath: row.dmStoragePath };
+}
+
+async function resolveSnapshotById(
+  tx: Transaction,
+  coverVersionId: string | null,
+): Promise<GuideAccessCoverSnapshot | null> {
+  if (coverVersionId === null) return null;
+  const row = await tx.resourceCoverVersion.findFirst({
+    where: { id: coverVersionId },
+    select: { id: true, dmStoragePath: true },
+  });
+  return toSnapshot(row);
 }
 
 type RepositoryOptions = {
@@ -343,22 +386,38 @@ export function createGuideAccessRepository(
           const locked = await lockAttempt(tx, existing.id);
           if (locked && ACTIVE_ATTEMPT_STATES.includes(locked.state)) {
             if (locked.messagingWindowExpiresAt > now) {
-              return { kind: "loaded" as const, attempt: withoutSender(locked) };
+              return {
+                kind: "loaded" as const,
+                attempt: withoutSender(locked),
+                // Resolved from the attempt's OWN snapshot id, never a fresh published
+                // lookup. A creator publishing a new cover must not change what an
+                // in-flight attempt will send.
+                cover: await resolveSnapshotById(tx, locked.coverVersionId),
+              };
             }
             await expireLockedAttempt(tx, locked, now);
           }
         }
 
+        // One explicit lookup, in this transaction, catalog/row reads only — no Storage.
+        const published = await tx.resourceCoverVersion.findFirst({
+          where: publishedCoverWhere(input.resourceId),
+          select: { id: true, dmStoragePath: true },
+        });
         const created = await tx.guideAccessAttempt.create({
           data: {
             id: idFactory(),
             conversationId: input.conversationId,
             resourceId: input.resourceId,
-            coverVersionId: input.coverVersionId,
+            coverVersionId: published?.id ?? null,
             messagingWindowExpiresAt: input.messagingWindowExpiresAt,
           },
         });
-        return { kind: "created" as const, attempt: created };
+        return {
+          kind: "created" as const,
+          attempt: created,
+          cover: toSnapshot(published),
+        };
       });
     },
 
