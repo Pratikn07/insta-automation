@@ -1135,6 +1135,26 @@ const HOME_FUNNEL = {
 
 
 /** Funnels, Sequence Editor and Insights fixtures — synthetic, deterministic. */
+const coverRate = (numerator: number, denominator: number) => ({
+  numerator,
+  denominator,
+  pct: denominator >= 5 ? Math.round((numerator / denominator) * 1000) / 10 : null,
+  belowMinSample: denominator < 5,
+});
+
+const GUIDE_COVER_METRICS = {
+  key: "guide-access-v2" as const,
+  window: { from: "2026-07-18", to: "2026-08-16" },
+  coverRates: {
+    included: coverRate(84, 471),
+    accepted: coverRate(79, 84),
+    failed: coverRate(3, 84),
+    uncertain: coverRate(2, 84),
+    duplicateSuppressed: coverRate(31, 471),
+    mispaired: coverRate(0, 471),
+  },
+};
+
 const FUNNEL_DROP_OFF = {
   bucket: "no-reply" as const,
   label: "Never replied DONE",
@@ -1365,6 +1385,11 @@ function installFetchStub(): void {
 
     if (path === "/funnels/guide-follow/drop-off/no-reply" && method === "GET") {
       return json(FUNNEL_DROP_OFF);
+    }
+    // Without this the cover panel renders its error state in every visual artifact, so
+    // the one surface the screenshots exist to check would never be captured working.
+    if (path.startsWith("/funnels/guide-access-metrics") && method === "GET") {
+      return json(GUIDE_COVER_METRICS);
     }
     if (path === "/resources" && method === "GET") {
       return json([
