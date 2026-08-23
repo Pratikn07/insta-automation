@@ -21,6 +21,15 @@ function envFlagKeys(): string[] {
 }
 
 describe("flag registry coverage", () => {
+  it("registers guide cover authoring as a reversible assistive feature", () => {
+    expect(flagDefinition("GUIDE_COVER_AUTHORING_ENABLED")).toMatchObject({
+      group: "assistive",
+      kind: "boolean",
+      pageMayEnable: true,
+      pageMayStop: true,
+    });
+  });
+
   it("has a definition for every flag in env.ts", () => {
     const missing = envFlagKeys().filter((key) => !flagDefinition(key));
     expect(missing).toEqual([]);

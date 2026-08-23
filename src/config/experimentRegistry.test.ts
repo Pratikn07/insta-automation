@@ -140,6 +140,7 @@ describe("experiment registry", () => {
       "AI_DRAFTS_ENABLED",
       "AI_FOLLOW_UPS_ENABLED",
       "AI_ADVISOR_ENABLED",
+      "GUIDE_COVER_AUTHORING_ENABLED",
       "WORKERS_ENABLED",
     ]);
   });

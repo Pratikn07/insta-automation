@@ -152,6 +152,34 @@ resourcesRouter.delete("/:id", async (req, res, next) => {
       ),
     });
   }
+
+  // A published cover is immutable public history. Deleting the resource would
+  // either strand its public PNG or require a broad Storage cleanup, neither of
+  // which is an acceptable side effect of an ordinary guide delete.
+  const publishedCoverCount = await prisma.resourceCoverVersion.count({
+    where: { resourceId: id, status: "published" },
+  });
+  if (publishedCoverCount > 0) {
+    return res.status(409).json({ error: "resource_has_published_cover" });
+  }
+
+  const storedCoverHistoryCount = await prisma.resourceCoverVersion.count({
+    where: { resourceId: id, dmStoragePath: { not: null } },
+  });
+  if (storedCoverHistoryCount > 0) {
+    return res.status(409).json({ error: "resource_has_cover_history" });
+  }
+
+  // Orphans name exact uploaded objects that the cleanup worker must reconcile.
+  // Keep their resource/cover foreign keys intact until that exact-path cleanup
+  // has settled; never replace this with a bucket-prefix delete.
+  const pendingCoverCleanupCount = await prisma.guideCoverOrphan.count({
+    where: { resourceId: id },
+  });
+  if (pendingCoverCleanupCount > 0) {
+    return res.status(409).json({ error: "resource_has_cover_cleanup_pending" });
+  }
+
   const keywordIds = (
     await prisma.keyword.findMany({ where: { resourceId: id }, select: { id: true } })
   ).map((k) => k.id);
@@ -159,6 +187,11 @@ resourcesRouter.delete("/:id", async (req, res, next) => {
     await prisma.$transaction([
       prisma.conversation.deleteMany({ where: { keywordId: { in: keywordIds } } }),
       prisma.keyword.deleteMany({ where: { resourceId: id } }),
+      // Only unpublished database drafts are removed. Generated Storage objects
+      // are never created for drafts, and no Storage call belongs in this route.
+      prisma.resourceCoverVersion.deleteMany({ where: { resourceId: id } }),
+      prisma.resourceCoverSuggestion.deleteMany({ where: { resourceId: id } }),
+      prisma.resourcePresentation.deleteMany({ where: { resourceId: id } }),
       prisma.resource.delete({ where: { id } }),
     ]);
   } catch (error) {

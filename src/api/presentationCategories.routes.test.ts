@@ -1,0 +1,141 @@
+import express from "express";
+import request from "supertest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const bool = vi.fn();
+const list = vi.fn();
+const createOrLoad = vi.fn();
+const update = vi.fn();
+const findUnique = vi.fn();
+
+vi.mock("../services/flagService.js", () => ({ flags: { bool } }));
+vi.mock("../services/presentationCategoryRepository.js", () => ({
+  createPresentationCategoryRepository: () => ({ list, createOrLoad }),
+}));
+vi.mock("../lib/prisma.js", () => ({
+  prisma: { presentationCategory: { findUnique, update } },
+}));
+
+const { presentationCategoriesRouter } = await import(
+  "./presentationCategories.routes.js"
+);
+
+const CATEGORY_ID = "10000000-0000-4000-8000-000000000099";
+
+function app() {
+  const value = express();
+  value.use(express.json());
+  value.use((req, _res, next) => {
+    req.adminEmail = "creator@tinysoho.com";
+    next();
+  });
+  value.use("/api/presentation-categories", presentationCategoriesRouter);
+  return value;
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  bool.mockReturnValue(true);
+  list.mockResolvedValue([]);
+  findUnique.mockResolvedValue(null);
+  update.mockResolvedValue({ id: CATEGORY_ID, designStatus: "needs_review" });
+});
+
+describe("presentation category API", () => {
+  it("fails closed while cover authoring is disabled", async () => {
+    bool.mockReturnValue(false);
+
+    await request(app()).get("/api/presentation-categories").expect(403, {
+      error: "guide_cover_authoring_disabled",
+    });
+    expect(list).not.toHaveBeenCalled();
+  });
+
+  it("lists categories in repository order", async () => {
+    list.mockResolvedValue([{ id: CATEGORY_ID, slug: "new-theme" }]);
+
+    const response = await request(app())
+      .get("/api/presentation-categories")
+      .expect(200);
+
+    expect(response.body.categories).toEqual([
+      { id: CATEGORY_ID, slug: "new-theme" },
+    ]);
+    expect(list).toHaveBeenCalledWith(false);
+  });
+
+  it("adds a future dropdown category as needs-review using an approved base direction", async () => {
+    createOrLoad.mockResolvedValue({
+      ok: true,
+      replayed: false,
+      value: { id: CATEGORY_ID, slug: "travel" },
+    });
+
+    const response = await request(app())
+      .post("/api/presentation-categories")
+      .set("idempotency-key", CATEGORY_ID)
+      .send({
+        id: CATEGORY_ID,
+        slug: "travel",
+        name: "Travel",
+        collectionLabel: "OUTINGS",
+        defaultKicker: "A LITTLE WIN OUT AND ABOUT",
+        basedOnCategorySlug: "montessori-activities",
+        sortOrder: 50,
+      })
+      .expect(201);
+
+    expect(response.body.replayed).toBe(false);
+    expect(createOrLoad).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: CATEGORY_ID,
+        slug: "travel",
+        designStatus: "needs_review",
+        templateKey: "editorial_right_panel_v1",
+        paletteKey: "montessori_discovery_v1",
+        illustrationKey: "discovery_tray_right_v1",
+        createdBy: "creator@tinysoho.com",
+      }),
+    );
+  });
+
+  it("rejects an idempotency header that disagrees with the category id", async () => {
+    await request(app())
+      .post("/api/presentation-categories")
+      .set("idempotency-key", "20000000-0000-4000-8000-000000000099")
+      .send({
+        id: CATEGORY_ID,
+        slug: "travel",
+        name: "Travel",
+        collectionLabel: "OUTINGS",
+        defaultKicker: "A LITTLE WIN OUT AND ABOUT",
+        basedOnCategorySlug: "bedtime",
+      })
+      .expect(400, { error: "idempotency_key_mismatch" });
+
+    expect(createOrLoad).not.toHaveBeenCalled();
+  });
+
+  it("lets a creator rename or deactivate a needs-review category but never mark it ready", async () => {
+    findUnique.mockResolvedValue({ id: CATEGORY_ID, designStatus: "needs_review" });
+
+    await request(app())
+      .patch(`/api/presentation-categories/${CATEGORY_ID}`)
+      .send({ name: "Family Travel", designStatus: "inactive" })
+      .expect(200);
+
+    expect(update).toHaveBeenCalledWith({
+      where: { id: CATEGORY_ID },
+      data: expect.objectContaining({
+        name: "Family Travel",
+        designStatus: "inactive",
+        updatedBy: "creator@tinysoho.com",
+      }),
+    });
+
+    await request(app())
+      .patch(`/api/presentation-categories/${CATEGORY_ID}`)
+      .send({ designStatus: "ready" })
+      .expect(400, { error: "category_ready_requires_code_review" });
+  });
+});

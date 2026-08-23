@@ -267,6 +267,20 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
     pageMayEnable: true,
     pageMayStop: true,
   },
+  {
+    key: "GUIDE_COVER_AUTHORING_ENABLED",
+    name: "Guide cover studio",
+    group: "assistive",
+    kind: "boolean",
+    doesWhat:
+      "Opens the private creator tools used to draft, approve, and publish branded guide covers.",
+    affectsWho:
+      "Only signed-in creators using the console. It does not message parents or alter guide delivery.",
+    ifOff:
+      "New cover changes are refused. Covers that were already published remain available and unchanged.",
+    pageMayEnable: true,
+    pageMayStop: true,
+  },
 
   // ── Infrastructure: not a product choice ─────────────────────────────────
   {

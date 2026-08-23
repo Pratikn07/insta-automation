@@ -11,6 +11,11 @@ const findKeywords = vi.fn();
 const deleteConversations = vi.fn();
 const deleteKeywords = vi.fn();
 const deleteResource = vi.fn();
+const countPublishedCovers = vi.fn();
+const countCoverOrphans = vi.fn();
+const deleteCoverVersions = vi.fn();
+const deleteCoverSuggestions = vi.fn();
+const deletePresentation = vi.fn();
 const transaction = vi.fn();
 
 vi.mock("../lib/prisma.js", () => ({
@@ -20,6 +25,13 @@ vi.mock("../lib/prisma.js", () => ({
     keyword: { findMany: findKeywords, deleteMany: deleteKeywords },
     conversation: { deleteMany: deleteConversations },
     resource: { findMany, findUnique, create, delete: deleteResource },
+    resourceCoverVersion: {
+      count: countPublishedCovers,
+      deleteMany: deleteCoverVersions,
+    },
+    resourceCoverSuggestion: { deleteMany: deleteCoverSuggestions },
+    resourcePresentation: { deleteMany: deletePresentation },
+    guideCoverOrphan: { count: countCoverOrphans },
     $transaction: transaction,
   },
 }));
@@ -84,6 +96,11 @@ beforeEach(() => {
   deleteConversations.mockReset().mockReturnValue({ operation: "delete-conversations" });
   deleteKeywords.mockReset().mockReturnValue({ operation: "delete-keywords" });
   deleteResource.mockReset().mockReturnValue({ operation: "delete-resource" });
+  countPublishedCovers.mockReset().mockResolvedValue(0);
+  countCoverOrphans.mockReset().mockResolvedValue(0);
+  deleteCoverVersions.mockReset().mockReturnValue({ operation: "delete-cover-versions" });
+  deleteCoverSuggestions.mockReset().mockReturnValue({ operation: "delete-cover-suggestions" });
+  deletePresentation.mockReset().mockReturnValue({ operation: "delete-presentation" });
   transaction.mockReset().mockResolvedValue([]);
 });
 
@@ -158,6 +175,41 @@ describe("resource create replay", () => {
 });
 
 describe("resource deletion", () => {
+  it("refuses to delete a guide whose published cover is part of its public history", async () => {
+    countPublishedCovers.mockResolvedValue(1);
+
+    const response = await request(makeApp())
+      .delete(`/api/resources/${RESOURCE_ID}`)
+      .expect(409);
+
+    expect(response.body).toEqual({ error: "resource_has_published_cover" });
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it("refuses deletion while an exact generated object still needs cleanup", async () => {
+    countCoverOrphans.mockResolvedValue(1);
+
+    const response = await request(makeApp())
+      .delete(`/api/resources/${RESOURCE_ID}`)
+      .expect(409);
+
+    expect(response.body).toEqual({ error: "resource_has_cover_cleanup_pending" });
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it("preserves retired published-cover history and its immutable object", async () => {
+    countPublishedCovers
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(1);
+
+    const response = await request(makeApp())
+      .delete(`/api/resources/${RESOURCE_ID}`)
+      .expect(409);
+
+    expect(response.body).toEqual({ error: "resource_has_cover_history" });
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
   it("rejects deletion before its transaction when immutable delivery history exists", async () => {
     countDeliveries.mockResolvedValue(1);
 
@@ -220,6 +272,9 @@ describe("resource deletion", () => {
     await request(makeApp()).delete(`/api/resources/${RESOURCE_ID}`).expect(204);
 
     expect(transaction).toHaveBeenCalledOnce();
+    expect(deleteCoverVersions).toHaveBeenCalledWith({ where: { resourceId: RESOURCE_ID } });
+    expect(deleteCoverSuggestions).toHaveBeenCalledWith({ where: { resourceId: RESOURCE_ID } });
+    expect(deletePresentation).toHaveBeenCalledWith({ where: { resourceId: RESOURCE_ID } });
     expect(deleteResource).toHaveBeenCalledWith({ where: { id: RESOURCE_ID } });
   });
 

@@ -16,6 +16,16 @@ const baseEnv = {
 };
 
 describe("env configuration schema for DM recovery", () => {
+  it("keeps guide cover authoring disabled unless explicitly enabled", () => {
+    expect(envSchema.parse(baseEnv).GUIDE_COVER_AUTHORING_ENABLED).toBe(false);
+    expect(
+      envSchema.parse({
+        ...baseEnv,
+        GUIDE_COVER_AUTHORING_ENABLED: "true",
+      }).GUIDE_COVER_AUTHORING_ENABLED,
+    ).toBe(true);
+  });
+
   it("defaults guide delivery to a disabled, bounded rollout", () => {
     const parsed = envSchema.parse(baseEnv);
     expect(parsed).toMatchObject({

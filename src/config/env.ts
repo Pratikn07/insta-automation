@@ -144,6 +144,9 @@ export const envSchema = z.object({
   AI_FOLLOW_UPS_ENABLED: booleanFlag(false),
   AI_SEND_ENABLED: booleanFlag(false),
   AI_ADVISOR_ENABLED: booleanFlag(false),
+  // Creator-only cover drafting and publication. It never changes an existing
+  // published cover when off; it only closes the authoring mutation surface.
+  GUIDE_COVER_AUTHORING_ENABLED: booleanFlag(false),
   AI_BRAND_VOICE: z
     .string()
     .max(4000)
