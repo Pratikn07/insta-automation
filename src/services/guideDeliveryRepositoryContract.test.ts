@@ -881,4 +881,67 @@ describeWithDatabase("guide delivery repository PostgreSQL contract", () => {
     });
     expect(statuses.map((delivery) => delivery.status)).toContain("sending");
   });
+
+  // Parent-delivery Task 1. The `generated_cover` label was appended to
+  // `guide_delivery_unit_origin` by ALTER TYPE. Two things need proving at row level,
+  // not just in the catalog: the two origins that live delivery rows already use are
+  // still readable, and the new label is actually writable end to end.
+  it("round-trips every origin after the appended enum value", async () => {
+    const fixture = await createFixture();
+
+    const plan: GuideDeliveryPlanResult = {
+      ok: true,
+      units: [
+        {
+          // A cover unit carries no authored resource message; the column is nullable.
+          resourceMessageId: null,
+          position: 0,
+          origin: "generated_cover",
+          kind: "image",
+          textSnapshot: null,
+          mediaUrlSnapshot: "https://cdn.example.test/cover/dm.png",
+          contentFingerprint: "c".repeat(64),
+        },
+        {
+          resourceMessageId: fixture.messageIds[0],
+          position: 1,
+          origin: "redelivery_intro",
+          kind: "text",
+          textSnapshot: "Here it is again",
+          mediaUrlSnapshot: null,
+          contentFingerprint: "d".repeat(64),
+        },
+        {
+          resourceMessageId: fixture.messageIds[1],
+          position: 2,
+          origin: "resource_step",
+          kind: "image",
+          textSnapshot: null,
+          mediaUrlSnapshot: "https://cdn.example.test/guide.jpg",
+          contentFingerprint: "e".repeat(64),
+        },
+      ],
+    };
+
+    const created = await repository.createOrLoadPlan(planInput(fixture, { plan }));
+
+    expect(created.units.map((unit) => [unit.position, unit.origin])).toEqual([
+      [0, "generated_cover"],
+      [1, "redelivery_intro"],
+      [2, "resource_step"],
+    ]);
+
+    // Read back through Prisma too, so the assertion covers the client's enum mapping
+    // and not only the repository's own return value.
+    const persisted = await prisma.guideDeliveryUnit.findMany({
+      where: { deliveryId: created.id },
+      orderBy: { position: "asc" },
+      select: { position: true, origin: true, resourceMessageId: true },
+    });
+    expect(persisted).toEqual([
+      { position: 0, origin: "generated_cover", resourceMessageId: null },
+      { position: 1, origin: "redelivery_intro", resourceMessageId: fixture.messageIds[0] },
+      { position: 2, origin: "resource_step", resourceMessageId: fixture.messageIds[1] },
+    ]);
+  });
 });

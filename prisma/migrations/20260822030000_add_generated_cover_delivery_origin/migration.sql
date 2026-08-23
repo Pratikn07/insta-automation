@@ -1,0 +1,17 @@
+-- Append one origin so the durable guide-delivery planner can carry a generated cover
+-- as its own unit, alongside the authored resource steps.
+--
+-- Additive by construction. `ALTER TYPE ... ADD VALUE` appends a label without
+-- recreating the type, so `resource_step` and `redelivery_intro` keep their existing
+-- `enumsortorder`, and every `guide_delivery_unit.origin` value already written stays
+-- readable. Recreating the enum would mean rewriting that column, dropping and
+-- rebuilding the worker's indexes and policies, and taking a lock on a table the
+-- delivery worker reads continuously.
+--
+-- `IF NOT EXISTS` makes the statement idempotent, so a partially applied migration or a
+-- re-run cannot fail on the second attempt.
+--
+-- Safe inside Prisma's per-migration transaction on PostgreSQL 12+: adding a label is
+-- transactional there, and the new value is not referenced by anything in this file, so
+-- the "unsafe use of new value" restriction does not apply.
+ALTER TYPE "guide_delivery_unit_origin" ADD VALUE IF NOT EXISTS 'generated_cover';

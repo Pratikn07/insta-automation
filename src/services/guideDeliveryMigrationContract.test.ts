@@ -285,6 +285,10 @@ describeWithDatabase("guide delivery ledger migration", () => {
       { enum_name: "guide_delivery_unit_kind", enum_value: "file" },
       { enum_name: "guide_delivery_unit_origin", enum_value: "resource_step" },
       { enum_name: "guide_delivery_unit_origin", enum_value: "redelivery_intro" },
+      // Appended last on purpose. The query orders by `enumsortorder`, so this
+      // position is the proof that the migration added a value rather than
+      // recreating the type and renumbering the two that delivery rows already use.
+      { enum_name: "guide_delivery_unit_origin", enum_value: "generated_cover" },
       { enum_name: "guide_delivery_unit_status", enum_value: "pending" },
       { enum_name: "guide_delivery_unit_status", enum_value: "sending" },
       { enum_name: "guide_delivery_unit_status", enum_value: "sent" },

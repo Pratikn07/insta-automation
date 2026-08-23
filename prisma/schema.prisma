@@ -866,6 +866,9 @@ enum GuideDeliveryStatus {
 enum GuideDeliveryUnitOrigin {
   resource_step
   redelivery_intro
+  // Appended, never reordered: the database labels carry a sort order that existing
+  // guide_delivery_unit rows depend on.
+  generated_cover
 
   @@map("guide_delivery_unit_origin")
 }
