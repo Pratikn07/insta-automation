@@ -5,26 +5,30 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { apiErrorCode, apiMutation, apiRead } from "@/lib/api";
-import { isUnknownOutcome } from "@/lib/unknownOutcome";
+import { ApiError, apiErrorCode, apiMutation, apiRead } from "@/lib/api";
 import { useOperationId } from "@/lib/useOperationId";
 import {
   GUIDE_COVER_TEXT_RULES,
   validateGuideCoverDraft,
 } from "@shared/guideCoverPolicy";
 
-import { copyFromCategory, deriveGuideCoverEditorState } from "./guideCoverEditorState";
+import { copyFromCategory } from "./guideCoverEditorState";
+import {
+  copyMatches,
+  createInitialGuideCoverEditor,
+  type GuideCoverEditorModel,
+} from "./guideCoverDraftPersistence";
+import { lifecyclePendingLabel } from "./guideCoverLifecycle";
 import { GuideCoverPreview } from "./GuideCoverPreview.tsx";
 import { PresentationCategoryPicker } from "./PresentationCategoryPicker";
+import { useGuideCoverDraftPersistence } from "./useGuideCoverDraftPersistence";
+import { useGuideCoverLifecycle } from "./useGuideCoverLifecycle";
 import type {
   GuideCoverCopy,
-  GuideCoverDraftResponse,
   GuideCoverPreviewStatus,
   GuideCoverSuggestionResponse,
   PresentationCategory,
   PresentationCategoriesResponse,
-  ResourceCoverStatus,
-  ResourceCoverVersion,
   ResourcePresentationResponse,
 } from "./types";
 
@@ -33,51 +37,7 @@ export interface GuideCoverPanelProps {
   resourceName: string;
 }
 
-interface LocalEditor {
-  resourceId: string;
-  categoryId: string | null;
-  copy: GuideCoverCopy;
-  suggestionId: string | null;
-  coverId: string | null;
-  revision: number | null;
-  status: ResourceCoverStatus | "not_configured";
-  savedCategoryId: string | null;
-  savedCopy: GuideCoverCopy | null;
-}
-
-interface PendingPatch {
-  coverId: string;
-  expectedRevision: number;
-  intendedCopy: GuideCoverCopy;
-  previousCopy: GuideCoverCopy;
-}
-
-const EMPTY_COPY: GuideCoverCopy = {
-  headline: "",
-  supportingLine: "",
-  closingLine: "",
-  alternativeDescription: "",
-};
-
-function copyFromCover(cover: ResourceCoverVersion): GuideCoverCopy {
-  return {
-    headline: cover.headline,
-    supportingLine: cover.supportingLine,
-    closingLine: cover.closingLine,
-    alternativeDescription: cover.alternativeDescription,
-  };
-}
-
-function copyMatches(left: GuideCoverCopy, right: GuideCoverCopy): boolean {
-  return (
-    left.headline === right.headline &&
-    left.supportingLine === right.supportingLine &&
-    left.closingLine === right.closingLine &&
-    left.alternativeDescription === right.alternativeDescription
-  );
-}
-
-function statusLabel(status: LocalEditor["status"]): string {
+function statusLabel(status: GuideCoverEditorModel["status"]): string {
   switch (status) {
     case "not_configured":
       return "Not configured";
@@ -92,34 +52,12 @@ function statusLabel(status: LocalEditor["status"]): string {
   }
 }
 
-function initialEditor(
-  resourceId: string,
-  categories: PresentationCategory[],
-  presentation: ResourcePresentationResponse,
-): LocalEditor {
-  const derived = deriveGuideCoverEditorState(presentation, categories);
-  const selectedCategory =
-    derived.selectedCategory ??
-    categories.find((category) => category.designStatus === "ready") ??
-    categories[0] ??
-    null;
-  const workingCover = derived.workingCover;
-
-  return {
-    resourceId,
-    categoryId: selectedCategory?.id ?? null,
-    copy: workingCover
-      ? copyFromCover(workingCover)
-      : selectedCategory
-        ? copyFromCategory(selectedCategory)
-        : EMPTY_COPY,
-    suggestionId: workingCover?.suggestionId ?? null,
-    coverId: workingCover?.id ?? null,
-    revision: workingCover?.revision ?? null,
-    status: workingCover?.status ?? "not_configured",
-    savedCategoryId: workingCover?.categoryId ?? null,
-    savedCopy: workingCover ? copyFromCover(workingCover) : null,
-  };
+function isAuthoringDisabled(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    error.status === 403 &&
+    apiErrorCode(error) === "guide_cover_authoring_disabled"
+  );
 }
 
 export function GuideCoverPanel({ resourceId, resourceName }: GuideCoverPanelProps) {
@@ -136,8 +74,8 @@ export function GuideCoverPanel({ resourceId, resourceName }: GuideCoverPanelPro
     retry: false,
   });
   const disabled =
-    apiErrorCode(categoriesQuery.error) === "guide_cover_authoring_disabled" ||
-    apiErrorCode(presentationQuery.error) === "guide_cover_authoring_disabled";
+    isAuthoringDisabled(categoriesQuery.error) ||
+    isAuthoringDisabled(presentationQuery.error);
   const readFailed =
     (categoriesQuery.isError && !categoriesQuery.data) ||
     (presentationQuery.isError && !presentationQuery.data);
@@ -207,24 +145,16 @@ function GuideCoverEditor({
   presentation,
   refetchPresentation,
 }: GuideCoverEditorProps) {
-  const [editor, setEditor] = useState<LocalEditor>(() =>
-    initialEditor(resourceId, categories, presentation),
+  const [editor, setEditor] = useState<GuideCoverEditorModel>(() =>
+    createInitialGuideCoverEditor(resourceId, categories, presentation),
   );
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [hasConflict, setHasConflict] = useState(false);
-  const [pendingPatch, setPendingPatch] = useState<PendingPatch | null>(null);
-  const [isReconciling, setIsReconciling] = useState(false);
   const [isSuggesting, setIsSuggesting] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
   const [previewStatus, setPreviewStatus] = useState<GuideCoverPreviewStatus>("loading");
-  const [lifecycleStage, setLifecycleStage] = useState<"approving" | "publishing" | null>(
-    null,
-  );
-  const [publicationFailed, setPublicationFailed] = useState(false);
   const { operationId: suggestionOperationId, renew: renewSuggestionOperationId } =
     useOperationId();
-  const { operationId: createOperationId, renew: renewCreateOperationId } = useOperationId();
 
   const selectedCategory =
     categories.find((category) => category.id === editor.categoryId) ?? null;
@@ -233,25 +163,34 @@ function GuideCoverEditor({
     !editor.savedCopy ||
     editor.categoryId !== editor.savedCategoryId ||
     !copyMatches(editor.copy, editor.savedCopy);
-  const isLifecycleBusy = lifecycleStage !== null;
-  const editorBusy = isSuggesting || isSaving || isReconciling || isLifecycleBusy;
-  const canSuggest = !editorBusy && !pendingPatch;
-  const canSave = Boolean(
+  const savePrerequisitesMet = Boolean(
     selectedCategory?.designStatus === "ready" &&
       copyIsValid &&
-      isDirty &&
-      !isSuggesting &&
-      !isSaving &&
-      !pendingPatch &&
-      !isReconciling &&
-      !isLifecycleBusy,
+      isDirty,
   );
+  const {
+    isReconciling,
+    isSaving,
+    pendingCreate,
+    pendingPatch,
+    reconcilePatch,
+    saveDraft,
+  } = useGuideCoverDraftPersistence({
+    resourceId,
+    editor,
+    savePrerequisitesMet,
+    setEditor,
+    setError,
+    setNotice,
+    setHasConflict,
+    refetchPresentation,
+  });
   const hasSavedDraft = Boolean(
     editor.coverId &&
       editor.revision &&
       (editor.status === "draft" || editor.status === "approved"),
   );
-  const canPublish = Boolean(
+  const lifecyclePrerequisitesMet = Boolean(
     hasSavedDraft &&
       !isDirty &&
       selectedCategory?.designStatus === "ready" &&
@@ -261,8 +200,38 @@ function GuideCoverEditor({
       !isSuggesting &&
       !isSaving &&
       !isReconciling &&
-      !isLifecycleBusy,
+      !pendingCreate,
   );
+  const {
+    approveAndPublish,
+    checkLifecycleStatus,
+    isCheckingLifecycle,
+    lifecycleStage,
+    pendingLifecycle,
+    publicationFailed,
+  } = useGuideCoverLifecycle({
+    resourceId,
+    editor,
+    canStartLifecycle: lifecyclePrerequisitesMet,
+    setEditor,
+    setError,
+    setNotice,
+    refetchPresentation,
+  });
+  const isLifecycleBusy = lifecycleStage !== null || isCheckingLifecycle;
+  const editorBusy = isSuggesting || isSaving || isReconciling || isLifecycleBusy;
+  const canSuggest = !editorBusy && !pendingPatch && !pendingLifecycle;
+  const canSave = Boolean(
+    (pendingCreate || savePrerequisitesMet) &&
+      !isSuggesting &&
+      !isSaving &&
+      !pendingPatch &&
+      !isReconciling &&
+      !isLifecycleBusy &&
+      !pendingLifecycle,
+  );
+  const canPublish =
+    lifecyclePrerequisitesMet && !isLifecycleBusy && !pendingLifecycle;
 
   const activeEditor = editor;
 
@@ -272,78 +241,6 @@ function GuideCoverEditor({
     );
     setError(null);
     setNotice(null);
-  }
-
-  function moveToConflict(message: string) {
-    setEditor((current) =>
-      current
-        ? {
-            ...current,
-            coverId: null,
-            revision: null,
-            savedCategoryId: null,
-            savedCopy: null,
-            status: "not_configured",
-          }
-        : current,
-    );
-    setPendingPatch(null);
-    setHasConflict(true);
-    setNotice(null);
-    setError(message);
-  }
-
-  async function reconcilePatch(attempt: PendingPatch) {
-    setIsReconciling(true);
-    try {
-      const result = await refetchPresentation();
-      if (result.isError || !result.data) {
-        setPendingPatch(attempt);
-        setError(
-          "Still confirming whether the draft save went through. Check save status before retrying.",
-        );
-        return;
-      }
-
-      const canonical = result.data.coverVersions.find(
-        (candidate) => candidate.id === attempt.coverId,
-      );
-      if (canonical && copyMatches(copyFromCover(canonical), attempt.intendedCopy)) {
-        setEditor((current) =>
-          current
-            ? {
-                ...current,
-                coverId: canonical.id,
-                revision: canonical.revision,
-                status: canonical.status,
-                savedCategoryId: canonical.categoryId,
-                savedCopy: copyFromCover(canonical),
-              }
-            : current,
-        );
-        setPendingPatch(null);
-        setHasConflict(false);
-        setError(null);
-        setNotice("Draft saved");
-        return;
-      }
-
-      if (
-        canonical &&
-        canonical.revision === attempt.expectedRevision &&
-        copyMatches(copyFromCover(canonical), attempt.previousCopy)
-      ) {
-        setPendingPatch(null);
-        setError("The server draft is unchanged. It is safe to retry this save.");
-        return;
-      }
-
-      moveToConflict(
-        "A newer version exists. Your local copy is preserved; save it as a new draft.",
-      );
-    } finally {
-      setIsReconciling(false);
-    }
   }
 
   async function suggest() {
@@ -394,185 +291,6 @@ function GuideCoverEditor({
     }
   }
 
-  async function saveDraft() {
-    if (!canSave || !selectedCategory) return;
-    setError(null);
-    setNotice(null);
-    setIsSaving(true);
-    const existingCoverId =
-      activeEditor.status === "draft" && activeEditor.coverId && activeEditor.revision
-        ? activeEditor.coverId
-        : null;
-    const expectedRevision = existingCoverId ? activeEditor.revision : null;
-    const isExistingDraft = existingCoverId !== null && expectedRevision !== null;
-    const attempt: PendingPatch | null = isExistingDraft
-      ? {
-          coverId: existingCoverId,
-          expectedRevision,
-          intendedCopy: { ...activeEditor.copy },
-          previousCopy: { ...(activeEditor.savedCopy ?? activeEditor.copy) },
-        }
-      : null;
-    try {
-      const response = isExistingDraft
-        ? await apiMutation<GuideCoverDraftResponse>(
-            `/resources/${resourceId}/cover-versions/${existingCoverId}`,
-            {
-              method: "PATCH",
-              body: JSON.stringify({
-                expectedRevision,
-                copy: activeEditor.copy,
-              }),
-            },
-          )
-        : await apiMutation<GuideCoverDraftResponse>(`/resources/${resourceId}/cover-versions`, {
-            method: "POST",
-            operationId: createOperationId,
-            body: JSON.stringify({
-              id: createOperationId,
-              categoryId: selectedCategory.id,
-              suggestionId: activeEditor.suggestionId,
-              copy: activeEditor.copy,
-            }),
-          });
-      setEditor((current) =>
-        current
-          ? {
-              ...current,
-              categoryId: response.cover.categoryId,
-              copy: copyFromCover(response.cover),
-              suggestionId: response.cover.suggestionId,
-              coverId: response.cover.id,
-              revision: response.cover.revision,
-              status: "draft",
-              savedCategoryId: response.cover.categoryId,
-              savedCopy: copyFromCover(response.cover),
-            }
-          : current,
-      );
-      if (!isExistingDraft) renewCreateOperationId();
-      setPendingPatch(null);
-      setHasConflict(false);
-      setNotice("Draft saved");
-      void refetchPresentation();
-    } catch (saveError) {
-      if (apiErrorCode(saveError) === "cover_revision_conflict") {
-        await refetchPresentation();
-        moveToConflict(
-          "A newer version exists. Your local copy is preserved; save it as a new draft.",
-        );
-      } else if (attempt && isUnknownOutcome(saveError)) {
-        setPendingPatch(attempt);
-        await reconcilePatch(attempt);
-      } else {
-        setError("Could not save the cover draft. Your local copy is still here.");
-      }
-    } finally {
-      setIsSaving(false);
-    }
-  }
-
-  async function approveAndPublish() {
-    if (!canPublish || !activeEditor.coverId || !activeEditor.revision) return;
-    const coverId = activeEditor.coverId;
-    const expectedRevision = activeEditor.revision;
-    let approved = activeEditor.status === "approved";
-
-    setError(null);
-    setNotice(null);
-    setPublicationFailed(false);
-    if (!approved) {
-      setLifecycleStage("approving");
-      try {
-        await apiMutation(`/resources/${resourceId}/cover-versions/${coverId}/approve`, {
-          method: "POST",
-          body: JSON.stringify({ expectedRevision }),
-        });
-        approved = true;
-        setEditor((current) => (current ? { ...current, status: "approved" } : current));
-      } catch (approvalError) {
-        if (!isUnknownOutcome(approvalError)) {
-          setError("Could not approve this cover. The previous published cover is unchanged.");
-          setLifecycleStage(null);
-          return;
-        }
-
-        const result = await refetchPresentation();
-        const canonical = result.isError
-          ? null
-          : result.data?.coverVersions.find(
-              (candidate) =>
-                candidate.id === coverId && candidate.revision === expectedRevision,
-            ) ?? null;
-        if (canonical?.status === "published") {
-          setEditor((current) => (current ? { ...current, status: "published" } : current));
-          setNotice("Cover published");
-          setLifecycleStage(null);
-          return;
-        }
-        if (canonical?.status !== "approved") {
-          setError(
-            canonical?.status === "draft"
-              ? "Approval did not complete. The saved draft is unchanged and can be retried."
-              : "Still confirming whether approval went through. Nothing has been retried.",
-          );
-          setLifecycleStage(null);
-          return;
-        }
-
-        approved = true;
-        setEditor((current) => (current ? { ...current, status: "approved" } : current));
-      }
-    }
-
-    if (!approved) return;
-    setLifecycleStage("publishing");
-    try {
-      await apiMutation(`/resources/${resourceId}/cover-versions/${coverId}/publish`, {
-        method: "POST",
-        body: JSON.stringify({ expectedRevision }),
-      });
-      setEditor((current) => (current ? { ...current, status: "published" } : current));
-      setPublicationFailed(false);
-      setNotice("Cover published");
-      void refetchPresentation();
-    } catch (publishError) {
-      setEditor((current) => (current ? { ...current, status: "approved" } : current));
-      setPublicationFailed(true);
-
-      if (isUnknownOutcome(publishError)) {
-        const result = await refetchPresentation();
-        const canonical = result.isError
-          ? null
-          : result.data?.coverVersions.find(
-              (candidate) =>
-                candidate.id === coverId && candidate.revision === expectedRevision,
-            ) ?? null;
-        if (canonical?.status === "published") {
-          setEditor((current) => (current ? { ...current, status: "published" } : current));
-          setPublicationFailed(false);
-          setError(null);
-          setNotice("Cover published");
-        } else if (canonical?.status === "approved") {
-          setError(
-            "Cover is Approved, and the canonical check shows publication did not complete. The previous published cover is unchanged; retry publication when ready.",
-          );
-        } else {
-          setError(
-            "Cover is Approved, but publication is still being confirmed. Retrying will reconcile this same cover revision.",
-          );
-        }
-      } else {
-        setPublicationFailed(true);
-        setError(
-          "Cover is Approved, but publication failed. The previous published cover is unchanged; retry publication when ready.",
-        );
-      }
-    } finally {
-      setLifecycleStage(null);
-    }
-  }
-
   return (
     <section
       aria-label="Presentation and cover"
@@ -589,9 +307,11 @@ function GuideCoverEditor({
         <p role="status" className="rounded-full border px-2.5 py-1 text-xs font-medium">
           {hasConflict
             ? "Needs attention"
-            : isLifecycleBusy
-              ? "Publishing"
-              : statusLabel(activeEditor.status)}
+            : pendingLifecycle
+              ? lifecyclePendingLabel(pendingLifecycle)
+              : isLifecycleBusy
+                ? "Publishing"
+                : statusLabel(activeEditor.status)}
         </p>
       </div>
 
@@ -709,9 +429,11 @@ function GuideCoverEditor({
         <Button type="button" disabled={!canSave} onClick={() => void saveDraft()}>
           {isSaving
             ? "Saving cover draft…"
-            : hasConflict
-              ? "Save as new draft"
-              : "Save cover draft"}
+            : pendingCreate
+              ? "Retry draft creation"
+              : hasConflict
+                ? "Save as new draft"
+                : "Save cover draft"}
         </Button>
         <Button
           type="button"
@@ -737,6 +459,20 @@ function GuideCoverEditor({
             onClick={() => void reconcilePatch(pendingPatch)}
           >
             {isReconciling ? "Checking save status…" : "Check save status"}
+          </Button>
+        )}
+        {pendingLifecycle && (
+          <Button
+            type="button"
+            variant="outline"
+            disabled={isCheckingLifecycle || isLifecycleBusy}
+            onClick={() => void checkLifecycleStatus()}
+          >
+            {isCheckingLifecycle
+              ? `Checking ${pendingLifecycle.stage} status…`
+              : pendingLifecycle.stage === "approval"
+                ? "Check approval status"
+                : "Check publication status"}
           </Button>
         )}
       </div>
@@ -765,12 +501,13 @@ function CoverField({
   const inputProps = {
     id,
     value,
-    maxLength: maximum,
     required: true,
     disabled,
     "aria-describedby": countId,
-    onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
-      onChange(event.target.value),
+    onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+      const nextValue = event.target.value;
+      if ([...nextValue].length <= maximum) onChange(nextValue);
+    },
   };
 
   return (

@@ -37,6 +37,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
 
 const RESOURCE_ID = "resource-1";
 const CATEGORY_ID = "10000000-0000-4000-8000-000000000001";
+const SECOND_CATEGORY_ID = "10000000-0000-4000-8000-000000000002";
 const COVER_ID = "30000000-0000-4000-8000-000000000001";
 const SUGGESTION_ID = "40000000-0000-4000-8000-000000000001";
 
@@ -56,6 +57,17 @@ const category: PresentationCategory = {
   updatedBy: "creator@tinysoho.com",
   createdAt: "2026-08-22T12:00:00.000Z",
   updatedAt: "2026-08-22T12:00:00.000Z",
+};
+
+const secondCategory: PresentationCategory = {
+  ...category,
+  id: SECOND_CATEGORY_ID,
+  slug: "big-feelings",
+  name: "Big Feelings",
+  collectionLabel: "FEELINGS",
+  defaultKicker: "A TINY WIN FOR RIGHT NOW",
+  nextEditionNumber: 7,
+  sortOrder: 2,
 };
 
 const defaultCopy = {
@@ -121,10 +133,13 @@ function presentationWithCover(
   });
 }
 
-function installSuccessfulReads(response = presentation()) {
+function installSuccessfulReads(
+  response = presentation(),
+  categories: PresentationCategory[] = [category],
+) {
   apiRead.mockImplementation((path: string) => {
     if (path === "/presentation-categories") {
-      return Promise.resolve({ categories: [category] });
+      return Promise.resolve({ categories });
     }
     if (path === `/resources/${RESOURCE_ID}/presentation`) {
       return Promise.resolve(response);
@@ -249,6 +264,27 @@ describe("GuideCoverPanel reads and local editing", () => {
     expect(categoryAttempts).toBe(2);
   });
 
+  it("shows retry when a non-403 response reuses the disabled error code", async () => {
+    apiRead.mockImplementation((path: string) =>
+      path === "/presentation-categories"
+        ? Promise.reject(
+            new ApiError(
+              500,
+              { error: "guide_cover_authoring_disabled" },
+              "misleading upstream response",
+            ),
+          )
+        : Promise.resolve(presentation()),
+    );
+
+    renderPanel();
+
+    expect(
+      await screen.findByRole("button", { name: "Retry cover editor" }),
+    ).toBeVisible();
+    expect(screen.getByRole("region", { name: "Presentation and cover" })).toBeVisible();
+  });
+
   it("applies a suggestion only to editable local category and copy", async () => {
     installSuccessfulReads();
     apiMutation.mockResolvedValue({
@@ -326,6 +362,23 @@ describe("GuideCoverPanel reads and local editing", () => {
     expect(body.copy.headline).toBe("My local headline");
     expect(await screen.findByText("Draft")).toBeVisible();
   });
+
+  it("enforces cover limits by Unicode code point at an emoji boundary", async () => {
+    installSuccessfulReads();
+    const user = userEvent.setup();
+    const validHeadline = `${"a".repeat(55)}😀`;
+
+    renderPanel();
+    const headline = await screen.findByLabelText("Cover headline");
+    await user.clear(headline);
+    await user.type(headline, validHeadline);
+
+    expect(headline).toHaveValue(validHeadline);
+    expect(screen.getByText("56 / 56")).toBeVisible();
+
+    await user.type(headline, "b");
+    expect(headline).toHaveValue(validHeadline);
+  });
 });
 
 describe("GuideCoverPanel draft persistence and recovery", () => {
@@ -383,6 +436,45 @@ describe("GuideCoverPanel draft persistence and recovery", () => {
     });
   });
 
+  it("creates a new UUID-owned draft when the category of an existing draft changes", async () => {
+    installSuccessfulReads(presentationWithCover(), [category, secondCategory]);
+    apiMutation.mockResolvedValue({
+      cover: cover({
+        id: "30000000-0000-4000-8000-000000000002",
+        categoryId: SECOND_CATEGORY_ID,
+        headline: "Keep my local copy",
+      }),
+      replayed: false,
+    });
+    const user = userEvent.setup();
+
+    renderPanel();
+    await user.click(await screen.findByText("Big Feelings"));
+    const headline = screen.getByLabelText("Cover headline");
+    await user.clear(headline);
+    await user.type(headline, "Keep my local copy");
+    await user.click(screen.getByRole("button", { name: "Save cover draft" }));
+
+    await waitFor(() => expect(apiMutation).toHaveBeenCalledTimes(1));
+    const [path, request] = apiMutation.mock.calls[0] as [
+      string,
+      { method: string; operationId?: string; body: string },
+    ];
+    expect(path).toBe(`/resources/${RESOURCE_ID}/cover-versions`);
+    expect(request.method).toBe("POST");
+    expect(JSON.parse(request.body)).toMatchObject({
+      id: request.operationId,
+      categoryId: SECOND_CATEGORY_ID,
+      copy: { headline: "Keep my local copy" },
+    });
+    expect(
+      apiMutation.mock.calls.some(([calledPath, options]) =>
+        calledPath === `/resources/${RESOURCE_ID}/cover-versions/${COVER_ID}` &&
+        options.method === "PATCH",
+      ),
+    ).toBe(false);
+  });
+
   it("replays an uncertain create with the same client-owned UUID", async () => {
     installSuccessfulReads();
     apiMutation
@@ -395,7 +487,7 @@ describe("GuideCoverPanel draft persistence and recovery", () => {
     renderPanel();
     await user.click(await screen.findByRole("button", { name: "Save cover draft" }));
     await screen.findByRole("alert");
-    await user.click(screen.getByRole("button", { name: "Save cover draft" }));
+    await user.click(screen.getByRole("button", { name: "Retry draft creation" }));
     await waitFor(() => expect(apiMutation).toHaveBeenCalledTimes(2));
 
     const first = apiMutation.mock.calls[0]?.[1] as { body: string; operationId: string };
@@ -403,6 +495,33 @@ describe("GuideCoverPanel draft persistence and recovery", () => {
     expect(retry.operationId).toBe(first.operationId);
     expect(JSON.parse(first.body).id).toBe(first.operationId);
     expect(JSON.parse(retry.body).id).toBe(first.operationId);
+  });
+
+  it("replays the exact uncertain create intent while preserving later local edits", async () => {
+    installSuccessfulReads();
+    apiMutation
+      .mockRejectedValueOnce(
+        new MutationOutcomeUnknownError(`/resources/${RESOURCE_ID}/cover-versions`, undefined),
+      )
+      .mockResolvedValueOnce({ cover: cover(), replayed: true });
+    const user = userEvent.setup();
+
+    renderPanel();
+    await user.click(await screen.findByRole("button", { name: "Save cover draft" }));
+    await screen.findByRole("alert");
+
+    const headline = screen.getByLabelText("Cover headline");
+    await user.clear(headline);
+    await user.type(headline, "A newer local edit");
+    await user.click(screen.getByRole("button", { name: "Retry draft creation" }));
+    await waitFor(() => expect(apiMutation).toHaveBeenCalledTimes(2));
+
+    const first = apiMutation.mock.calls[0]?.[1] as { body: string; operationId: string };
+    const retry = apiMutation.mock.calls[1]?.[1] as { body: string; operationId: string };
+    expect(retry.operationId).toBe(first.operationId);
+    expect(JSON.parse(retry.body)).toEqual(JSON.parse(first.body));
+    expect(screen.getByLabelText("Cover headline")).toHaveValue("A newer local edit");
+    expect(screen.getByRole("button", { name: "Save cover draft" })).toBeEnabled();
   });
 
   it("treats an unknown PATCH as saved when canonical state matches the intended copy", async () => {
@@ -699,6 +818,42 @@ describe("GuideCoverPanel approval and publication", () => {
     expect(presentationReads).toBeGreaterThanOrEqual(2);
   });
 
+  it("keeps an unknown approval pending and only re-GETs while reconciliation fails", async () => {
+    let presentationReads = 0;
+    apiRead.mockImplementation((path: string) => {
+      if (path === "/presentation-categories") {
+        return Promise.resolve({ categories: [category] });
+      }
+      if (path === `/resources/${RESOURCE_ID}/presentation`) {
+        presentationReads += 1;
+        return presentationReads === 1
+          ? Promise.resolve(presentationWithCover())
+          : Promise.reject(new Error("canonical read failed"));
+      }
+      throw new Error(`Unexpected read: ${path}`);
+    });
+    apiMutation.mockRejectedValueOnce(
+      new MutationOutcomeUnknownError(
+        `/resources/${RESOURCE_ID}/cover-versions/${COVER_ID}/approve`,
+        undefined,
+      ),
+    );
+    const user = userEvent.setup();
+
+    renderPanel();
+    const publish = await screen.findByRole("button", { name: "Approve and publish" });
+    await waitFor(() => expect(publish).toBeEnabled());
+    await user.click(publish);
+
+    expect(await screen.findByText("Confirming approval")).toBeVisible();
+    expect(screen.getByRole("alert")).toHaveTextContent(/approval.*still being confirmed/i);
+    await user.click(screen.getByRole("button", { name: "Check approval status" }));
+
+    await waitFor(() => expect(presentationReads).toBe(3));
+    expect(apiMutation).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Confirming approval")).toBeVisible();
+  });
+
   it("shows Approved after an unknown publish is canonically still approved", async () => {
     let presentationReads = 0;
     apiRead.mockImplementation((path: string) => {
@@ -770,6 +925,44 @@ describe("GuideCoverPanel approval and publication", () => {
     expect(await screen.findByText("Published")).toBeVisible();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(presentationReads).toBe(2);
+  });
+
+  it("keeps an unknown publication pending and only re-GETs while reconciliation fails", async () => {
+    let presentationReads = 0;
+    apiRead.mockImplementation((path: string) => {
+      if (path === "/presentation-categories") {
+        return Promise.resolve({ categories: [category] });
+      }
+      if (path === `/resources/${RESOURCE_ID}/presentation`) {
+        presentationReads += 1;
+        return presentationReads === 1
+          ? Promise.resolve(presentationWithCover())
+          : Promise.reject(new Error("canonical read failed"));
+      }
+      throw new Error(`Unexpected read: ${path}`);
+    });
+    apiMutation
+      .mockResolvedValueOnce({ ok: true, outcome: "approved" })
+      .mockRejectedValueOnce(
+        new MutationOutcomeUnknownError(
+          `/resources/${RESOURCE_ID}/cover-versions/${COVER_ID}/publish`,
+          undefined,
+        ),
+      );
+    const user = userEvent.setup();
+
+    renderPanel();
+    const publish = await screen.findByRole("button", { name: "Approve and publish" });
+    await waitFor(() => expect(publish).toBeEnabled());
+    await user.click(publish);
+
+    expect(await screen.findByText("Confirming publication")).toBeVisible();
+    expect(screen.getByRole("alert")).toHaveTextContent(/publication.*still being confirmed/i);
+    await user.click(screen.getByRole("button", { name: "Check publication status" }));
+
+    await waitFor(() => expect(presentationReads).toBe(3));
+    expect(apiMutation).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("Confirming publication")).toBeVisible();
   });
 
   it("disables publication until a saved draft has no local edits", async () => {
