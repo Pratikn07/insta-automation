@@ -7,6 +7,7 @@ import { sendMetaMessage } from "./sendMessage.js";
 import {
   guideAccessCopy,
   guideAccessOpening,
+  guideAccessOpeningText,
   guideAccessWaitingTitle,
 } from "../services/guideAccessCopy.js";
 import type { MetaSendResult } from "../types/meta.js";
@@ -52,10 +53,12 @@ export async function sendGuideInitialPrivateReply(input: {
   capabilities?: GuideActionCapabilities;
 }): Promise<MetaSendResult> {
   const capabilities = input.capabilities ?? TEXT_ONLY_CAPABILITIES;
-  const text = guideAccessOpening(input.guideName);
 
   // Decide before sending. Never retry text after an attempted rich private reply.
   if (!capabilities.privateQuickReply) {
+    // The text variant asks for a reply instead of naming a control, so it is a
+    // different length. Measure the copy that is actually sent.
+    const text = guideAccessOpeningText(input.guideName);
     return sendCapabilityPayload(
       buildGuideGateCapabilityPayload({
         case: "private_text",
@@ -66,6 +69,7 @@ export async function sendGuideInitialPrivateReply(input: {
     );
   }
 
+  const text = guideAccessOpening(input.guideName);
   return sendCapabilityPayload(
     buildGuideGateCapabilityPayload({
       case: "private_quick_reply",
@@ -100,7 +104,7 @@ export async function sendGuideFollowerGate(input: {
     );
   }
 
-  const text = `${guideAccessWaitingTitle(input.guideName)}\n\n${guideAccessCopy.nonFollowerGate}\n\nVisit profile: ${GUIDE_PROFILE_URL}`;
+  const text = `${guideAccessWaitingTitle(input.guideName)}\n\n${guideAccessCopy.nonFollowerGateText}\n\nVisit profile: ${GUIDE_PROFILE_URL}`;
   return sendMetaMessage(
     {
       recipient: { id: input.recipientId },
@@ -118,7 +122,9 @@ export async function sendGuideFollowLag(input: {
 }): Promise<MetaSendResult> {
   const capabilities = input.capabilities ?? TEXT_ONLY_CAPABILITIES;
   const actionToken = requiredOpaqueActionToken(input.actionToken);
-  const text = guideAccessCopy.followLag;
+  const text = capabilities.dmQuickReply
+    ? guideAccessCopy.followLag
+    : guideAccessCopy.followLagText;
 
   if (capabilities.dmQuickReply) {
     return sendCapabilityPayload(

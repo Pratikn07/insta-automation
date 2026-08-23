@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   guideAccessCopy,
   guideAccessOpening,
+  guideAccessOpeningText,
   guideAccessWaitingTitle,
 } from "../services/guideAccessCopy.js";
 
@@ -147,7 +148,8 @@ export function buildGuideGateCapabilityPayload(
 
   switch (input.case) {
     case "private_text": {
-      const text = guideAccessOpening(input.guideName);
+      // No control accompanies this message, so the copy must not name one.
+      const text = guideAccessOpeningText(input.guideName);
       return {
         recipient: { comment_id: input.commentId },
         message: { text },

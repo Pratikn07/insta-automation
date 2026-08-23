@@ -13,6 +13,8 @@ const COVER_URL = "https://cdn.example.com/guide-cover/sleep/dm.png";
 const GUIDE_NAME = "toddler sleep guide";
 const OPENING =
   "Got it 💛 I've got the toddler sleep guide you asked for. Want me to send it here?";
+// The text-only case carries no control, so it asks for the short reply instead.
+const OPENING_TEXT = `${OPENING} Reply YES and I'll send it over.`;
 
 describe("guide gate capability payloads", () => {
   it("builds the text-only private reply baseline", () => {
@@ -24,7 +26,7 @@ describe("guide gate capability payloads", () => {
       }),
     ).toEqual({
       recipient: { comment_id: COMMENT_ID },
-      message: { text: OPENING },
+      message: { text: OPENING_TEXT },
     });
   });
 

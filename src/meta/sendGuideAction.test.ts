@@ -19,6 +19,8 @@ const ACTION_PAYLOAD = `ts:guide:${ACTION_TOKEN}`;
 const COVER_URL = "https://cdn.example.com/guide-cover/sleep/dm.png";
 const OPENING =
   "Got it 💛 I've got the toddler sleep guide you asked for. Want me to send it here?";
+// Text mode carries no control, so it asks for the short reply instead.
+const OPENING_TEXT = `${OPENING} Reply YES and I'll send it over.`;
 
 beforeEach(() => {
   sendMetaMessage.mockReset().mockResolvedValue({ messageId: "mid-1" });
@@ -34,8 +36,8 @@ describe("sendGuideInitialPrivateReply", () => {
 
     expect(sendMetaMessage).toHaveBeenCalledOnce();
     expect(sendMetaMessage).toHaveBeenCalledWith(
-      { recipient: { comment_id: COMMENT_ID }, message: { text: OPENING } },
-      { commentId: COMMENT_ID, mode: "private_text", messageLength: OPENING.length },
+      { recipient: { comment_id: COMMENT_ID }, message: { text: OPENING_TEXT } },
+      { commentId: COMMENT_ID, mode: "private_text", messageLength: OPENING_TEXT.length },
     );
   });
 
@@ -119,7 +121,7 @@ describe("sendGuideFollowerGate", () => {
 
     const text =
       "Your toddler sleep guide is waiting ✨\n\n" +
-      "Follow @tinysoho for more ideas like this, then tap I'm following and I'll send it over.\n\n" +
+      "Follow @tinysoho for more ideas like this, then reply YES and I'll send it over.\n\n" +
       "Visit profile: https://www.instagram.com/tinysoho/";
     expect(sendMetaMessage).toHaveBeenCalledOnce();
     expect(sendMetaMessage).toHaveBeenCalledWith(
@@ -132,7 +134,7 @@ describe("sendGuideFollowerGate", () => {
 describe("sendGuideFollowLag", () => {
   it("keeps the replacement token at the sender boundary while capability is text-only", async () => {
     const text =
-      "Almost there 💛 Instagram may take a moment to update. Check that you're following @tinysoho, wait a little, then tap I'm following once more.";
+      "Almost there 💛 Instagram may take a moment to update. Check that you're following @tinysoho, wait a little, then reply YES once more.";
 
     await sendGuideFollowLag({
       recipientId: RECIPIENT_ID,
@@ -183,5 +185,73 @@ describe("sendGuideFollowLag", () => {
           "Almost there 💛 Instagram may take a moment to update. Check that you're following @tinysoho, wait a little, then tap I'm following once more.".length,
       },
     );
+  });
+});
+
+// Fix round 3. Text mode is the ONLY mode available while every capability row is
+// `not_verified`, yet all three text branches told the parent to "tap" a control
+// that does not exist there, and the opening never asked for the short `YES` the
+// spec's fallback requires ("send the same copy as text. The fallback asks for a
+// short YES ... DONE is not required"). Rich copy is unchanged.
+describe("text-mode copy references no controls", () => {
+  const REPLY_ASK = /reply YES/i;
+
+  async function sentText(): Promise<string> {
+    const [payload] = sendMetaMessage.mock.calls[0]!;
+    return (payload as { message: { text: string } }).message.text;
+  }
+
+  it("the text opening asks for a short YES and mentions no tap", async () => {
+    await sendGuideInitialPrivateReply({
+      commentId: COMMENT_ID,
+      guideName: "toddler sleep guide",
+      actionToken: ACTION_TOKEN,
+    });
+
+    const text = await sentText();
+    expect(text).toMatch(REPLY_ASK);
+    expect(text).not.toMatch(/\btap\b/i);
+    // Still the same opening copy, per the spec's "send the same copy as text".
+    expect(text).toContain("I've got the toddler sleep guide you asked for");
+  });
+
+  it("the text follower gate asks for a reply and mentions no tap", async () => {
+    await sendGuideFollowerGate({
+      recipientId: RECIPIENT_ID,
+      guideName: "toddler sleep guide",
+      coverUrl: COVER_URL,
+      actionToken: ACTION_TOKEN,
+    });
+
+    const text = await sentText();
+    expect(text).toMatch(REPLY_ASK);
+    expect(text).not.toMatch(/\btap\b/i);
+    expect(text).toContain("Follow @tinysoho");
+    expect(text).toContain(GUIDE_PROFILE_URL);
+  });
+
+  it("the text follow-lag response asks for a reply and mentions no tap", async () => {
+    await sendGuideFollowLag({
+      recipientId: RECIPIENT_ID,
+      actionToken: ACTION_TOKEN,
+    });
+
+    const text = await sentText();
+    expect(text).toMatch(REPLY_ASK);
+    expect(text).not.toMatch(/\btap\b/i);
+    expect(text).toContain("Instagram may take a moment to update");
+  });
+
+  it("keeps the button wording when the rich control is actually proven", async () => {
+    await sendGuideInitialPrivateReply({
+      commentId: COMMENT_ID,
+      guideName: "toddler sleep guide",
+      actionToken: ACTION_TOKEN,
+      capabilities: { privateQuickReply: true, dmGenericGate: false },
+    });
+
+    const text = await sentText();
+    expect(text).not.toMatch(REPLY_ASK);
+    expect(text).toBe(OPENING);
   });
 });
