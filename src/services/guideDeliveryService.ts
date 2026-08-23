@@ -1,6 +1,7 @@
 import type { DmMessageSource } from "@prisma/client";
 import { env } from "../config/env.js";
 import { publicMediaUrl } from "../lib/supabase.js";
+import { guideCoverDeliverySelector } from "./guideCoverDeliveryRollout.js";
 import { logger } from "../lib/logger.js";
 import { prisma } from "../lib/prisma.js";
 import type { MetaSendResult } from "../types/meta.js";
@@ -107,6 +108,12 @@ type GuideDeliveryServiceDependencies = {
   ): Promise<"completed" | "already_completed" | "not_ready" | "lost_claim">;
   /** Resolves an immutable storage path to a public URL. No network work. */
   coverMediaUrl(path: string): string;
+  /**
+   * Whether this delivery may include its cover. Consulted once, before the plan is
+   * compiled. It governs cover inclusion ONLY — never follower authorization, and never
+   * which service owns the guide send.
+   */
+  coverDecision(input: { resourceId: string; triggerId: string }): "include" | "omit";
   /** Operator-visible record that a snapshotted cover did not match its guide. */
   recordCoverMismatch(input: {
     deliveryResourceId: string;
@@ -464,6 +471,16 @@ export function createGuideDeliveryService(dependencies: GuideDeliveryServiceDep
     // Short-circuit before resolving a URL nobody will use. The planner keeps its own
     // already-shown guard for callers that reach it directly.
     if (input.coverAlreadyShown === true) return undefined;
+    // The rollout fence. Off or unselected means the guide still goes out, exactly as it
+    // did before covers existed — only the image is withheld.
+    if (
+      dependencies.coverDecision({
+        resourceId: input.resourceId,
+        triggerId: input.triggerId,
+      }) !== "include"
+    ) {
+      return undefined;
+    }
     if (snapshot.resourceId !== input.resourceId) {
       dependencies.logger.warn(
         {
@@ -586,6 +603,7 @@ const defaultService = createGuideDeliveryService({
   sendMedia: sendTrackedMedia,
   finalizeGuideDelivery,
   coverMediaUrl: publicMediaUrl,
+  coverDecision: (decision) => guideCoverDeliverySelector.decide(decision),
   recordCoverMismatch: (details) => logEvent("guide_cover_resource_mismatch", details),
   sleep,
   now: () => new Date(),

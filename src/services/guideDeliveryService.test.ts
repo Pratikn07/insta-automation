@@ -312,6 +312,7 @@ function harness(options: HarnessOptions = {}) {
   const logger = { error: vi.fn(), warn: vi.fn() };
   const coverMediaUrl = vi.fn((path: string) => `https://cdn.example.test/${path}`);
   const recordCoverMismatch = vi.fn(async () => undefined);
+  const coverDecision = vi.fn(() => "include" as "include" | "omit");
 
   function service() {
     return createGuideDeliveryService({
@@ -321,6 +322,7 @@ function harness(options: HarnessOptions = {}) {
       sendMedia,
       finalizeGuideDelivery,
       coverMediaUrl,
+      coverDecision,
       recordCoverMismatch,
       sleep,
       now: () => now,
@@ -339,6 +341,7 @@ function harness(options: HarnessOptions = {}) {
     sendMedia,
     finalizeGuideDelivery,
     coverMediaUrl,
+    coverDecision,
     recordCoverMismatch,
     sleep,
     logger,
@@ -795,5 +798,53 @@ describe("generated cover in the durable plan", () => {
     expect(test.sendMedia).not.toHaveBeenCalled();
     expect(test.sendText).not.toHaveBeenCalled();
     expect(test.repository.claimById).not.toHaveBeenCalled();
+  });
+});
+
+// Parent-delivery Task 6. The rollout fence sits at one call site, before the plan is
+// compiled. It governs cover inclusion ONLY.
+describe("cover delivery rollout fence", () => {
+  const COVER = {
+    versionId: "70000000-0000-4000-8000-000000000007",
+    resourceId: input.resourceId,
+    dmStoragePath: "guide-cover/sleep/dm.png",
+  };
+
+  it("omits the cover but still delivers the guide when unselected", async () => {
+    const test = harness({
+      messages: [{ id: "first", order: 0, type: "text", body: "One", mediaUrl: null }],
+    });
+    test.coverDecision.mockReturnValue("omit");
+
+    await expect(test.service()({ ...input, cover: COVER })).resolves.toBe("completed");
+
+    // Turning cover delivery off must never withhold an authorized guide.
+    expect(test.sendMedia).not.toHaveBeenCalled();
+    expect(test.sendText).toHaveBeenCalledTimes(1);
+    expect(test.coverMediaUrl).not.toHaveBeenCalled();
+  });
+
+  it("consults the fence once, with the guide and the trigger", async () => {
+    const test = harness({
+      messages: [{ id: "first", order: 0, type: "text", body: "One", mediaUrl: null }],
+    });
+
+    await test.service()({ ...input, cover: COVER });
+
+    expect(test.coverDecision).toHaveBeenCalledTimes(1);
+    expect(test.coverDecision).toHaveBeenCalledWith({
+      resourceId: input.resourceId,
+      triggerId: input.triggerId,
+    });
+  });
+
+  it("never consults the fence when there is no cover to include", async () => {
+    const test = harness({
+      messages: [{ id: "first", order: 0, type: "text", body: "One", mediaUrl: null }],
+    });
+
+    await test.service()(input);
+
+    expect(test.coverDecision).not.toHaveBeenCalled();
   });
 });

@@ -116,6 +116,32 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
     pageMayStop: true,
   },
   {
+    key: "GUIDE_COVER_DELIVERY_ENABLED",
+    name: "Guide cover in delivery",
+    group: "outbound",
+    kind: "boolean",
+    doesWhat:
+      "Includes the published cover image as the first part of a guide that is sent.",
+    affectsWho:
+      "Only guides explicitly selected for the cover pilot, or a share of new requests once a percentage is set.",
+    ifOff:
+      "The guide is sent exactly as before, without its cover. Follower checks are unaffected.",
+    pageMayEnable: false,
+    pageMayStop: true,
+  },
+  {
+    key: "GUIDE_COVER_DELIVERY_ROLLOUT_PERCENT",
+    name: "Guide cover rollout share",
+    group: "outbound",
+    kind: "percent",
+    doesWhat:
+      "Share of new guide requests whose delivery includes the cover image.",
+    affectsWho: "New requests only. A journey already under way keeps its original decision.",
+    ifOff: "Zero means only explicitly allowlisted guides include a cover.",
+    pageMayEnable: false,
+    pageMayStop: true,
+  },
+  {
     key: "GUIDE_DELIVERY_ROLLOUT_PERCENT",
     // Not "Guide delivery rollout" — that is the name of the experiment this
     // belongs to, and the switch row then read "Guide delivery rollout · part of

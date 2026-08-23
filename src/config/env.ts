@@ -167,6 +167,9 @@ export const envSchema = z.object({
   GUIDE_RICH_GATE_ENABLED: booleanFlag(false),
   GUIDE_FOLLOW_GATE_V2_COHORT_IG_USER_IDS: z.string().default(""),
   GUIDE_FOLLOW_GATE_V2_RESOURCE_IDS: z.string().default(""),
+  GUIDE_COVER_DELIVERY_ENABLED: booleanFlag(false),
+  GUIDE_COVER_DELIVERY_RESOURCE_IDS: z.string().default(""),
+  GUIDE_COVER_DELIVERY_ROLLOUT_PERCENT: z.coerce.number().int().min(0).max(100).default(0),
   GUIDE_COVER_ORPHAN_BATCH: z.coerce.number().int().min(1).max(50).default(10),
   GUIDE_COVER_ORPHAN_INTERVAL_MS: z.coerce
     .number()
