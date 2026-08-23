@@ -34,6 +34,7 @@ import {
   recordInboundCampaignHealthSignals,
 } from "../services/campaignHealthObservation.js";
 import { env, guideDeliveryCohortIgUserIds } from "../config/env.js";
+import { routeGuideAction } from "./guideActionRouter.js";
 
 // Kept only as an analytics hint now — it is NO LONGER the trigger. Any reply to
 // an open gate delivers the guide (people say "Hi"/"Followed"/"Yes", not "Done").
@@ -367,6 +368,19 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
       { senderId, mid: msg.mid, duplicate: false, becameLatest: false },
       "Inbound webhook ignored for conversation routing (not latest)",
     );
+    return;
+  }
+
+  // Quick replies are action intent, never free-form copy. Route them before
+  // profile enrichment, keyword matching, or open-gate reply handling so a
+  // button title cannot accidentally trigger a second automation branch.
+  if (msg.quick_reply) {
+    await routeGuideAction({
+      payload: msg.quick_reply.payload,
+      senderId,
+      inboundMessageId: inbound.messageId,
+      eventAt: observedAt,
+    });
     return;
   }
 

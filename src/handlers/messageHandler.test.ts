@@ -29,6 +29,7 @@ const guideDeliveryOwner = vi.fn();
 const deliverGuideForTrigger = vi.fn();
 const sendTrackedText = vi.fn();
 const resolveUsername = vi.fn();
+const routeGuideAction = vi.fn();
 const logEvent = vi.fn();
 const SAFE_UNKNOWN = {
   category: "unknown_error",
@@ -75,6 +76,7 @@ vi.mock("../services/guideDeliveryRollout.js", () => ({ guideDeliveryOwner }));
 vi.mock("../services/guideDeliveryService.js", () => ({ deliverGuideForTrigger }));
 vi.mock("../services/dmDeliveryService.js", () => ({ sendTrackedText }));
 vi.mock("../services/igUserService.js", () => ({ resolveUsername }));
+vi.mock("./guideActionRouter.js", () => ({ routeGuideAction }));
 vi.mock("../services/eventLogger.js", () => ({
   logEvent,
   describeGraphError,
@@ -164,6 +166,7 @@ beforeEach(() => {
     deliverGuideForTrigger,
     sendTrackedText,
     resolveUsername,
+    routeGuideAction,
     logEvent,
     describeGraphError,
   ]) {
@@ -178,6 +181,10 @@ beforeEach(() => {
     messageId: "message-1",
   });
   resolveUsername.mockResolvedValue({ isFollower: true, username: "geri", name: "Geri" });
+  routeGuideAction.mockResolvedValue({
+    kind: "handled",
+    outcome: "guide_delivery_started",
+  });
   findKeywordInMessage.mockResolvedValue(null);
   findActiveAwaitingDone.mockResolvedValue(null);
   findLatestIncompleteConversation.mockResolvedValue(null);
@@ -341,7 +348,60 @@ describe("handleMessage — inbound capture", () => {
       receivedAt: expect.any(Date),
       kind: "quick_reply",
     });
+    expect(routeGuideAction).toHaveBeenCalledWith({
+      payload: GUIDE_ACTION_PAYLOAD,
+      senderId: "controlled-recipient",
+      inboundMessageId: "message-1",
+      eventAt: new Date(GUIDE_ACTION_TIMESTAMP),
+    });
+    expect(resolveUsername).not.toHaveBeenCalled();
+    expect(findKeywordInMessage).not.toHaveBeenCalled();
+    expect(findActiveAwaitingDone).not.toHaveBeenCalled();
     expect(JSON.stringify(logEvent.mock.calls)).not.toContain(GUIDE_ACTION_PAYLOAD);
+  });
+
+  it("routes an exact quick-reply provider replay only once", async () => {
+    recordInboundMessage
+      .mockResolvedValueOnce({
+        duplicate: false,
+        becameLatest: true,
+        threadId: "thread-1",
+        messageId: "message-1",
+      })
+      .mockResolvedValueOnce({
+        duplicate: true,
+        becameLatest: false,
+        threadId: "thread-1",
+        messageId: "message-1",
+      });
+    const entry = guideQuickReplyEvent();
+
+    await handleMessage(entry);
+    await handleMessage(entry);
+
+    expect(routeGuideAction).toHaveBeenCalledOnce();
+    expect(findKeywordInMessage).not.toHaveBeenCalled();
+    expect(findActiveAwaitingDone).not.toHaveBeenCalled();
+  });
+
+  it("acknowledges an unknown quick-reply action without treating its title as a keyword", async () => {
+    const entry = guideQuickReplyEvent();
+    entry.message = {
+      ...entry.message!,
+      text: "SLEEP",
+      quick_reply: { payload: "unregistered:action:value" },
+    };
+
+    await handleMessage(entry);
+
+    expect(routeGuideAction).toHaveBeenCalledWith({
+      payload: "unregistered:action:value",
+      senderId: "controlled-recipient",
+      inboundMessageId: "message-1",
+      eventAt: new Date(GUIDE_ACTION_TIMESTAMP),
+    });
+    expect(findKeywordInMessage).not.toHaveBeenCalled();
+    expect(findActiveAwaitingDone).not.toHaveBeenCalled();
   });
 
   it("continues handling when the profile lookup fails", async () => {

@@ -7,9 +7,11 @@ import {
 } from "../test/fixtures/metaGuideGateEvents.js";
 
 const recordRecoveryPostback = vi.fn();
+const routeGuideAction = vi.fn();
 const loggerInfo = vi.fn();
 
 vi.mock("../services/dmRecoveryService.js", () => ({ recordRecoveryPostback }));
+vi.mock("./guideActionRouter.js", () => ({ routeGuideAction }));
 vi.mock("../lib/logger.js", () => ({
   logger: { debug: vi.fn(), info: loggerInfo, error: vi.fn(), warn: vi.fn() },
 }));
@@ -18,6 +20,10 @@ const { handlePostback } = await import("./postbackHandler.js");
 
 beforeEach(() => {
   recordRecoveryPostback.mockReset();
+  routeGuideAction.mockReset().mockResolvedValue({
+    kind: "handled",
+    outcome: "follow_not_confirmed",
+  });
   loggerInfo.mockReset();
 });
 
@@ -36,6 +42,14 @@ describe("postbackHandler", () => {
       eventAt: new Date(timestamp),
       receivedAt: expect.any(Date),
     });
+    expect(routeGuideAction).toHaveBeenCalledWith({
+      payload: "OPEN",
+      senderId: "user-1",
+      eventAt: new Date(timestamp),
+    });
+    expect(recordRecoveryPostback.mock.invocationCallOrder[0]).toBeLessThan(
+      routeGuideAction.mock.invocationCallOrder[0]!,
+    );
   });
 
   it("acknowledges without evidence write when mid is missing", async () => {
@@ -47,6 +61,7 @@ describe("postbackHandler", () => {
     });
 
     expect(recordRecoveryPostback).not.toHaveBeenCalled();
+    expect(routeGuideAction).not.toHaveBeenCalled();
   });
 
   it("does not log an opaque action payload when a malformed postback has no mid", async () => {
@@ -56,6 +71,7 @@ describe("postbackHandler", () => {
     await handlePostback(entry);
 
     expect(recordRecoveryPostback).not.toHaveBeenCalled();
+    expect(routeGuideAction).not.toHaveBeenCalled();
     expect(JSON.stringify(loggerInfo.mock.calls)).not.toContain(GUIDE_ACTION_PAYLOAD);
   });
 
@@ -76,6 +92,17 @@ describe("postbackHandler", () => {
       eventAt: new Date(GUIDE_ACTION_TIMESTAMP),
       receivedAt: expect.any(Date),
     });
+    expect(routeGuideAction).toHaveBeenCalledTimes(2);
+    expect(routeGuideAction).toHaveBeenNthCalledWith(1, {
+      payload: GUIDE_ACTION_PAYLOAD,
+      senderId: "controlled-recipient",
+      eventAt: new Date(GUIDE_ACTION_TIMESTAMP),
+    });
+    expect(routeGuideAction).toHaveBeenNthCalledWith(2, {
+      payload: GUIDE_ACTION_PAYLOAD,
+      senderId: "controlled-recipient",
+      eventAt: new Date(GUIDE_ACTION_TIMESTAMP),
+    });
   });
 
   it("acknowledges an unknown action payload through recovery evidence only", async () => {
@@ -85,6 +112,11 @@ describe("postbackHandler", () => {
       instagramMessageId: "controlled-unknown-mid",
       eventAt: new Date(GUIDE_ACTION_TIMESTAMP),
       receivedAt: expect.any(Date),
+    });
+    expect(routeGuideAction).toHaveBeenCalledWith({
+      payload: "unregistered:action:value",
+      senderId: "controlled-recipient",
+      eventAt: new Date(GUIDE_ACTION_TIMESTAMP),
     });
     expect(loggerInfo).not.toHaveBeenCalled();
   });
