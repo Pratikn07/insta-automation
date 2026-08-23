@@ -85,12 +85,15 @@ async function createFixture(): Promise<Fixture> {
   return { conversationId, coverVersionId, resourceId, senderId };
 }
 
-async function createAttempt(fixture: Fixture) {
+async function createAttempt(
+  fixture: Fixture,
+  messagingWindowExpiresAt = new Date(NOW.getTime() + 24 * 60 * 60_000),
+) {
   const result = await firstRepository.createOrLoadAttempt({
     conversationId: fixture.conversationId,
     resourceId: fixture.resourceId,
     coverVersionId: fixture.coverVersionId,
-    messagingWindowExpiresAt: new Date(NOW.getTime() + 24 * 60 * 60_000),
+    messagingWindowExpiresAt,
   });
   return result.attempt;
 }
@@ -146,6 +149,25 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
     await expect(
       firstClient.guideAccessAttempt.count({ where: { conversationId: fixture.conversationId } }),
     ).resolves.toBe(1);
+  });
+
+  it("expires a time-closed row before creating the next active attempt", async () => {
+    const fixture = await createFixture();
+    const first = await createAttempt(fixture, NOW);
+
+    const replay = await firstRepository.createOrLoadAttempt({
+      conversationId: fixture.conversationId,
+      resourceId: fixture.resourceId,
+      coverVersionId: fixture.coverVersionId,
+      messagingWindowExpiresAt: new Date(NOW.getTime() + 24 * 60 * 60_000),
+      now: NOW,
+    });
+
+    expect(replay.kind).toBe("created");
+    expect(replay.attempt.id).not.toBe(first.id);
+    await expect(
+      firstClient.guideAccessAttempt.findUniqueOrThrow({ where: { id: first.id } }),
+    ).resolves.toMatchObject({ state: "expired" });
   });
 
   it("collapses concurrent token issue to one opaque active token", async () => {
@@ -218,11 +240,13 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
         attemptId: attempt.id,
         expectedState: "checking_follow",
         checkedAt: NOW,
+        now: NOW,
       }),
       secondRepository.markDelivering({
         attemptId: attempt.id,
         expectedState: "checking_follow",
         checkedAt: NOW,
+        now: NOW,
       }),
     ]);
 
@@ -242,6 +266,7 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
       attemptId: attempt.id,
       expectedState: "checking_follow",
       checkedAt: NOW,
+      now: NOW,
     });
 
     const repositories = [firstRepository, secondRepository, firstRepository];
@@ -250,6 +275,7 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
         repository.reserveFollowResponse({
           attemptId: attempt.id,
           expectedState: "awaiting_follow",
+          now: NOW,
         }),
       ),
     );
@@ -259,5 +285,73 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
     await expect(firstClient.guideAccessAttempt.findUniqueOrThrow({ where: { id: attempt.id } })).resolves.toMatchObject({
       followResponseCount: 2,
     });
+  });
+
+  it("expires direct checking at the exact messaging-window boundary", async () => {
+    const fixture = await createFixture();
+    const attempt = await createAttempt(fixture, NOW);
+
+    await expect(
+      firstRepository.beginChecking({
+        attemptId: attempt.id,
+        expectedState: "awaiting_request",
+        now: NOW,
+      }),
+    ).resolves.toMatchObject({ kind: "expired", attempt: { state: "expired" } });
+    await expect(
+      firstClient.guideAccessAttempt.findUniqueOrThrow({ where: { id: attempt.id } }),
+    ).resolves.toMatchObject({ state: "expired", followCheckCount: 0 });
+  });
+
+  it.each(["markAwaitingFollow", "markDelivering"] as const)(
+    "expires %s at the exact post-check boundary",
+    async (method) => {
+      const fixture = await createFixture();
+      const attempt = await createAttempt(fixture, NOW);
+      await firstRepository.beginChecking({
+        attemptId: attempt.id,
+        expectedState: "awaiting_request",
+        now: new Date(NOW.getTime() - 1),
+      });
+
+      await expect(
+        firstRepository[method]({
+          attemptId: attempt.id,
+          expectedState: "checking_follow",
+          checkedAt: new Date(NOW.getTime() - 1),
+          now: NOW,
+        }),
+      ).resolves.toMatchObject({ kind: "expired", attempt: { state: "expired" } });
+      await expect(
+        firstClient.guideAccessAttempt.findUniqueOrThrow({ where: { id: attempt.id } }),
+      ).resolves.toMatchObject({ state: "expired", lastFollowResult: "unknown" });
+    },
+  );
+
+  it("expires automatic-response reservation at the exact messaging-window boundary", async () => {
+    const fixture = await createFixture();
+    const attempt = await createAttempt(fixture, NOW);
+    await firstRepository.beginChecking({
+      attemptId: attempt.id,
+      expectedState: "awaiting_request",
+      now: new Date(NOW.getTime() - 2),
+    });
+    await firstRepository.markAwaitingFollow({
+      attemptId: attempt.id,
+      expectedState: "checking_follow",
+      checkedAt: new Date(NOW.getTime() - 1),
+      now: new Date(NOW.getTime() - 1),
+    });
+
+    await expect(
+      firstRepository.reserveFollowResponse({
+        attemptId: attempt.id,
+        expectedState: "awaiting_follow",
+        now: NOW,
+      }),
+    ).resolves.toMatchObject({ kind: "expired", attempt: { state: "expired" } });
+    await expect(
+      firstClient.guideAccessAttempt.findUniqueOrThrow({ where: { id: attempt.id } }),
+    ).resolves.toMatchObject({ state: "expired", followResponseCount: 0 });
   });
 });

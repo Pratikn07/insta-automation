@@ -117,6 +117,7 @@ describe("guide access repository", () => {
       coverVersionId: COVER_ID,
       messagingWindowExpiresAt: WINDOW_EXPIRES_AT,
     });
+    const { senderId: _, ...originalRecord } = original;
     const test = harness({ activeAttempt: original });
 
     await expect(
@@ -126,8 +127,32 @@ describe("guide access repository", () => {
         coverVersionId: null,
         messagingWindowExpiresAt: new Date("2026-08-25T12:00:00.000Z"),
       }),
-    ).resolves.toEqual({ kind: "loaded", attempt: original });
+    ).resolves.toEqual({ kind: "loaded", attempt: originalRecord });
     expect(test.tx.guideAccessAttempt.create).not.toHaveBeenCalled();
+  });
+
+  it("expires a time-closed attempt before creating a new active attempt", async () => {
+    const closed = attempt({ messagingWindowExpiresAt: NOW });
+    const test = harness({ activeAttempt: closed, lockedAttempt: closed });
+
+    await expect(
+      test.repository.createOrLoadAttempt({
+        conversationId: CONVERSATION_ID,
+        resourceId: RESOURCE_ID,
+        coverVersionId: COVER_ID,
+        messagingWindowExpiresAt: WINDOW_EXPIRES_AT,
+        now: NOW,
+      }),
+    ).resolves.toMatchObject({ kind: "created" });
+    expect(test.tx.guideAccessAttempt.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: ATTEMPT_ID,
+        state: "awaiting_request",
+        messagingWindowExpiresAt: { lte: NOW },
+      },
+      data: { state: "expired" },
+    });
+    expect(test.tx.guideAccessAttempt.create).toHaveBeenCalledOnce();
   });
 
   it("returns the same active token on issue replay", async () => {
@@ -307,16 +332,51 @@ describe("guide access repository", () => {
       first.repository.reserveFollowResponse({
         attemptId: ATTEMPT_ID,
         expectedState: "awaiting_follow",
+        now: NOW,
       }),
     ).resolves.toEqual({ kind: "reserved", responseNumber: 2 });
     await expect(
       capped.repository.reserveFollowResponse({
         attemptId: ATTEMPT_ID,
         expectedState: "awaiting_follow",
+        now: NOW,
       }),
     ).resolves.toEqual({ kind: "limit_reached" });
     expect(capped.tx.guideAccessAttempt.updateMany).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["beginChecking", "awaiting_request", { now: NOW }],
+    ["markAwaitingFollow", "checking_follow", { checkedAt: NOW, now: NOW }],
+    ["markDelivering", "checking_follow", { checkedAt: NOW, now: NOW }],
+    ["reserveFollowResponse", "awaiting_follow", { now: NOW }],
+  ] as const)(
+    "returns typed expiry when %s reaches the exact messaging-window boundary",
+    async (method, state, time) => {
+      const lastFollowResult = state === "awaiting_follow" ? "non_follower" : "unknown";
+      const test = harness({
+        lockedAttempt: attempt({
+          state,
+          lastFollowResult,
+          messagingWindowExpiresAt: NOW,
+        }),
+      });
+
+      const result = await (
+        test.repository[method] as (input: Record<string, unknown>) => Promise<unknown>
+      )({ attemptId: ATTEMPT_ID, expectedState: state, ...time });
+
+      expect(result).toMatchObject({ kind: "expired", attempt: { state: "expired" } });
+      expect(test.tx.guideAccessAttempt.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: ATTEMPT_ID,
+          state,
+          messagingWindowExpiresAt: { lte: NOW },
+        },
+        data: { state: "expired" },
+      });
+    },
+  );
 
   it("fails closed when a stale expected state loses the state-version fence", async () => {
     const test = harness({
@@ -328,6 +388,7 @@ describe("guide access repository", () => {
         attemptId: ATTEMPT_ID,
         expectedState: "checking_follow",
         checkedAt: NOW,
+        now: NOW,
       }),
     ).resolves.toEqual({ kind: "state_conflict", actualState: "delivering" });
     expect(test.tx.guideAccessAttempt.updateMany).not.toHaveBeenCalled();
@@ -347,8 +408,8 @@ describe("guide access repository", () => {
     const common = { attemptId: ATTEMPT_ID, expectedState: from };
     const inputs = {
       beginChecking: { ...common, now: NOW },
-      markAwaitingFollow: { ...common, checkedAt: NOW },
-      markDelivering: { ...common, checkedAt: NOW },
+      markAwaitingFollow: { ...common, checkedAt: NOW, now: NOW },
+      markDelivering: { ...common, checkedAt: NOW, now: NOW },
       markDelivered: common,
       markNeedsReview: { ...common, checkedAt: NOW },
       markExpired: { ...common, now: NOW },

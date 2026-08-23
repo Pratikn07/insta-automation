@@ -35,6 +35,7 @@ export type CreateGuideAccessAttemptInput = {
   resourceId: string;
   coverVersionId: string | null;
   messagingWindowExpiresAt: Date;
+  now?: Date;
 };
 
 export type CreateGuideAccessAttemptResult =
@@ -74,6 +75,7 @@ export type ConsumeGuideActionTokenResult =
 
 export type GuideAccessTransitionResult =
   | { kind: "transitioned"; attempt: GuideAccessAttempt }
+  | { kind: "expired"; attempt: GuideAccessAttempt }
   | { kind: "attempt_not_found" }
   | { kind: "state_conflict"; actualState: GuideAccessAttemptState };
 
@@ -87,6 +89,7 @@ export type MarkGuideAccessAwaitingFollowInput = {
   attemptId: string;
   expectedState: "checking_follow";
   checkedAt: Date;
+  now: Date;
 };
 
 export type MarkGuideAccessDeliveringInput = MarkGuideAccessAwaitingFollowInput;
@@ -111,10 +114,12 @@ export type MarkGuideAccessExpiredInput = {
 export type ReserveGuideFollowResponseInput = {
   attemptId: string;
   expectedState: "awaiting_follow";
+  now: Date;
 };
 
 export type ReserveGuideFollowResponseResult =
   | { kind: "reserved"; responseNumber: 1 | 2 }
+  | { kind: "expired"; attempt: GuideAccessAttempt }
   | { kind: "limit_reached" }
   | { kind: "attempt_not_found" }
   | { kind: "state_conflict"; actualState: GuideAccessAttemptState };
@@ -265,6 +270,26 @@ async function loadLockedForExpectedState(
   return { kind: "ready", attempt };
 }
 
+async function expireLockedAttempt(
+  tx: Transaction,
+  attempt: LockedAttempt,
+  now: Date,
+): Promise<{ kind: "expired"; attempt: GuideAccessAttempt }> {
+  const updated = await tx.guideAccessAttempt.updateMany({
+    where: {
+      id: attempt.id,
+      state: attempt.state,
+      messagingWindowExpiresAt: { lte: now },
+    },
+    data: { state: "expired" },
+  });
+  if (updated.count !== 1) throw new TransactionFenceConflict(attempt.state);
+  return {
+    kind: "expired",
+    attempt: withAttemptUpdate(attempt, { state: "expired" }),
+  };
+}
+
 export function createGuideAccessRepository(
   options: RepositoryOptions = {},
 ): GuideAccessRepository {
@@ -274,6 +299,8 @@ export function createGuideAccessRepository(
   return {
     async createOrLoadAttempt(input) {
       requireValidDate(input.messagingWindowExpiresAt, "guide access window");
+      const now = input.now ?? new Date();
+      requireValidDate(now, "guide access create time");
       return database.$transaction(async (tx) => {
         if (!(await lockConversation(tx, input.conversationId))) {
           throw new Error("guide access conversation not found");
@@ -285,7 +312,15 @@ export function createGuideAccessRepository(
           },
           orderBy: { createdAt: "asc" },
         });
-        if (existing) return { kind: "loaded" as const, attempt: existing };
+        if (existing) {
+          const locked = await lockAttempt(tx, existing.id);
+          if (locked && ACTIVE_ATTEMPT_STATES.includes(locked.state)) {
+            if (locked.messagingWindowExpiresAt > now) {
+              return { kind: "loaded" as const, attempt: withoutSender(locked) };
+            }
+            await expireLockedAttempt(tx, locked, now);
+          }
+        }
 
         const created = await tx.guideAccessAttempt.create({
           data: {
@@ -427,6 +462,9 @@ export function createGuideAccessRepository(
       return database.$transaction(async (tx) => {
         const locked = await loadLockedForExpectedState(tx, input.attemptId, input.expectedState);
         if (locked.kind !== "ready") return locked;
+        if (locked.attempt.messagingWindowExpiresAt <= input.now) {
+          return expireLockedAttempt(tx, locked.attempt, input.now);
+        }
         if (locked.attempt.followCheckCount >= MAX_FOLLOW_CHECKS) {
           return { kind: "state_conflict" as const, actualState: locked.attempt.state };
         }
@@ -435,6 +473,7 @@ export function createGuideAccessRepository(
             id: input.attemptId,
             state: input.expectedState,
             followCheckCount: { lt: MAX_FOLLOW_CHECKS },
+            messagingWindowExpiresAt: { gt: input.now },
           },
           data: {
             state: "checking_follow",
@@ -460,11 +499,19 @@ export function createGuideAccessRepository(
 
     async markAwaitingFollow(input) {
       requireValidDate(input.checkedAt, "guide follow result time");
+      requireValidDate(input.now, "guide access transition time");
       return database.$transaction(async (tx) => {
         const locked = await loadLockedForExpectedState(tx, input.attemptId, input.expectedState);
         if (locked.kind !== "ready") return locked;
+        if (locked.attempt.messagingWindowExpiresAt <= input.now) {
+          return expireLockedAttempt(tx, locked.attempt, input.now);
+        }
         const updated = await tx.guideAccessAttempt.updateMany({
-          where: { id: input.attemptId, state: input.expectedState },
+          where: {
+            id: input.attemptId,
+            state: input.expectedState,
+            messagingWindowExpiresAt: { gt: input.now },
+          },
           data: {
             state: "awaiting_follow",
             lastFollowResult: "non_follower",
@@ -487,11 +534,19 @@ export function createGuideAccessRepository(
 
     async markDelivering(input) {
       requireValidDate(input.checkedAt, "guide follow result time");
+      requireValidDate(input.now, "guide access transition time");
       return database.$transaction(async (tx) => {
         const locked = await loadLockedForExpectedState(tx, input.attemptId, input.expectedState);
         if (locked.kind !== "ready") return locked;
+        if (locked.attempt.messagingWindowExpiresAt <= input.now) {
+          return expireLockedAttempt(tx, locked.attempt, input.now);
+        }
         const updated = await tx.guideAccessAttempt.updateMany({
-          where: { id: input.attemptId, state: input.expectedState },
+          where: {
+            id: input.attemptId,
+            state: input.expectedState,
+            messagingWindowExpiresAt: { gt: input.now },
+          },
           data: {
             state: "delivering",
             lastFollowResult: "follower",
@@ -573,9 +628,13 @@ export function createGuideAccessRepository(
     },
 
     async reserveFollowResponse(input) {
+      requireValidDate(input.now, "guide response reservation time");
       return database.$transaction(async (tx) => {
         const locked = await loadLockedForExpectedState(tx, input.attemptId, input.expectedState);
         if (locked.kind !== "ready") return locked;
+        if (locked.attempt.messagingWindowExpiresAt <= input.now) {
+          return expireLockedAttempt(tx, locked.attempt, input.now);
+        }
         if (locked.attempt.followResponseCount >= MAX_FOLLOW_RESPONSES) {
           return { kind: "limit_reached" as const };
         }
@@ -584,6 +643,7 @@ export function createGuideAccessRepository(
             id: input.attemptId,
             state: input.expectedState,
             followResponseCount: { lt: MAX_FOLLOW_RESPONSES },
+            messagingWindowExpiresAt: { gt: input.now },
           },
           data: { followResponseCount: { increment: 1 } },
         });
