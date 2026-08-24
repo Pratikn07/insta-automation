@@ -53,6 +53,30 @@ export const guideAccessCopy = {
     "Almost there 💛 Instagram may take a moment to update. Check that you're following @tinysoho, wait a little, then tap I'm following once more.",
   followLagText:
     "Almost there 💛 Instagram may take a moment to update. Check that you're following @tinysoho, wait a little, then reply DONE once more.",
+  /**
+   * The last thing a non-follower is told, and the only one of these that has to be true.
+   *
+   * Before this the ladder simply stopped: the third tap was refused, nothing was sent, and
+   * the attempt was stamped a confirmed non-follower, which is terminal — so a parent who
+   * then went and followed could never get in. Observed on device 2026-08-24, where a parent
+   * tapped three more times into silence after being told to go and follow.
+   *
+   * Text, with no control of any kind, and that is the point. Every control we had given her
+   * was spent or stale, and a card button is exactly what had just failed: it stays in the
+   * thread looking alive, posts her words into the conversation, and goes nowhere. A typed
+   * reply is the one route that cannot expire, cannot be consumed, and does not depend on a
+   * capability being on.
+   *
+   * It asks for DONE rather than a new word for the same reason the gate does: once the
+   * internal gate window has lapsed, `messageHandler`'s `DONE_RE` is the only thing that
+   * recovers the latest request, so DONE is the reply that still works late.
+   *
+   * "one more look" is literal. `MAX_FOLLOW_CHECKS` holds a check back for exactly this
+   * reply — see the note on that constant. Do not reword it into an open-ended promise
+   * without raising that budget too.
+   */
+  followFinal:
+    "I still can't see the follow from my side 💛 If you've followed @tinysoho, reply DONE and I'll take one more look.",
 } as const;
 
 /**

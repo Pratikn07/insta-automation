@@ -332,9 +332,19 @@ export function buildGuideGateCapabilityPayload(
               url: input.profileUrl,
               title: GUIDE_GATE_BUTTON_LABELS.visitProfile,
             },
-            // A postback, not a quick reply. The gate already asked them to follow, so this is
-            // the confirm — and as a postback its label stays interface rather than being
-            // posted into the thread as the parent's own words.
+            // A postback, not a quick reply. The gate already asked them to follow, so this
+            // is the confirm.
+            //
+            // It was ALSO claimed here that a postback label stays interface rather than
+            // being posted into the thread as the parent's own words. That is not what
+            // Instagram does: the title of a tapped button is posted to the conversation as
+            // a message either way. Observed on device 2026-08-24, where four "I'm following"
+            // bubbles from one parent are card taps, not typing.
+            //
+            // Which matters for a reason beyond tidiness. Unlike a chip, this button stays in
+            // the thread and stays tappable long after its token is spent, so a parent who is
+            // not getting anywhere presses it again — and each press looks, to them, like a
+            // message they sent and we ignored. Anything reached by tapping this must answer.
             {
               type: "postback",
               title: GUIDE_GATE_BUTTON_LABELS.confirmFollow,

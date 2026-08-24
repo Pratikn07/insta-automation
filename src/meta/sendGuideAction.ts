@@ -35,8 +35,14 @@ export type GuideActionCapabilities = {
    * accepted on that surface and renders with tappable buttons.
    *
    * Separate from `privateQuickReply` because they compete for the same one-shot reply and
-   * only one can win. Card takes precedence when both are on: a chip posts its own label into
-   * the thread as the parent's words, an in-bubble button does not.
+   * only one can win. Card takes precedence when both are on, because it carries the cover
+   * and the copy where a chip carries neither.
+   *
+   * The reason recorded here used to be that a chip posts its own label into the thread as
+   * the parent's words and an in-bubble button does not. Instagram posts the title of a
+   * tapped button either way — observed on device 2026-08-24 — so that was never the
+   * difference. The real one is that a chip is consumed on tap and a card button is not: it
+   * stays in the thread, stays tappable, and keeps returning a spent token.
    */
   privateGeneric?: boolean;
 };
@@ -189,17 +195,25 @@ export async function sendGuideFollowerGate(input: {
  *   confirm button. This is the message that has to make following worth doing.
  * - `2` — their second. Now a genuine propagation delay is worth crediting, so the sympathetic
  *   "Instagram may take a moment" copy is sent unchanged.
+ * - `3` — their third, and the last thing we say. Plain text, no control: every control they
+ *   had is spent or stale, and a stale card button is what has been failing them. It hands
+ *   them a typed reply instead and promises exactly one more check, which the follow-check
+ *   budget holds back for it.
  *
  * Before this, response 1 got the sympathetic copy: someone who never followed was told they
  * had and asked to wait out a delay that was not happening. Observed on device 2026-08-24, 11
  * seconds after the gate — not enough time to leave Instagram, follow, and return.
+ *
+ * And before this there was no response 3 at all: the ladder ran out at 2 and every later tap
+ * was dropped in silence. Same day, same account, a parent tapped three more times and was
+ * answered nothing each time.
  */
 export async function sendGuideFollowLag(input: {
   recipientId: string;
   actionToken: string;
   capabilities: GuideActionCapabilities;
-  /** 1 = first re-tap (re-ask), 2 = second (credit the delay). */
-  responseNumber: 1 | 2;
+  /** 1 = first re-tap (re-ask), 2 = second (credit the delay), 3 = the closing word. */
+  responseNumber: 1 | 2 | 3;
   /** The square cover. Absent means the re-ask cannot be a card and falls back to text. */
   coverUrl?: string;
   /** Names the category so the copy can say what else is behind the follow. */
@@ -244,6 +258,19 @@ export async function sendGuideFollowLag(input: {
         mode: "dm_text_follow_reask",
         messageLength: reAskText.length,
       },
+    );
+  }
+
+  // The closing word. No card, no chip, no capability branch — see `followFinal`.
+  if (input.responseNumber === 3) {
+    const text = guideAccessCopy.followFinal;
+    return sendMetaMessage(
+      {
+        recipient: { id: input.recipientId },
+        messaging_type: "RESPONSE",
+        message: { text },
+      },
+      { recipientId: input.recipientId, mode: "dm_text_follow_final", messageLength: text.length },
     );
   }
 

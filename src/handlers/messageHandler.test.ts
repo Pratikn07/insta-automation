@@ -62,7 +62,13 @@ vi.mock("../services/campaignHealthObservation.js", () => ({
 }));
 vi.mock("../services/replyDraftService.js", () => ({ queueReplyDraft }));
 vi.mock("../services/engagementFollowUpService.js", () => ({ scheduleEngagementFollowUp }));
-vi.mock("../services/keywordService.js", () => ({ findKeywordInMessage }));
+// `textContainsKeyword` stays REAL: it is a pure length-gate over the message text with no
+// database or network behind it, and it now decides whether a repeat DM is a genuine re-ask.
+// Stubbing it would make the redelivery-suppression tests assert against a fake rule.
+vi.mock("../services/keywordService.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/keywordService.js")>()),
+  findKeywordInMessage,
+}));
 // The resolver is contract-tested against real Postgres; here the DM path's own
 // contract is that it records the trigger and still delivers.
 vi.mock("../services/journeyIntentService.js", () => ({ resolveJourneyIntent }));
@@ -1388,6 +1394,70 @@ describe("handleMessage journey resolution is bookkeeping, not a gate", () => {
 
     const matched = logEvent.mock.calls.find(([kind]) => kind === "keyword_matched");
     expect(matched?.[1]).toMatchObject({ journeyDisposition: "reused_active", source: "dm" });
+  });
+});
+
+/**
+ * A keyword buried in a sentence is not a request for a guide they already own.
+ *
+ * Observed on device 2026-08-24: a parent who had just received the waffle guide wrote
+ * "Thank you! Do you have a waffle maker reco?" and was sent the same guide again, cover
+ * and all, because WAFFLE is a live keyword and the DM matcher scans every word.
+ *
+ * The gate is the COMMENT length rule, applied to redelivery only. First deliveries stay
+ * exactly as generous as they were — asserted below, because narrowing them would cost
+ * someone a guide they do not have, which is a far worse failure than a duplicate.
+ */
+describe("handleMessage — a chatty repeat is not a re-ask", () => {
+  beforeEach(() => {
+    findKeywordInMessage.mockResolvedValue(keywordFixture);
+    resolveUsername.mockResolvedValue({ isFollower: true, username: "parent", name: "Parent" });
+  });
+
+  it("does not redeliver a guide they own when the keyword is buried in a sentence", async () => {
+    hasCompletedKeyword.mockResolvedValue(true);
+
+    await handleMessage(inbound("Thank you! Do you have a sleep training book reco?"));
+
+    expect(sendSequence).not.toHaveBeenCalled();
+    expect(deliverGuideForTrigger).not.toHaveBeenCalled();
+    expect(resolveJourneyIntent).not.toHaveBeenCalled();
+  });
+
+  // The message is not swallowed. It reaches the owner, which is where a real question
+  // about a waffle maker belonged in the first place.
+  it("passes the suppressed message to the owner's drafts instead", async () => {
+    hasCompletedKeyword.mockResolvedValue(true);
+
+    await handleMessage(inbound("Thank you! Do you have a sleep training book reco?"));
+
+    expect(queueReplyDraft).toHaveBeenCalledOnce();
+    const suppressed = logEvent.mock.calls.find(
+      ([kind]) => kind === "keyword_redelivery_suppressed",
+    );
+    expect(suppressed?.[1]).toMatchObject({ keyword: "SLEEP", senderId: "ig-user-1" });
+  });
+
+  // The whole point of scoping this to redelivery. Same sentence, no prior delivery.
+  it("still fires on a long sentence when they do NOT already have the guide", async () => {
+    hasCompletedKeyword.mockResolvedValue(false);
+
+    await handleMessage(inbound("Thank you! Do you have a sleep training book reco?"));
+
+    expect(sendSequence).toHaveBeenCalledOnce();
+    expect(queueReplyDraft).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["the bare word", "SLEEP"],
+    ["a short ask", "sleep again please"],
+    ["a message that leads with the word", "SLEEP send it over again when you can"],
+  ])("still redelivers on %s", async (_label, text) => {
+    hasCompletedKeyword.mockResolvedValue(true);
+
+    await handleMessage(inbound(text));
+
+    expect(sendSequence).toHaveBeenCalledOnce();
   });
 });
 
