@@ -109,32 +109,43 @@ export type GuideAccessActionDependencies = {
   resolveFollowStatusFresh(igUserId: string): Promise<FreshFollowResult>;
   startGuideDelivery(input: DeliverGuideForTriggerInput): Promise<GuideDeliveryResult>;
   /**
-   * Required, not optional, and deliberately so. `sendGuideFollowerGate` defaults an absent
-   * `capabilities` to TEXT_ONLY, which silently makes its card branch unreachable — the gate
-   * looked wired, took a cover, and sent text anyway. A required field means the type system
-   * refuses the omission rather than a parent discovering it.
+   * The three capability-bearing sends, declared as PROPERTIES with arrow types rather than
+   * method shorthand — and that distinction is the whole reason this bug survived.
+   *
+   * TypeScript checks method-shorthand parameters bivariantly. `sendFollowLag(input: {...})`
+   * accepted `sendGuideFollowLag`, a function that requires a `capabilities` field this
+   * contract never declared and therefore never passed. Nothing errored; the send read
+   * `undefined`, resolved to text, and a parent got a message with no way to retry.
+   *
+   * Arrow-typed properties are checked contravariantly under `strictFunctionTypes`, so an
+   * implementation demanding more than the contract promises now fails to compile. Verified
+   * by deleting `capabilities` below and confirming tsc rejects it, rather than assumed.
+   *
+   * `capabilities` is required on each. A caller wanting text passes TEXT_ONLY_CAPABILITIES
+   * and says so.
    */
-  sendFollowerGate(input: {
+  sendFollowerGate: (input: {
     recipientId: string;
     guideName: string;
     actionToken: string;
     capabilities: GuideActionCapabilities;
     coverUrl?: string;
     categorySlug?: string;
-  }): Promise<MetaSendResult>;
+  }) => Promise<MetaSendResult>;
   sendText(input: { recipientId: string; text: string }): Promise<MetaSendResult>;
-  sendFollowLag(input: {
+  sendFollowLag: (input: {
     recipientId: string;
     actionToken: string;
-  }): Promise<MetaSendResult>;
-  sendInitialPrivateReply(input: {
+    capabilities: GuideActionCapabilities;
+  }) => Promise<MetaSendResult>;
+  sendInitialPrivateReply: (input: {
     commentId: string;
     guideName: string;
     actionToken: string;
     capabilities: GuideActionCapabilities;
     coverUrl?: string;
     categorySlug?: string;
-  }): Promise<MetaSendResult>;
+  }) => Promise<MetaSendResult>;
   /**
    * The guide's square cover and category, for the card opening. Returns null when the guide
    * has no published square — the opening then falls back to text rather than sending a card
@@ -727,6 +738,11 @@ export function createGuideAccessActionService(
         dependencies.sendFollowLag({
           recipientId: context.senderId,
           actionToken: issued.tokenId,
+          // The lag message exists BECAUSE Instagram's follow graph propagates slowly: this
+          // parent has followed and been told to wait. Without capabilities it lost its
+          // "I'm following" chip, leaving them a dead end at the one moment they are trying
+          // to comply.
+          capabilities,
         });
     } else {
       send = () =>
