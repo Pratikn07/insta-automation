@@ -202,7 +202,7 @@ describe("copyFromCategory", () => {
     expect(copyFromCategory(category)).toEqual({
       headline: "Bedtime can feel softer",
       supportingLine: "A calmer bedtime, one small shift at a time.",
-      closingLine: "Prepared for calmer evenings.",
+      closingLine: "Made with care by TinySoho.",
       alternativeDescription:
         "Blush TinySoho sleep guide cover with a moonlit house illustration.",
     });

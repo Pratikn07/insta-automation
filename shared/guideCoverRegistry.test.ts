@@ -107,6 +107,12 @@ describe("approved TinySoho guide cover registry", () => {
     });
   });
 
+  it("closes every category with the shared TinySoho signature", () => {
+    for (const category of Object.values(GUIDE_COVER_CATEGORIES)) {
+      expect(category.exampleCopy.closingLine).toBe("Made with care by TinySoho.");
+    }
+  });
+
   it("pins the shared safe areas for both approved compositions", () => {
     expect(GUIDE_COVER_TEMPLATES.warm_editorial_corner_v1).toEqual({
       key: "warm_editorial_corner_v1",
