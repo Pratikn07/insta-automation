@@ -211,6 +211,69 @@ const PLAN: CoverPlan[] = [
   },
 ];
 
+/**
+ * The 26 recipe guides, headlines drafted from each guide's own first recipe rather than
+ * from its keyword — "Recipe" appears six times as a name and means six different dishes,
+ * so the name carries no information a parent would recognise.
+ *
+ * Held behind `--include-recipes` because this is 26 guides of parent-facing copy that
+ * wants a human read before it ships, not because it is technically different.
+ */
+const RECIPE_PLAN: CoverPlan[] = [
+  { resourceId: "d3e3f5a9-2e91-432a-8eea-d92a01d8cfc5", label: "Breakfast", categorySlug: "recipes",
+    headline: "Apple toast bites", supportingLine: "A warm breakfast in about ten minutes." },
+  { resourceId: "ae4bfa77-2ec9-4de4-91b3-e748d5fec5a6", label: "Chicken", categorySlug: "recipes",
+    headline: "One chicken, five dinners", supportingLine: "Five toddler meals from a single rotisserie chicken." },
+  { resourceId: "c835aee7-a631-4e38-95a5-811b6af9a991", label: "Dinner (cheesy broccoli)", categorySlug: "recipes",
+    headline: "Cheesy broccoli pasta", supportingLine: "Small shapes, soft greens, one bowl." },
+  { resourceId: "4ff036c1-82b4-48bb-92a2-fdab6ff4a4b4", label: "Dinner (picky days)", categorySlug: "recipes",
+    headline: "Five dinners for picky days", supportingLine: "Simple, familiar and toddler friendly." },
+  { resourceId: "e522c3c2-c637-4e35-bdd6-d33520f54cba", label: "Dinner (ravioli)", categorySlug: "recipes",
+    headline: "Ten-minute ravioli", supportingLine: "Lemon, pea and ricotta, ready in ten." },
+  { resourceId: "44513b10-03ac-4737-814d-a48f3bfda400", label: "Dinner (picky days, 2)", categorySlug: "recipes",
+    headline: "Five easy toddler dinners", supportingLine: "One toddler serving each, ready fast." },
+  { resourceId: "dc2a26bf-6af4-46e0-9ae3-bc6aeae3c84b", label: "Dinner (tomato spinach)", categorySlug: "recipes",
+    headline: "Creamy tomato spinach pasta", supportingLine: "Two toddler servings, greens blended in." },
+  { resourceId: "248094f5-d030-4d2a-a8a6-67db3bcfa324", label: "Fancy", categorySlug: "recipes",
+    headline: "Mini fruit tart cups", supportingLine: "Oats, yogurt and fruit. No baking." },
+  { resourceId: "89118597-3f3d-4543-994a-4bc96bbc3ef5", label: "Fiber", categorySlug: "recipes",
+    headline: "White bean mac and cheese", supportingLine: "Creamy and cheesy, quietly full of fibre." },
+  { resourceId: "7fa88842-49cb-419e-b08a-5f549072b069", label: "Freezer", categorySlug: "recipes",
+    headline: "Freezer-friendly rice cups", supportingLine: "Make a batch, freeze, reheat all week." },
+  { resourceId: "4f4db9af-336f-488d-866c-7a87f2267784", label: "Fruit", categorySlug: "recipes",
+    headline: "Raspberry yogurt bark", supportingLine: "Freeze it once, snack on it all week." },
+  { resourceId: "b1bd806d-af38-4206-8adb-4479cbda70c5", label: "Gummies", categorySlug: "recipes",
+    headline: "Strawberry raspberry gummies", supportingLine: "Fruit, water and gelatin. That is all." },
+  { resourceId: "8b44a369-517c-4e8d-b502-29a5c9d0f2c2", label: "GUMMY", categorySlug: "recipes",
+    headline: "Mango strawberry gummies", supportingLine: "Real fruit, set soft enough for little hands." },
+  { resourceId: "594e9978-83dc-4cbe-ad21-a640662821c4", label: "Lunch", categorySlug: "recipes",
+    headline: "Black bean taquitos", supportingLine: "A lunch they can hold all by themselves." },
+  { resourceId: "7a90aef4-e4de-4d67-80d4-6d936448c500", label: "Meal", categorySlug: "recipes",
+    headline: "Five toddler dinners", supportingLine: "The recipes I promised, all in one place." },
+  { resourceId: "de9c341c-5bee-4778-9ad6-4625033a8911", label: "MealPrep", categorySlug: "recipes",
+    headline: "Hidden veggie mac cups", supportingLine: "Prep once on Sunday, eat well all week." },
+  { resourceId: "b993d258-b4d8-494f-8e5a-874e88d4e675", label: "Muffin", categorySlug: "recipes",
+    headline: "Broccoli cheddar egg muffins", supportingLine: "Six muffins, ready for the week ahead." },
+  { resourceId: "f2782a2e-6913-4165-b6bc-c439eb174ef3", label: "Pear", categorySlug: "recipes",
+    headline: "Spiced pear and quinoa oats", supportingLine: "A warm breakfast worth waking up for." },
+  { resourceId: "6513a99a-85b7-434d-aaa1-2777cb44fff3", label: "protein", categorySlug: "recipes",
+    headline: "Pizza muffin bites", supportingLine: "Vegetables, egg and cheese in one bite." },
+  { resourceId: "af09fe12-078a-4e45-b435-0cdc545793b2", label: "Recipe (berry smoothie)", categorySlug: "recipes",
+    headline: "Berry brain boost smoothie", supportingLine: "Berries, yogurt and chia, blended smooth." },
+  { resourceId: "ca49f0a7-b984-4452-9ac7-65e0e2942b9d", label: "Recipe (chicken meatballs)", categorySlug: "recipes",
+    headline: "Chicken zucchini meatballs", supportingLine: "Soft, mild and easy to pick up." },
+  { resourceId: "53693478-efaa-406d-a39b-2e6f2d699af2", label: "Recipe (pizza muffins)", categorySlug: "recipes",
+    headline: "Pizza muffin bites", supportingLine: "Twelve mini muffins for the week." },
+  { resourceId: "b52c74b1-e239-4b56-801b-56c0de853445", label: "Recipe (beef meatballs)", categorySlug: "recipes",
+    headline: "Mini beef meatballs", supportingLine: "Parmesan, parsley and a soft bite." },
+  { resourceId: "fc54cbce-2b9f-4f16-9c5d-1ed1bd22a373", label: "Recipe (peach smoothie)", categorySlug: "recipes",
+    headline: "Peach almond oat smoothie", supportingLine: "Oats blended in, and no one notices." },
+  { resourceId: "1ea43def-f312-4d91-ae4f-b87802d006e9", label: "Recipe (spinach muffins)", categorySlug: "recipes",
+    headline: "Spinach cheese egg muffins", supportingLine: "Twelve muffins, greens included." },
+  { resourceId: "42d449b4-aad3-4b14-9570-397edcd2eea3", label: "WAFFLE", categorySlug: "recipes",
+    headline: "Banana oat waffles", supportingLine: "Banana, egg and oat flour. That is it." },
+];
+
 const CLOSING_LINE = "Made with care by TinySoho.";
 
 /**
@@ -251,7 +314,10 @@ async function main(): Promise<void> {
 
   let failures = 0;
 
-  for (const plan of PLAN) {
+  const includeRecipes = args.includes("--include-recipes");
+  const plans = includeRecipes ? [...PLAN, ...RECIPE_PLAN] : PLAN;
+
+  for (const plan of plans) {
     const category = categoryBySlug.get(plan.categorySlug);
     if (!category) {
       console.log(`FAIL ${plan.label}: category ${plan.categorySlug} missing`);
@@ -414,7 +480,7 @@ async function main(): Promise<void> {
 
   await prisma.$disconnect();
   console.log(
-    `\n${apply ? "APPLIED" : "DRY RUN"} — ${PLAN.length} guides, ${failures} failure(s)`,
+    `\n${apply ? "APPLIED" : "DRY RUN"} — ${plans.length} guides, ${failures} failure(s)`,
   );
   if (failures > 0) process.exitCode = 1;
 }
