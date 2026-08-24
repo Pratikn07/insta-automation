@@ -46,6 +46,12 @@ export const guideAccessCopy = {
     "Follow @tinysoho for more ideas like this, then tap below and I'll send it over.",
   nonFollowerGateText:
     "Follow @tinysoho for more ideas like this, then reply DONE and I'll send it over.",
+  // A card subtitle, not a message. Meta caps a generic-template subtitle at 80 characters
+  // and `nonFollowerGateText` is 81 — one over, which the payload validator caught rather
+  // than Meta silently truncating "over." off the end. Its own string rather than a trimmed
+  // copy: the card carries a Visit profile button, so it does not need to spell out
+  // "for more ideas like this" the way a bare text message does.
+  nonFollowerGateCard: "Follow @tinysoho, then reply DONE and I'll send it over.",
   unavailable: "Unable to confirm right now. Please try again a little later.",
   followLag:
     "Almost there 💛 Instagram may take a moment to update. Check that you're following @tinysoho, wait a little, then tap I'm following once more.",

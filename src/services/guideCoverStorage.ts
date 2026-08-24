@@ -1,10 +1,19 @@
 import type { GuideCoverRendition } from "../../shared/guideCoverPolicy.js";
+import { GUIDE_COVER_RENDITION_FILENAMES } from "../../shared/guideCoverPolicy.js";
 import { publicMediaUrl, serverMediaBucket } from "../lib/supabase.js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const HASH_PATTERN = /^[a-f0-9]{64}$/u;
+// Derived from the filename map rather than spelled out, so a new rendition cannot be
+// accepted by the path builder and then rejected by this pattern. The hardcoded
+// "(?:dm|generic)" was a third place that had to be remembered.
+const RENDITION_FILE_ALTERNATION = Object.values(GUIDE_COVER_RENDITION_FILENAMES)
+  .map((filename) => filename.replace(/\.png$/u, ""))
+  .join("|");
 const STORAGE_PATH_PATTERN = new RegExp(
-  "^guide-cover/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/[a-f0-9]{64}/(?:dm|generic)\\.png$",
+  "^guide-cover/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/[a-f0-9]{64}/(?:" +
+    RENDITION_FILE_ALTERNATION +
+    ")\\.png$",
   "u",
 );
 const PNG_SIGNATURE = Buffer.from("89504e470d0a1a0a", "hex");
@@ -61,7 +70,7 @@ export function guideCoverStoragePath(
   ) {
     return null;
   }
-  const filename = input.rendition === "dm_cover" ? "dm.png" : "generic.png";
+  const filename = GUIDE_COVER_RENDITION_FILENAMES[input.rendition];
   return `guide-cover/${input.resourceId.toLowerCase()}/${input.coverVersionId.toLowerCase()}/${input.contentHash}/${filename}`;
 }
 

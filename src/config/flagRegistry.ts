@@ -117,6 +117,37 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
     pageMayStop: true,
   },
   {
+    key: "GUIDE_GATE_CARD_ENABLED",
+    name: "Follow request as a card",
+    group: "outbound",
+    kind: "boolean",
+    doesWhat:
+      "Replaces the plain-text follow request sent to someone who commented with a card: the guide's cover image, the same words, and a Visit profile button.",
+    affectsWho:
+      "A share of people who comment a keyword and are not following yet, set by Follow request card share. It is the first and often the only message those people ever receive.",
+    ifOff:
+      "The follow request is sent as plain text, exactly as before. Nobody loses a guide either way — replying DONE still works identically, because the card never changes the mechanism, only the presentation.",
+    pageMayEnable: false,
+    pageMayStop: true,
+  },
+  {
+    key: "GUIDE_GATE_CARD_PERCENT",
+    name: "Follow request card share",
+    group: "outbound",
+    kind: "percent",
+    doesWhat:
+      "What share of eligible follow requests go out as a card rather than plain text.",
+    affectsWho:
+      "New comment-triggered follow requests only. Someone already mid-conversation is unaffected.",
+    ifOff:
+      "At 0 nobody receives a card, even with Follow request as a card switched on.",
+    // A percentage the console may not SET is discarded outright by `resolvePercent`, so
+    // advertising a stop here would hand an operator a control that does nothing. The way to
+    // halt this rollout is the boolean above, which the page really can stop.
+    pageMayEnable: false,
+    pageMayStop: false,
+  },
+  {
     key: "GUIDE_COVER_DELIVERY_ENABLED",
     name: "Guide cover image",
     group: "outbound",

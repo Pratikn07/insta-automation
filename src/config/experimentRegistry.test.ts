@@ -137,6 +137,8 @@ describe("experiment registry", () => {
       // against an ungated arm that violates the approved product rule.
       "GUIDE_FOLLOW_GATE_V2_ENABLED",
       "GUIDE_RICH_GATE_ENABLED",
+      "GUIDE_GATE_CARD_ENABLED",
+      "GUIDE_GATE_CARD_PERCENT",
       // Cover inclusion is a presentation switch, not a comparison arm. There is no
       // "guide without its cover" hypothesis being measured here; the percent exists to
       // ramp exposure safely, and pairing it with an experiment would imply an ungated

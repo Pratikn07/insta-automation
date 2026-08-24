@@ -166,6 +166,10 @@ export const envSchema = z.object({
   // controlled account or resource match, so an empty pilot list reaches nobody.
   GUIDE_FOLLOW_GATE_V2_ENABLED: booleanFlag(false),
   GUIDE_RICH_GATE_ENABLED: booleanFlag(false),
+  // The V1 comment gate, sent as a card instead of plain text. Ships off with a 0% share so
+  // the first parent only sees it after someone deliberately sets both.
+  GUIDE_GATE_CARD_ENABLED: booleanFlag(false),
+  GUIDE_GATE_CARD_PERCENT: z.coerce.number().int().min(0).max(100).default(0),
   GUIDE_FOLLOW_GATE_V2_COHORT_IG_USER_IDS: z.string().default(""),
   GUIDE_FOLLOW_GATE_V2_RESOURCE_IDS: z.string().default(""),
   GUIDE_COVER_DELIVERY_ENABLED: booleanFlag(false),
