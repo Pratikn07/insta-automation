@@ -45,9 +45,9 @@ This hedge exists only in V2, which before 2026-08-24 had never executed in prod
 
 ## The signal we already have and discard
 
-`reserveFollowResponse` returns `responseNumber: 1 | 2`, derived from
-`guide_access_attempt.follow_response_count`, durable, and already capped at
-`MAX_FOLLOW_RESPONSES = 2` before the attempt goes to owner review. The gate itself does not
+`reserveFollowResponse` returns `responseNumber: 1 | 2 | 3` (`1 | 2` when this was written),
+derived from `guide_access_attempt.follow_response_count`, durable, and capped at
+`MAX_FOLLOW_RESPONSES` before the attempt goes to owner review. The gate itself does not
 reserve a response — only the lag branch does — so `responseNumber === 1` is exactly "first
 re-tap after the gate".
 
@@ -61,7 +61,27 @@ re-tap after the gate".
 | --- | --- | --- |
 | 1st re-tap (`responseNumber` 1) | not following | **new re-ask card** — "One step left 💛" |
 | 2nd re-tap (`responseNumber` 2) | not following | existing `followLag` copy, unchanged |
-| 3rd (`limit_reached`) | not following | owner review, unchanged |
+| 3rd re-tap (`responseNumber` 3) | not following | **closing word** — `followFinal`, plain text |
+| 4th (`limit_reached`) | not following | owner review, no send, attempt stays re-enterable |
+
+> **Amended 2026-08-24, after this shipped.** The row that read "3rd (`limit_reached`) →
+> owner review, unchanged" was wrong in production, and the ladder above is what replaced it.
+>
+> Sending nothing was survivable when the control was "reply DONE": people stop typing. It is
+> not survivable with a card, because Instagram posts a tapped button's title into the thread
+> as the parent's own words and the button stays tappable long after its token is spent. A
+> parent tapped three more times past the cap and was answered nothing each time — every tap
+> looking, to her, like a message she sent and we ignored.
+>
+> Worse, `limit_reached` stamped `lastFollowResult: "non_follower"`, which makes a review
+> terminal. The last thing we had told her was to go and follow the account, so the state we
+> put her in was one where doing exactly as asked could not work.
+>
+> Three changes: a third response carrying a closing message that asks for a typed reply
+> (the one route that cannot expire or be consumed); no follow answer recorded at the cap, so
+> the attempt stays re-enterable; and `MAX_FOLLOW_CHECKS` raised from 3 to 5 — three to run
+> the ladder, one for the closing message, and one held back so "I'll take one more look" is
+> literally true. `MAX_FOLLOW_RESPONSES` is 3.
 
 Most likely explanation first, benefit of the doubt second. A parent who genuinely hit a
 propagation delay is not accused — they are asked to try once more, and the second message is

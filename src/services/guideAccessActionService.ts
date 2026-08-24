@@ -135,15 +135,16 @@ export type GuideAccessActionDependencies = {
   sendText(input: { recipientId: string; text: string }): Promise<MetaSendResult>;
   /**
    * `responseNumber` is required, because it decides WHICH message a parent gets: 1 is the
-   * re-ask that has to sell the follow, 2 is the sympathetic "Instagram may take a moment".
-   * Defaulting it would silently pick one, and picking the sympathetic one for a parent who
-   * never followed is the defect this replaces.
+   * re-ask that has to sell the follow, 2 is the sympathetic "Instagram may take a moment",
+   * 3 is the closing word that hands them a typed reply. Defaulting it would silently pick
+   * one, and picking the sympathetic one for a parent who never followed is the defect this
+   * replaces.
    */
   sendFollowLag: (input: {
     recipientId: string;
     actionToken: string;
     capabilities: GuideActionCapabilities;
-    responseNumber: 1 | 2;
+    responseNumber: 1 | 2 | 3;
     coverUrl?: string;
     categorySlug?: string;
   }) => Promise<MetaSendResult>;
@@ -433,11 +434,17 @@ export function createGuideAccessActionService(
     | { kind: "ready"; tokenId: string }
     | { kind: "outcome"; outcome: GuideAccessActionOutcome }
   > {
-    const expiresAt = tokenExpiry(
-      now,
-      attempt.messagingWindowExpiresAt,
-      dependencies.actionTokenTtlMs,
-    );
+    // The messaging window, NOT the ten-minute action TTL.
+    //
+    // A follow token has to outlive the errand it asks for. Every message carrying one tells
+    // the parent to leave Instagram, follow the account, and come back — and at ten minutes
+    // the tap that comes back was silently refused as expired, with nothing sent. The copy
+    // even says "wait a little", which is an instruction to exceed it.
+    //
+    // The opening's `request_guide` token keeps `actionTokenTtlMs`: it asks for nothing but a
+    // tap, so a short life is right there. This one is bounded by the window, which is the
+    // outer limit on being able to say anything at all.
+    const expiresAt = attempt.messagingWindowExpiresAt;
     if (expiresAt <= now) return { kind: "outcome", outcome: "action_expired" };
 
     let result;
@@ -659,12 +666,12 @@ export function createGuideAccessActionService(
      * Which re-tap this is, and therefore which message they get.
      *
      * `reserveFollowResponse` has always returned this — derived from the durable
-     * `follow_response_count`, already capped at two before owner review — and the code only
-     * ever checked that the reservation succeeded. Reading it is the whole escalation: 1 is the
-     * re-ask, 2 credits a genuine propagation delay. Hoisted out of the branch below because
-     * the send site needs it.
+     * `follow_response_count` — and the code only ever checked that the reservation
+     * succeeded. Reading it is the whole escalation: 1 is the re-ask, 2 credits a genuine
+     * propagation delay, 3 is the closing word that hands them a typed reply. Hoisted out of
+     * the branch below because the send site needs it.
      */
-    let responseNumber: 1 | 2 | null = null;
+    let responseNumber: 1 | 2 | 3 | null = null;
 
     if (context.falseResponse === "lag") {
       let reservation;
@@ -694,12 +701,24 @@ export function createGuideAccessActionService(
           return outcomeForState(reservation.actualState);
         }
         if (reservation.kind === "limit_reached") {
+          // NO follow result recorded, deliberately, and this is the whole difference
+          // between "we have stopped nudging" and "this parent is locked out".
+          //
+          // Stamping `"non_follower"` here made the review terminal: `isRetryableReview`
+          // keys on that field, so the attempt refused every later message for the rest of
+          // the messaging window and only an operator release could clear it. The last
+          // thing we had told this parent was to go and follow the account — so the state
+          // we put them in was one where doing exactly as asked could not work. Observed on
+          // device 2026-08-24.
+          //
+          // Leaving it `unknown` keeps the attempt re-enterable, which is bounded anyway:
+          // `claimDirectInbound` still refuses past MAX_FOLLOW_CHECKS, and that budget now
+          // holds one check back for precisely this parent's next reply.
           const review = await checkpointNeedsReview(
             context.attempt.id,
             "checking_follow",
             "follow_response_limit_reached",
             checkedAt,
-            "non_follower",
           );
           return review.outcome;
         }

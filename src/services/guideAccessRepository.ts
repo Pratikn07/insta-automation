@@ -11,8 +11,32 @@ import {
 import { prisma } from "../lib/prisma.js";
 import { publishedCoverWhere } from "./guideCoverRepository.js";
 
-const MAX_FOLLOW_CHECKS = 3;
-const MAX_FOLLOW_RESPONSES = 2;
+/**
+ * How many live follow reads one attempt may spend, and how many replies a non-follower
+ * may receive. Both were one lower, and between them they ended a parent's journey in
+ * silence before that parent had a chance to act on what we asked them to do.
+ *
+ * Observed on device 2026-08-24. The gate's button is a control that stays in the thread
+ * and posts its own label as the parent's words every time it is pressed, so people press
+ * it repeatedly. One parent pressed it six times. The first three answered; the rest were
+ * dropped without a word, because the budget was spent like this:
+ *
+ *   tap 1 (the gate's own button)  check 1  -> the follower gate
+ *   tap 2                          check 2  -> the re-ask card
+ *   tap 3                          check 3  -> "Instagram may take a moment"
+ *   tap 4                          refused  -> nothing, ever again
+ *
+ * The last message we sent told her to go and follow the account and come back. The check
+ * budget ran out at exactly the moment she was doing that, so the one read that mattered —
+ * the one AFTER she followed — was the one we refused to spend.
+ *
+ * Five and three are sized to that journey: three checks to run the ladder, a fourth to
+ * carry the closing message, and a fifth held back for the parent who does what the closing
+ * message asks. Each check is a single Graph read; the cap is here to bound them, not to
+ * end conversations.
+ */
+const MAX_FOLLOW_CHECKS = 5;
+const MAX_FOLLOW_RESPONSES = 3;
 const ACTIVE_ATTEMPT_STATES: readonly GuideAccessAttemptState[] = [
   "awaiting_request",
   "checking_follow",
@@ -192,7 +216,7 @@ export type SettleCoverExposureInput = {
 };
 
 export type ReserveGuideFollowResponseResult =
-  | { kind: "reserved"; responseNumber: 1 | 2 }
+  | { kind: "reserved"; responseNumber: 1 | 2 | 3 }
   | { kind: "expired"; attempt: GuideAccessAttempt }
   | { kind: "limit_reached" }
   | { kind: "attempt_not_found" }
@@ -1069,7 +1093,7 @@ export function createGuideAccessRepository(
         if (updated.count !== 1) {
           return { kind: "state_conflict" as const, actualState: locked.attempt.state };
         }
-        const responseNumber = (locked.attempt.followResponseCount + 1) as 1 | 2;
+        const responseNumber = (locked.attempt.followResponseCount + 1) as 1 | 2 | 3;
         return { kind: "reserved" as const, responseNumber };
       });
     },

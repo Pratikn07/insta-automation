@@ -266,6 +266,43 @@ describe("sendGuideFollowLag — first re-tap", () => {
 });
 
 describe("sendGuideFollowLag", () => {
+  /**
+   * The closing word carries NO control, and not because a capability was missing.
+   *
+   * Everything this parent had been given was a control, and every one of them was spent or
+   * stale by now — that is what left her tapping a live-looking card button into silence.
+   * The one route back that cannot expire or be consumed is a typed reply, so this message
+   * asks for one and offers nothing to press. Asserted with every capability ON, because the
+   * bug would be it quietly becoming a chip again.
+   */
+  it("sends the closing word as plain text even with every rich capability on", async () => {
+    const text =
+      "I still can't see the follow from my side 💛 If you've followed @tinysoho, reply DONE and I'll take one more look.";
+
+    await sendGuideFollowLag({
+      recipientId: RECIPIENT_ID,
+      actionToken: ACTION_TOKEN,
+      responseNumber: 3,
+      capabilities: {
+        privateQuickReply: true,
+        dmGenericGate: true,
+        dmQuickReply: true,
+        privateGeneric: true,
+      },
+      coverUrl: "https://example.test/cover.png",
+      categorySlug: "recipes",
+    });
+
+    expect(sendMetaMessage).toHaveBeenCalledWith(
+      {
+        recipient: { id: RECIPIENT_ID },
+        messaging_type: "RESPONSE",
+        message: { text },
+      },
+      { recipientId: RECIPIENT_ID, mode: "dm_text_follow_final", messageLength: text.length },
+    );
+  });
+
   it("keeps the replacement token at the sender boundary while capability is text-only", async () => {
     const text =
       "Almost there 💛 Instagram may take a moment to update. Check that you're following @tinysoho, wait a little, then reply DONE once more.";

@@ -20,8 +20,10 @@ const RICH: GuideActionCapabilities = {
   dmQuickReply: true,
 };
 const COMMENT_ID = "comment-4001";
-// Mirrors MAX_FOLLOW_CHECKS in guideAccessRepository.ts.
-const MAX_FOLLOW_CHECKS = 3;
+// Mirror the real budgets in guideAccessRepository.ts. Both are asserted against below,
+// so a change there that this harness does not follow shows up as a failing ladder.
+const MAX_FOLLOW_CHECKS = 5;
+const MAX_FOLLOW_RESPONSES = 3;
 
 const ATTEMPT_ID = "10000000-0000-4000-8000-000000000001";
 const CONVERSATION_ID = "20000000-0000-4000-8000-000000000002";
@@ -30,6 +32,10 @@ const REQUEST_TOKEN_ID = "40000000-0000-4000-8000-000000000004";
 const FOLLOW_TOKEN_1 = "50000000-0000-4000-8000-000000000005";
 const FOLLOW_TOKEN_2 = "60000000-0000-4000-8000-000000000006";
 const FOLLOW_TOKEN_3 = "70000000-0000-4000-8000-000000000007";
+// The ladder now runs to a closing message and holds one check back for the reply it asks
+// for, so the harness needs enough rotations to reach both.
+const FOLLOW_TOKEN_4 = "b0000000-0000-4000-8000-00000000000b";
+const FOLLOW_TOKEN_5 = "c0000000-0000-4000-8000-00000000000c";
 const INBOUND_ID = "80000000-0000-4000-8000-000000000008";
 const DIRECT_INBOUND_ID = "90000000-0000-4000-8000-000000000009";
 const THREAD_ID = "a0000000-0000-4000-8000-00000000000a";
@@ -178,7 +184,13 @@ function createHarness(input: {
   let nextToken = 0;
   let requestTokenIssued = false;
   let coverClaimed = false;
-  const followTokens = [FOLLOW_TOKEN_1, FOLLOW_TOKEN_2, FOLLOW_TOKEN_3];
+  const followTokens = [
+    FOLLOW_TOKEN_1,
+    FOLLOW_TOKEN_2,
+    FOLLOW_TOKEN_3,
+    FOLLOW_TOKEN_4,
+    FOLLOW_TOKEN_5,
+  ];
   const consumed = new Set<string>();
   const directClaims = new Set<string>();
   const cancelledTokens = new Set<string>();
@@ -355,8 +367,10 @@ function createHarness(input: {
     reserveFollowResponse: vi.fn(async () => {
       order.push("reserve:follow_response");
       fail("reserveFollowResponse");
-      if (current.followResponseCount >= 2) return { kind: "limit_reached" } as const;
-      const responseNumber = (current.followResponseCount + 1) as 1 | 2;
+      if (current.followResponseCount >= MAX_FOLLOW_RESPONSES) {
+        return { kind: "limit_reached" } as const;
+      }
+      const responseNumber = (current.followResponseCount + 1) as 1 | 2 | 3;
       current = { ...current, followResponseCount: responseNumber };
       loseAcknowledgement("reserveFollowResponse");
       return { kind: "reserved", responseNumber } as const;
@@ -665,7 +679,10 @@ describe("request and follow action orchestration", () => {
       action: "check_follow",
       expectedState: "checking_follow",
       now: NOW,
-      expiresAt: new Date(NOW.getTime() + 10 * 60_000),
+      // The messaging window, not the ten-minute action TTL. This token is attached to a
+      // message telling the parent to leave Instagram, follow the account and come back;
+      // at ten minutes the tap that came back was refused as expired, silently.
+      expiresAt: WINDOW_END,
     });
     expect(test.sendFollowerGate).toHaveBeenCalledWith({
       recipientId: SENDER_ID,
@@ -943,19 +960,18 @@ describe("request and follow action orchestration", () => {
     expect(test.sendFollowerGate).not.toHaveBeenCalled();
   });
 
-  it("sends at most two gentle lag responses, then marks review and sends nothing", async () => {
+  it("climbs re-ask, delay, closing word — then stops sending", async () => {
     const test = createHarness({
-      freshResults: [live(false), live(false), live(false), live(false)],
+      freshResults: [live(false), live(false), live(false), live(false), live(false)],
     });
 
     await expect(request(test)).resolves.toBe("follow_not_confirmed");
     await expect(check(test, FOLLOW_TOKEN_1)).resolves.toBe("follow_not_confirmed");
     await expect(check(test, FOLLOW_TOKEN_2)).resolves.toBe("follow_not_confirmed");
-    await expect(check(test, FOLLOW_TOKEN_3)).resolves.toBe(
-      "access_attempt_needs_review",
-    );
+    await expect(check(test, FOLLOW_TOKEN_3)).resolves.toBe("follow_not_confirmed");
+    await expect(check(test, FOLLOW_TOKEN_4)).resolves.toBe("access_attempt_needs_review");
 
-    expect(test.sendFollowLag).toHaveBeenCalledTimes(2);
+    expect(test.sendFollowLag).toHaveBeenCalledTimes(3);
     expect(test.sendFollowLag).toHaveBeenNthCalledWith(1, {
       recipientId: SENDER_ID,
       actionToken: FOLLOW_TOKEN_2,
@@ -971,8 +987,73 @@ describe("request and follow action orchestration", () => {
       // now belongs. No cover: that message has no image slot, so it is not looked up.
       responseNumber: 2,
     });
-    expect(test.attempt().state).toBe("needs_review");
+    expect(test.sendFollowLag).toHaveBeenNthCalledWith(3, {
+      recipientId: SENDER_ID,
+      actionToken: FOLLOW_TOKEN_4,
+      capabilities: TEXT_ONLY,
+      // The THIRD, and the last thing we say. Before this the ladder simply ran out here and
+      // the parent was answered nothing — three more times, on device, 2026-08-24.
+      responseNumber: 3,
+    });
     expect(test.startGuideDelivery).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The closing message promises "one more look", and this is the test that keeps it honest.
+   *
+   * Two things had to be true together: the review must not be stamped with a follow answer
+   * (which would make it terminal), and a check must still be left in the budget. Either one
+   * missing and the parent who does exactly what we asked gets nothing.
+   */
+  it("still delivers to a parent who follows after the closing message", async () => {
+    const test = createHarness({
+      freshResults: [live(false), live(false), live(false), live(false), live(true)],
+    });
+
+    await expect(request(test)).resolves.toBe("follow_not_confirmed");
+    await expect(check(test, FOLLOW_TOKEN_1)).resolves.toBe("follow_not_confirmed");
+    await expect(check(test, FOLLOW_TOKEN_2)).resolves.toBe("follow_not_confirmed");
+    await expect(check(test, FOLLOW_TOKEN_3)).resolves.toBe("follow_not_confirmed");
+    expect(test.sendFollowLag).toHaveBeenLastCalledWith(
+      expect.objectContaining({ responseNumber: 3 }),
+    );
+
+    // She goes and follows, then replies DONE as the closing message asked.
+    await expect(
+      test.service.startDirectDmGuideRequest(
+        {
+          id: CONVERSATION_ID,
+          igUserId: SENDER_ID,
+          resourceId: RESOURCE_ID,
+          guideName: "toddler sleep guide",
+        },
+        {
+          id: DIRECT_INBOUND_ID,
+          threadId: THREAD_ID,
+          eventAt: EVENT_AT,
+          messagingWindowExpiresAt: WINDOW_END,
+        },
+      ),
+    ).resolves.toBe("guide_delivery_started");
+
+    expect(test.startGuideDelivery).toHaveBeenCalledOnce();
+  });
+
+  // The lockout, which is the half of this that cost a parent their guide even when she did
+  // follow. A review with a definitive answer is terminal; this one must not carry one.
+  it("leaves the exhausted attempt re-enterable rather than terminal", async () => {
+    const test = createHarness({
+      freshResults: [live(false), live(false), live(false), live(false), live(false)],
+    });
+
+    await expect(request(test)).resolves.toBe("follow_not_confirmed");
+    await expect(check(test, FOLLOW_TOKEN_1)).resolves.toBe("follow_not_confirmed");
+    await expect(check(test, FOLLOW_TOKEN_2)).resolves.toBe("follow_not_confirmed");
+    await expect(check(test, FOLLOW_TOKEN_3)).resolves.toBe("follow_not_confirmed");
+    await expect(check(test, FOLLOW_TOKEN_4)).resolves.toBe("access_attempt_needs_review");
+
+    expect(test.attempt().state).toBe("needs_review");
+    expect(test.attempt().lastFollowResult).toBe("unknown");
   });
 
   it("uses the bounded lag path when a direct DM rechecks an active follow wait", async () => {
@@ -1852,12 +1933,16 @@ describe("retry after an inconclusive review", () => {
     expect(test.sendFollowerGate).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps a lag-limit review terminal and sends nothing", async () => {
+  // A review that DOES hold a definitive answer stays terminal — an uncertain gate send is
+  // the live producer of one, since Meta may already have delivered that gate and it must
+  // never be sent twice. The response limit no longer records an answer here, deliberately:
+  // see "leaves the exhausted attempt re-enterable rather than terminal".
+  it("keeps a review holding a definitive non-follower answer terminal", async () => {
     const test = createHarness({
       initialAttempt: attempt({
         state: "needs_review",
         lastFollowResult: "non_follower",
-        followResponseCount: 2,
+        followResponseCount: 3,
       }),
     });
 
@@ -1919,7 +2004,7 @@ describe("retry after an inconclusive review", () => {
     // An awaiting_follow attempt whose lag send came back uncertain lands in
     // needs_review with lastFollowResult still "unknown". Its retry must not be
     // treated as a first contact: that would send the initial gate copy and skip
-    // reserveFollowResponse, escaping the two-response limit.
+    // reserveFollowResponse, escaping the response limit.
     const test = createHarness({
       initialAttempt: attempt({
         state: "needs_review",

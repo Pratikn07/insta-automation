@@ -18,6 +18,11 @@ const SENDER_ID = "instagram-sender-1";
 const NOW = new Date("2026-08-23T12:00:00.000Z");
 const WINDOW_EXPIRES_AT = new Date("2026-08-24T12:00:00.000Z");
 const TOKEN_EXPIRES_AT = new Date("2026-08-23T12:10:00.000Z");
+// Mirror the module's own budgets. Named rather than inlined so the numbers live in one
+// place here too — they were spelled out at four separate call sites, and a change to
+// either one meant hunting down every literal.
+const MAX_FOLLOW_CHECKS = 5;
+const MAX_FOLLOW_RESPONSES = 3;
 
 function attempt(
   overrides: Partial<GuideAccessAttempt> = {},
@@ -249,7 +254,7 @@ describe("guide access repository", () => {
       where: {
         id: ATTEMPT_ID,
         state: "awaiting_request",
-        followCheckCount: { lt: 3 },
+        followCheckCount: { lt: MAX_FOLLOW_CHECKS },
         messagingWindowExpiresAt: { gt: NOW },
       },
       data: {
@@ -388,7 +393,7 @@ describe("guide access repository", () => {
       where: {
         id: ATTEMPT_ID,
         state: "awaiting_request",
-        followCheckCount: { lt: 3 },
+        followCheckCount: { lt: MAX_FOLLOW_CHECKS },
         messagingWindowExpiresAt: { gt: NOW },
       },
       data: {
@@ -460,7 +465,7 @@ describe("guide access repository", () => {
     ).resolves.toEqual({ kind: "state_conflict", actualState: "awaiting_request" });
   });
 
-  it("reserves at most two automatic follow responses", async () => {
+  it("reserves automatic follow responses up to the limit and no further", async () => {
     const first = harness({
       lockedAttempt: attempt({
         state: "awaiting_follow",
@@ -472,7 +477,19 @@ describe("guide access repository", () => {
       lockedAttempt: attempt({
         state: "awaiting_follow",
         lastFollowResult: "non_follower",
-        followResponseCount: 2,
+        followResponseCount: MAX_FOLLOW_RESPONSES,
+      }),
+    });
+
+    // The response BEFORE the cap must still be reservable. Without this the cap is only
+    // pinned from above, and lowering it would go unnoticed — which matters because the
+    // last reservable response is the closing message, the one thing that keeps a parent
+    // who cannot be seen following from being answered with nothing at all.
+    const last = harness({
+      lockedAttempt: attempt({
+        state: "awaiting_follow",
+        lastFollowResult: "non_follower",
+        followResponseCount: MAX_FOLLOW_RESPONSES - 1,
       }),
     });
 
@@ -483,6 +500,13 @@ describe("guide access repository", () => {
         now: NOW,
       }),
     ).resolves.toEqual({ kind: "reserved", responseNumber: 2 });
+    await expect(
+      last.repository.reserveFollowResponse({
+        attemptId: ATTEMPT_ID,
+        expectedState: "awaiting_follow",
+        now: NOW,
+      }),
+    ).resolves.toEqual({ kind: "reserved", responseNumber: MAX_FOLLOW_RESPONSES });
     await expect(
       capped.repository.reserveFollowResponse({
         attemptId: ATTEMPT_ID,
@@ -597,7 +621,7 @@ describe("retryable review fence in claimDirectInbound", () => {
         id: ATTEMPT_ID,
         state: "needs_review",
         lastFollowResult: "unknown",
-        followCheckCount: { lt: 3 },
+        followCheckCount: { lt: MAX_FOLLOW_CHECKS },
         messagingWindowExpiresAt: { gt: NOW },
       },
       data: {
@@ -638,7 +662,7 @@ describe("retryable review fence in claimDirectInbound", () => {
       lockedAttempt: attempt({
         state: "needs_review",
         lastFollowResult: "unknown",
-        followCheckCount: 3,
+        followCheckCount: MAX_FOLLOW_CHECKS,
       }),
     });
 
