@@ -174,14 +174,23 @@ describe("guide cover layout", () => {
       expect(square.ok).toBe(true);
       if (!landscape.ok || !square.ok) return;
 
-      // And the reason it cannot regress: the square INHERITS the landscape text measure
-      // instead of choosing its own, so copy that fits one fits the other by construction.
-      // The square buys its extra room vertically, which is the axis it actually has spare.
-      for (const field of ["headline", "supportingLine", "closingLine"] as const) {
+      // The headline and the closing line INHERIT the landscape measure rather than
+      // choosing their own, so copy that fits one fits the other by construction.
+      for (const field of ["headline", "closingLine"] as const) {
         expect(square.value.text[field].maxWidth).toBe(
           landscape.value.text[field].maxWidth,
         );
       }
+
+      // The supporting line is the deliberate exception: it may only ever GAIN measure.
+      // Written as an inequality rather than an equality because the square gives the
+      // corner templates a much wider column, and as a comparison rather than a literal
+      // because a regression here is silent — a narrower measure still lays out, it just
+      // wraps to more lines at a size chosen for fewer, and the overflow surfaces on
+      // whichever single category happens to have the longest copy.
+      expect(square.value.text.supportingLine.maxWidth).toBeGreaterThanOrEqual(
+        landscape.value.text.supportingLine.maxWidth,
+      );
     });
 
     /**
@@ -219,18 +228,31 @@ describe("guide cover layout", () => {
       }
     });
 
-    it("keeps the square text column clear of the corner artwork", () => {
+    /**
+     * Only the closing line is checked here, and that is the whole point.
+     *
+     * The closing line sits low, genuinely beside the illustration, so a width clamp is
+     * what keeps it clear and a width assertion can prove it. The supporting line sits
+     * ABOVE the illustration and deliberately runs the full canvas width straight across
+     * the artwork box — for it, a width assertion would be false, and the real guarantee
+     * (no paint behind the text) is not visible from the layout at all, because the box's
+     * upper region is reserved and empty. That one is asserted in pixels, in
+     * `guideCoverPngRenderer.test.ts`.
+     */
+    it("keeps the square closing line clear of the corner artwork", () => {
       const result = layoutGuideCover(inputFor("bedtime"), metrics, "square_card");
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       const { geometry, text } = result.value;
 
       expect(
-        text.supportingLine.x + text.supportingLine.maxWidth,
-      ).toBeLessThanOrEqual(geometry.artwork.x);
-      expect(
         text.closingLine.x + text.closingLine.maxWidth,
       ).toBeLessThanOrEqual(geometry.artwork.x);
+      // And the supporting line really does take the wider measure, so nobody reads the
+      // absence of a clamp above as an oversight.
+      expect(text.supportingLine.maxWidth).toBeGreaterThan(
+        text.closingLine.maxWidth,
+      );
     });
 
     /**

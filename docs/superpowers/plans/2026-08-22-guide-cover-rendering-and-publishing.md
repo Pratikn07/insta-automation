@@ -269,6 +269,61 @@
 - [ ] Confirm `GUIDE_COVER_DELIVERY_ENABLED`, `GUIDE_RICH_GATE_ENABLED`, and `GUIDE_FOLLOW_GATE_V2_ENABLED` do not exist or remain false; this plan contacts no parents.
 - [ ] Commit with `feat: gate guide cover authoring foundation`.
 
+### Task 10: Publish the square rendition (NOT STARTED — added 2026-08-23)
+
+The renderer produces `square_card` (1200x1200) and its geometry is locked with tests,
+but **nothing can publish it yet and nothing sends it.** This task is what closes that
+gap, and it is a schema task before it is a service task.
+
+**Verified against production, 2026-08-23** — read these before designing the migration,
+because two of the three are easy to miss and one of them fails silently:
+
+1. `guide_cover_orphan_rendition_check` is
+   `CHECK (rendition = ANY (ARRAY['dm_cover','generic_card']))`. It does not allow
+   `square_card`, so orphan recording — which happens *before* the upload — rejects the
+   row and publication cannot proceed. This is the hard stop, and it fails loudly.
+2. `guide_cover_orphan_storage_path_check` derives the filename with
+   `CASE rendition WHEN 'dm_cover' THEN 'dm' ELSE 'generic' END`. **The `ELSE` is the
+   trap.** Widen the rendition CHECK in (1) and this constraint will happily accept a
+   square stored at `generic.png` — no error, wrong filename, and the two renditions now
+   share a path namespace. Whatever (1) allows, this CASE must name explicitly.
+3. `resource_cover_version_ready_render_check` pins `generic_storage_path` to exactly
+   `guide-cover/{resource}/{version}/{hash}/generic.png`. So reusing that column for the
+   square forces the `generic.png` filename; a `square.png` filename requires a new
+   column and a change here.
+
+And one code-side consequence that leaks storage rather than erroring:
+`validateGuideCoverObjectIdentity` in `src/services/guideCoverCleanupStorage.ts` maps only
+`dm_cover -> dm` and `generic_card -> generic`, returning `null` for anything else, which
+makes the identity invalid and makes cleanup **refuse to delete**. Today that is the safe
+direction — an unpublishable square cannot be wrongly deleted. The moment squares can be
+published, it inverts: every orphaned square becomes permanently unreclaimable. This
+mapping has to be widened in the same change as the constraints, not after.
+
+- [ ] Decide the column question: reuse `generic_storage_path` (forces the `generic.png`
+      filename, retires the name in place) or add `square_storage_path` (clearer, one more
+      column and constraint). Prefer whichever leaves no path shared between two renditions.
+- [ ] Write the migration contract test FIRST, asserting a `square_card` orphan row is
+      accepted, that its path uses the square filename and not `generic.png`, and that the
+      old `generic_card` values still validate for historical rows.
+- [ ] Widen `validateGuideCoverObjectIdentity` and prove a published square is claimable by
+      cleanup — the assertion that matters is a successful delete, not a valid identity.
+- [ ] Render and store both renditions in `publishCoverVersion`, preserving its existing
+      guarantees: durable intent before Storage, upload outside the transaction, exact
+      replay on retry, and no second edition. Two uploads means two orphan claims and a
+      partial-success path that did not exist before — cover it explicitly.
+- [ ] Resolve the square's public URL at send time and pass it as `coverUrl` instead of the
+      `""` placeholder in `guideAccessActionService`'s default `sendFollowerGate`.
+- [ ] Add the missing `private_generic` branch to `sendGuideInitialPrivateReply`. The
+      payload builder already supports the case and nothing reaches it. This is the branch
+      that lets one message carry artwork and a control together, which is the only shape
+      available on the comment path, where Meta permits exactly one private reply.
+- [ ] Only then spend a fresh comment on the `private_generic` capability case, so the one
+      irreversible attempt verifies the real send path rather than the payload builder.
+- [ ] Keep `GUIDE_RICH_GATE_ENABLED` false throughout. Enabling it needs the inbound
+      webhook shape confirmed against the guide-action router and a duplicate tap shown to
+      be idempotent — neither of which the spike observed.
+
 ## Final Verification
 
 - [ ] Run `npm ci`, `npm test`, and `npm run build` in a clean checkout.

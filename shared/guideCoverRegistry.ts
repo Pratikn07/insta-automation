@@ -54,7 +54,7 @@ export const GUIDE_COVER_CATEGORIES = {
     exampleCopy: {
       headline: "Bedtime can feel softer",
       supportingLine: "A calmer bedtime, one small shift at a time.",
-      closingLine: "Prepared for calmer evenings.",
+      closingLine: "Made with care by TinySoho.",
       alternativeDescription:
         "Blush TinySoho sleep guide cover with a moonlit house illustration.",
     },
@@ -95,7 +95,7 @@ export const GUIDE_COVER_CATEGORIES = {
     exampleCopy: {
       headline: "Ready in their own time",
       supportingLine: "Simple routines for growing confidence, without pressure.",
-      closingLine: "Prepared for little moments of progress.",
+      closingLine: "Made with care by TinySoho.",
       alternativeDescription:
         "Warm TinySoho potty-training guide cover with sunlight, a folded towel and a plant.",
     },
@@ -162,7 +162,7 @@ export const GUIDE_COVER_CATEGORIES = {
     exampleCopy: {
       headline: "Little hands, growing minds",
       supportingLine: "A calm invitation to focus, coordinate and discover.",
-      closingLine: "Prepared for curious little minds.",
+      closingLine: "Made with care by TinySoho.",
       alternativeDescription:
         "Blush TinySoho activity guide cover with a discovery tray on a structured right panel.",
     },

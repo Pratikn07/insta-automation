@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { Resvg } from "@resvg/resvg-js";
 import { describe, expect, it } from "vitest";
 
 import type { GuideCoverRenderInput } from "../../shared/guideCoverPolicy.js";
@@ -6,6 +7,10 @@ import {
   GUIDE_COVER_CATEGORIES,
   type GuideCoverCategorySlug,
 } from "../../shared/guideCoverRegistry.js";
+import {
+  layoutGuideCover,
+  type GuideCoverFontMetrics,
+} from "../../shared/guideCoverRenderer.js";
 import {
   GUIDE_COVER_RENDERER_VERSION,
   renderGuideCoverPng,
@@ -91,11 +96,11 @@ describe("guide cover PNG renderer", () => {
   it.each([
     [
       "bedtime",
-      "6e32a066e0d2c66f991729fcc109ebad0b95e0dfb96ec5a6be98c47a0d2233d4",
+      "577eee46948d5b9a559473e7b0d75815ddb10d06cc9709da7517b1bd1b2ee858",
     ],
     [
       "potty-training",
-      "9cea8b2d9b00e7ed22c746a5e4b4b308a6aa2699f746e7f52317fe13af86905e",
+      "fc35592931d08c9e21d7512f788ae2d241dfe020461e17ea19fc27412afb6f09",
     ],
     [
       "recipes",
@@ -103,7 +108,7 @@ describe("guide cover PNG renderer", () => {
     ],
     [
       "montessori-activities",
-      "0a7c85b3cd2b31f4392cb8947853871dc02368cf2f82d4f80cf83bd00a173245",
+      "58b5f8bbd69f6554b4fe8c2f6e85d369d029b515d0c404045d194d2c960752d3",
     ],
   ] as const)("matches the approved %s PNG snapshot", async (slug, pngHash) => {
     const result = await renderGuideCoverPng(inputFor(slug), "dm_cover");
@@ -112,4 +117,123 @@ describe("guide cover PNG renderer", () => {
     if (!result.ok) return;
     expect(result.value.pngHash).toBe(pngHash);
   });
+
+  /**
+   * The square's supporting line runs the FULL width of the canvas, straight across the
+   * artwork box, and is safe only because the illustration's ink begins below it. Every
+   * other guarantee in this feature is a width clamp that can be asserted from the layout;
+   * this one cannot, because the artwork box's upper region is empty — the corner
+   * compositions fill a triangle from their hypotenuse down and to the right, so the box
+   * says "reserved" where nothing is drawn.
+   *
+   * So this checks the actual claim in pixels: no illustration colour appears anywhere in
+   * the rows the supporting line occupies. It fails if the artwork scale grows, if
+   * supportTop moves down, or if an illustration's internal offsets shift upward — three
+   * independent changes that each render without error and each put a paint colour behind
+   * the one line the square exists to make readable.
+   */
+  it.each(["bedtime", "potty-training", "recipes"] as const)(
+    "keeps illustration ink out of the %s square's supporting line",
+    async (slug) => {
+      const category = GUIDE_COVER_CATEGORIES[slug];
+      const result = await renderGuideCoverPng(inputFor(slug), "square_card");
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const pixmap = decodePng(result.value.png, result.value.width, result.value.height);
+      const { pixels, width } = pixmap;
+
+      const support = supportingLineBand(slug);
+      // Bounded by line boxes for the same reason the layout test uses them: lineHeight >=
+      // fontSize for every entry in TYPOGRAPHY, so one above the first baseline covers the
+      // tallest ascender and one below the last covers the deepest descender. Assumes the
+      // maximum two lines rather than reading the wrapped count, so the band cannot narrow
+      // when copy shortens — erring wide makes a pass mean more.
+      const firstRow = Math.max(0, support.y - support.lineHeight);
+      const lastRow = Math.min(
+        result.value.height - 1,
+        support.y + support.lineHeight * 2,
+      );
+
+      // Paint colours only. `background` is the paper the text sits on and `ink` is the
+      // text itself, so both must be excluded or every row would "fail".
+      const paint = [
+        category.renderColors.surface,
+        category.renderColors.artPrimary,
+        category.renderColors.artSecondary,
+        category.renderColors.accent,
+      ].map(hexToRgb);
+
+      const intrusions: string[] = [];
+      for (let y = firstRow; y <= lastRow; y += 1) {
+        for (let x = 0; x < width; x += 1) {
+          const offset = (y * width + x) * 4;
+          const found = paint.find(
+            (colour) =>
+              pixels[offset] === colour.r &&
+              pixels[offset + 1] === colour.g &&
+              pixels[offset + 2] === colour.b &&
+              pixels[offset + 3] === 255,
+          );
+          if (found) intrusions.push(`(${x},${y})`);
+        }
+      }
+
+      expect(
+        intrusions.slice(0, 5),
+        `illustration ink inside rows ${firstRow}-${lastRow}`,
+      ).toEqual([]);
+    },
+  );
 });
+
+function hexToRgb(hex: string): { r: number; g: number; b: number } {
+  const value = Number.parseInt(hex.replace("#", ""), 16);
+  return { r: (value >> 16) & 255, g: (value >> 8) & 255, b: value & 255 };
+}
+
+/**
+ * Decodes the PUBLISHED png bytes rather than re-rendering the SVG, by handing them back to
+ * Resvg wrapped in an `<image>`. Re-rendering would test a second render of the same
+ * layout; this tests the artifact that actually reaches a parent. Resvg is already a
+ * dependency, so this adds no decoder.
+ */
+function decodePng(
+  png: Buffer,
+  width: number,
+  height: number,
+): { pixels: Buffer; width: number } {
+  const wrapper =
+    `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" ` +
+    `width="${width}" height="${height}">` +
+    `<image width="${width}" height="${height}" ` +
+    `xlink:href="data:image/png;base64,${png.toString("base64")}"/></svg>`;
+  const pixmap = new Resvg(wrapper).render();
+  return { pixels: pixmap.pixels, width: pixmap.width };
+}
+
+/**
+ * Where the square's supporting line sits, taken from the layout rather than hardcoded, so
+ * moving `supportTop` moves the band this checks instead of leaving it checking empty rows.
+ * The synthetic metric is fine here: `y` and `lineHeight` are set by the rendition's
+ * geometry and type scale, neither of which depends on how wide the glyphs measure.
+ */
+function supportingLineBand(slug: GuideCoverCategorySlug): {
+  y: number;
+  lineHeight: number;
+} {
+  const laid = layoutGuideCover(inputFor(slug), SYNTHETIC_METRICS, "square_card");
+  if (!laid.ok) throw new Error(`layout_failed:${slug}:${laid.error.code}`);
+  const { y, lineHeight } = laid.value.text.supportingLine;
+  return { y, lineHeight };
+}
+
+const SYNTHETIC_METRICS: GuideCoverFontMetrics = {
+  measureText({ family, fontSize, letterSpacing, text }) {
+    const factor = family === "Source Serif 4" ? 0.52 : 0.5;
+    return (
+      [...text].length * fontSize * factor +
+      Math.max(0, [...text].length - 1) * letterSpacing
+    );
+  },
+};
