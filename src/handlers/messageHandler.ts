@@ -12,6 +12,11 @@ import {
 import { findKeywordInMessage } from "../services/keywordService.js";
 import { resolveJourneyIntent } from "../services/journeyIntentService.js";
 import { sendSequence } from "../services/sequenceSender.js";
+import {
+  sendCoverBeforeGate,
+  wasCoverShownAtGate,
+  withoutAlreadyShownCover,
+} from "../services/guideCoverGateExposure.js";
 import { guideDeliveryOwner } from "../services/guideDeliveryRollout.js";
 import { deliverGuideForTrigger } from "../services/guideDeliveryService.js";
 import { sendTrackedText } from "../services/dmDeliveryService.js";
@@ -622,6 +627,16 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     }
 
     try {
+      // The cover goes FIRST, so the ask arrives under a picture of what is on offer.
+      // Outside the try/catch that guards the gate on purpose: it swallows its own
+      // failures and reports whether the parent actually saw it, so a cover problem can
+      // never cost them the gate message that converts.
+      await sendCoverBeforeGate({
+        conversationId: convo.id,
+        resourceId: keyword.resource.id,
+        recipientIgUserId: senderId,
+        messages: keyword.resource.messages,
+      });
       await sendTrackedText({
         recipientIgUserId: senderId,
         text: keyword.gateMessage,
@@ -698,7 +713,10 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
         await deliverOwnedGuide({
           conversationId: convo.id,
           resourceId: convo.keyword.resource.id,
-          messages: convo.keyword.resource.messages,
+          messages: withoutAlreadyShownCover(
+            convo.keyword.resource.messages,
+            await wasCoverShownAtGate(convo.id),
+          ),
           senderId,
           threadId: inbound.threadId,
           triggerId: inbound.messageId,
@@ -781,7 +799,10 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
       await deliverOwnedGuide({
         conversationId: convo.id,
         resourceId: convo.keyword.resource.id,
-        messages: convo.keyword.resource.messages,
+        messages: withoutAlreadyShownCover(
+          convo.keyword.resource.messages,
+          await wasCoverShownAtGate(convo.id),
+        ),
         senderId,
         threadId: inbound.threadId,
         triggerId: inbound.messageId,
