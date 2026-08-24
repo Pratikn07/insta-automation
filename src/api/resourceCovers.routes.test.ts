@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const bool = vi.fn();
 const createOrLoadPresentation = vi.fn();
 const createOrLoadDraft = vi.fn();
+const repointPresentation = vi.fn();
 const saveDraft = vi.fn();
 const findPublished = vi.fn();
 const approve = vi.fn();
@@ -24,6 +25,7 @@ vi.mock("../services/guideCoverRepository.js", () => ({
   createGuideCoverRepository: () => ({
     createOrLoadPresentation,
     createOrLoadDraft,
+    repointPresentation,
     saveDraft,
     findPublished,
   }),
@@ -108,6 +110,7 @@ beforeEach(() => {
   updatePresentation.mockResolvedValue({ count: 1 });
   findPublished.mockResolvedValue(null);
   move.mockResolvedValue({ ok: true, outcome: "moved", editionNumber: 4 });
+  repointPresentation.mockResolvedValue({ ok: true, outcome: "moved" });
   suggest.mockResolvedValue({
     ok: true,
     replayed: false,
@@ -199,10 +202,13 @@ describe("resource cover API", () => {
   it("requires the explicit move operation once a cover is published", async () => {
     findPresentation.mockResolvedValue({
       resourceId: RESOURCE_ID,
-      categoryId: "10000000-0000-4000-8000-000000000002",
+      categoryId: SECOND_CATEGORY_ID,
       editionNumber: 7,
     });
-    countPublished.mockResolvedValue(1);
+    repointPresentation.mockResolvedValue({
+      ok: false,
+      error: "cover_category_locked_by_publication",
+    });
 
     await request(app())
       .put(`/api/resources/${RESOURCE_ID}/presentation`)
@@ -210,6 +216,33 @@ describe("resource cover API", () => {
       .expect(409, { error: "published_category_move_requires_explicit_operation" });
 
     expect(updatePresentation).not.toHaveBeenCalled();
+  });
+
+  it("moves an unpublished guide to another collection even once it has drafts", async () => {
+    findPresentation
+      .mockResolvedValueOnce({
+        resourceId: RESOURCE_ID,
+        categoryId: SECOND_CATEGORY_ID,
+        editionNumber: null,
+      })
+      .mockResolvedValueOnce({
+        resourceId: RESOURCE_ID,
+        categoryId: CATEGORY_ID,
+        editionNumber: null,
+      });
+    repointPresentation.mockResolvedValue({ ok: true, outcome: "moved" });
+
+    const response = await request(app())
+      .put(`/api/resources/${RESOURCE_ID}/presentation`)
+      .send({ categoryId: CATEGORY_ID })
+      .expect(200);
+
+    expect(repointPresentation).toHaveBeenCalledWith({
+      resourceId: RESOURCE_ID,
+      toCategoryId: CATEGORY_ID,
+    });
+    expect(response.body.presentation.categoryId).toBe(CATEGORY_ID);
+    expect(response.body.replayed).toBe(false);
   });
 
   it("moves a published guide only with the explicit expected category and cover revision", async () => {

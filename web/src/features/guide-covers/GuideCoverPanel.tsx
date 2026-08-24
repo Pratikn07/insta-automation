@@ -165,6 +165,10 @@ function GuideCoverEditor({
 
   const selectedCategory =
     editorCategories.find((category) => category.id === editor.categoryId) ?? null;
+  // An allocated edition is what pins a guide to its collection: the number is a
+  // per-collection sequence, so the server refuses to re-point the guide once it has one.
+  // Lock the choice here too rather than letting the creator walk into that refusal.
+  const allocatedEdition = presentation.presentation?.editionNumber ?? null;
   const copyIsValid = validateGuideCoverDraft(editor.copy).ok;
   const isDirty =
     !editor.savedCopy ||
@@ -325,6 +329,7 @@ function GuideCoverEditor({
       <PresentationCategoryPicker
         categories={editorCategories}
         selectedCategoryId={editor.categoryId}
+        selectionLocked={allocatedEdition !== null}
         disabled={editorBusy}
         onSelect={(categoryId) => {
           if (editorBusy) return;
@@ -344,6 +349,14 @@ function GuideCoverEditor({
           setNotice(null);
         }}
       />
+
+      {allocatedEdition !== null && (
+        <p className="text-xs text-muted-foreground">
+          Published as {selectedCategory?.collectionLabel ?? "this collection"} ·{" "}
+          {String(allocatedEdition).padStart(2, "0")}. That edition belongs to the
+          collection, so moving this guide to another one is a separate, deliberate step.
+        </p>
+      )}
 
       {selectedCategory && (
         <div className="rounded-lg bg-muted p-3 text-sm">

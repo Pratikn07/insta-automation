@@ -175,6 +175,18 @@ export function useGuideCoverDraftPersistence({
         moveToConflict(
           "A newer version exists. Your local copy is preserved; save it as a new draft.",
         );
+      } else if (apiErrorCode(saveError) === "cover_category_locked_by_publication") {
+        // The editor normally stops this by locking the picker once an edition exists;
+        // reaching here means the guide was published elsewhere while it was open. Undo
+        // only the refused part — the collection — and refetch so the picker locks too.
+        await refetchPresentation();
+        setEditor((current) => ({
+          ...current,
+          categoryId: current.savedCategoryId ?? current.categoryId,
+        }));
+        setError(
+          "This guide is already published, so its collection cannot change here. The selection has been set back to the published collection; your copy edits are untouched.",
+        );
       } else if (intent.kind === "patch" && isUnknownOutcome(saveError)) {
         setPendingPatch(intent);
         await reconcilePatch(intent);

@@ -145,6 +145,21 @@ function presentationWithCover(
   });
 }
 
+function publishedPresentation(
+  editionNumber = 9,
+): ResourcePresentationResponse {
+  return presentation({
+    presentation: {
+      resourceId: RESOURCE_ID,
+      categoryId: CATEGORY_ID,
+      editionNumber,
+      createdAt: "2026-08-22T12:00:00.000Z",
+      updatedAt: "2026-08-22T12:00:00.000Z",
+    },
+    coverVersions: [cover({ status: "published", editionNumber })],
+  });
+}
+
 function presentationWithInactiveCurrent(
   workingCover = cover({ categoryId: inactiveCategory.id }),
 ): ResourcePresentationResponse {
@@ -481,6 +496,74 @@ describe("GuideCoverPanel draft persistence and recovery", () => {
 
     finishSave({ cover: cover(), replayed: false });
     expect(await screen.findByText("Draft saved")).toBeVisible();
+  });
+
+  it("changes the collection of a guide that has drafts but was never published", async () => {
+    installSuccessfulReads(presentationWithCover(), [category, secondCategory]);
+    apiMutation.mockResolvedValue({
+      cover: cover({
+        id: "30000000-0000-4000-8000-000000000002",
+        categoryId: SECOND_CATEGORY_ID,
+      }),
+      replayed: false,
+    });
+    const user = userEvent.setup();
+
+    renderPanel();
+    await screen.findByText("Big Feelings");
+    const picker = screen.getByRole("combobox", { name: "Presentation category" });
+
+    // Nothing has been published, so the collection is still the creator's to change.
+    expect(picker).toBeEnabled();
+    await user.selectOptions(picker, SECOND_CATEGORY_ID);
+    await user.click(screen.getByRole("button", { name: "Save cover draft" }));
+
+    await waitFor(() =>
+      expect(mutationFor(`/resources/${RESOURCE_ID}/cover-versions`)).toBeDefined(),
+    );
+    const [, request] = mutationFor(`/resources/${RESOURCE_ID}/cover-versions`)!;
+    expect(JSON.parse(request.body).categoryId).toBe(SECOND_CATEGORY_ID);
+  });
+
+  it("locks the collection of a published guide and says why", async () => {
+    installSuccessfulReads(publishedPresentation(9), [category, secondCategory]);
+
+    renderPanel();
+
+    // The edition is a per-collection sequence, so the server will not re-point this
+    // guide. Do not offer the change at all rather than let it be refused on save.
+    const picker = await screen.findByRole("combobox", { name: "Presentation category" });
+    expect(picker).toBeDisabled();
+    expect(picker).toHaveValue(CATEGORY_ID);
+    expect(screen.getByText(/Published as SLEEP · 09/)).toBeVisible();
+    // Locking the choice must not stop a creator adding a reusable category.
+    expect(screen.getByRole("button", { name: "Add reusable category" })).toBeEnabled();
+  });
+
+  it("restores the published collection when a save loses the race to a publication", async () => {
+    installSuccessfulReads(presentationWithCover(), [category, secondCategory]);
+    apiMutation.mockRejectedValueOnce(
+      new ApiError(409, { error: "cover_category_locked_by_publication" }, "conflict"),
+    );
+    const user = userEvent.setup();
+
+    renderPanel();
+    await screen.findByText("Big Feelings");
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Presentation category" }),
+      SECOND_CATEGORY_ID,
+    );
+    const headline = screen.getByLabelText("Cover headline");
+    await user.clear(headline);
+    await user.type(headline, "My local headline");
+    await user.click(screen.getByRole("button", { name: "Save cover draft" }));
+
+    expect(await screen.findByText(/already published/i)).toBeVisible();
+    // Only the refused part is undone; the creator's own words survive.
+    expect(screen.getByRole("combobox", { name: "Presentation category" })).toHaveValue(
+      CATEGORY_ID,
+    );
+    expect(screen.getByLabelText("Cover headline")).toHaveValue("My local headline");
   });
 
   it("patches a saved draft with its optimistic revision only after explicit save", async () => {

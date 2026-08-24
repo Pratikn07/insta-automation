@@ -15,6 +15,11 @@ export interface PresentationCategoryPickerProps {
   onSelect: (categoryId: string) => void;
   /** The category currently chosen in the parent, so the dropdown shows it as selected. */
   selectedCategoryId?: string | null;
+  /**
+   * The collection can no longer change — an edition has been allocated to this guide.
+   * Distinct from `disabled`: adding a reusable category is still allowed.
+   */
+  selectionLocked?: boolean;
   disabled?: boolean;
 }
 
@@ -62,6 +67,7 @@ export function PresentationCategoryPicker({
   categories,
   onSelect,
   selectedCategoryId = null,
+  selectionLocked = false,
   disabled = false,
 }: PresentationCategoryPickerProps) {
   const [showAddForm, setShowAddForm] = useState(false);
@@ -141,7 +147,7 @@ export function PresentationCategoryPicker({
       <Select
         aria-label="Presentation category"
         value={selectedOption?.id ?? ""}
-        disabled={disabled}
+        disabled={disabled || selectionLocked}
         onChange={(event) => {
           const id = event.target.value;
           const category = visibleCategories.find((candidate) => candidate.id === id);
