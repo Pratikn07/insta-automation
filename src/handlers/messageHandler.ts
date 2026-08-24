@@ -9,7 +9,7 @@ import {
   markGated,
   openConversationIn,
 } from "../services/conversationService.js";
-import { findKeywordInMessage } from "../services/keywordService.js";
+import { findKeywordInMessage, textContainsKeyword } from "../services/keywordService.js";
 import { resolveJourneyIntent } from "../services/journeyIntentService.js";
 import { sendSequence } from "../services/sequenceSender.js";
 import {
@@ -515,7 +515,57 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
   // ---- 1. New keyword → (re)send the gate ----------------------------------
   // Checked FIRST so someone with an open "sleep" gate who DMs "potty" starts a
   // potty gate rather than completing the sleep one.
-  const keyword = await findKeywordInMessage(text);
+  const matchedKeyword = await findKeywordInMessage(text);
+
+  // Do they already own this guide? Read once, here, because the answer decides both
+  // whether the match is trustworthy at all (below) and which trigger kind the delivery
+  // gets further down.
+  const alreadyCompleted = matchedKeyword
+    ? await hasCompletedKeyword(senderId, matchedKeyword.id)
+    : false;
+
+  /**
+   * A guide they ALREADY have is only re-sent when the message is shaped like an ask.
+   *
+   * `findKeywordInMessage` scans every word of a DM with no length gate, deliberately: a
+   * cold DM saying "sleep" is someone typing a word they saw on a reel, and being generous
+   * there is right. It stops being right once the conversation is under way, because the
+   * keyword set on this account is ordinary English — WAFFLE, DINNER, MUFFIN, SLEEP, PLAY.
+   * Observed on device 2026-08-24: a parent who had just received the waffle guide wrote
+   * "Thank you! Do you have a waffle maker reco?" and we answered by re-sending the guide
+   * she was thanking us for, cover image and all. Her actual question never reached the
+   * owner's drafts queue, which is where it belonged.
+   *
+   * `textContainsKeyword` is the COMMENT rule — every word of a short message, first word
+   * only of a long one — already calibrated on 30 days of production comments. Reused rather
+   * than reinvented so there is one length gate and one number to tune. It still accepts the
+   * shapes a real re-ask takes ("waffle", "waffle again please", "WAFFLE send it over when
+   * you can"), because those either are short or lead with the word.
+   *
+   * Scoped to redelivery on purpose: a first delivery stays as generous as it was, so this
+   * can never cost anyone a guide they do not already have. The most it can cost is a
+   * duplicate, and a suppressed message is not dropped — it falls through to the draft
+   * branch below, and the thread stays unresolved for the owner either way.
+   */
+  const suppressedRedelivery =
+    matchedKeyword !== null &&
+    alreadyCompleted &&
+    !textContainsKeyword(text, matchedKeyword.keyword);
+
+  if (suppressedRedelivery) {
+    logger.info(
+      { senderId, mid: msg.mid, keyword: matchedKeyword.keyword },
+      "Keyword inside a longer DM for a guide they already have — not redelivering",
+    );
+    await logEvent("keyword_redelivery_suppressed", {
+      senderId,
+      mid: msg.mid,
+      keyword: matchedKeyword.keyword,
+      textLength: text.length,
+    });
+  }
+
+  const keyword = suppressedRedelivery ? null : matchedKeyword;
   if (keyword) {
     // Attach the ask to this person's canonical journey for this keyword, so the
     // dashboard counts one request rather than one per ask. Measured: 257 of the
@@ -571,7 +621,9 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     // the guide immediately. The "follow and reply DONE" gate is pure friction
     // there; it stays only for non-followers/unknowns, where it's the one
     // leverage moment for the follow ask.
-    const alreadyCompleted = await hasCompletedKeyword(senderId, keyword.id);
+    //
+    // `alreadyCompleted` is read above, before the match is trusted, because the same
+    // answer decides whether this is a redelivery at all.
 
     // ---- Strict follower gate V2 --------------------------------------------
     // Both of the V1 conditions below are disqualified evidence: `isFollower` is
