@@ -260,6 +260,59 @@ describe("generated cover unit", () => {
     expect(units[0]).toMatchObject({ position: 0, origin: "resource_step" });
   });
 
+  /**
+   * The second route a cover can arrive by, which `coverAlreadyShown` does not know about.
+   *
+   * Covers reach parents today as ordinary authored images: publish-guide-covers.ts attaches
+   * one at `order: -1` so the live sender leads with it. That row arrives here as a normal
+   * resource step, so prepending the generated cover as well puts the same picture in the
+   * thread twice — and a duplicate image reads to a parent as a glitch, not as a setting.
+   */
+  it("omits the cover when the guide already carries it as an authored image", () => {
+    const units = compiled({
+      messages: [
+        imageStep({ id: "cover", order: -1, body: null, mediaUrl: COVER_URL }),
+        textStep({ id: "m1", order: 0, body: "Step one" }),
+      ],
+      triggerKind: "inbound_reply",
+      cover: { versionId: COVER_VERSION, mediaUrl: COVER_URL },
+    });
+
+    expect(units.some((unit) => unit.origin === "generated_cover")).toBe(false);
+    // Exactly one image reaches the parent, and it is the authored row — what the owner
+    // actually placed in the guide.
+    const images = units.filter((unit) => unit.kind === "image");
+    expect(images).toHaveLength(1);
+    expect(images[0]).toMatchObject({
+      origin: "resource_step",
+      resourceMessageId: "cover",
+      mediaUrlSnapshot: COVER_URL,
+    });
+  });
+
+  /**
+   * The narrow version of the same check: a DIFFERENT authored image must not suppress the
+   * cover. Comparing on "does this guide contain any image" instead of on the URL would
+   * silently drop covers from every activity guide, all of which lead with photos.
+   */
+  it("still prepends the cover when the guide's images are different pictures", () => {
+    const units = compiled({
+      messages: [
+        imageStep({
+          id: "photo",
+          order: 0,
+          body: null,
+          mediaUrl: "https://cdn.example.test/image/activity-photo.png",
+        }),
+      ],
+      triggerKind: "inbound_reply",
+      cover: { versionId: COVER_VERSION, mediaUrl: COVER_URL },
+    });
+
+    expect(units.filter((unit) => unit.origin === "generated_cover")).toHaveLength(1);
+    expect(units[0]).toMatchObject({ position: 0, mediaUrlSnapshot: COVER_URL });
+  });
+
   it("omits the cover when the parent already saw it in the gate", () => {
     const units = compiled({
       messages: [textStep({ id: "m1", order: 0, body: "Step one" })],
