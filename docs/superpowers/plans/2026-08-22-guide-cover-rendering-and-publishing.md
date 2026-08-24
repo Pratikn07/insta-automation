@@ -322,7 +322,11 @@ mapping has to be widened in the same change as the constraints, not after.
       replay on retry, and no second edition. Two uploads means two orphan claims and a
       partial-success path that did not exist before — cover it explicitly.
 - [ ] Resolve the square's public URL at send time and pass it as `coverUrl` instead of the
-      `""` placeholder in `guideAccessActionService`'s default `sendFollowerGate`.
+      `""` placeholder in `guideAccessActionService`'s default `sendFollowerGate`. Pass
+      `categorySlug` in the SAME change: the card's button label is per-category, and the
+      resolver falls back to the generic "Send it over" when it is absent. Wiring the cover
+      without the category renders a correct card with a blander button and nothing fails,
+      so this is the pairing to get right in one edit rather than notice later.
 - [ ] Add the missing `private_generic` branch to `sendGuideInitialPrivateReply`. The
       payload builder already supports the case and nothing reaches it. This is the branch
       that lets one message carry artwork and a control together, which is the only shape

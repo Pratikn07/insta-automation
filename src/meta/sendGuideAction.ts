@@ -87,6 +87,13 @@ export async function sendGuideFollowerGate(input: {
   coverUrl: string;
   actionToken: string;
   capabilities?: GuideActionCapabilities;
+  /**
+   * Names the guide's category so the card's button can say what it is sending rather
+   * than "Send it over". Optional, and absent degrades to the generic label — a button
+   * whose wording is less specific is a cosmetic loss, and a copy lookup must never be
+   * able to cost a parent their guide.
+   */
+  categorySlug?: string;
 }): Promise<MetaSendResult> {
   const capabilities = input.capabilities ?? TEXT_ONLY_CAPABILITIES;
 
@@ -99,6 +106,7 @@ export async function sendGuideFollowerGate(input: {
         profileUrl: GUIDE_PROFILE_URL,
         coverUrl: input.coverUrl,
         actionToken: requiredOpaqueActionToken(input.actionToken),
+        ...(input.categorySlug ? { categorySlug: input.categorySlug } : {}),
       }),
       { recipientId: input.recipientId, mode: "dm_generic_gate", messageLength: 0 },
     );

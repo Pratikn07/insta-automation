@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   GUIDE_GATE_BUTTON_LABELS,
+  GUIDE_GATE_CATEGORY_ACTION_LABELS,
   buildGuideGateCapabilityPayload,
+  guideGateCardActionLabel,
 } from "./guideGatePayloads.js";
+import { GUIDE_COVER_CATEGORIES } from "../../shared/guideCoverRegistry.js";
 
 const COMMENT_ID = "17890000000000001";
 const RECIPIENT_ID = "17890000000000002";
@@ -79,7 +82,7 @@ describe("guide gate capability payloads", () => {
                 buttons: [
                   {
                     type: "postback",
-                    title: "Yes, send it",
+                    title: "Send it over",
                     payload: ACTION_PAYLOAD,
                   },
                 ],
@@ -131,7 +134,7 @@ describe("guide gate capability payloads", () => {
         quick_replies: [
           {
             content_type: "text",
-            title: "I'm following ✓",
+            title: "I'm following",
             payload: ACTION_PAYLOAD,
           },
         ],
@@ -161,14 +164,14 @@ describe("guide gate capability payloads", () => {
               {
                 title: "Your toddler sleep guide is waiting ✨",
                 subtitle:
-                  "Follow @tinysoho for more ideas like this, then tap I'm following and I'll send it over.",
+                  "Follow @tinysoho for more ideas like this, then tap below and I'll send it over.",
                 image_url: COVER_URL,
                 default_action: { type: "web_url", url: PROFILE_URL },
                 buttons: [
                   { type: "web_url", url: PROFILE_URL, title: "Visit profile" },
                   {
                     type: "postback",
-                    title: "I'm following ✓",
+                    title: "Send it over",
                     payload: ACTION_PAYLOAD,
                   },
                 ],
@@ -261,5 +264,97 @@ describe("guide gate capability payloads", () => {
 
     expect(JSON.stringify(payload)).toContain(coverUrl);
     expect(Object.keys(payload)).toEqual(["recipient", "message"]);
+  });
+});
+
+describe("per-category card action label", () => {
+  function cardButtons(categorySlug?: string) {
+    const payload = buildGuideGateCapabilityPayload({
+      case: "dm_generic_gate",
+      recipientId: RECIPIENT_ID,
+      guideName: GUIDE_NAME,
+      profileUrl: PROFILE_URL,
+      coverUrl: COVER_URL,
+      actionToken: ACTION_TOKEN,
+      ...(categorySlug ? { categorySlug } : {}),
+    });
+    const message = payload.message;
+    if (!("attachment" in message)) throw new Error("expected a template message");
+    return message.attachment.payload.elements[0]!.buttons;
+  }
+
+  it("names what it is sending, per category", () => {
+    expect(cardButtons("bedtime")[1]).toMatchObject({
+      type: "postback",
+      title: "Send my tiny win",
+    });
+    expect(cardButtons("recipes")[1]).toMatchObject({ title: "Send the recipes" });
+    expect(cardButtons("montessori-activities")[1]).toMatchObject({
+      title: "Send the activity",
+    });
+    expect(cardButtons("potty-training")[1]).toMatchObject({ title: "Send the steps" });
+  });
+
+  /**
+   * Absent or unrecognised categories degrade to the generic label. Rejecting the payload
+   * instead would let a copy lookup cost a parent their guide, which is the wrong trade for
+   * a button's wording.
+   */
+  it("falls back rather than failing when the category is missing or unknown", () => {
+    expect(cardButtons()[1]).toMatchObject({ title: "Send it over" });
+    expect(cardButtons("not-a-category")[1]).toMatchObject({ title: "Send it over" });
+    expect(guideGateCardActionLabel(undefined)).toBe("Send it over");
+    expect(guideGateCardActionLabel("")).toBe("Send it over");
+  });
+
+  /**
+   * Every registered cover category needs a label, because every one of them can render a
+   * card. Derived from the registry rather than listed here, so adding a category fails this
+   * test instead of silently shipping "Send it over" on a cover that names something else.
+   */
+  it("covers every registered cover category", () => {
+    for (const slug of Object.keys(GUIDE_COVER_CATEGORIES)) {
+      expect(
+        GUIDE_GATE_CATEGORY_ACTION_LABELS[slug as keyof typeof GUIDE_GATE_CATEGORY_ACTION_LABELS],
+        `no card action label for ${slug}`,
+      ).toBeTruthy();
+    }
+  });
+
+  /**
+   * Meta documents two things about button titles: keep them under 20 characters, and prefer
+   * one to three words.
+   *
+   * Only the length is asserted. Length is what actually breaks — a long title is truncated
+   * on device, and the truncation is invisible from any payload assertion, so nothing else
+   * would catch it. Word count is a style preference, and encoding taste as a hard rule is
+   * how a test starts rejecting better copy: this assertion originally failed "Send my tiny
+   * win" for being four words, which is the label that ties the card to its own kicker and
+   * the reason this feature exists.
+   */
+  it("keeps every button label inside Meta's 20-character guidance", () => {
+    const labels = [
+      ...Object.values(GUIDE_GATE_BUTTON_LABELS),
+      ...Object.values(GUIDE_GATE_CATEGORY_ACTION_LABELS),
+    ];
+    for (const label of labels) {
+      expect([...label].length, `"${label}" is too long for a button`).toBeLessThanOrEqual(20);
+    }
+  });
+
+  /**
+   * The chip labels are a different job and must stay parent-voiced: a quick reply's title is
+   * posted into the thread AS THE PARENT'S OWN MESSAGE. The "✓" that used to be here showed up
+   * inside their sent message, reading as a UI artifact in their words.
+   */
+  it("keeps quick-reply labels free of interface decoration", () => {
+    for (const label of [
+      GUIDE_GATE_BUTTON_LABELS.requestGuide,
+      GUIDE_GATE_BUTTON_LABELS.confirmFollow,
+    ]) {
+      expect(label, `"${label}" reads as UI, not as something a parent would type`).not.toMatch(
+        /[✓✔☑»▸]/u,
+      );
+    }
   });
 });
