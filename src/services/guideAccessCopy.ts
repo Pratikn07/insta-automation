@@ -82,6 +82,15 @@ export function guideAccessOpeningText(name: string): string {
  */
 export const guideAccessCardTitle = "Your guide is waiting ✨";
 
+/**
+ * The opening card's title, at the moment the parent has just asked and nothing is required
+ * of them yet — so "ready" rather than "waiting".
+ *
+ * Interpolates nothing, for the same reason as `guideAccessCardTitle`: on this account a
+ * resource name is the keyword. The V2 opening rendered "Your MealPrep is ready" on device.
+ */
+export const guideAccessOpeningCardTitle = "Your guide is ready ✨";
+
 export function guideAccessWaitingTitle(name: string): string {
   return `Your ${reviewedGuideName(name)} is waiting ✨`;
 }

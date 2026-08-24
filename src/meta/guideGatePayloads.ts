@@ -127,6 +127,9 @@ const inputSchema = z.discriminatedUnion("case", [
   z.object({
     case: z.literal("private_generic"),
     commentId: providerId,
+    // A literal title, not a name to interpolate. Resource names here are keywords, so
+    // "Your ${name} is ready" rendered "Your MealPrep is ready" on device.
+    title: z.string().trim().min(1).max(80),
     guideName,
     profileUrl: httpsUrl,
     coverUrl: httpsUrl,
@@ -173,6 +176,7 @@ const inputSchema = z.discriminatedUnion("case", [
   z.object({
     case: z.literal("dm_generic_gate"),
     recipientId: providerId,
+    title: z.string().trim().min(1).max(80),
     guideName,
     profileUrl: httpsUrl,
     coverUrl: httpsUrl,
@@ -243,7 +247,7 @@ export function buildGuideGateCapabilityPayload(
       return {
         recipient: { comment_id: input.commentId },
         message: genericMessage({
-          title: `Your ${input.guideName} is ready`,
+          title: input.title,
           subtitle: "Tap below and I'll check access before sending it here.",
           image_url: input.coverUrl,
           default_action: { type: "web_url", url: input.profileUrl },
@@ -295,7 +299,7 @@ export function buildGuideGateCapabilityPayload(
         recipient: { id: input.recipientId },
         messaging_type: "RESPONSE",
         message: genericMessage({
-          title: guideAccessWaitingTitle(input.guideName),
+          title: input.title,
           subtitle: guideAccessCopy.nonFollowerGate,
           image_url: input.coverUrl,
           default_action: { type: "web_url", url: input.profileUrl },
