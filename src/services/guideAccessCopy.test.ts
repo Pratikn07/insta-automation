@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   guideAccessCardTitle,
   guideAccessCopy,
+  guideAccessFollowReAsk,
+  guideAccessFollowReAskNoun,
+  guideAccessFollowReAskText,
+  guideAccessFollowReAskTitle,
   guideAccessOpening,
   guideAccessWaitingTitle,
 } from "./guideAccessCopy.js";
@@ -77,5 +81,75 @@ describe("guide access copy", () => {
     expect(guideAccessCardTitle).toBe("Your guide is waiting ✨");
     expect(guideAccessCardTitle).not.toMatch(/\$\{|WAFFLE/u);
     expect([...guideAccessCardTitle].length).toBeLessThanOrEqual(80);
+  });
+});
+
+/**
+ * The first re-ask, sent when a parent tapped the gate's button WITHOUT following and Meta
+ * answered definitively that they are not a follower. That case used to receive "Instagram may
+ * take a moment to update", which tells someone who never followed that they did.
+ */
+describe("follow re-ask copy", () => {
+  const CATEGORIES = ["recipes", "bedtime", "potty-training", "montessori-activities"];
+
+  it("states the situation without asserting what the parent did", () => {
+    expect(guideAccessFollowReAskTitle).toBe("One step left 💛");
+    // The whole point of the change: no claim about Instagram being slow, and no accusation.
+    expect(guideAccessFollowReAskTitle).not.toMatch(/Instagram|moment|can't|cannot/iu);
+    expect([...guideAccessFollowReAskTitle].length).toBeLessThanOrEqual(80);
+  });
+
+  it("names what else is behind the follow, per category", () => {
+    expect(guideAccessFollowReAsk("recipes")).toBe(
+      "Follow @tinysoho for more recipes like this, then tap I'm following.",
+    );
+    expect(guideAccessFollowReAsk("bedtime")).toContain("more bedtime wins like this");
+    expect(guideAccessFollowReAsk("potty-training")).toContain("more potty steps like this");
+    expect(guideAccessFollowReAsk("montessori-activities")).toContain(
+      "more activities like this",
+    );
+  });
+
+  /**
+   * Meta truncates a generic-template subtitle past 80 characters silently, on device, with no
+   * error — `nonFollowerGateText` was 81 and that is why this is asserted for every noun rather
+   * than checked once for the longest. Counted in code points, as Meta counts characters.
+   */
+  it("keeps every category's subtitle inside Meta's 80-character cap", () => {
+    for (const slug of [...CATEGORIES, undefined, "unknown-category"]) {
+      expect([...guideAccessFollowReAsk(slug)].length).toBeLessThanOrEqual(80);
+    }
+  });
+
+  /**
+   * A copy lookup must never be able to cost a parent their guide, so an unrecognised category
+   * degrades to a real word that keeps the sentence grammatical.
+   */
+  it("falls back to a real noun for an unknown or absent category", () => {
+    expect(guideAccessFollowReAskNoun(undefined)).toBe("ideas");
+    expect(guideAccessFollowReAskNoun("")).toBe("ideas");
+    expect(guideAccessFollowReAskNoun("no-such-category")).toBe("ideas");
+    expect(guideAccessFollowReAsk("no-such-category")).toContain("more ideas like this");
+    expect(() => guideAccessFollowReAsk("no-such-category")).not.toThrow();
+  });
+
+  /**
+   * Same invariant the existing pairs hold: the card names its button because it has one, the
+   * text fallback asks for a reply because it has none. Naming a control that was not sent is a
+   * dead end for the parent.
+   */
+  it("names the button only in the card variant", () => {
+    for (const slug of CATEGORIES) {
+      expect(guideAccessFollowReAsk(slug)).toMatch(/tap I'm following/u);
+      expect(guideAccessFollowReAskText(slug)).toMatch(/reply DONE/u);
+      expect(guideAccessFollowReAskText(slug)).not.toMatch(/\btap\b/iu);
+    }
+  });
+
+  it("carries no guide count, which would drift the moment a guide is published", () => {
+    for (const slug of CATEGORIES) {
+      expect(guideAccessFollowReAsk(slug)).not.toMatch(/\d/u);
+      expect(guideAccessFollowReAskText(slug)).not.toMatch(/\d/u);
+    }
   });
 });

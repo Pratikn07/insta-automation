@@ -363,3 +363,67 @@ describe("per-category card action label", () => {
     }
   });
 });
+
+/**
+ * The follow re-ask card, for a parent who tapped a follow control without following.
+ *
+ * A separate case from `dm_generic_gate` because the second button is a different question. The
+ * gate asks them to follow, so its button sends the guide ("Send the recipes"); by the re-ask
+ * they have already been asked, so the button confirms ("I'm following").
+ */
+describe("dm_follow_reask_card", () => {
+  const valid = {
+    case: "dm_follow_reask_card" as const,
+    recipientId: RECIPIENT_ID,
+    title: "One step left 💛",
+    subtitle: "Follow @tinysoho for more recipes like this, then tap I'm following.",
+    profileUrl: PROFILE_URL,
+    coverUrl: COVER_URL,
+    actionToken: ACTION_TOKEN,
+  };
+
+  it("carries a profile link and a confirm postback, in that order", () => {
+    const payload = buildGuideGateCapabilityPayload(valid);
+    const element = (
+      payload.message as {
+        attachment: { payload: { elements: [Record<string, unknown>] } };
+      }
+    ).attachment.payload.elements[0];
+
+    expect(element.title).toBe("One step left 💛");
+    expect(element.subtitle).toBe(valid.subtitle);
+    expect(element.image_url).toBe(COVER_URL);
+    // Profile first: following is the thing they have to do, and the confirm is only useful
+    // afterwards.
+    expect(element.buttons).toEqual([
+      { type: "web_url", url: PROFILE_URL, title: "Visit profile" },
+      { type: "postback", title: "I'm following", payload: ACTION_PAYLOAD },
+    ]);
+  });
+
+  /**
+   * Meta truncates a subtitle past 80 characters silently and on device. The payload keeps its
+   * own guard rather than trusting the copy layer, because the copy layer is where an 81-character
+   * string already slipped through once.
+   */
+  it("rejects a subtitle Meta would silently truncate", () => {
+    expect(() =>
+      buildGuideGateCapabilityPayload({ ...valid, subtitle: "x".repeat(81) }),
+    ).toThrow("invalid_guide_gate_payload");
+    expect(() => buildGuideGateCapabilityPayload({ ...valid, subtitle: "   " })).toThrow(
+      "invalid_guide_gate_payload",
+    );
+  });
+
+  it("refuses a non-https cover or profile URL, and a non-uuid token", () => {
+    for (const bad of [
+      { coverUrl: "http://cdn.example.com/square.png" },
+      { profileUrl: "http://www.instagram.com/tinysoho/" },
+      { actionToken: "not-a-uuid" },
+    ]) {
+      expect(() => buildGuideGateCapabilityPayload({ ...valid, ...bad })).toThrow(
+        "invalid_guide_gate_payload",
+      );
+    }
+  });
+});

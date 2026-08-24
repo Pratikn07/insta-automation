@@ -27,6 +27,12 @@ beforeEach(() => {
   sendMetaMessage.mockReset().mockResolvedValue({ messageId: "mid-1" });
 });
 
+/** The text of the message actually sent. Throws if a template went out instead. */
+async function sentText(): Promise<string> {
+  const [payload] = sendMetaMessage.mock.calls[0]!;
+  return (payload as { message: { text: string } }).message.text;
+}
+
 describe("sendGuideInitialPrivateReply", () => {
   it("uses the text-only private-reply fallback before Meta is contacted when rich capability is unproven", async () => {
     await sendGuideInitialPrivateReply({
@@ -134,6 +140,131 @@ describe("sendGuideFollowerGate", () => {
   });
 });
 
+/**
+ * The first re-tap, for a parent who tapped a follow control WITHOUT following.
+ *
+ * Meta answers `is_user_follow_business: false` definitively — "could not reach Meta" is a
+ * separate outcome with its own copy — and this used to reply "Instagram may take a moment to
+ * update", telling someone who never followed that they had. Observed on device 2026-08-24,
+ * eleven seconds after the gate went out.
+ */
+describe("sendGuideFollowLag — first re-tap", () => {
+  const CARD_CAPS = {
+    privateQuickReply: false,
+    dmGenericGate: true,
+    dmQuickReply: true,
+  };
+
+  it("sends the re-ask card with a profile link and an I'm following postback", async () => {
+    await sendGuideFollowLag({
+      recipientId: RECIPIENT_ID,
+      actionToken: ACTION_TOKEN,
+      capabilities: CARD_CAPS,
+      responseNumber: 1,
+      coverUrl: COVER_URL,
+      categorySlug: "recipes",
+    });
+
+    const subtitle = "Follow @tinysoho for more recipes like this, then tap I'm following.";
+    expect(sendMetaMessage).toHaveBeenCalledOnce();
+    expect(sendMetaMessage).toHaveBeenCalledWith(
+      {
+        recipient: { id: RECIPIENT_ID },
+        messaging_type: "RESPONSE",
+        message: {
+          attachment: {
+            type: "template",
+            payload: {
+              template_type: "generic",
+              elements: [
+                {
+                  title: "One step left 💛",
+                  subtitle,
+                  image_url: COVER_URL,
+                  default_action: { type: "web_url", url: GUIDE_PROFILE_URL },
+                  buttons: [
+                    { type: "web_url", url: GUIDE_PROFILE_URL, title: "Visit profile" },
+                    { type: "postback", title: "I'm following", payload: ACTION_PAYLOAD },
+                  ],
+                },
+              ],
+            },
+          },
+        },
+      },
+      {
+        recipientId: RECIPIENT_ID,
+        mode: "dm_follow_reask_card",
+        messageLength: subtitle.length,
+      },
+    );
+  });
+
+  it("never sends the delay apology on a first re-tap", async () => {
+    await sendGuideFollowLag({
+      recipientId: RECIPIENT_ID,
+      actionToken: ACTION_TOKEN,
+      capabilities: CARD_CAPS,
+      responseNumber: 1,
+      coverUrl: COVER_URL,
+      categorySlug: "recipes",
+    });
+
+    // The whole defect: Meta said "not a follower" and we blamed Instagram for being slow.
+    expect(JSON.stringify(sendMetaMessage.mock.calls)).not.toMatch(/may take a moment/u);
+  });
+
+  /**
+   * A card needs the capability AND a cover. Either missing must still deliver a message — the
+   * re-ask is the only thing standing between a non-follower and abandonment.
+   */
+  it("falls back to text when there is no cover, and still names no button", async () => {
+    await sendGuideFollowLag({
+      recipientId: RECIPIENT_ID,
+      actionToken: ACTION_TOKEN,
+      capabilities: CARD_CAPS,
+      responseNumber: 1,
+      categorySlug: "recipes",
+    });
+
+    const text = await sentText();
+    expect(text).toContain("One step left 💛");
+    expect(text).toContain("Follow @tinysoho for more recipes like this");
+    expect(text).toMatch(/reply DONE/u);
+    expect(text).not.toMatch(/\btap\b/iu);
+    expect(text).toContain(GUIDE_PROFILE_URL);
+  });
+
+  it("falls back to text when the card capability is off, even holding a cover", async () => {
+    await sendGuideFollowLag({
+      recipientId: RECIPIENT_ID,
+      actionToken: ACTION_TOKEN,
+      capabilities: TEXT_ONLY_CAPABILITIES,
+      responseNumber: 1,
+      coverUrl: COVER_URL,
+      categorySlug: "recipes",
+    });
+
+    const text = await sentText();
+    expect(text).toContain("One step left 💛");
+    expect(text).not.toMatch(/attachment/u);
+  });
+
+  it("still reads as a sentence when the category is unknown", async () => {
+    await sendGuideFollowLag({
+      recipientId: RECIPIENT_ID,
+      actionToken: ACTION_TOKEN,
+      capabilities: CARD_CAPS,
+      responseNumber: 1,
+      coverUrl: COVER_URL,
+    });
+
+    const payload = JSON.stringify(sendMetaMessage.mock.calls);
+    expect(payload).toContain("more ideas like this");
+    expect(payload).not.toContain("undefined");
+  });
+});
+
 describe("sendGuideFollowLag", () => {
   it("keeps the replacement token at the sender boundary while capability is text-only", async () => {
     const text =
@@ -142,6 +273,7 @@ describe("sendGuideFollowLag", () => {
     await sendGuideFollowLag({
       recipientId: RECIPIENT_ID,
       actionToken: ACTION_TOKEN,
+      responseNumber: 2,
       capabilities: TEXT_ONLY_CAPABILITIES,
     });
 
@@ -159,6 +291,7 @@ describe("sendGuideFollowLag", () => {
     await sendGuideFollowLag({
       recipientId: RECIPIENT_ID,
       actionToken: ACTION_TOKEN,
+      responseNumber: 2,
       capabilities: {
         privateQuickReply: false,
         dmGenericGate: false,
@@ -206,11 +339,6 @@ describe("text-mode copy references no controls", () => {
   const OPENING_ASK = /reply YES/i;
   const FOLLOW_ASK = /reply DONE/i;
 
-  async function sentText(): Promise<string> {
-    const [payload] = sendMetaMessage.mock.calls[0]!;
-    return (payload as { message: { text: string } }).message.text;
-  }
-
   it("the text opening asks for a short YES and mentions no tap", async () => {
     await sendGuideInitialPrivateReply({
       commentId: COMMENT_ID,
@@ -246,6 +374,7 @@ describe("text-mode copy references no controls", () => {
     await sendGuideFollowLag({
       recipientId: RECIPIENT_ID,
       actionToken: ACTION_TOKEN,
+      responseNumber: 2,
       capabilities: TEXT_ONLY_CAPABILITIES,
     });
 
