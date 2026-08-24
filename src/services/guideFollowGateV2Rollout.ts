@@ -6,6 +6,18 @@ export type GuideFollowGateOwner = "v1" | "v2";
 export interface GuideFollowGateV2SelectorDependencies {
   /** Read on every parent action; never capture the result at construction. */
   isEnabled(): boolean;
+  /**
+   * Every guide, past and future — the graduation from the pilot.
+   *
+   * Read per action like `isEnabled`, and deliberately a FLAG rather than a wider allowlist.
+   * The allowlists below can only ever name guides that exist when an operator pastes them in,
+   * so a keyword attached next week silently stayed on V1: no error, no log, nothing to notice.
+   * That is the gap this closes.
+   *
+   * Checked before the allowlists, so turning it on makes them irrelevant rather than requiring
+   * them to be emptied — and emptying them would DISABLE V2, not widen it.
+   */
+  isAllGuides(): boolean;
   cohortIgUserIds: ReadonlySet<string>;
   resourceIds: ReadonlySet<string>;
 }
@@ -27,8 +39,17 @@ function exactMember(set: ReadonlySet<string>, value: string): boolean | null {
 }
 
 /**
- * Stable allowlist-first rollout. There is intentionally no percentage input:
- * broad assignment comes only after the controlled account/guide pilot.
+ * Stable allowlist-first rollout, with an explicit graduation to every guide.
+ *
+ * There is still no PERCENTAGE input, and that remains deliberate: a percentage would split
+ * one guide's parents into two different experiences for no reason anyone could explain. The
+ * pilot this comment used to gate on has now happened — one account, then 46 guides, verified
+ * end to end on a real device with zero send errors — so `isAllGuides` is the switch that
+ * broadens it, covering guides that do not exist yet.
+ *
+ * Everything still fails closed to `"v1"`: a bad input, an unreadable flag, a thrown set
+ * membership check. V1 is the path that has been converting all along, so it is the safe
+ * answer to every question this function cannot answer.
  */
 export function createGuideFollowGateV2Selector(
   dependencies: GuideFollowGateV2SelectorDependencies,
@@ -53,6 +74,15 @@ export function createGuideFollowGateV2Selector(
       }
       if (!enabled) return "v1";
 
+      // Before the allowlists, so broadening does not require emptying them — and emptying them
+      // would disable V2 rather than widen it. Wrapped because an unreadable flag must not be
+      // the reason a parent's journey changes.
+      try {
+        if (dependencies.isAllGuides() === true) return "v2";
+      } catch {
+        return "v1";
+      }
+
       const accountMatch = exactMember(dependencies.cohortIgUserIds, input.igUserId);
       if (accountMatch === null) return "v1";
       if (accountMatch) return "v2";
@@ -67,6 +97,7 @@ export function createGuideFollowGateV2Selector(
 /** Runtime selector consumed by Task 7 handler branches. */
 export const guideFollowGateV2Selector = createGuideFollowGateV2Selector({
   isEnabled: () => flags.bool("GUIDE_FOLLOW_GATE_V2_ENABLED"),
+  isAllGuides: () => flags.bool("GUIDE_FOLLOW_GATE_V2_ALL"),
   cohortIgUserIds: parseIdentifierSet(env.GUIDE_FOLLOW_GATE_V2_COHORT_IG_USER_IDS),
   resourceIds: parseIdentifierSet(env.GUIDE_FOLLOW_GATE_V2_RESOURCE_IDS),
 });

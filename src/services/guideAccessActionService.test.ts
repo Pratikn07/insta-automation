@@ -1691,7 +1691,9 @@ describe("comment guide request", () => {
     expect(asFollower.sendInitialPrivateReply.mock.calls[0]?.[0]?.guideName).toBe(
       asNonFollower.sendInitialPrivateReply.mock.calls[0]?.[0]?.guideName,
     );
-    expect(guideAccessOpening("toddler sleep guide")).toContain("toddler sleep guide");
+    // Parity is now structural rather than incidental: the opening interpolates nothing, so
+    // there is no per-parent input that could make the two differ.
+    expect(guideAccessOpening).not.toContain("toddler sleep guide");
   });
 
   it("a repeat comment on the same journey sends no second private reply", async () => {
@@ -1994,7 +1996,7 @@ describe("failed opening surfaces recovery evidence", () => {
     // Always the text variant: a queued retry carries no control, whatever mode
     // the original attempt used.
     expect(result.openingSendFailure?.retryText).toBe(
-      guideAccessOpeningText("toddler sleep guide"),
+      guideAccessOpeningText,
     );
   });
 
@@ -2026,7 +2028,7 @@ describe("failed opening surfaces recovery evidence", () => {
       expect.objectContaining({ capabilities: RICH }),
     );
     expect(result.openingSendFailure?.retryText).toBe(
-      guideAccessOpeningText("toddler sleep guide"),
+      guideAccessOpeningText,
     );
   });
 
@@ -2097,7 +2099,7 @@ describe("opening with no provider message id", () => {
     expect(result.outcome).toBe("access_attempt_needs_review");
     expect(result.openingSendFailure).toBeDefined();
     expect(result.openingSendFailure?.retryText).toBe(
-      guideAccessOpeningText("toddler sleep guide"),
+      guideAccessOpeningText,
     );
   });
 
@@ -2112,18 +2114,30 @@ describe("opening with no provider message id", () => {
     expect(result.openingSendFailure).toBeUndefined();
   });
 
-  it("keeps recovery evidence intact when the guide name cannot form reviewed copy", async () => {
-    // `guideAccessOpeningText` throws above 56 characters. Computing it inside the
-    // catch would replace the provider error and skip the ladder, so it must be
-    // resolved before the send is attempted.
+  /**
+   * The successor to a test that asserted the opposite, and worth explaining.
+   *
+   * `guideAccessOpeningText` used to interpolate the guide name and THROW above 56 characters,
+   * so an overlong name aborted the opening before any send — which is why the retry copy had
+   * to be computed before the send rather than inside the catch, where it would have replaced
+   * the provider error and skipped the recovery ladder.
+   *
+   * The copy is now a constant, so that whole hazard class is closed: no guide name, however
+   * long or hostile, can break an opening. Asserted rather than deleted, because "this can no
+   * longer fail" is the actual guarantee and it should fail loudly if interpolation returns.
+   */
+  it("sends the opening normally however unusable the guide name is", async () => {
     const test = createHarness({
       loadGuideName: async () => "g".repeat(57),
       sendInitialPrivateReply: async () => ({ messageId: null }),
     });
 
-    await expect(commentOnce(test)).rejects.toThrow("invalid_guide_access_copy");
-    // Nothing was sent, so no opening escaped with unreviewed copy.
-    expect(test.sendInitialPrivateReply).not.toHaveBeenCalled();
+    const result = await commentOnce(test);
+
+    expect(test.sendInitialPrivateReply).toHaveBeenCalledOnce();
+    // Still reports recovery evidence, since Meta acknowledged with no message id.
+    expect(result.openingSendFailure?.retryText).toBe(guideAccessOpeningText);
+    expect(result.openingSendFailure?.retryText).not.toContain("g".repeat(57));
   });
 });
 

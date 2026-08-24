@@ -13,7 +13,6 @@ import {
   guideAccessOpeningCardTitle,
   guideAccessOpening,
   guideAccessOpeningText,
-  guideAccessWaitingTitle,
 } from "../services/guideAccessCopy.js";
 import type { MetaSendResult } from "../types/meta.js";
 
@@ -91,7 +90,7 @@ export async function sendGuideInitialPrivateReply(input: {
   // with no image is a worse opening than the text it replaced, so a missing square falls
   // through rather than sending a hollow template.
   if (capabilities.privateGeneric && input.coverUrl) {
-    const text = guideAccessOpening(input.guideName);
+    const text = guideAccessOpening;
     return sendCapabilityPayload(
       buildGuideGateCapabilityPayload({
         case: "private_generic",
@@ -111,7 +110,7 @@ export async function sendGuideInitialPrivateReply(input: {
   if (!capabilities.privateQuickReply) {
     // The text variant asks for a reply instead of naming a control, so it is a
     // different length. Measure the copy that is actually sent.
-    const text = guideAccessOpeningText(input.guideName);
+    const text = guideAccessOpeningText;
     return sendCapabilityPayload(
       buildGuideGateCapabilityPayload({
         case: "private_text",
@@ -122,7 +121,7 @@ export async function sendGuideInitialPrivateReply(input: {
     );
   }
 
-  const text = guideAccessOpening(input.guideName);
+  const text = guideAccessOpening;
   return sendCapabilityPayload(
     buildGuideGateCapabilityPayload({
       case: "private_quick_reply",
@@ -167,7 +166,8 @@ export async function sendGuideFollowerGate(input: {
     );
   }
 
-  const text = `${guideAccessWaitingTitle(input.guideName)}\n\n${guideAccessCopy.nonFollowerGateText}\n\nVisit profile: ${GUIDE_PROFILE_URL}`;
+  // Shares the card's title rather than keeping a second string that named the guide.
+  const text = `${guideAccessCardTitle}\n\n${guideAccessCopy.nonFollowerGateText}\n\nVisit profile: ${GUIDE_PROFILE_URL}`;
   return sendMetaMessage(
     {
       recipient: { id: input.recipientId },

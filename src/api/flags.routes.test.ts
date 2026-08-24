@@ -85,12 +85,12 @@ describe("flags API", () => {
     expect(drafts.ifOff.length).toBeGreaterThan(10);
   });
 
-  it("returns all twenty-three, even those with no stored row", async () => {
+  it("returns all twenty-four, even those with no stored row", async () => {
     snapshot.mockReturnValue([]);
 
     const response = await request(app()).get("/api/flags").expect(200);
 
-    expect(response.body.flags).toHaveLength(23);
+    expect(response.body.flags).toHaveLength(24);
   });
 
   /**

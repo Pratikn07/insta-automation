@@ -7,22 +7,46 @@ import {
   guideAccessFollowReAskText,
   guideAccessFollowReAskTitle,
   guideAccessOpening,
-  guideAccessWaitingTitle,
+  guideAccessOpeningText,
 } from "./guideAccessCopy.js";
 
 describe("guide access copy", () => {
-  it("renders the reviewed neutral opening with the guide name", () => {
-    expect(guideAccessOpening("toddler sleep guide")).toBe(
-      "Got it 💛 I've got the toddler sleep guide you asked for. Want me to send it here?",
+  /**
+   * The opening names NO guide, and that is the invariant.
+   *
+   * It used to interpolate `resources.name`, which on this account IS the keyword — the live set
+   * includes WAFFLE, protein, Poop, GUMMY, Play, Sleep and six rows called "Recipe" — so it
+   * rendered "I've got the Play you asked for". The card titles were fixed for this; these text
+   * variants were not, which is the only reason the strict flow had to be limited to guides that
+   * had a cover to render a card from.
+   */
+  it("names no guide in the opening", () => {
+    expect(guideAccessOpening).toBe("Got it 💛 I've got it ready for you. Want me to send it here?");
+    expect(guideAccessOpeningText).toBe(
+      "Got it 💛 I've got it ready for you. Want me to send it here? Reply YES and I'll send it over.",
     );
   });
 
-  it("keeps guide-name punctuation as text and rejects names outside the reviewed limit", () => {
-    expect(guideAccessWaitingTitle('sleep guide", "buttons"')).toBe(
-      'Your sleep guide", "buttons" is waiting ✨',
-    );
-    expect(() => guideAccessOpening("x".repeat(57))).toThrow("invalid_guide_access_copy");
-    expect(() => guideAccessOpening("   ")).toThrow("invalid_guide_access_copy");
+  /**
+   * Asserted as a property rather than a fixed string, so a future rewrite of this copy cannot
+   * quietly reintroduce interpolation. `${` catches a template hole; the keyword list catches a
+   * real resource name being pasted in.
+   */
+  it("cannot reintroduce a guide name into any parent-facing string", () => {
+    const parentFacing = [
+      guideAccessOpening,
+      guideAccessOpeningText,
+      guideAccessCardTitle,
+      guideAccessCopy.nonFollowerGate,
+      guideAccessCopy.nonFollowerGateText,
+      guideAccessCopy.nonFollowerGateCard,
+      guideAccessCopy.followLag,
+      guideAccessCopy.followLagText,
+    ];
+    for (const copy of parentFacing) {
+      expect(copy).not.toMatch(/\$\{/u);
+      expect(copy).not.toMatch(/WAFFLE|MealPrep|GUMMY|\bPoop\b|\bPlay\b/u);
+    }
   });
 
   it("uses reviewed deterministic unavailable and follow-lag responses", () => {

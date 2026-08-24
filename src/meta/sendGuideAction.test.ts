@@ -19,7 +19,7 @@ const ACTION_TOKEN = "3f05a514-1f04-4b14-9df4-7730c7c39af4";
 const ACTION_PAYLOAD = `ts:guide:${ACTION_TOKEN}`;
 const COVER_URL = "https://cdn.example.com/guide-cover/sleep/dm.png";
 const OPENING =
-  "Got it 💛 I've got the toddler sleep guide you asked for. Want me to send it here?";
+  "Got it 💛 I've got it ready for you. Want me to send it here?";
 // Text mode carries no control, so it asks for the short reply instead.
 const OPENING_TEXT = `${OPENING} Reply YES and I'll send it over.`;
 
@@ -129,7 +129,7 @@ describe("sendGuideFollowerGate", () => {
     });
 
     const text =
-      "Your toddler sleep guide is waiting ✨\n\n" +
+      "Your guide is waiting ✨\n\n" +
       "Follow @tinysoho for more ideas like this, then reply DONE and I'll send it over.\n\n" +
       "Visit profile: https://www.instagram.com/tinysoho/";
     expect(sendMetaMessage).toHaveBeenCalledOnce();
@@ -351,7 +351,7 @@ describe("text-mode copy references no controls", () => {
     expect(text).toMatch(OPENING_ASK);
     expect(text).not.toMatch(/\btap\b/i);
     // Still the same opening copy, per the spec's "send the same copy as text".
-    expect(text).toContain("I've got the toddler sleep guide you asked for");
+    expect(text).toContain("I've got it ready for you");
   });
 
   it("the text follower gate asks for a reply and mentions no tap", async () => {

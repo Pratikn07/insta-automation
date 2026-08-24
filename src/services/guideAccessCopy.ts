@@ -1,12 +1,8 @@
-import { z } from "zod";
-
-const guideName = z.string().trim().min(1).max(56);
-
-function reviewedGuideName(value: string): string {
-  const parsed = guideName.safeParse(value);
-  if (!parsed.success) throw new Error("invalid_guide_access_copy");
-  return parsed.data;
-}
+/**
+ * No guide name is interpolated anywhere in this file, so the validator that used to guard that
+ * interpolation is gone with it. The payload schemas in `guideGatePayloads.ts` still validate a
+ * `guideName` on input; nothing renders it.
+ */
 
 /**
  * Two variants of every parent-facing prompt.
@@ -59,13 +55,27 @@ export const guideAccessCopy = {
     "Almost there 💛 Instagram may take a moment to update. Check that you're following @tinysoho, wait a little, then reply DONE once more.",
 } as const;
 
-export function guideAccessOpening(name: string): string {
-  return `Got it 💛 I've got the ${reviewedGuideName(name)} you asked for. Want me to send it here?`;
-}
+/**
+ * The opening, naming NO guide — and that is the point.
+ *
+ * This used to read "I've got the ${name} you asked for", where `name` is `resources.name`.
+ * On this account a resource name IS the keyword: the live set includes WAFFLE, protein, Poop,
+ * GUMMY, Play, Sleep and six separate rows called "Recipe". So the sentence rendered as "I've
+ * got the Play you asked for" — the automation showing its plumbing in its first words.
+ *
+ * The card titles were fixed for exactly this reason (`guideAccessCardTitle`,
+ * `guideAccessOpeningCardTitle`), but these TEXT variants were left interpolating, which meant
+ * the premium journey could only safely be enabled on guides that had a cover to render a card
+ * from. Removing the name here is what lets it run on every guide instead.
+ *
+ * A constant rather than a function of a name: a parameter that must not be used is an
+ * invitation to use it.
+ */
+export const guideAccessOpening =
+  "Got it 💛 I've got it ready for you. Want me to send it here?";
 
-export function guideAccessOpeningText(name: string): string {
-  return `${guideAccessOpening(name)} Reply YES and I'll send it over.`;
-}
+/** Text mode carries no control, so it asks for the short reply instead. */
+export const guideAccessOpeningText = `${guideAccessOpening} Reply YES and I'll send it over.`;
 
 /**
  * The card's title. Interpolates NOTHING, deliberately.
@@ -91,9 +101,12 @@ export const guideAccessCardTitle = "Your guide is waiting ✨";
  */
 export const guideAccessOpeningCardTitle = "Your guide is ready ✨";
 
-export function guideAccessWaitingTitle(name: string): string {
-  return `Your ${reviewedGuideName(name)} is waiting ✨`;
-}
+/**
+ * `guideAccessWaitingTitle(name)` is gone. It produced "Your ${name} is waiting ✨", which
+ * rendered "Your WAFFLE is waiting" for the same reason described above — and
+ * `guideAccessCardTitle` is already the identical sentence without the name, so the text gate
+ * now shares it rather than keeping a second string that could only be wrong.
+ */
 
 /**
  * The first re-ask, for a parent who tapped the gate's button without following.

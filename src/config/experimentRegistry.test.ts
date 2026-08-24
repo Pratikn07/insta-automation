@@ -136,6 +136,10 @@ describe("experiment registry", () => {
       // These are safety switches, not an invitation to compare strict access
       // against an ungated arm that violates the approved product rule.
       "GUIDE_FOLLOW_GATE_V2_ENABLED",
+      // Breadth, not a hypothesis. This switch decides WHICH guides use the strict flow, so
+      // pairing it with an experiment would imply we are measuring strict-vs-ungated, which is
+      // the comparison the product rule forbids.
+      "GUIDE_FOLLOW_GATE_V2_ALL",
       "GUIDE_RICH_GATE_ENABLED",
       "GUIDE_GATE_CARD_ENABLED",
       "GUIDE_GATE_CARD_PERCENT",

@@ -4,7 +4,6 @@ import {
   guideAccessCopy,
   guideAccessOpening,
   guideAccessOpeningText,
-  guideAccessWaitingTitle,
 } from "../services/guideAccessCopy.js";
 
 export const GUIDE_GATE_CAPABILITY_CASES = [
@@ -254,14 +253,14 @@ export function buildGuideGateCapabilityPayload(
   switch (input.case) {
     case "private_text": {
       // No control accompanies this message, so the copy must not name one.
-      const text = guideAccessOpeningText(input.guideName);
+      const text = guideAccessOpeningText;
       return {
         recipient: { comment_id: input.commentId },
         message: { text },
       };
     }
     case "private_quick_reply": {
-      const text = guideAccessOpening(input.guideName);
+      const text = guideAccessOpening;
       return {
         recipient: { comment_id: input.commentId },
         message: { text, quick_replies: [quickReply(input.actionToken)] },
@@ -285,7 +284,7 @@ export function buildGuideGateCapabilityPayload(
         }),
       };
     case "dm_quick_reply": {
-      const text = guideAccessOpening(input.guideName);
+      const text = guideAccessOpening;
       return {
         recipient: { id: input.recipientId },
         messaging_type: "RESPONSE",
