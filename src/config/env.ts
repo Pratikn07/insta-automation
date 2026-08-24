@@ -165,6 +165,14 @@ export const envSchema = z.object({
   // Both switches default off. The strict flow additionally requires an exact
   // controlled account or resource match, so an empty pilot list reaches nobody.
   GUIDE_FOLLOW_GATE_V2_ENABLED: booleanFlag(false),
+  /**
+   * Applies the strict flow to EVERY guide, including guides created later.
+   *
+   * Defaults off, and requires `GUIDE_FOLLOW_GATE_V2_ENABLED` as well — two switches, so this
+   * one cannot broaden a flow that is itself turned off. `booleanFlag` rather than
+   * `z.coerce.boolean`, which parses the string "false" as true.
+   */
+  GUIDE_FOLLOW_GATE_V2_ALL: booleanFlag(false),
   GUIDE_RICH_GATE_ENABLED: booleanFlag(false),
   // The V1 comment gate, sent as a card instead of plain text. Ships off with a 0% share so
   // the first parent only sees it after someone deliberately sets both.

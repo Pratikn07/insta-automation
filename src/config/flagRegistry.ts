@@ -96,9 +96,23 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
     doesWhat:
       "Uses a fresh Instagram follow check before a new guide or repeat guide can be sent.",
     affectsWho:
-      "Only new actions from the controlled accounts or guides selected for the pilot.",
+      "Only new actions from the controlled accounts or guides selected for the pilot, unless Strict access for every guide is also on.",
     ifOff:
       "New actions stay on the existing guide-request path. In-progress evidence remains available.",
+    pageMayEnable: false,
+    pageMayStop: true,
+  },
+  {
+    key: "GUIDE_FOLLOW_GATE_V2_ALL",
+    name: "Strict access for every guide",
+    group: "outbound",
+    kind: "boolean",
+    doesWhat:
+      "Applies the strict guide-access flow to every guide instead of a hand-picked list, including guides added later.",
+    affectsWho:
+      "Everyone who comments a keyword, on any guide. Requires Strict guide access to be on as well; on its own it does nothing.",
+    ifOff:
+      "Only the hand-picked pilot accounts and guides use the strict flow. Everyone else stays on the existing path, which is also where any failure falls back to.",
     pageMayEnable: false,
     pageMayStop: true,
   },

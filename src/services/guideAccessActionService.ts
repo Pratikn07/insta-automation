@@ -1294,7 +1294,7 @@ export function createGuideAccessActionService(
         : null;
     // Resolved before the send: computing it inside the catch would let a copy
     // validation error replace the provider error and skip the recovery ladder.
-    const retryText = guideAccessOpeningText(guideName);
+    const retryText = guideAccessOpeningText;
     const disposition = await sendAfterFence(attempt.id, "awaiting_request", async () => {
       let receipt: MetaSendResult;
       try {

@@ -15,7 +15,7 @@ const PROFILE_URL = "https://www.instagram.com/tinysoho/";
 const COVER_URL = "https://cdn.example.com/guide-cover/sleep/dm.png";
 const GUIDE_NAME = "toddler sleep guide";
 const OPENING =
-  "Got it 💛 I've got the toddler sleep guide you asked for. Want me to send it here?";
+  "Got it 💛 I've got it ready for you. Want me to send it here?";
 // The text-only case carries no control, so it asks for the short reply instead.
 const OPENING_TEXT = `${OPENING} Reply YES and I'll send it over.`;
 
@@ -247,7 +247,9 @@ describe("guide gate capability payloads", () => {
 
     expect(Object.keys(payload)).toEqual(["recipient", "message"]);
     expect(payload.message).toEqual({
-      text: `Got it 💛 I've got the ${hostileGuideName} you asked for. Want me to send it here?`,
+      // The opening no longer renders the name at all, so a hostile name cannot reach a
+      // parent's screen. It is still VALIDATED on input, which is what this case now proves.
+      text: OPENING,
       quick_replies: [
         { content_type: "text", title: "Yes, send it", payload: ACTION_PAYLOAD },
       ],

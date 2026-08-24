@@ -899,7 +899,7 @@ describe("strict opening failure recovery", () => {
     media: { id: "reel-1", media_product_type: "REELS" },
   };
   const RETRY_TEXT =
-    "Got it 💛 I've got the toddler sleep guide you asked for. Want me to send it here? Reply YES and I'll send it over.";
+    "Got it 💛 I've got it ready for you. Want me to send it here? Reply YES and I'll send it over.";
 
   // HTTP 503: Meta answered and did not accept the send, so it is provably
   // retryable ("retryable_transport"). A 400 would classify as "permanent" and
