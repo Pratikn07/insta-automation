@@ -25,12 +25,23 @@ export type GuideActionCapabilities = {
   privateQuickReply: boolean;
   dmGenericGate: boolean;
   dmQuickReply?: boolean;
+  /**
+   * The opening as a CARD — cover, copy and a real postback — carried in the single private
+   * reply Meta allows per comment. Verified on device 2026-08-24: a generic template is
+   * accepted on that surface and renders with tappable buttons.
+   *
+   * Separate from `privateQuickReply` because they compete for the same one-shot reply and
+   * only one can win. Card takes precedence when both are on: a chip posts its own label into
+   * the thread as the parent's words, an in-bubble button does not.
+   */
+  privateGeneric?: boolean;
 };
 
 const TEXT_ONLY_CAPABILITIES: GuideActionCapabilities = {
   privateQuickReply: false,
   dmGenericGate: false,
   dmQuickReply: false,
+  privateGeneric: false,
 };
 
 function requiredOpaqueActionToken(value: string): string {
@@ -51,8 +62,32 @@ export async function sendGuideInitialPrivateReply(input: {
   guideName: string;
   actionToken: string;
   capabilities?: GuideActionCapabilities;
+  /** Square cover for the card. Absent means the card cannot be built, so text is used. */
+  coverUrl?: string;
+  /** Names the guide's category so the card's button says what it is sending. */
+  categorySlug?: string;
 }): Promise<MetaSendResult> {
   const capabilities = input.capabilities ?? TEXT_ONLY_CAPABILITIES;
+
+  // The card first, because it is the richest shape this one reply can carry — and because a
+  // quick reply would spend the same single reply on strictly less. Requires a cover: a card
+  // with no image is a worse opening than the text it replaced, so a missing square falls
+  // through rather than sending a hollow template.
+  if (capabilities.privateGeneric && input.coverUrl) {
+    const text = guideAccessOpening(input.guideName);
+    return sendCapabilityPayload(
+      buildGuideGateCapabilityPayload({
+        case: "private_generic",
+        commentId: input.commentId,
+        guideName: input.guideName,
+        profileUrl: GUIDE_PROFILE_URL,
+        coverUrl: input.coverUrl,
+        actionToken: requiredOpaqueActionToken(input.actionToken),
+        ...(input.categorySlug ? { categorySlug: input.categorySlug } : {}),
+      }),
+      { commentId: input.commentId, mode: "private_generic", messageLength: text.length },
+    );
+  }
 
   // Decide before sending. Never retry text after an attempted rich private reply.
   if (!capabilities.privateQuickReply) {
