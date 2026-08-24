@@ -85,6 +85,20 @@ describe("PresentationCategoryPicker", () => {
     expect(screen.queryByRole("option", { name: "Select a category" })).not.toBeInTheDocument();
   });
 
+  it("locks the choice without locking the ability to add a category", () => {
+    render(
+      <PresentationCategoryPicker
+        categories={[recipes]}
+        selectedCategoryId={recipes.id}
+        selectionLocked
+        onSelect={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("combobox", { name: "Presentation category" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add reusable category" })).toBeEnabled();
+  });
+
   it("adds a reusable needs-review category without making it publishable", async () => {
     const user = userEvent.setup();
     apiMutation.mockResolvedValue({ category: feedingTips, replayed: false });
