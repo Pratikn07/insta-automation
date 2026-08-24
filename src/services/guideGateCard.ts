@@ -6,7 +6,7 @@ import { sendMetaMessage } from "../meta/sendMessage.js";
 import { publicMediaUrl } from "../lib/supabase.js";
 import { prisma } from "../lib/prisma.js";
 import { flags } from "./flagService.js";
-import { guideAccessCopy } from "./guideAccessCopy.js";
+import { guideAccessCardTitle, guideAccessCopy } from "./guideAccessCopy.js";
 import type { MetaSendResult } from "../types/meta.js";
 
 /**
@@ -77,9 +77,7 @@ export const GUIDE_GATE_CARD_SUBTITLE = guideAccessCopy.nonFollowerGateCard;
 /**
  * Everything the card needs, in one query, or null.
  *
- * Returns the guide name alongside the cover because a keyword row carries only a
- * `resourceId` — fetching the name separately would be a second query per gate for a string
- * this one already has to join to.
+ * Only the cover: the card's title names nothing, so the guide's name is never needed here.
  *
  * Square specifically: a template's image slot centre-crops to roughly 1:1, so handing it the
  * 1200x916 dm cover would lose the headline's first word — verified on device. A guide with no
@@ -87,17 +85,14 @@ export const GUIDE_GATE_CARD_SUBTITLE = guideAccessCopy.nonFollowerGateCard;
  */
 export async function loadGateCard(
   resourceId: string,
-): Promise<{ coverUrl: string; guideName: string } | null> {
+): Promise<{ coverUrl: string } | null> {
   try {
     const cover = await prisma.resourceCoverVersion.findFirst({
       where: { resourceId, status: "published", squareStoragePath: { not: null } },
-      select: { squareStoragePath: true, resource: { select: { name: true } } },
+      select: { squareStoragePath: true },
     });
     if (!cover?.squareStoragePath) return null;
-    return {
-      coverUrl: publicMediaUrl(cover.squareStoragePath),
-      guideName: cover.resource.name,
-    };
+    return { coverUrl: publicMediaUrl(cover.squareStoragePath) };
   } catch {
     return null;
   }
@@ -109,13 +104,12 @@ export async function loadGateCard(
  */
 export function sendGuideGateCard(input: {
   commentId: string;
-  guideName: string;
   coverUrl: string;
 }): Promise<MetaSendResult> {
   const payload = buildGuideGateCapabilityPayload({
     case: "private_gate_card",
     commentId: input.commentId,
-    guideName: input.guideName,
+    title: guideAccessCardTitle,
     profileUrl: GUIDE_PROFILE_URL,
     coverUrl: input.coverUrl,
     // The card's own subtitle. Uses the TEXT variant on purpose: it is the one that says

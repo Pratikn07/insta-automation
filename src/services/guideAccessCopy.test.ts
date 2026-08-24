@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  guideAccessCardTitle,
   guideAccessCopy,
   guideAccessOpening,
   guideAccessWaitingTitle,
@@ -64,5 +65,17 @@ describe("guide access copy", () => {
   it("keeps the card subtitle inside Meta's 80-character subtitle limit", () => {
     expect([...guideAccessCopy.nonFollowerGateCard].length).toBeLessThanOrEqual(80);
     expect(guideAccessCopy.nonFollowerGateCard).toMatch(/reply DONE/u);
+  });
+
+  /**
+   * The card title must never interpolate a resource name. On this account those names are the
+   * keywords themselves — WAFFLE, protein, Poop, GUMMY, and six separate rows called "Recipe" —
+   * so "Your ${name} is waiting" renders as "Your WAFFLE is waiting" on the one message half of
+   * these parents ever see. The cover carries the authored headline instead.
+   */
+  it("names no guide in the card title", () => {
+    expect(guideAccessCardTitle).toBe("Your guide is waiting ✨");
+    expect(guideAccessCardTitle).not.toMatch(/\$\{|WAFFLE/u);
+    expect([...guideAccessCardTitle].length).toBeLessThanOrEqual(80);
   });
 });

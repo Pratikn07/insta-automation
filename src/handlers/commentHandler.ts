@@ -456,7 +456,7 @@ export async function handleComment(comment: CommentValue): Promise<void> {
   // consumes the single reply. Anything unknown here — flags unreadable, no square published,
   // lookup failed — resolves to the text gate, which is the message that has been converting
   // all along.
-  let card: { coverUrl: string; guideName: string } | null = null;
+  let card: { coverUrl: string } | null = null;
   if (guideGateCardSelected({ igUserId: senderId, resourceId: keyword.resourceId })) {
     card = await loadGateCard(keyword.resourceId);
   }
@@ -473,7 +473,6 @@ export async function handleComment(comment: CommentValue): Promise<void> {
           send: () =>
             sendGuideGateCard({
               commentId: comment.id,
-              guideName: card.guideName,
               coverUrl: card.coverUrl,
             }),
         })

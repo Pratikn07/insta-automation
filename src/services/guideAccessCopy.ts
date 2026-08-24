@@ -67,6 +67,21 @@ export function guideAccessOpeningText(name: string): string {
   return `${guideAccessOpening(name)} Reply YES and I'll send it over.`;
 }
 
+/**
+ * The card's title. Interpolates NOTHING, deliberately.
+ *
+ * `guideAccessWaitingTitle` puts the resource's name in the sentence, and on this account a
+ * resource name is almost never a name a parent would recognise — it is the keyword. The live
+ * set includes WAFFLE, protein, Poop, GUMMY and six different rows called "Recipe". Rendered,
+ * that reads "Your WAFFLE is waiting", which is the automation showing its plumbing on the one
+ * message half of these parents ever see.
+ *
+ * The card does not need it. Its cover already carries the authored, human headline — "Banana
+ * oat waffles" — set in the guide's own type. Naming the guide again in the title was both a
+ * duplicate and the worse of the two names.
+ */
+export const guideAccessCardTitle = "Your guide is waiting ✨";
+
 export function guideAccessWaitingTitle(name: string): string {
   return `Your ${reviewedGuideName(name)} is waiting ✨`;
 }
