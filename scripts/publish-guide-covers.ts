@@ -114,6 +114,29 @@ const PLAN: CoverPlan[] = [
     headline: "Toothbrushing without the fight",
     supportingLine: "Less tension at the sink, starting tonight.",
   },
+  {
+    /**
+     * The account's highest-volume keyword, by a factor of nine: 949 journeys in the 30 days
+     * to 2026-08-24, against 37 for the next uncovered guide. It was missing from this list by
+     * OMISSION, not judgement — it carries no media, so it always satisfied the pure order -1
+     * insert this script was built around, and the only guide deliberately excluded is `Picky`
+     * for leading with ten images.
+     *
+     * The cost of that omission was concrete: `loadGateCard` filters on a published square, so
+     * until now the single most-requested guide on the account could only ever send its follow
+     * request as plain text — the one message more than half of those parents ever receive.
+     *
+     * Copy is from the guide's own content, which is about reaching longer sleep stretches from
+     * around two months through a consistent routine, full daytime feeds and room to
+     * self-settle. Not from the keyword: "Sleep" as a name says nothing a parent would
+     * recognise.
+     */
+    resourceId: "c5aa5d70-b6ac-455c-9e24-33eb5037e5ee",
+    label: "Sleep (longer stretches, 3 msgs)",
+    categorySlug: "bedtime",
+    headline: "Longer sleep stretches",
+    supportingLine: "Same routine, full days, room to self-settle.",
+  },
 
   // ─ potty-training ─────────────────────────────────────────────────────────────────
   {
