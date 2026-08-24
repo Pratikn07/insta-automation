@@ -39,7 +39,19 @@ export type GuideActionCapabilities = {
   privateGeneric?: boolean;
 };
 
-const TEXT_ONLY_CAPABILITIES: GuideActionCapabilities = {
+/**
+ * Text only, and now an explicit choice rather than a default.
+ *
+ * This was the fallback for an absent `capabilities`, and that default cost the follow gate
+ * its card twice: the dependency type that calls it simply had no such field, so nothing was
+ * ever passed, TEXT_ONLY quietly won, and a gate holding a perfectly good cover sent plain
+ * text. Nothing failed, so nothing surfaced — the shape a parent received was decided by an
+ * omission.
+ *
+ * `capabilities` is required on every send below. A caller that wants text passes this and
+ * says so; a caller that forgets no longer compiles.
+ */
+export const TEXT_ONLY_CAPABILITIES: GuideActionCapabilities = {
   privateQuickReply: false,
   dmGenericGate: false,
   dmQuickReply: false,
@@ -63,13 +75,13 @@ export async function sendGuideInitialPrivateReply(input: {
   commentId: string;
   guideName: string;
   actionToken: string;
-  capabilities?: GuideActionCapabilities;
+  capabilities: GuideActionCapabilities;
   /** Square cover for the card. Absent means the card cannot be built, so text is used. */
   coverUrl?: string;
   /** Names the guide's category so the card's button says what it is sending. */
   categorySlug?: string;
 }): Promise<MetaSendResult> {
-  const capabilities = input.capabilities ?? TEXT_ONLY_CAPABILITIES;
+  const { capabilities } = input;
 
   // The card first, because it is the richest shape this one reply can carry — and because a
   // quick reply would spend the same single reply on strictly less. Requires a cover: a card
@@ -125,7 +137,7 @@ export async function sendGuideFollowerGate(input: {
   /** The square cover. Empty means the gate cannot be a card and falls back to text. */
   coverUrl: string;
   actionToken: string;
-  capabilities?: GuideActionCapabilities;
+  capabilities: GuideActionCapabilities;
   /**
    * Names the guide's category so the card's button can say what it is sending rather
    * than "Send it over". Optional, and absent degrades to the generic label — a button
@@ -134,7 +146,7 @@ export async function sendGuideFollowerGate(input: {
    */
   categorySlug?: string;
 }): Promise<MetaSendResult> {
-  const capabilities = input.capabilities ?? TEXT_ONLY_CAPABILITIES;
+  const { capabilities } = input;
 
   if (capabilities.dmGenericGate && input.coverUrl) {
     return sendCapabilityPayload(
@@ -166,9 +178,9 @@ export async function sendGuideFollowerGate(input: {
 export async function sendGuideFollowLag(input: {
   recipientId: string;
   actionToken: string;
-  capabilities?: GuideActionCapabilities;
+  capabilities: GuideActionCapabilities;
 }): Promise<MetaSendResult> {
-  const capabilities = input.capabilities ?? TEXT_ONLY_CAPABILITIES;
+  const { capabilities } = input;
   const actionToken = requiredOpaqueActionToken(input.actionToken);
   const text = capabilities.dmQuickReply
     ? guideAccessCopy.followLag

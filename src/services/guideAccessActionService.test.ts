@@ -790,6 +790,30 @@ describe("request and follow action orchestration", () => {
     ]);
   });
 
+  /**
+   * The lag response exists BECAUSE Instagram's follow graph propagates slowly: this parent
+   * has already followed and tapped, and is being asked to wait. Its retry control is a quick
+   * reply gated on `dmQuickReply`, and the dependency contract had no `capabilities` field at
+   * all — so the chip could never render and the one message telling someone to try again gave
+   * them nothing to try again WITH. Same omission as the gate's, one message further along.
+   */
+  it("hands the lag response the capability its retry chip depends on", async () => {
+    const test = createHarness({
+      freshResults: [live(false), live(false)],
+      richCapabilities: RICH,
+    });
+
+    await expect(request(test)).resolves.toBe("follow_not_confirmed");
+    await expect(check(test, FOLLOW_TOKEN_1)).resolves.toBe("follow_not_confirmed");
+
+    expect(test.sendFollowLag).toHaveBeenCalledWith({
+      recipientId: SENDER_ID,
+      actionToken: FOLLOW_TOKEN_2,
+      capabilities: RICH,
+    });
+    expect(RICH.dmQuickReply).toBe(true);
+  });
+
   it("sends a gentle lag response for a false recheck, then starts delivery with token UUID identity on fresh true", async () => {
     const test = createHarness({ freshResults: [live(false), live(false), live(true)] });
 
@@ -800,6 +824,7 @@ describe("request and follow action orchestration", () => {
     expect(test.sendFollowLag).toHaveBeenCalledWith({
       recipientId: SENDER_ID,
       actionToken: FOLLOW_TOKEN_2,
+      capabilities: TEXT_ONLY,
     });
     expect(test.startGuideDelivery).toHaveBeenCalledOnce();
     expect(test.startGuideDelivery).toHaveBeenCalledWith(
@@ -894,10 +919,12 @@ describe("request and follow action orchestration", () => {
     expect(test.sendFollowLag).toHaveBeenNthCalledWith(1, {
       recipientId: SENDER_ID,
       actionToken: FOLLOW_TOKEN_2,
+      capabilities: TEXT_ONLY,
     });
     expect(test.sendFollowLag).toHaveBeenNthCalledWith(2, {
       recipientId: SENDER_ID,
       actionToken: FOLLOW_TOKEN_3,
+      capabilities: TEXT_ONLY,
     });
     expect(test.attempt().state).toBe("needs_review");
     expect(test.startGuideDelivery).not.toHaveBeenCalled();
@@ -933,6 +960,7 @@ describe("request and follow action orchestration", () => {
     expect(test.sendFollowLag).toHaveBeenCalledWith({
       recipientId: SENDER_ID,
       actionToken: FOLLOW_TOKEN_2,
+      capabilities: TEXT_ONLY,
     });
   });
 

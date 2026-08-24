@@ -6,6 +6,7 @@ vi.mock("./sendMessage.js", () => ({ sendMetaMessage }));
 
 const {
   GUIDE_PROFILE_URL,
+  TEXT_ONLY_CAPABILITIES,
   sendGuideFollowerGate,
   sendGuideFollowLag,
   sendGuideInitialPrivateReply,
@@ -32,6 +33,7 @@ describe("sendGuideInitialPrivateReply", () => {
       commentId: COMMENT_ID,
       guideName: "toddler sleep guide",
       actionToken: ACTION_TOKEN,
+      capabilities: TEXT_ONLY_CAPABILITIES,
     });
 
     expect(sendMetaMessage).toHaveBeenCalledOnce();
@@ -117,6 +119,7 @@ describe("sendGuideFollowerGate", () => {
       guideName: "toddler sleep guide",
       coverUrl: COVER_URL,
       actionToken: ACTION_TOKEN,
+      capabilities: TEXT_ONLY_CAPABILITIES,
     });
 
     const text =
@@ -139,6 +142,7 @@ describe("sendGuideFollowLag", () => {
     await sendGuideFollowLag({
       recipientId: RECIPIENT_ID,
       actionToken: ACTION_TOKEN,
+      capabilities: TEXT_ONLY_CAPABILITIES,
     });
 
     expect(sendMetaMessage).toHaveBeenCalledWith(
@@ -212,6 +216,7 @@ describe("text-mode copy references no controls", () => {
       commentId: COMMENT_ID,
       guideName: "toddler sleep guide",
       actionToken: ACTION_TOKEN,
+      capabilities: TEXT_ONLY_CAPABILITIES,
     });
 
     const text = await sentText();
@@ -227,6 +232,7 @@ describe("text-mode copy references no controls", () => {
       guideName: "toddler sleep guide",
       coverUrl: COVER_URL,
       actionToken: ACTION_TOKEN,
+      capabilities: TEXT_ONLY_CAPABILITIES,
     });
 
     const text = await sentText();
@@ -240,6 +246,7 @@ describe("text-mode copy references no controls", () => {
     await sendGuideFollowLag({
       recipientId: RECIPIENT_ID,
       actionToken: ACTION_TOKEN,
+      capabilities: TEXT_ONLY_CAPABILITIES,
     });
 
     const text = await sentText();
