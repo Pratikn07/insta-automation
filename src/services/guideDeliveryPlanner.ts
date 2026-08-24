@@ -131,7 +131,34 @@ function compileUnits(input: CompileGuideDeliveryPlanInput): CompiledGuideDelive
   // redelivery with a bare image gives the parent a picture before any context, and the
   // intro explains why they are receiving it again. Exactly one cover, because it is
   // appended once here and nowhere else.
-  if (input.cover && input.coverAlreadyShown !== true) {
+  // A cover can reach a parent by TWO independent routes, and `coverAlreadyShown` only
+  // knows about one of them.
+  //
+  // It covers "the follower gate already sent this cover". It does not cover the other
+  // route: a published cover attached to the guide as an ordinary authored image, which is
+  // how covers actually reach parents today — `scripts/publish-guide-covers.ts` writes one
+  // at `order: -1` so the live sender leads with it. That row is loaded here like any other
+  // resource step, so prepending the generated cover as well sends the same image twice in
+  // one delivery.
+  //
+  // Compared by URL because that is the identity a parent perceives; two units with
+  // different origins and ids are still one duplicate picture on the screen. The authored
+  // row wins because it is what the owner explicitly placed in the guide.
+  //
+  // Not currently reachable — the ledger path serves one cohort account and
+  // GUIDE_COVER_DELIVERY_ENABLED is unset, so no snapshot is eligible. That is exactly why
+  // it needs a guard rather than a note: the day someone enables cover delivery for a guide
+  // that already carries an attached cover, this fires silently, and a duplicate image
+  // looks like a glitch rather than a config change.
+  const authoredCoverUrls = new Set(
+    input.messages
+      .filter((message) => message.type === "image" && message.mediaUrl)
+      .map((message) => message.mediaUrl as string),
+  );
+  const coverAlreadyAuthored =
+    input.cover !== undefined && authoredCoverUrls.has(input.cover.mediaUrl);
+
+  if (input.cover && input.coverAlreadyShown !== true && !coverAlreadyAuthored) {
     appendUnit(units, {
       resourceMessageId: null,
       authoredOrder: null,
