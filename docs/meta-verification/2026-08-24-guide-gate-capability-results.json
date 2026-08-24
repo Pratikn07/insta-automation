@@ -1,0 +1,168 @@
+{
+  "schemaVersion": 1,
+  "run": {
+    "graphVersion": "v21.0",
+    "loginType": "not_verified",
+    "permissions": [],
+    "startedAt": "2026-08-24T00:15:35.772Z",
+    "completedAt": "2026-08-24T00:20:35.787Z",
+    "reviewedAt": null,
+    "reviewedBy": null,
+    "reviewNotes": [
+      "startedAt and completedAt are the first and last verified case checkedAt values. The spike CLI stamps each case but does not stamp a run, so these are derived from case results rather than recorded independently.",
+      "loginType and permissions are not_verified because the spike never probed the token. It sends and reports; it does not enumerate scopes. Both stay unverified rather than being inferred from the fact that the sends succeeded.",
+      "reviewedAt and reviewedBy are null on purpose. The parent-facing composition was reviewed and approved, but no one has signed off a capability release decision, and this file is the input to that decision rather than a record of it."
+    ]
+  },
+  "cases": [
+    {
+      "case": "private_text",
+      "decision": "not_verified",
+      "sanitizedResult": {
+        "accepted": null,
+        "httpStatus": null,
+        "graphCode": null,
+        "graphSubcode": null,
+        "providerMessageIdPresent": null,
+        "checkedAt": null
+      },
+      "webhookType": "not_verified",
+      "mobilePresentation": "not_verified",
+      "desktopPresentation": "not_verified",
+      "cropAndSafeArea": "not_applicable",
+      "profileReturn": "not_applicable",
+      "duplicateAction": "not_applicable",
+      "screenshotRefs": [],
+      "reviewNotes": [
+        "Unspent. Every private-reply case consumes a comment permanently: Meta allows exactly one private reply per comment, so a case cannot be re-run against the same comment and cannot be undone. Three fresh comment IDs are needed, one per private case.",
+        "This is the text fallback that ships today, so it is the one private case whose behaviour is already exercised by production traffic. Verifying it through the spike would confirm the spike harness, not the capability."
+      ]
+    },
+    {
+      "case": "private_quick_reply",
+      "decision": "not_verified",
+      "sanitizedResult": {
+        "accepted": null,
+        "httpStatus": null,
+        "graphCode": null,
+        "graphSubcode": null,
+        "providerMessageIdPresent": null,
+        "checkedAt": null
+      },
+      "webhookType": "not_verified",
+      "mobilePresentation": "not_verified",
+      "desktopPresentation": "not_verified",
+      "cropAndSafeArea": "not_applicable",
+      "profileReturn": "not_applicable",
+      "duplicateAction": "not_verified",
+      "screenshotRefs": [],
+      "reviewNotes": [
+        "Unspent, one-shot. See private_text.",
+        "The DM equivalent (dm_quick_reply) was accepted, which is evidence about quick replies in an open thread and NOT about quick replies attached to a private reply. Private replies are a distinct Meta surface with their own constraint, so the DM result must not be read across."
+      ]
+    },
+    {
+      "case": "private_generic",
+      "decision": "not_verified",
+      "sanitizedResult": {
+        "accepted": null,
+        "httpStatus": null,
+        "graphCode": null,
+        "graphSubcode": null,
+        "providerMessageIdPresent": null,
+        "checkedAt": null
+      },
+      "webhookType": "not_verified",
+      "mobilePresentation": "not_verified",
+      "desktopPresentation": "not_verified",
+      "cropAndSafeArea": "not_verified",
+      "profileReturn": "not_verified",
+      "duplicateAction": "not_verified",
+      "screenshotRefs": [],
+      "reviewNotes": [
+        "Unspent, one-shot. See private_text.",
+        "This is the case the square rendition exists for, and the highest-value one remaining. It is the only shape that can put artwork and a tappable control in the SAME message, which matters because a parent arriving from a comment can be sent exactly one private reply — a cover message followed by a controls message is not available on that path.",
+        "It has no caller yet: buildGuideGateCapabilityPayload builds it, and sendGuideInitialPrivateReply has no branch that reaches it. Spending a comment on it before that branch exists would verify the payload builder and leave the send path unverified."
+      ]
+    },
+    {
+      "case": "dm_quick_reply",
+      "decision": "supported",
+      "sanitizedResult": {
+        "accepted": true,
+        "httpStatus": 200,
+        "graphCode": null,
+        "graphSubcode": null,
+        "providerMessageIdPresent": true,
+        "checkedAt": "2026-08-24T00:15:35.772Z"
+      },
+      "webhookType": "not_verified",
+      "mobilePresentation": "verified",
+      "desktopPresentation": "not_verified",
+      "cropAndSafeArea": "not_applicable",
+      "profileReturn": "not_applicable",
+      "duplicateAction": "not_verified",
+      "screenshotRefs": [],
+      "reviewNotes": [
+        "Accepted and delivered with a provider message id.",
+        "Presentation is NOT an in-bubble button. It renders as a chip near the keyboard, and tapping it posts the chip's label into the thread as the parent's own message. Confirmed on device by the account owner, who corrected an earlier reading of the screenshot. This is why the rich gate leans on the generic template for anything meant to feel like a control rather than a suggested reply.",
+        "webhookType and duplicateAction are not_verified: the chip was tapped, but no one inspected the resulting inbound payload or tapped it twice. The guide-action router accepts only an exact ts:guide:<uuid> envelope, so the inbound shape is a real dependency and it is currently unconfirmed against live traffic."
+      ]
+    },
+    {
+      "case": "dm_generic_gate",
+      "decision": "supported",
+      "sanitizedResult": {
+        "accepted": true,
+        "httpStatus": 200,
+        "graphCode": null,
+        "graphSubcode": null,
+        "providerMessageIdPresent": true,
+        "checkedAt": "2026-08-24T00:20:35.787Z"
+      },
+      "webhookType": "not_verified",
+      "mobilePresentation": "verified",
+      "desktopPresentation": "not_verified",
+      "cropAndSafeArea": "failed",
+      "profileReturn": "not_verified",
+      "duplicateAction": "not_verified",
+      "screenshotRefs": [],
+      "reviewNotes": [
+        "Accepted three times — 2026-08-24T00:16:46.850Z, 2026-08-24T00:20:35.787Z and 2026-08-24T00:55:56.832Z — each 200 with a provider message id. The first two carried landscape images and produced the crop finding below; the third carried the 1200x1200 square_card and is the one still awaiting visual confirmation.",
+        "Buttons render in-bubble, which is the presentation the rich gate wants: Visit profile and I'm following, both tappable without posting anything into the thread.",
+        "cropAndSafeArea FAILED, and this is the load-bearing finding. Instagram's generic-template image slot crops to roughly 1:1 and takes a CENTRE slice. The 1200x916 dm_cover lost its edges, and the 1200x628 generic_card rendition rendered the bedtime headline as 'me can feel softer' — the first word gone entirely. Widening the safe area does not fix a centre crop; only a square source does, because then the crop is the identity function.",
+        "Consequence: the generic_card rendition (1200x628, 1.91:1) is DEAD. It was specified as Messenger-oriented and the plan deliberately withheld publishing it until this spike ruled. The spike ruled against it. square_card (1200x1200) replaces it and is now the rendition the renderer produces for card slots.",
+        "Plain image messages are NOT cropped, which is why the follow gate's separate cover exposure can keep using dm_cover at 1200x916. The crop is a property of the template slot, not of Instagram DMs.",
+        "cropAndSafeArea stays failed rather than being flipped by the square. The 1200x1200 square_card was sent to the controlled recipient at 2026-08-24T00:55:56.832Z and accepted, but acceptance is not the claim under test — the claim is that no content is lost, and nobody has looked at the delivered card yet. It flips to verified only on an on-device reading, because a 200 was exactly what the cropped landscape sends also returned."
+      ]
+    }
+  ],
+  "followFlagPropagation": {
+    "beforeFollow": null,
+    "observations": [],
+    "firstTrueAfterMs": null,
+    "reviewNotes": [
+      "Not measured. The spike sent messages; it never followed and unfollowed the account to time how long the Graph follow flag takes to flip.",
+      "This gap matters more than it looks. The gate fails closed, so a parent who follows and taps confirm before the flag propagates is told access could not be confirmed. The follow-lag ladder exists for exactly that window, and its bounded retry count is currently tuned against an unmeasured propagation delay."
+    ]
+  },
+  "releaseDecision": {
+    "textFallbackRequired": true,
+    "richGateMayBeEnabled": false,
+    "approvedCases": [],
+    "blockedCases": [
+      "private_quick_reply",
+      "private_generic",
+      "dm_quick_reply",
+      "dm_generic_gate"
+    ],
+    "decisionAt": null,
+    "decidedBy": null,
+    "reviewNotes": [
+      "GUIDE_RICH_GATE_ENABLED stays false and every case stays blocked, including the two that were accepted.",
+      "Delivery is not the bar. A case is releasable when its inbound webhook shape is confirmed against the guide-action router and a duplicate tap is shown to be idempotent, because the router is what turns a tap into a follow check and a guide send. Both dm cases are accepted-and-rendered but webhook-unverified, so enabling them would put an unverified inbound contract in front of real parents.",
+      "The three private cases are unspent and each one costs a comment permanently. private_generic should be spent only after sendGuideInitialPrivateReply has a branch that reaches it, so the single attempt verifies the real send path.",
+      "approvedCases is empty rather than listing the two accepted cases, so that no reader can mistake HTTP 200 for a release approval."
+    ]
+  }
+}

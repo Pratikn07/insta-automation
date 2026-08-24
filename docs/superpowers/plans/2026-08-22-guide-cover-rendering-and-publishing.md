@@ -103,7 +103,7 @@
 - [ ] Run focused tests and confirm expected failures.
 - [ ] Implement font parsing/measurement with the bundled Source Serif 4/Inter assets; do not use `canvas.measureText` or host fonts.
 - [ ] Implement code-native SVG illustrations for the four approved directions and Resvg rasterization for `dm_cover`.
-- [ ] Implement `generic_card` composition behind a renderer option, but do not publish it until the Meta spike marks it supported.
+- [x] ~~Implement `generic_card` composition behind a renderer option, but do not publish it until the Meta spike marks it supported.~~ **Spike ruled against it.** Instagram's template image slot centre-crops to ~1:1, so the 1.91:1 source lost its first word on device. `generic_card` is retired unpublished and `square_card` (1200x1200) takes its place, because a square source makes the crop a no-op. See `docs/meta-verification/2026-08-24-guide-gate-capability-results.json`.
 - [ ] Generate the four PNG snapshots with approved example copy and inspect them at original resolution.
 - [ ] Rerun focused tests on the developer machine and in a clean `npm ci && npm run build` environment; hashes must match.
 - [ ] Commit with `feat: render deterministic TinySoho guide covers`.

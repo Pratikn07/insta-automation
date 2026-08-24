@@ -49,6 +49,23 @@ interface GuideCoverGeometry {
   closingBottom: number;
   textRight: number;
   artwork: { x: number; y: number; width: number; height: number };
+  /**
+   * Uniform scale applied to the illustration about the artwork box's bottom-right
+   * corner. Absent means 1.
+   *
+   * It exists because every illustration draws its shapes at FIXED pixel offsets from
+   * the box's top-left — `y + 230`, `y + 468` and so on — so `height` controls only the
+   * corner bleed, not how large the drawing is. Enlarging a cover therefore cannot be
+   * done by widening the box; the box would grow and the drawing inside it would not.
+   *
+   * Scaling about the bottom-right corner rather than the centre is what keeps the
+   * bleed intact: these compositions are anchored to the canvas corner, and growing
+   * from anywhere else would pull the artwork inward and expose a seam.
+   *
+   * Consequence worth stating: when this is set, `width` and `height` stop describing
+   * the drawn extent. They stay the scale's frame of reference, not its result.
+   */
+  artworkScale?: number;
 }
 
 export interface GuideCoverLayout {
@@ -146,6 +163,61 @@ function renditionGeometry(
   }
 
   const rightPanel = templateKey === "editorial_right_panel_v1";
+
+  /**
+   * A square rendition exists because Instagram's message-card image slot crops to
+   * roughly 1:1 and takes a CENTRE slice. A landscape cover put there loses its first
+   * letters — verified on device: the 1.91:1 rendition rendered "me can feel softer".
+   * The wider the source, the worse the loss, so the fix is a composition that is
+   * square to begin with rather than one squeezed into a square hole.
+   *
+   * 1200 wide keeps every horizontal measure identical to the DM cover, so the type
+   * scale and insets are shared and only the vertical rhythm is re-cut.
+   */
+  if (rendition === "square_card") {
+    return {
+      canvas: { width: 1200, height: 1200 },
+      geometry: {
+        ...template,
+        // The supporting line sits close under the headline because it IS a subtitle to
+        // it — floated at the vertical midpoint it read as an orphaned third line, and it
+        // collided with the height the illustration starts at. Judged on device at the
+        // size a message card actually renders, where tight grouping survives shrinking
+        // and even spacing turns into scatter.
+        labelTop: 96,
+        headlineTop: 250,
+        supportTop: 520,
+        closingBottom: 150,
+        // The artwork box keeps the DM cover's x, NOT a wider one. Moving it 48px left to
+        // fill the square narrowed the text column by the same amount, and
+        // `potty-training`'s supporting line needs all of it — it wrapped to a third row
+        // and failed `maxLines: 2`. Copy that fits the landscape cover must fit here, so
+        // the text measure is inherited rather than re-chosen.
+        //
+        // The right panel is bottom-anchored and keeps its 916 height instead of being
+        // stretched to 1200. Its contents are drawn at fixed offsets from the panel top
+        // (`y + 285` for the tray, `y + 680` for the sweep), so a 1200-tall panel left
+        // roughly 520px of empty lavender below them. Anchoring the panel to the bottom
+        // edge and letting its top land just under the headline keeps the tray centred in
+        // the visible lavender and reads as a deliberate crop.
+        artwork: rightPanel
+          ? { x: 804, y: 284, width: 396, height: 916 }
+          : { x: 684, y: 684, width: 516, height: 516 },
+        // Corner illustrations are enlarged rather than repositioned, so the square reads
+        // as its own composition instead of the landscape one with 284px of dead paper
+        // added underneath. The DM cover's drawing covers ~520 of 916 (57%) of the height;
+        // at 1:1 the identical drawing covered 43%, and the gap between the supporting
+        // line and the top of the illustration opened to ~180px of nothing. 1.31 restores
+        // that 57%, which brings the illustration's leading edge back up alongside the
+        // supporting line the way the landscape cover interlocks them.
+        //
+        // The right panel is exempt: it is a filled rect that already meets three edges,
+        // so scaling it would only push its contents off-canvas.
+        artworkScale: rightPanel ? undefined : 1.31,
+      },
+    };
+  }
+
   return {
     canvas: { width: 1200, height: 628 },
     geometry: {
@@ -481,6 +553,25 @@ function montessoriArtwork(layout: GuideCoverLayout): string {
   </g>`;
 }
 
+/**
+ * The illustration, scaled about the artwork box's bottom-right corner when the
+ * rendition asks for it. See `GuideCoverGeometry.artworkScale` for why a scale is the
+ * only lever available here.
+ *
+ * Emitted as no wrapper at all when the scale is absent, so the DM cover's SVG is
+ * byte-identical to what it was before the square rendition existed — its committed
+ * `pngHash` snapshots stay valid, and a diff in them means a real regression.
+ */
+function scaledIllustrationSvg(layout: GuideCoverLayout): string {
+  const body = illustrationSvg(layout);
+  const scale = layout.geometry.artworkScale;
+  if (scale === undefined || scale === 1) return body;
+  const { x, y, width, height } = layout.geometry.artwork;
+  const anchorX = x + width;
+  const anchorY = y + height;
+  return `<g transform="translate(${anchorX} ${anchorY}) scale(${scale}) translate(${-anchorX} ${-anchorY})">${body}</g>`;
+}
+
 function illustrationSvg(layout: GuideCoverLayout): string {
   switch (layout.category.illustrationKey) {
     case "bedtime_window_house_v1":
@@ -506,7 +597,7 @@ export function renderGuideCoverSvg(
   <defs><clipPath id="${clipId}"><rect width="${canvas.width}" height="${canvas.height}" rx="${geometry.cornerRadius}"/></clipPath><style>${fontFaceCss(fontFaces)}</style></defs>
   <g clip-path="url(#${clipId})">
     <rect width="${canvas.width}" height="${canvas.height}" fill="${c.background}"/>
-    ${illustrationSvg(layout)}
+    ${scaledIllustrationSvg(layout)}
     ${textRenderer(text.kicker, c.ink)}
     ${textRenderer(text.collectionLabel, c.ink)}
     ${textRenderer(text.headline, c.ink)}
