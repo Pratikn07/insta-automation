@@ -95,15 +95,15 @@ describe("card share selection", () => {
 });
 
 describe("loadGateCard", () => {
-  it("returns the square cover and the guide name together", async () => {
-    findFirst.mockResolvedValue({
-      squareStoragePath: "guide-cover/r/v/h/square.png",
-      resource: { name: "WAFFLE" },
-    });
+  it("returns the square cover, and nothing that names the guide", async () => {
+    findFirst.mockResolvedValue({ squareStoragePath: "guide-cover/r/v/h/square.png" });
 
+    // No guide name, because the card's title interpolates nothing. Resource names on this
+    // account are keywords — WAFFLE, protein, Poop, and six rows called "Recipe" — so a title
+    // built from one reads "Your WAFFLE is waiting". The cover already carries the authored
+    // headline in the guide's own type.
     await expect(loadGateCard("res-1")).resolves.toEqual({
       coverUrl: "https://cdn.example.test/guide-cover/r/v/h/square.png",
-      guideName: "WAFFLE",
     });
     // A published cover with a square, specifically — a dm-only cover would be centre-cropped
     // in a card slot and lose its first word.
