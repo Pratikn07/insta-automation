@@ -133,10 +133,19 @@ export type GuideAccessActionDependencies = {
     categorySlug?: string;
   }) => Promise<MetaSendResult>;
   sendText(input: { recipientId: string; text: string }): Promise<MetaSendResult>;
+  /**
+   * `responseNumber` is required, because it decides WHICH message a parent gets: 1 is the
+   * re-ask that has to sell the follow, 2 is the sympathetic "Instagram may take a moment".
+   * Defaulting it would silently pick one, and picking the sympathetic one for a parent who
+   * never followed is the defect this replaces.
+   */
   sendFollowLag: (input: {
     recipientId: string;
     actionToken: string;
     capabilities: GuideActionCapabilities;
+    responseNumber: 1 | 2;
+    coverUrl?: string;
+    categorySlug?: string;
   }) => Promise<MetaSendResult>;
   sendInitialPrivateReply: (input: {
     commentId: string;
@@ -646,6 +655,17 @@ export function createGuideAccessActionService(
   ): Promise<GuideAccessActionOutcome> {
     const now = dependencies.now();
 
+    /**
+     * Which re-tap this is, and therefore which message they get.
+     *
+     * `reserveFollowResponse` has always returned this — derived from the durable
+     * `follow_response_count`, already capped at two before owner review — and the code only
+     * ever checked that the reservation succeeded. Reading it is the whole escalation: 1 is the
+     * re-ask, 2 credits a genuine propagation delay. Hoisted out of the branch below because
+     * the send site needs it.
+     */
+    let responseNumber: 1 | 2 | null = null;
+
     if (context.falseResponse === "lag") {
       let reservation;
       try {
@@ -685,6 +705,7 @@ export function createGuideAccessActionService(
         }
         return "action_consumed";
       }
+      responseNumber = reservation.responseNumber;
     }
 
     let guideName: string | null = null;
@@ -727,8 +748,15 @@ export function createGuideAccessActionService(
     // Resolved before the send fence, and only when a card could actually be sent: a lookup
     // inside the fence would put a database round-trip between the fence and the one message
     // this parent gets, and a cover fetched with the capability off is a query for nothing.
+    //
+    // `responseNumber === 2` is the second re-tap, which sends the sympathetic text copy and
+    // has no image slot to fill, so it is excluded for the same reason. This database is a
+    // CPU-bound instance on a small connection pool; a query whose result is discarded is not
+    // free here.
+    const cardCanBeSent =
+      capabilities.dmGenericGate && (context.falseResponse === "gate" || responseNumber === 1);
     const gateCard =
-      capabilities.dmGenericGate && dependencies.loadOpeningCard
+      cardCanBeSent && dependencies.loadOpeningCard
         ? await dependencies.loadOpeningCard(context.attempt.resourceId)
         : null;
 
@@ -738,11 +766,17 @@ export function createGuideAccessActionService(
         dependencies.sendFollowLag({
           recipientId: context.senderId,
           actionToken: issued.tokenId,
-          // The lag message exists BECAUSE Instagram's follow graph propagates slowly: this
-          // parent has followed and been told to wait. Without capabilities it lost its
-          // "I'm following" chip, leaving them a dead end at the one moment they are trying
-          // to comply.
+          // Without capabilities this message lost its "I'm following" control entirely,
+          // leaving a dead end at the one moment the parent is trying to comply.
           capabilities,
+          // Never null on this branch: `falseResponse === "lag"` is exactly the path that
+          // reserved a response above. Falling back to 2 rather than asserting, because the
+          // sympathetic copy is the safe one to send if this invariant ever breaks — it asks
+          // them to try again instead of implying they did nothing.
+          responseNumber: responseNumber ?? 2,
+          // The re-ask carries the cover and the category so it can say what else is behind
+          // the follow. Absent means it degrades to text, which still gets sent.
+          ...(gateCard ?? {}),
         });
     } else {
       send = () =>
@@ -1336,6 +1370,8 @@ const defaultService = createGuideAccessActionService({
       text: input.text,
       source: "keyword_automation",
     }),
+  // Passes `coverUrl`/`categorySlug` straight through when present. The re-ask needs both to
+  // be a card; `sendGuideFollowLag` falls back to text when either is missing.
   sendFollowLag: sendGuideFollowLag,
   sendInitialPrivateReply: sendGuideInitialPrivateReply,
   async loadOpeningCard(resourceId) {

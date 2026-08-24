@@ -791,16 +791,24 @@ describe("request and follow action orchestration", () => {
   });
 
   /**
-   * The lag response exists BECAUSE Instagram's follow graph propagates slowly: this parent
-   * has already followed and tapped, and is being asked to wait. Its retry control is a quick
-   * reply gated on `dmQuickReply`, and the dependency contract had no `capabilities` field at
-   * all — so the chip could never render and the one message telling someone to try again gave
-   * them nothing to try again WITH. Same omission as the gate's, one message further along.
+   * The first re-tap gets everything the re-ask card needs: the capability, the response
+   * number that selects the re-ask over the delay apology, and the cover plus category so it
+   * can say what else is behind the follow.
+   *
+   * All four used to be missing or discarded. The dependency contract had no `capabilities`
+   * field, so the retry control could never render; `responseNumber` was computed by
+   * `reserveFollowResponse` and thrown away, so a parent who never followed was told
+   * "Instagram may take a moment to update"; and the cover was never passed because the lag
+   * was documented as "a nudge" that deliberately carried no image.
    */
-  it("hands the lag response the capability its retry chip depends on", async () => {
+  it("hands the first re-tap the capability, the response number and the cover", async () => {
     const test = createHarness({
       freshResults: [live(false), live(false)],
       richCapabilities: RICH,
+      openingCard: {
+        coverUrl: "https://cdn.example.test/guide-cover/r/v/h/square.png",
+        categorySlug: "recipes",
+      },
     });
 
     await expect(request(test)).resolves.toBe("follow_not_confirmed");
@@ -810,8 +818,39 @@ describe("request and follow action orchestration", () => {
       recipientId: SENDER_ID,
       actionToken: FOLLOW_TOKEN_2,
       capabilities: RICH,
+      responseNumber: 1,
+      coverUrl: "https://cdn.example.test/guide-cover/r/v/h/square.png",
+      categorySlug: "recipes",
     });
-    expect(RICH.dmQuickReply).toBe(true);
+  });
+
+  /**
+   * The second re-tap sends the sympathetic text copy, which has no image slot, so its cover is
+   * not looked up. This database is a CPU-bound instance on a small connection pool — a query
+   * whose result is discarded is not free.
+   */
+  it("skips the cover lookup for the second re-tap, which cannot use one", async () => {
+    const test = createHarness({
+      freshResults: [live(false), live(false), live(false)],
+      richCapabilities: RICH,
+      openingCard: {
+        coverUrl: "https://cdn.example.test/guide-cover/r/v/h/square.png",
+        categorySlug: "recipes",
+      },
+    });
+
+    await expect(request(test)).resolves.toBe("follow_not_confirmed");
+    await expect(check(test, FOLLOW_TOKEN_1)).resolves.toBe("follow_not_confirmed");
+    await expect(check(test, FOLLOW_TOKEN_2)).resolves.toBe("follow_not_confirmed");
+
+    expect(test.sendFollowLag).toHaveBeenNthCalledWith(2, {
+      recipientId: SENDER_ID,
+      actionToken: FOLLOW_TOKEN_3,
+      capabilities: RICH,
+      responseNumber: 2,
+    });
+    // Once for the gate and once for the first re-tap, not for the second.
+    expect(test.loadOpeningCard).toHaveBeenCalledTimes(2);
   });
 
   it("sends a gentle lag response for a false recheck, then starts delivery with token UUID identity on fresh true", async () => {
@@ -825,6 +864,7 @@ describe("request and follow action orchestration", () => {
       recipientId: SENDER_ID,
       actionToken: FOLLOW_TOKEN_2,
       capabilities: TEXT_ONLY,
+      responseNumber: 1,
     });
     expect(test.startGuideDelivery).toHaveBeenCalledOnce();
     expect(test.startGuideDelivery).toHaveBeenCalledWith(
@@ -920,11 +960,16 @@ describe("request and follow action orchestration", () => {
       recipientId: SENDER_ID,
       actionToken: FOLLOW_TOKEN_2,
       capabilities: TEXT_ONLY,
+      // The FIRST re-tap gets the re-ask, not the delay apology.
+      responseNumber: 1,
     });
     expect(test.sendFollowLag).toHaveBeenNthCalledWith(2, {
       recipientId: SENDER_ID,
       actionToken: FOLLOW_TOKEN_3,
       capabilities: TEXT_ONLY,
+      // The SECOND re-tap, which is where the sympathetic "Instagram may take a moment" copy
+      // now belongs. No cover: that message has no image slot, so it is not looked up.
+      responseNumber: 2,
     });
     expect(test.attempt().state).toBe("needs_review");
     expect(test.startGuideDelivery).not.toHaveBeenCalled();
@@ -961,6 +1006,7 @@ describe("request and follow action orchestration", () => {
       recipientId: SENDER_ID,
       actionToken: FOLLOW_TOKEN_2,
       capabilities: TEXT_ONLY,
+      responseNumber: 1,
     });
   });
 

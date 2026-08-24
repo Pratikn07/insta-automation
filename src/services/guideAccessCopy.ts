@@ -94,3 +94,70 @@ export const guideAccessOpeningCardTitle = "Your guide is ready ✨";
 export function guideAccessWaitingTitle(name: string): string {
   return `Your ${reviewedGuideName(name)} is waiting ✨`;
 }
+
+/**
+ * The first re-ask, for a parent who tapped the gate's button without following.
+ *
+ * Meta had just answered definitively that they are not a follower, and we replied "Instagram
+ * may take a moment to update" — telling someone who never followed that they did, and
+ * inviting them to wait out a delay that was not happening. Observed on device 2026-08-24:
+ * the gate went out at 14:23:18 and the tap came 11 seconds later, which is not enough time to
+ * leave Instagram, follow an account and come back.
+ *
+ * "One step left" states the situation without asserting what the parent did, so the same
+ * words are honest whether they skipped the follow or genuinely hit a propagation delay. The
+ * sympathetic "Instagram may take a moment" copy is still sent, but as the SECOND response —
+ * most likely explanation first, benefit of the doubt second.
+ */
+export const guideAccessFollowReAskTitle = "One step left 💛";
+
+/**
+ * The noun for "more ___ like this", per category.
+ *
+ * The re-ask is the message that has to make following worth doing, so it names what else is
+ * behind the follow rather than repeating the demand. Per-category for the same reason the
+ * card's button label is: the card already knows its category, so naming the thing costs one
+ * lookup and stops the copy reading as a template.
+ *
+ * Deliberately no counts. "29 more recipes" is true today — 30 recipes, 7 sleep, 4 potty and
+ * 4 learning guides are published — and wrong the moment a guide is added, while "3 more potty
+ * steps" undersells the collection it is trying to sell. Worded abundance stays true.
+ */
+const FOLLOW_RE_ASK_NOUNS: Record<string, string> = {
+  recipes: "recipes",
+  bedtime: "bedtime wins",
+  "potty-training": "potty steps",
+  "montessori-activities": "activities",
+};
+
+/**
+ * Falls back to "ideas" rather than throwing, and the fallback is a real word so the sentence
+ * still reads. An unrecognised category is a cosmetic loss; a copy lookup must never be able to
+ * cost a parent their guide.
+ */
+export function guideAccessFollowReAskNoun(categorySlug?: string): string {
+  if (!categorySlug) return "ideas";
+  return FOLLOW_RE_ASK_NOUNS[categorySlug] ?? "ideas";
+}
+
+/**
+ * The card subtitle. Names the button because a card HAS one.
+ *
+ * Length is `61 + noun`, so the longest ("bedtime wins") is 73 — inside Meta's 80-character
+ * subtitle cap. Asserted per noun in the tests rather than trusted to review, because
+ * `nonFollowerGateText` was 81 and Meta truncates silently, on device, with no error.
+ */
+export function guideAccessFollowReAsk(categorySlug?: string): string {
+  return `Follow @tinysoho for more ${guideAccessFollowReAskNoun(categorySlug)} like this, then tap I'm following.`;
+}
+
+/**
+ * The text fallback, for a guide with no published square or a capability that is off.
+ *
+ * Asks for a reply instead of naming a control, because in text mode there is none. Not
+ * subject to the 80-character cap — that applies to a card subtitle, not a message — which is
+ * why this one can afford to spell out what happens next.
+ */
+export function guideAccessFollowReAskText(categorySlug?: string): string {
+  return `Follow @tinysoho for more ${guideAccessFollowReAskNoun(categorySlug)} like this, then reply DONE and I'll send it over.`;
+}

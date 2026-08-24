@@ -15,6 +15,7 @@ export const GUIDE_GATE_CAPABILITY_CASES = [
   "dm_follow_lag",
   "dm_generic_gate",
   "private_gate_card",
+  "dm_follow_reask_card",
 ] as const;
 
 export type GuideGateCapabilityCase = (typeof GUIDE_GATE_CAPABILITY_CASES)[number];
@@ -183,6 +184,29 @@ const inputSchema = z.discriminatedUnion("case", [
     actionToken,
     categorySlug: z.string().optional(),
   }),
+  /**
+   * The first re-ask, for a parent who tapped the gate's button without following.
+   *
+   * A separate case from `dm_generic_gate` on purpose. That card's second button is the
+   * per-category ACTION label ("Send the recipes"), which is the right words before anyone has
+   * been asked to follow and the wrong words afterwards — by this point the question is whether
+   * they followed, so the button is "I'm following". Reusing the gate case would mean two more
+   * optional fields and one case that means two things, which is exactly how the interpolated
+   * title reached a parent's phone as "Your MealPrep is ready".
+   *
+   * `subtitle` is passed in rather than derived here because it is per-category copy, and its
+   * 80-character ceiling is asserted for every category in `guideAccessCopy.test.ts`. The bound
+   * here is the payload's own guard, not the copy's contract.
+   */
+  z.object({
+    case: z.literal("dm_follow_reask_card"),
+    recipientId: providerId,
+    title: z.string().trim().min(1).max(80),
+    subtitle: z.string().trim().min(1).max(80),
+    profileUrl: httpsUrl,
+    coverUrl: httpsUrl,
+    actionToken,
+  }),
 ]);
 
 export type GuideGateCapabilityInput = z.output<typeof inputSchema>;
@@ -290,6 +314,32 @@ export function buildGuideGateCapabilityPayload(
               type: "web_url",
               url: input.profileUrl,
               title: GUIDE_GATE_BUTTON_LABELS.visitProfile,
+            },
+          ],
+        }),
+      };
+    case "dm_follow_reask_card":
+      return {
+        recipient: { id: input.recipientId },
+        messaging_type: "RESPONSE",
+        message: genericMessage({
+          title: input.title,
+          subtitle: input.subtitle,
+          image_url: input.coverUrl,
+          default_action: { type: "web_url", url: input.profileUrl },
+          buttons: [
+            {
+              type: "web_url",
+              url: input.profileUrl,
+              title: GUIDE_GATE_BUTTON_LABELS.visitProfile,
+            },
+            // A postback, not a quick reply. The gate already asked them to follow, so this is
+            // the confirm — and as a postback its label stays interface rather than being
+            // posted into the thread as the parent's own words.
+            {
+              type: "postback",
+              title: GUIDE_GATE_BUTTON_LABELS.confirmFollow,
+              payload: actionPayload(input.actionToken),
             },
           ],
         }),

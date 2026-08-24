@@ -7,6 +7,9 @@ import { sendMetaMessage } from "./sendMessage.js";
 import {
   guideAccessCardTitle,
   guideAccessCopy,
+  guideAccessFollowReAsk,
+  guideAccessFollowReAskText,
+  guideAccessFollowReAskTitle,
   guideAccessOpeningCardTitle,
   guideAccessOpening,
   guideAccessOpeningText,
@@ -175,13 +178,75 @@ export async function sendGuideFollowerGate(input: {
   );
 }
 
+/**
+ * The response to a parent who tapped a follow control and still is not following.
+ *
+ * TWO messages live here, and which one is sent turns on `responseNumber`:
+ *
+ * - `1` — their first re-tap. Meta answered definitively "not a follower" moments after the
+ *   gate went out, so overwhelmingly they skipped the follow rather than hit a delay. They get
+ *   the re-ask: the guide's cover, what else is behind the follow, a profile button and a
+ *   confirm button. This is the message that has to make following worth doing.
+ * - `2` — their second. Now a genuine propagation delay is worth crediting, so the sympathetic
+ *   "Instagram may take a moment" copy is sent unchanged.
+ *
+ * Before this, response 1 got the sympathetic copy: someone who never followed was told they
+ * had and asked to wait out a delay that was not happening. Observed on device 2026-08-24, 11
+ * seconds after the gate — not enough time to leave Instagram, follow, and return.
+ */
 export async function sendGuideFollowLag(input: {
   recipientId: string;
   actionToken: string;
   capabilities: GuideActionCapabilities;
+  /** 1 = first re-tap (re-ask), 2 = second (credit the delay). */
+  responseNumber: 1 | 2;
+  /** The square cover. Absent means the re-ask cannot be a card and falls back to text. */
+  coverUrl?: string;
+  /** Names the category so the copy can say what else is behind the follow. */
+  categorySlug?: string;
 }): Promise<MetaSendResult> {
   const { capabilities } = input;
   const actionToken = requiredOpaqueActionToken(input.actionToken);
+
+  if (input.responseNumber === 1) {
+    const subtitle = guideAccessFollowReAsk(input.categorySlug);
+    // A card needs BOTH the capability and a cover. Either missing falls through to the text
+    // re-ask rather than sending a hollow template or a message about a button that is not
+    // there — the same rule the gate follows.
+    if (capabilities.dmGenericGate && input.coverUrl) {
+      return sendCapabilityPayload(
+        buildGuideGateCapabilityPayload({
+          case: "dm_follow_reask_card",
+          recipientId: input.recipientId,
+          title: guideAccessFollowReAskTitle,
+          subtitle,
+          profileUrl: GUIDE_PROFILE_URL,
+          coverUrl: input.coverUrl,
+          actionToken,
+        }),
+        {
+          recipientId: input.recipientId,
+          mode: "dm_follow_reask_card",
+          messageLength: subtitle.length,
+        },
+      );
+    }
+
+    const reAskText = `${guideAccessFollowReAskTitle}\n\n${guideAccessFollowReAskText(input.categorySlug)}\n\nVisit profile: ${GUIDE_PROFILE_URL}`;
+    return sendMetaMessage(
+      {
+        recipient: { id: input.recipientId },
+        messaging_type: "RESPONSE",
+        message: { text: reAskText },
+      },
+      {
+        recipientId: input.recipientId,
+        mode: "dm_text_follow_reask",
+        messageLength: reAskText.length,
+      },
+    );
+  }
+
   const text = capabilities.dmQuickReply
     ? guideAccessCopy.followLag
     : guideAccessCopy.followLagText;
