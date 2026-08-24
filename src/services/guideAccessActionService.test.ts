@@ -156,6 +156,14 @@ function createHarness(input: {
     capabilities: GuideActionCapabilities;
   }) => Promise<{ messageId: string | null }>;
   richCapabilities?: GuideActionCapabilities;
+  /**
+   * Omitted means the dependency is ABSENT, which is both the default here and a real
+   * production shape — the service treats a missing `loadOpeningCard` as "no card". Passing a
+   * value (including an explicit `null`) wires the dependency and makes it answer with that.
+   * The distinction matters: the harness having no such option at all is why a gate that could
+   * never render a card passed 126 tests.
+   */
+  openingCard?: { coverUrl: string; categorySlug: string } | null;
   coverSnapshot?: { versionId: string; resourceId: string; dmStoragePath: string } | null;
   exposureAlready?: "accepted" | "uncertain" | "failed";
   sendCover?: () => Promise<{ messageId: string | null }>;
@@ -403,6 +411,10 @@ function createHarness(input: {
     order.push("external:gate");
     return input.sendGate ? input.sendGate() : { messageId: "gate-mid" };
   });
+  const loadOpeningCard = vi.fn(async () => {
+    order.push("external:cover_lookup");
+    return input.openingCard ?? null;
+  });
   const sendText = vi.fn(async (message: { recipientId: string; text: string }) => {
     order.push("external:unavailable");
     return input.sendText ? input.sendText(message) : { messageId: "text-mid" };
@@ -458,6 +470,8 @@ function createHarness(input: {
     sendFollowLag,
     sendInitialPrivateReply,
     richCapabilities,
+    // Conditionally, so "no dependency at all" stays the default and stays covered.
+    ...(input.openingCard === undefined ? {} : { loadOpeningCard }),
     sendCover,
     coverMediaUrl,
     coverDecision,
@@ -485,6 +499,7 @@ function createHarness(input: {
     sendFollowLag,
     sendInitialPrivateReply,
     richCapabilities,
+    loadOpeningCard,
     sendCover,
     coverMediaUrl,
     coverDecision,
@@ -656,6 +671,10 @@ describe("request and follow action orchestration", () => {
       recipientId: SENDER_ID,
       guideName: "toddler sleep guide",
       actionToken: FOLLOW_TOKEN_1,
+      // Threaded, not defaulted. `sendGuideFollowerGate` resolves an absent `capabilities` to
+      // TEXT_ONLY, so omitting it here made the card branch unreachable while every assertion
+      // still passed — the gate took a cover and sent text anyway.
+      capabilities: TEXT_ONLY,
     });
     expect(test.startGuideDelivery).not.toHaveBeenCalled();
     expect(test.order).toEqual([
@@ -665,6 +684,90 @@ describe("request and follow action orchestration", () => {
       "external:gate",
       "mark:awaiting_follow",
     ]);
+  });
+
+  /**
+   * The gate is the single highest-leverage message in this funnel: for more than half the
+   * people who ask for a guide it is everything the account ever sends them. It needs BOTH a
+   * cover and the capability to render as a card, and it shipped missing each in turn — the
+   * cover until #55, the capability until this change. Both inputs are asserted here, on the
+   * same call, so supplying one without the other fails rather than silently sending text.
+   */
+  it("hands the gate both the cover and the capability, so it can render as a card", async () => {
+    const test = createHarness({
+      freshResults: [live(false)],
+      richCapabilities: RICH,
+      openingCard: {
+        coverUrl: "https://cdn.example.test/guide-cover/r/v/h/square.png",
+        categorySlug: "bedtime",
+      },
+    });
+
+    await expect(request(test)).resolves.toBe("follow_not_confirmed");
+
+    expect(test.loadOpeningCard).toHaveBeenCalledWith(RESOURCE_ID);
+    expect(test.sendFollowerGate).toHaveBeenCalledWith({
+      recipientId: SENDER_ID,
+      guideName: "toddler sleep guide",
+      actionToken: FOLLOW_TOKEN_1,
+      capabilities: RICH,
+      coverUrl: "https://cdn.example.test/guide-cover/r/v/h/square.png",
+      categorySlug: "bedtime",
+    });
+    // Looked up BEFORE the fenced send, so no database round-trip sits between the fence and
+    // the one message this parent gets.
+    expect(test.order).toEqual([
+      "consume:request_guide",
+      "external:verify",
+      "replace:check_follow",
+      "external:cover_lookup",
+      "external:gate",
+      "mark:awaiting_follow",
+    ]);
+  });
+
+  it("skips the cover lookup entirely when the card capability is off", async () => {
+    const test = createHarness({
+      freshResults: [live(false)],
+      richCapabilities: TEXT_ONLY,
+      openingCard: {
+        coverUrl: "https://cdn.example.test/guide-cover/r/v/h/square.png",
+        categorySlug: "bedtime",
+      },
+    });
+
+    await expect(request(test)).resolves.toBe("follow_not_confirmed");
+
+    // A cover fetched with the capability off is a query whose result cannot be used.
+    expect(test.loadOpeningCard).not.toHaveBeenCalled();
+    expect(test.sendFollowerGate).toHaveBeenCalledWith({
+      recipientId: SENDER_ID,
+      guideName: "toddler sleep guide",
+      actionToken: FOLLOW_TOKEN_1,
+      capabilities: TEXT_ONLY,
+    });
+  });
+
+  /**
+   * A cover lookup must never be able to cost a parent their gate. The guide simply has no
+   * published square yet, which is an ordinary state — 5 of the 50 guides are still media-led.
+   */
+  it("still sends the gate when the guide has no square, dropping to text", async () => {
+    const test = createHarness({
+      freshResults: [live(false)],
+      richCapabilities: RICH,
+      openingCard: null,
+    });
+
+    await expect(request(test)).resolves.toBe("follow_not_confirmed");
+
+    expect(test.loadOpeningCard).toHaveBeenCalledOnce();
+    expect(test.sendFollowerGate).toHaveBeenCalledWith({
+      recipientId: SENDER_ID,
+      guideName: "toddler sleep guide",
+      actionToken: FOLLOW_TOKEN_1,
+      capabilities: RICH,
+    });
   });
 
   it("withholds on unavailable, sends only neutral wording, and moves the attempt to review first", async () => {
