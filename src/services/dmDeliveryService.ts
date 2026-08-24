@@ -116,6 +116,46 @@ export async function sendTrackedPrivateReply(
   };
 }
 
+/**
+ * A private reply carried as a template card, tracked identically to the text one.
+ *
+ * Lives here rather than beside the card's payload builder so it shares `recordDelivered`
+ * with every other outbound send. Bypassing that would leave the gate absent from
+ * `dm_message`, and the read-receipt and recovery machinery reads exactly that table — a card
+ * gate that Meta accepted but we never recorded would look to our own system like a gate that
+ * was never sent.
+ *
+ * `text` records the card's subtitle, because that is the wording the parent actually reads.
+ * `mediaUrl` records the cover, so the row is distinguishable from a text gate without
+ * parsing anything.
+ */
+export async function sendTrackedPrivateCard(input: {
+  recipientIgUserId: string;
+  commentId: string;
+  send: () => Promise<MetaSendResult>;
+  subtitle: string;
+  coverUrl: string;
+  source: DmMessageSource;
+}): Promise<TrackedPrivateReplyReceipt> {
+  const result = await input.send();
+  const acceptedAt = new Date();
+  const recorded = await recordDelivered({
+    igAccountId: env.IG_USER_ID,
+    igUserId: input.recipientIgUserId,
+    instagramMessageId: result.messageId,
+    text: input.subtitle,
+    messageType: "image",
+    mediaUrl: input.coverUrl,
+    source: input.source,
+    instagramTimestamp: acceptedAt,
+  });
+  return {
+    instagramMessageId: result.messageId,
+    dmMessageId: recorded?.messageId ?? null,
+    acceptedAt,
+  };
+}
+
 export async function sendTrackedMedia(input: {
   recipientIgUserId: string;
   type: AttachmentType;

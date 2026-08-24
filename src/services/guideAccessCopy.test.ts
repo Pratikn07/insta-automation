@@ -54,4 +54,15 @@ describe("guide access copy", () => {
     // The text fallback must keep naming the reply word, since it has no control to tap.
     expect(guideAccessCopy.nonFollowerGateText).toMatch(/reply DONE/u);
   });
+
+  /**
+   * Meta truncates a generic-template subtitle past 80 characters, silently and on device.
+   * The plain-text gate is 81, which is exactly why the card has its own string — and why
+   * that limit is asserted here rather than discovered by a parent reading a sentence that
+   * stops mid-word.
+   */
+  it("keeps the card subtitle inside Meta's 80-character subtitle limit", () => {
+    expect([...guideAccessCopy.nonFollowerGateCard].length).toBeLessThanOrEqual(80);
+    expect(guideAccessCopy.nonFollowerGateCard).toMatch(/reply DONE/u);
+  });
 });

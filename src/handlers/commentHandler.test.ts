@@ -44,6 +44,13 @@ const VERIFIED_SETTINGS_EVIDENCE = {
   evidenceSha256: "a".repeat(64),
 };
 
+// guideGateCard reaches lib/supabase for publicMediaUrl, and that module builds a client at
+// import time — so without this the whole file fails to load rather than any test failing.
+vi.mock("../lib/supabase.js", () => ({
+  publicMediaUrl: (path: string) => `https://cdn.example.test/${path}`,
+  serverMediaBucket: () => ({}),
+  supabase: {},
+}));
 vi.mock("../services/keywordService.js", () => ({
   extractCandidates,
   findKeywordForComment,

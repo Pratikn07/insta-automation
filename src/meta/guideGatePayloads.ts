@@ -14,6 +14,7 @@ export const GUIDE_GATE_CAPABILITY_CASES = [
   "dm_quick_reply",
   "dm_follow_lag",
   "dm_generic_gate",
+  "private_gate_card",
 ] as const;
 
 export type GuideGateCapabilityCase = (typeof GUIDE_GATE_CAPABILITY_CASES)[number];
@@ -146,6 +147,27 @@ const inputSchema = z.discriminatedUnion("case", [
     recipientId: providerId,
     actionToken,
   }),
+  /**
+   * The V1 gate, as a card.
+   *
+   * Deliberately NOT `private_generic`. That case carries a postback whose payload is an
+   * action token minted by the V2 access flow — and V2 has never run, so on the live comment
+   * path there is no token to mint. The button would reach the guide-action router, find
+   * nothing, and do nothing: a control that looks tappable and silently fails, which is worse
+   * for a parent than plain text.
+   *
+   * So this card has exactly one button, a link to the profile, and its copy keeps telling
+   * them to reply DONE — the mechanism V1 already listens for. Art and a real tappable
+   * control, with no dependency on machinery that has never executed.
+   */
+  z.object({
+    case: z.literal("private_gate_card"),
+    commentId: providerId,
+    guideName,
+    profileUrl: httpsUrl,
+    coverUrl: httpsUrl,
+    gateText: z.string().trim().min(1).max(80),
+  }),
   z.object({
     case: z.literal("dm_generic_gate"),
     recipientId: providerId,
@@ -248,6 +270,23 @@ export function buildGuideGateCapabilityPayload(
           text: guideAccessCopy.followLag,
           quick_replies: [followQuickReply(input.actionToken)],
         },
+      };
+    case "private_gate_card":
+      return {
+        recipient: { comment_id: input.commentId },
+        message: genericMessage({
+          title: guideAccessWaitingTitle(input.guideName),
+          subtitle: input.gateText,
+          image_url: input.coverUrl,
+          default_action: { type: "web_url", url: input.profileUrl },
+          buttons: [
+            {
+              type: "web_url",
+              url: input.profileUrl,
+              title: GUIDE_GATE_BUTTON_LABELS.visitProfile,
+            },
+          ],
+        }),
       };
     case "dm_generic_gate":
       return {

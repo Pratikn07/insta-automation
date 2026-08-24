@@ -6,7 +6,17 @@ import {
   resolveJourneyIntent,
 } from "../services/journeyIntentService.js";
 import { replyToComment } from "../meta/replyToComment.js";
-import { sendTrackedPrivateReply, type TrackedPrivateReplyReceipt } from "../services/dmDeliveryService.js";
+import {
+  sendTrackedPrivateCard,
+  sendTrackedPrivateReply,
+  type TrackedPrivateReplyReceipt,
+} from "../services/dmDeliveryService.js";
+import {
+  GUIDE_GATE_CARD_SUBTITLE,
+  guideGateCardSelected,
+  loadGateCard,
+  sendGuideGateCard,
+} from "../services/guideGateCard.js";
 import { logger } from "../lib/logger.js";
 import { logEvent, describeGraphError } from "../services/eventLogger.js";
 import { getFollowState, rememberUsername } from "../services/igUserService.js";
@@ -439,15 +449,45 @@ export async function handleComment(comment: CommentValue): Promise<void> {
     );
   }
 
+  // The card, when this commenter is in the share and this guide has a square cover.
+  //
+  // Resolved BEFORE the send and treated as all-or-nothing: Meta allows one private reply per
+  // comment, so there is no sending a card and then a text, or the reverse. Either decision
+  // consumes the single reply. Anything unknown here — flags unreadable, no square published,
+  // lookup failed — resolves to the text gate, which is the message that has been converting
+  // all along.
+  let card: { coverUrl: string; guideName: string } | null = null;
+  if (guideGateCardSelected({ igUserId: senderId, resourceId: keyword.resourceId })) {
+    card = await loadGateCard(keyword.resourceId);
+  }
+
   let receipt: TrackedPrivateReplyReceipt;
   try {
-    receipt = await sendTrackedPrivateReply({
-      recipientIgUserId: senderId,
-      commentId: comment.id,
-      text: gate.text,
-      source: "keyword_automation",
-    });
+    receipt = card
+      ? await sendTrackedPrivateCard({
+          recipientIgUserId: senderId,
+          commentId: comment.id,
+          coverUrl: card.coverUrl,
+          subtitle: GUIDE_GATE_CARD_SUBTITLE,
+          source: "keyword_automation",
+          send: () =>
+            sendGuideGateCard({
+              commentId: comment.id,
+              guideName: card.guideName,
+              coverUrl: card.coverUrl,
+            }),
+        })
+      : await sendTrackedPrivateReply({
+          recipientIgUserId: senderId,
+          commentId: comment.id,
+          text: gate.text,
+          source: "keyword_automation",
+        });
   } catch (error) {
+    // No text retry after a failed card. The failure may be one of Meta's 500-but-delivered
+    // responses — observed twice on 2026-08-24 — and a "fallback" text would then be a second
+    // message on a surface that allows one. The existing ladder already handles this: an
+    // uncertain outcome parks for owner review rather than retrying.
     await recoverFailedPrivateReply({
       error,
       conversationId: convo.id,
