@@ -163,7 +163,9 @@ const inputSchema = z.discriminatedUnion("case", [
   z.object({
     case: z.literal("private_gate_card"),
     commentId: providerId,
-    guideName,
+    // A literal title rather than a guide name to interpolate. Resource names on this account
+    // are keywords — WAFFLE, protein, Poop — so "Your ${name} is waiting" leaks the plumbing.
+    title: z.string().trim().min(1).max(80),
     profileUrl: httpsUrl,
     coverUrl: httpsUrl,
     gateText: z.string().trim().min(1).max(80),
@@ -275,7 +277,7 @@ export function buildGuideGateCapabilityPayload(
       return {
         recipient: { comment_id: input.commentId },
         message: genericMessage({
-          title: guideAccessWaitingTitle(input.guideName),
+          title: input.title,
           subtitle: input.gateText,
           image_url: input.coverUrl,
           default_action: { type: "web_url", url: input.profileUrl },
