@@ -190,6 +190,20 @@ function renderPanel() {
   };
 }
 
+/**
+ * The first thing a creator does on an unconfigured guide. There is no default category,
+ * so nothing is editable or saveable until the dropdown is used.
+ */
+async function chooseCategory(
+  user: ReturnType<typeof userEvent.setup>,
+  categoryId: string = CATEGORY_ID,
+) {
+  await user.selectOptions(
+    await screen.findByRole("combobox", { name: "Presentation category" }),
+    categoryId,
+  );
+}
+
 function mutationFor(path: string) {
   return apiMutation.mock.calls.find(([calledPath]) => calledPath === path) as
     | [string, { method: string; body: string; operationId?: string }]
@@ -235,6 +249,34 @@ describe("GuideCoverPanel reads and local editing", () => {
         screen.queryByRole("region", { name: "Presentation and cover" }),
       ).not.toBeInTheDocument(),
     );
+  });
+
+  it("starts an unconfigured guide with no category, no copy and nothing to save", async () => {
+    installSuccessfulReads(presentation(), [category, secondCategory]);
+    const user = userEvent.setup();
+
+    renderPanel();
+
+    // Nothing has been chosen, so the dropdown holds the placeholder rather than whichever
+    // collection happens to sort first, and none of that collection's copy is in the form.
+    const picker = await screen.findByRole("combobox", { name: "Presentation category" });
+    expect(picker).toHaveValue("");
+    expect(screen.getByRole("option", { name: "Select a category" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Cover headline")).toHaveValue("");
+    expect(screen.getByLabelText("Supporting line")).toHaveValue("");
+    expect(screen.queryByText(category.defaultKicker)).not.toBeInTheDocument();
+    expect(screen.getByText("Select a presentation category to preview the cover.")).toBeVisible();
+    expect(screen.getByText("Not configured")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Save cover draft" })).toBeDisabled();
+
+    // Only the creator's own choice configures the guide, and it seeds that category's copy.
+    await user.selectOptions(picker, SECOND_CATEGORY_ID);
+
+    expect(picker).toHaveValue(SECOND_CATEGORY_ID);
+    expect(screen.getByText(secondCategory.defaultKicker)).toBeVisible();
+    expect(screen.getByLabelText("Cover headline")).not.toHaveValue("");
+    expect(screen.getByRole("button", { name: "Save cover draft" })).toBeEnabled();
+    expect(apiMutation).not.toHaveBeenCalled();
   });
 
   it("keeps the suggestion UUID stable until a suggestion is known to succeed", async () => {
@@ -351,10 +393,15 @@ describe("GuideCoverPanel reads and local editing", () => {
     ];
     expect(path).toBe(`/resources/${RESOURCE_ID}/cover-suggestions`);
     expect(request.method).toBe("POST");
+    // Nothing is configured, so the request carries no category hint: the suggester is
+    // asked to choose one rather than being steered by a collection nobody picked.
     expect(JSON.parse(request.body)).toEqual({
       id: request.operationId,
-      selectedCategoryId: CATEGORY_ID,
+      selectedCategoryId: null,
     });
+    expect(screen.getByRole("combobox", { name: "Presentation category" })).toHaveValue(
+      CATEGORY_ID,
+    );
     expect(apiMutation.mock.calls.some(([calledPath]) => /approve|publish/u.test(calledPath))).toBe(
       false,
     );
@@ -366,7 +413,8 @@ describe("GuideCoverPanel reads and local editing", () => {
     const user = userEvent.setup();
 
     renderPanel();
-    const headline = await screen.findByLabelText("Cover headline");
+    await chooseCategory(user);
+    const headline = screen.getByLabelText("Cover headline");
     await user.clear(headline);
     await user.type(headline, "My local headline");
     await user.tab();
@@ -421,8 +469,8 @@ describe("GuideCoverPanel draft persistence and recovery", () => {
     const user = userEvent.setup();
 
     renderPanel();
-    const save = await screen.findByRole("button", { name: "Save cover draft" });
-    await user.click(save);
+    await chooseCategory(user);
+    await user.click(screen.getByRole("button", { name: "Save cover draft" }));
 
     expect(screen.getByRole("region", { name: "Presentation and cover" })).toHaveAttribute(
       "aria-busy",
@@ -517,7 +565,8 @@ describe("GuideCoverPanel draft persistence and recovery", () => {
     const user = userEvent.setup();
 
     renderPanel();
-    await user.click(await screen.findByRole("button", { name: "Save cover draft" }));
+    await chooseCategory(user);
+    await user.click(screen.getByRole("button", { name: "Save cover draft" }));
     await screen.findByRole("alert");
     await user.click(screen.getByRole("button", { name: "Retry draft creation" }));
     await waitFor(() => expect(apiMutation).toHaveBeenCalledTimes(2));
@@ -539,7 +588,8 @@ describe("GuideCoverPanel draft persistence and recovery", () => {
     const user = userEvent.setup();
 
     renderPanel();
-    await user.click(await screen.findByRole("button", { name: "Save cover draft" }));
+    await chooseCategory(user);
+    await user.click(screen.getByRole("button", { name: "Save cover draft" }));
     await screen.findByRole("alert");
 
     const headline = screen.getByLabelText("Cover headline");

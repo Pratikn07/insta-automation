@@ -72,11 +72,11 @@ export function createInitialGuideCoverEditor(
   presentation: ResourcePresentationResponse,
 ): GuideCoverEditorModel {
   const derived = deriveGuideCoverEditorState(presentation, categories);
-  const selectedCategory =
-    derived.selectedCategory ??
-    categories.find((category) => category.designStatus === "ready") ??
-    categories[0] ??
-    null;
+  // A guide with no presentation row starts with no category chosen. Falling back to the
+  // first ready category filled the whole editor from a collection nobody picked, and
+  // because that alone satisfied the save prerequisites, one click pinned the resource's
+  // presentation row to it. "Not configured" must mean nothing is configured.
+  const selectedCategory = derived.selectedCategory;
   const workingCover = derived.workingCover;
 
   return {

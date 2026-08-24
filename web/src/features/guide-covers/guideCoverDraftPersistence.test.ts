@@ -4,10 +4,15 @@ import {
   buildDraftSaveIntent,
   classifyPatchReconciliation,
   copyFromCover,
+  createInitialGuideCoverEditor,
   mergeCreateSuccess,
   type GuideCoverEditorModel,
 } from "./guideCoverDraftPersistence";
-import type { ResourceCoverVersion } from "./types";
+import type {
+  PresentationCategory,
+  ResourceCoverVersion,
+  ResourcePresentationResponse,
+} from "./types";
 
 const copy = {
   headline: "Bedtime can feel softer",
@@ -45,6 +50,34 @@ function cover(overrides: Partial<ResourceCoverVersion> = {}): ResourceCoverVers
     ...overrides,
   };
 }
+
+const bedtime: PresentationCategory = {
+  id: "category-1",
+  slug: "bedtime",
+  name: "Bedtime",
+  collectionLabel: "SLEEP",
+  defaultKicker: "A TINY WIN FOR TONIGHT",
+  templateKey: "warm_editorial_corner_v1",
+  paletteKey: "bedtime_blush_v1",
+  illustrationKey: "bedtime_window_house_v1",
+  designStatus: "ready",
+  nextEditionNumber: 9,
+  sortOrder: 1,
+  createdBy: "creator@tinysoho.com",
+  updatedBy: "creator@tinysoho.com",
+  createdAt: "2026-08-22T12:00:00.000Z",
+  updatedAt: "2026-08-22T12:00:00.000Z",
+};
+
+const recipes: PresentationCategory = {
+  ...bedtime,
+  id: "category-2",
+  slug: "recipes",
+  name: "Recipes",
+  collectionLabel: "RECIPES",
+  defaultKicker: "A LITTLE WIN AT THE TABLE",
+  sortOrder: 2,
+};
 
 function editor(overrides: Partial<GuideCoverEditorModel> = {}): GuideCoverEditorModel {
   return {
@@ -132,5 +165,58 @@ describe("guide cover draft persistence decisions", () => {
     expect(
       classifyPatchReconciliation(cover({ revision: 2, headline: "Their edit" }), attempt),
     ).toBe("conflict");
+  });
+});
+
+describe("the initial editor for a guide", () => {
+  const unconfigured: ResourcePresentationResponse = {
+    presentation: null,
+    coverVersions: [],
+  };
+
+  it("chooses no category and no copy when nothing is configured", () => {
+    const initial = createInitialGuideCoverEditor(
+      "resource-1",
+      [bedtime, recipes],
+      unconfigured,
+    );
+
+    // The first ready collection in the list is not a choice the creator made. Seeding it
+    // would show a category nobody picked and make Save valid before any decision.
+    expect(initial.categoryId).toBeNull();
+    expect(initial.copy).toEqual({
+      headline: "",
+      supportingLine: "",
+      closingLine: "",
+      alternativeDescription: "",
+    });
+    expect(initial.status).toBe("not_configured");
+    expect(initial.savedCategoryId).toBeNull();
+    expect(initial.savedCopy).toBeNull();
+  });
+
+  it("refuses to build a save intent while no category is chosen", () => {
+    const initial = createInitialGuideCoverEditor("resource-1", [bedtime], unconfigured);
+
+    expect(() => buildDraftSaveIntent(initial, "create-id")).toThrow(
+      "A presentation category is required",
+    );
+  });
+
+  it("uses the category the resource is already configured with", () => {
+    const initial = createInitialGuideCoverEditor("resource-1", [bedtime, recipes], {
+      presentation: {
+        resourceId: "resource-1",
+        categoryId: recipes.id,
+        editionNumber: null,
+        createdAt: "2026-08-22T12:00:00.000Z",
+        updatedAt: "2026-08-22T12:00:00.000Z",
+      },
+      coverVersions: [cover({ categoryId: recipes.id })],
+    });
+
+    expect(initial.categoryId).toBe(recipes.id);
+    expect(initial.copy).toEqual(copy);
+    expect(initial.status).toBe("draft");
   });
 });
