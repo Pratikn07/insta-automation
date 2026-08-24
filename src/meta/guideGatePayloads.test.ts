@@ -60,6 +60,7 @@ describe("guide gate capability payloads", () => {
     expect(
       buildGuideGateCapabilityPayload({
         case: "private_generic",
+        title: "Your guide is ready ✨",
         commentId: COMMENT_ID,
         guideName: GUIDE_NAME,
         profileUrl: PROFILE_URL,
@@ -75,7 +76,7 @@ describe("guide gate capability payloads", () => {
             template_type: "generic",
             elements: [
               {
-                title: "Your toddler sleep guide is ready",
+                title: "Your guide is ready ✨",
                 subtitle: "Tap below and I'll check access before sending it here.",
                 image_url: COVER_URL,
                 default_action: { type: "web_url", url: PROFILE_URL },
@@ -146,6 +147,7 @@ describe("guide gate capability payloads", () => {
     expect(
       buildGuideGateCapabilityPayload({
         case: "dm_generic_gate",
+        title: "Your guide is waiting ✨",
         recipientId: RECIPIENT_ID,
         guideName: GUIDE_NAME,
         profileUrl: PROFILE_URL,
@@ -162,7 +164,7 @@ describe("guide gate capability payloads", () => {
             template_type: "generic",
             elements: [
               {
-                title: "Your toddler sleep guide is waiting ✨",
+                title: "Your guide is waiting ✨",
                 subtitle:
                   "Follow @tinysoho for more ideas like this, then tap below and I'll send it over.",
                 image_url: COVER_URL,
@@ -196,6 +198,7 @@ describe("guide gate capability payloads", () => {
     expect(() =>
       buildGuideGateCapabilityPayload({
         case: "dm_generic_gate",
+        title: "Your guide is waiting ✨",
         recipientId: RECIPIENT_ID,
         guideName: GUIDE_NAME,
         profileUrl: field === "profileUrl" ? value : PROFILE_URL,
@@ -255,6 +258,7 @@ describe("guide gate capability payloads", () => {
     const coverUrl = "https://cdn.example.com/cover.png?title=buttons&payload=forged";
     const payload = buildGuideGateCapabilityPayload({
       case: "private_generic",
+      title: "Your guide is ready ✨",
       commentId: COMMENT_ID,
       guideName: GUIDE_NAME,
       profileUrl: PROFILE_URL,
@@ -271,6 +275,7 @@ describe("per-category card action label", () => {
   function cardButtons(categorySlug?: string) {
     const payload = buildGuideGateCapabilityPayload({
       case: "dm_generic_gate",
+      title: "Your guide is waiting ✨",
       recipientId: RECIPIENT_ID,
       guideName: GUIDE_NAME,
       profileUrl: PROFILE_URL,

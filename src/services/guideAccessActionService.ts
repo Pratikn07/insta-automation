@@ -112,6 +112,8 @@ export type GuideAccessActionDependencies = {
     recipientId: string;
     guideName: string;
     actionToken: string;
+    coverUrl?: string;
+    categorySlug?: string;
   }): Promise<MetaSendResult>;
   sendText(input: { recipientId: string; text: string }): Promise<MetaSendResult>;
   sendFollowLag(input: {
@@ -131,7 +133,7 @@ export type GuideAccessActionDependencies = {
    * has no published square — the opening then falls back to text rather than sending a card
    * with an empty image slot.
    */
-  loadOpeningCard(resourceId: string): Promise<{
+  loadOpeningCard?(resourceId: string): Promise<{
     coverUrl: string;
     categorySlug: string;
   } | null>;
@@ -694,6 +696,14 @@ export function createGuideAccessActionService(
     const issued = await issueFollowToken(context.attempt, now);
     if (issued.kind === "outcome") return issued.outcome;
 
+    // The gate's cover, resolved before the send. Without this the gate fell back to text and
+    // shipped a bare "Visit profile: https://..." URL, which Instagram unfurls into a profile
+    // preview — the exact opposite of the card this feature exists to send. Observed on device
+    // 2026-08-24: the opening card worked and the follow request that followed it did not.
+    const gateCard = dependencies.loadOpeningCard
+      ? await dependencies.loadOpeningCard(context.attempt.resourceId)
+      : null;
+
     let send: () => Promise<MetaSendResult>;
     if (context.falseResponse === "lag") {
       send = () =>
@@ -707,6 +717,7 @@ export function createGuideAccessActionService(
           recipientId: context.senderId,
           guideName: guideName!,
           actionToken: issued.tokenId,
+          ...(gateCard ?? {}),
         });
     }
 
@@ -1205,9 +1216,14 @@ export function createGuideAccessActionService(
     // Resolved BEFORE the send fence. A card needs a cover, and looking one up inside the
     // fenced send would put a database round-trip between the fence and the single private
     // reply this comment gets. Null simply means the opening is text.
-    const openingCard = capabilities.privateGeneric
-      ? await dependencies.loadOpeningCard(input.resourceId)
-      : null;
+    // Optional dependency: absent means text, which is the same fallback a guide with no
+    // published square gets. Making it required turned a missing cover into a thrown send and
+    // a needs-review outcome — 39 tests caught that, all of them asserting gate behaviour that
+    // has nothing to do with covers.
+    const openingCard =
+      capabilities.privateGeneric && dependencies.loadOpeningCard
+        ? await dependencies.loadOpeningCard(input.resourceId)
+        : null;
     // Resolved before the send: computing it inside the catch would let a copy
     // validation error replace the provider error and skip the recovery ladder.
     const retryText = guideAccessOpeningText(guideName);
@@ -1275,10 +1291,11 @@ const defaultService = createGuideAccessActionService({
   repository: guideAccessRepository,
   resolveFollowStatusFresh,
   startGuideDelivery: deliverGuideForTrigger,
-  // The generic (rich) gate template is still text-only until the capability rows say
-  // otherwise, so this placeholder is never serialized. The cover now reaches the parent
-  // as its own fenced exposure ahead of the gate, not embedded in the gate payload.
-  sendFollowerGate: (input) => sendGuideFollowerGate({ ...input, coverUrl: "" }),
+  // The gate carries the same square cover as the opening. `coverUrl` defaults to empty
+  // rather than being required, because a guide with no published square must still be able
+  // to send a text gate — sendGuideFollowerGate falls back when it is absent.
+  sendFollowerGate: (input) =>
+    sendGuideFollowerGate({ ...input, coverUrl: input.coverUrl ?? "" }),
   sendText: (input) =>
     sendTrackedText({
       recipientIgUserId: input.recipientId,

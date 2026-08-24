@@ -1,3 +1,7 @@
+import {
+  guideAccessCardTitle,
+  guideAccessOpeningCardTitle,
+} from "../services/guideAccessCopy.js";
 import { describeGraphError } from "../services/eventLogger.js";
 import {
   GUIDE_GATE_CAPABILITY_CASES,
@@ -147,6 +151,9 @@ export function buildCapabilityInputFromEnvironment(
       return {
         case: capabilityCase,
         commentId: environment.META_SPIKE_COMMENT_ID,
+        // The same literal the real sender uses, so the spike exercises the shipped card
+        // rather than a variant of it.
+        title: guideAccessOpeningCardTitle,
         guideName,
         actionToken,
         profileUrl,
@@ -163,6 +170,7 @@ export function buildCapabilityInputFromEnvironment(
       return {
         case: capabilityCase,
         recipientId: environment.META_SPIKE_RECIPIENT_IG_USER_ID,
+        title: guideAccessCardTitle,
         guideName,
         actionToken,
         profileUrl,

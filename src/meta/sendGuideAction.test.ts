@@ -88,7 +88,7 @@ describe("sendGuideFollowerGate", () => {
               template_type: "generic",
               elements: [
                 {
-                  title: "Your toddler sleep guide is waiting ✨",
+                  title: "Your guide is waiting ✨",
                   subtitle:
                     "Follow @tinysoho for more ideas like this, then tap below and I'll send it over.",
                   image_url: COVER_URL,

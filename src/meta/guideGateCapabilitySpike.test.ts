@@ -92,6 +92,7 @@ describe("controlled Meta guide-gate capability runner", () => {
       payloadInput: {
         case: "dm_generic_gate",
         recipientId: RECIPIENT_ID,
+        title: "Your guide is waiting ✨",
         guideName: privateTextInput.guideName,
         actionToken: ACTION_TOKEN,
         profileUrl: PROFILE_URL,
@@ -241,6 +242,9 @@ describe("guide-gate capability CLI boundary", () => {
     });
     expect(buildCapabilityInputFromEnvironment("dm_generic_gate", common)).toEqual({
       case: "dm_generic_gate",
+      // The card title is a shipped literal, not an environment input — the spike must send
+      // the same string the real gate sends or it is testing a different message.
+      title: "Your guide is waiting ✨",
       recipientId: RECIPIENT_ID,
       guideName: "toddler sleep guide",
       actionToken: ACTION_TOKEN,

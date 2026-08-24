@@ -5,7 +5,9 @@ import {
 } from "./guideGatePayloads.js";
 import { sendMetaMessage } from "./sendMessage.js";
 import {
+  guideAccessCardTitle,
   guideAccessCopy,
+  guideAccessOpeningCardTitle,
   guideAccessOpening,
   guideAccessOpeningText,
   guideAccessWaitingTitle,
@@ -79,6 +81,7 @@ export async function sendGuideInitialPrivateReply(input: {
       buildGuideGateCapabilityPayload({
         case: "private_generic",
         commentId: input.commentId,
+        title: guideAccessOpeningCardTitle,
         guideName: input.guideName,
         profileUrl: GUIDE_PROFILE_URL,
         coverUrl: input.coverUrl,
@@ -119,6 +122,7 @@ export async function sendGuideInitialPrivateReply(input: {
 export async function sendGuideFollowerGate(input: {
   recipientId: string;
   guideName: string;
+  /** The square cover. Empty means the gate cannot be a card and falls back to text. */
   coverUrl: string;
   actionToken: string;
   capabilities?: GuideActionCapabilities;
@@ -132,11 +136,12 @@ export async function sendGuideFollowerGate(input: {
 }): Promise<MetaSendResult> {
   const capabilities = input.capabilities ?? TEXT_ONLY_CAPABILITIES;
 
-  if (capabilities.dmGenericGate) {
+  if (capabilities.dmGenericGate && input.coverUrl) {
     return sendCapabilityPayload(
       buildGuideGateCapabilityPayload({
         case: "dm_generic_gate",
         recipientId: input.recipientId,
+        title: guideAccessCardTitle,
         guideName: input.guideName,
         profileUrl: GUIDE_PROFILE_URL,
         coverUrl: input.coverUrl,
