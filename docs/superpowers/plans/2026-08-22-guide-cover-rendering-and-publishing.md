@@ -292,6 +292,15 @@ because two of the three are easy to miss and one of them fails silently:
    square forces the `generic.png` filename; a `square.png` filename requires a new
    column and a change here.
 
+One constraint the storage layout must keep, verified the hard way on 2026-08-23: **Meta
+caches a template's `image_url` by URL.** Uploading new bytes to a path that has already
+been fetched leaves Instagram rendering its cached copy — accepted with a 200, looking
+correct, showing a cover two revisions old. The existing
+`guide-cover/{resource}/{version}/{contentHash}/{filename}` layout already prevents this,
+because new bytes mean a new hash means a new URL. Treat that hash as load-bearing for
+correctness and not merely for idempotency: any "simplification" to a stable per-resource
+path would serve every parent a permanently stale cover with no error raised anywhere.
+
 And one code-side consequence that leaks storage rather than erroring:
 `validateGuideCoverObjectIdentity` in `src/services/guideCoverCleanupStorage.ts` maps only
 `dm_cover -> dm` and `generic_card -> generic`, returning `null` for anything else, which
