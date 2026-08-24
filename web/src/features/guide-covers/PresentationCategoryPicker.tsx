@@ -1,4 +1,3 @@
-import { Command } from "cmdk";
 import { useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -14,6 +13,8 @@ import type { PresentationCategory } from "./types";
 export interface PresentationCategoryPickerProps {
   categories: PresentationCategory[];
   onSelect: (categoryId: string) => void;
+  /** The category currently chosen in the parent, so the dropdown shows it as selected. */
+  selectedCategoryId?: string | null;
   disabled?: boolean;
 }
 
@@ -60,9 +61,9 @@ function statusLabel(status: PresentationCategory["designStatus"]): string {
 export function PresentationCategoryPicker({
   categories,
   onSelect,
+  selectedCategoryId = null,
   disabled = false,
 }: PresentationCategoryPickerProps) {
-  const [query, setQuery] = useState("");
   const [showAddForm, setShowAddForm] = useState(false);
   const [form, setForm] = useState<CategoryForm>(emptyForm);
   const [addedCategories, setAddedCategories] = useState<PresentationCategory[]>([]);
@@ -123,44 +124,39 @@ export function PresentationCategoryPicker({
       <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
         Presentation category
       </p>
-      <Command label="Presentation category" className="overflow-hidden rounded-lg border bg-card">
-        <div className="border-b px-3 py-2">
-          <Command.Input
-            disabled={disabled}
-            value={query}
-            onValueChange={setQuery}
-            placeholder="Search categories"
-            className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-          />
-        </div>
-        <Command.List label="Presentation category results" className="max-h-56 overflow-y-auto p-1">
-          <Command.Empty className="px-3 py-4 text-sm text-muted-foreground">
-            No category matches.
-          </Command.Empty>
-          {visibleCategories.map((category) => {
-            const isReady = category.designStatus === "ready";
-            const unavailable = disabled || !isReady;
-            const label = statusLabel(category.designStatus);
-            return (
-              <Command.Item
-                key={category.id}
-                value={`${category.name} ${category.collectionLabel} ${label}`}
-                disabled={unavailable}
-                aria-disabled={unavailable}
-                onSelect={() => {
-                  if (!unavailable) onSelect(category.id);
-                }}
-                className="flex items-center gap-2 rounded-md px-3 py-2 text-sm data-[selected=true]:bg-muted data-[disabled=true]:cursor-not-allowed data-[disabled=true]:opacity-60"
-              >
-                <span className="min-w-0 flex-1 truncate">{category.name}</span>
-                <span className="shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                  {label}
-                </span>
-              </Command.Item>
-            );
-          })}
-        </Command.List>
-      </Command>
+      {/*
+        A native dropdown, not a search palette. With only a handful of collections the
+        always-open searchable list was more chrome than the choice needed; a select shows the
+        current category in one line and opens the rest on click. Non-ready categories stay in
+        the list but disabled, so a half-built collection is visible without being publishable.
+        The onChange guard is belt-and-braces — a native `disabled` option cannot be chosen —
+        but it also refuses the empty placeholder value.
+      */}
+      <Select
+        aria-label="Presentation category"
+        value={selectedCategoryId ?? ""}
+        disabled={disabled}
+        onChange={(event) => {
+          const id = event.target.value;
+          const category = visibleCategories.find((candidate) => candidate.id === id);
+          if (!id || !category || category.designStatus !== "ready") return;
+          onSelect(id);
+        }}
+      >
+        {selectedCategoryId == null && (
+          <option value="" disabled>
+            Select a category
+          </option>
+        )}
+        {visibleCategories.map((category) => {
+          const isReady = category.designStatus === "ready";
+          return (
+            <option key={category.id} value={category.id} disabled={!isReady}>
+              {isReady ? category.name : `${category.name} · ${statusLabel(category.designStatus)}`}
+            </option>
+          );
+        })}
+      </Select>
 
       <Button
         type="button"

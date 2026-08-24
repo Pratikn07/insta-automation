@@ -324,6 +324,7 @@ function GuideCoverEditor({
 
       <PresentationCategoryPicker
         categories={editorCategories}
+        selectedCategoryId={editor.categoryId}
         disabled={editorBusy}
         onSelect={(categoryId) => {
           if (editorBusy) return;

@@ -59,15 +59,30 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("PresentationCategoryPicker", () => {
-  it("searches and selects ready categories with labelled combobox results", async () => {
+  it("selects a ready category from the dropdown", async () => {
     const user = userEvent.setup();
     const { onSelect } = renderPicker();
 
-    await user.type(screen.getByRole("combobox", { name: "Presentation category" }), "recipe");
-    await user.click(screen.getByRole("option", { name: /Recipes/ }));
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Presentation category" }),
+      recipes.id,
+    );
 
     expect(onSelect).toHaveBeenCalledWith(recipes.id);
-    expect(screen.getByRole("listbox", { name: "Presentation category results" })).toBeVisible();
+  });
+
+  it("shows the selected category as the dropdown value", () => {
+    render(
+      <PresentationCategoryPicker
+        categories={[recipes]}
+        selectedCategoryId={recipes.id}
+        onSelect={vi.fn()}
+      />,
+    );
+
+    // No "Select a category" placeholder once a value is chosen, and the select reflects it.
+    expect(screen.getByRole("combobox", { name: "Presentation category" })).toHaveValue(recipes.id);
+    expect(screen.queryByRole("option", { name: "Select a category" })).not.toBeInTheDocument();
   });
 
   it("adds a reusable needs-review category without making it publishable", async () => {
@@ -90,11 +105,10 @@ describe("PresentationCategoryPicker", () => {
     const payload = JSON.parse(request.body) as { id: string; basedOnCategorySlug: string };
     expect(payload.id).toBe(request.operationId);
     expect(payload.basedOnCategorySlug).toBe("recipes");
-    expect(screen.getByText("Needs visual review")).toBeVisible();
-    expect(screen.getByRole("option", { name: /Feeding Tips.*Needs visual review/i })).toHaveAttribute(
-      "aria-disabled",
-      "true",
-    );
+    // The new category appears as a disabled option annotated with its status, so it is visible
+    // in the dropdown but cannot be used to publish until visual review passes.
+    const option = screen.getByRole("option", { name: /Feeding Tips.*Needs visual review/i });
+    expect(option).toBeDisabled();
   });
 
   it("keeps the create UUID for an uncertain retry", async () => {

@@ -477,7 +477,11 @@ describe("GuideCoverPanel draft persistence and recovery", () => {
     const user = userEvent.setup();
 
     renderPanel();
-    await user.click(await screen.findByText("Big Feelings"));
+    await screen.findByText("Big Feelings");
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Presentation category" }),
+      SECOND_CATEGORY_ID,
+    );
     const headline = screen.getByLabelText("Cover headline");
     await user.clear(headline);
     await user.type(headline, "Keep my local copy");
@@ -1027,7 +1031,11 @@ describe("GuideCoverPanel approval and publication", () => {
 
     renderPanel();
 
-    expect(await screen.findByText("Needs visual review")).toBeVisible();
+    // The status now rides in the option text ("… · Needs visual review") rather than a
+    // standalone badge, so it is matched on the option itself.
+    expect(
+      await screen.findByRole("option", { name: /Needs visual review/i }),
+    ).toBeDisabled();
     expect(screen.getByRole("button", { name: "Approve and publish" })).toBeDisabled();
   });
 
@@ -1049,7 +1057,8 @@ describe("GuideCoverPanel approval and publication", () => {
     renderPanel();
 
     const inactiveOption = await screen.findByRole("option", { name: /Archive.*Inactive/i });
-    expect(inactiveOption).toHaveAttribute("aria-disabled", "true");
+    // A native <option disabled> carries the `disabled` attribute rather than aria-disabled.
+    expect(inactiveOption).toBeDisabled();
     expect(screen.getByText("A TINY WIN FROM BEFORE")).toBeVisible();
     expect(screen.getByText("ARCHIVE")).toBeVisible();
     expect(screen.getByLabelText("Cover headline")).toHaveValue("Historical draft headline");
