@@ -108,10 +108,17 @@ export type GuideAccessActionDependencies = {
   repository: GuideAccessRepository;
   resolveFollowStatusFresh(igUserId: string): Promise<FreshFollowResult>;
   startGuideDelivery(input: DeliverGuideForTriggerInput): Promise<GuideDeliveryResult>;
+  /**
+   * Required, not optional, and deliberately so. `sendGuideFollowerGate` defaults an absent
+   * `capabilities` to TEXT_ONLY, which silently makes its card branch unreachable — the gate
+   * looked wired, took a cover, and sent text anyway. A required field means the type system
+   * refuses the omission rather than a parent discovering it.
+   */
   sendFollowerGate(input: {
     recipientId: string;
     guideName: string;
     actionToken: string;
+    capabilities: GuideActionCapabilities;
     coverUrl?: string;
     categorySlug?: string;
   }): Promise<MetaSendResult>;
@@ -696,13 +703,23 @@ export function createGuideAccessActionService(
     const issued = await issueFollowToken(context.attempt, now);
     if (issued.kind === "outcome") return issued.outcome;
 
-    // The gate's cover, resolved before the send. Without this the gate fell back to text and
-    // shipped a bare "Visit profile: https://..." URL, which Instagram unfurls into a profile
-    // preview — the exact opposite of the card this feature exists to send. Observed on device
-    // 2026-08-24: the opening card worked and the follow request that followed it did not.
-    const gateCard = dependencies.loadOpeningCard
-      ? await dependencies.loadOpeningCard(context.attempt.resourceId)
-      : null;
+    // A card needs BOTH a cover and the capability, and the gate was missing each in turn.
+    // #55 supplied the cover; `sendGuideFollowerGate` still defaulted to TEXT_ONLY_CAPABILITIES
+    // because this dependency never accepted capabilities, so the card branch stayed
+    // unreachable and the gate shipped a bare "Visit profile: https://..." URL that Instagram
+    // unfurls into a profile preview. Observed on device 2026-08-24: the opening card worked
+    // and the follow request that followed it did not.
+    //
+    // Read here rather than passed in, and read per send, so an operator turning the switch off
+    // applies to the next gate — the same contract the opening has.
+    const capabilities = dependencies.richCapabilities();
+    // Resolved before the send fence, and only when a card could actually be sent: a lookup
+    // inside the fence would put a database round-trip between the fence and the one message
+    // this parent gets, and a cover fetched with the capability off is a query for nothing.
+    const gateCard =
+      capabilities.dmGenericGate && dependencies.loadOpeningCard
+        ? await dependencies.loadOpeningCard(context.attempt.resourceId)
+        : null;
 
     let send: () => Promise<MetaSendResult>;
     if (context.falseResponse === "lag") {
@@ -717,6 +734,7 @@ export function createGuideAccessActionService(
           recipientId: context.senderId,
           guideName: guideName!,
           actionToken: issued.tokenId,
+          capabilities,
           ...(gateCard ?? {}),
         });
     }
