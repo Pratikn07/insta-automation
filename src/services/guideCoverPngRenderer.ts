@@ -13,6 +13,7 @@ import type {
   GuideCoverRendition,
   GuideCoverRenderInput,
 } from "../../shared/guideCoverPolicy.js";
+import { GUIDE_COVER_RENDITION_FILENAMES } from "../../shared/guideCoverPolicy.js";
 import {
   layoutGuideCover,
   renderGuideCoverSvg,
@@ -23,30 +24,9 @@ import {
 
 export const GUIDE_COVER_RENDERER_VERSION = "tinysoho-guide-cover-v1";
 
-/**
- * One filename per rendition, stated exhaustively.
- *
- * This was `rendition === "dm_cover" ? "dm.png" : "generic.png"`, which silently gave the
- * square rendition the generic card's filename the moment it was added — two renditions
- * pointing at one storage path, with no error anywhere. The storage constraints derive the
- * path from this name, so a collision here would have let a square overwrite a generic
- * card's object in place.
- *
- * `square.png` is not writable yet: `guide_cover_orphan`'s rendition CHECK still lists only
- * dm_cover and generic_card, so publishing a square fails loudly at the database. Loudly is
- * the point — a wrong-but-accepted filename is the failure this replaces. See Task 10 in
- * docs/superpowers/plans/2026-08-22-guide-cover-rendering-and-publishing.md.
- */
-type GuideCoverRenditionFilename = "dm.png" | "generic.png" | "square.png";
-
-const RENDITION_FILENAMES: Record<
-  GuideCoverRendition,
-  GuideCoverRenditionFilename
-> = {
-  dm_cover: "dm.png",
-  generic_card: "generic.png",
-  square_card: "square.png",
-};
+// Filenames live in shared/guideCoverPolicy.ts so this module and guideCoverStorage
+// cannot disagree about where a rendition belongs.
+const RENDITION_FILENAMES = GUIDE_COVER_RENDITION_FILENAMES;
 
 interface LoadedGuideCoverFont {
   bytes: Buffer;
@@ -65,7 +45,7 @@ interface LoadedGuideCoverFonts {
 
 export interface RenderedGuideCoverPng {
   contentHash: string;
-  filename: GuideCoverRenditionFilename;
+  filename: string;
   height: number;
   png: Buffer;
   pngHash: string;

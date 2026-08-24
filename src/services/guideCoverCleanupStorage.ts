@@ -1,8 +1,17 @@
+import {
+  GUIDE_COVER_RENDITION_FILENAMES,
+  type GuideCoverRendition,
+} from "../../shared/guideCoverPolicy.js";
 import { serverMediaBucket } from "../lib/supabase.js";
 
 const UUID_SOURCE = "[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+// Alternation derived from the shared filename map: a rendition the path builder can write
+// must be one cleanup can parse, or its orphans become unreclaimable.
+const RENDITION_FILES = Object.values(GUIDE_COVER_RENDITION_FILENAMES)
+  .map((filename) => filename.replace(/\.png$/u, ""))
+  .join("|");
 const PATH_PATTERN = new RegExp(
-  `^guide-cover/(${UUID_SOURCE})/(${UUID_SOURCE})/([a-f0-9]{64})/(dm|generic)\\.png$`,
+  `^guide-cover/(${UUID_SOURCE})/(${UUID_SOURCE})/([a-f0-9]{64})/(${RENDITION_FILES})\\.png$`,
   "u",
 );
 
@@ -47,8 +56,14 @@ export function validateGuideCoverObjectIdentity(
 ): boolean {
   const match = PATH_PATTERN.exec(identity.path);
   if (!match) return false;
-  const expectedFilename = identity.rendition === "dm_cover" ? "dm" :
-    identity.rendition === "generic_card" ? "generic" : null;
+  // Shared map, so a rendition the path builder can write is a rendition cleanup can
+  // reclaim. When these disagreed, an orphaned square was unreclaimable forever: the
+  // identity came back invalid and cleanup refused to delete, silently.
+  const expectedFilename =
+    GUIDE_COVER_RENDITION_FILENAMES[identity.rendition as GuideCoverRendition]?.replace(
+      /\.png$/u,
+      "",
+    ) ?? null;
   return (
     expectedFilename !== null &&
     match[1] === identity.resourceId &&

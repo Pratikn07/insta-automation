@@ -31,6 +31,22 @@ export type GuideCoverDraftField = Exclude<
  * docs/meta-verification/2026-08-24-guide-gate-capability-results.json.
  */
 export type GuideCoverRendition = "dm_cover" | "generic_card" | "square_card";
+/**
+ * The filename each rendition occupies inside its content-hashed folder.
+ *
+ * Exhaustive on purpose, and shared on purpose. This started life as
+ * `rendition === "dm_cover" ? "dm.png" : "generic.png"` in TWO places — the PNG renderer and
+ * the storage path builder. Adding `square_card` silently gave it the generic card's filename
+ * in both, and fixing one did not fix the other, so a square would still have been filed at
+ * `generic.png` by whichever copy the caller happened to reach. A `Record` keyed on the union
+ * makes a new rendition a compile error rather than a silent collision.
+ */
+export const GUIDE_COVER_RENDITION_FILENAMES: Record<GuideCoverRendition, string> = {
+  dm_cover: "dm.png",
+  generic_card: "generic.png",
+  square_card: "square.png",
+};
+
 export type GuideCoverStableErrorCode =
   | "cover_invalid_input"
   | "cover_invalid_visual_key"
