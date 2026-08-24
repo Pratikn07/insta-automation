@@ -22,10 +22,26 @@ type ReplayResult<T> =
   | {
       ok: false;
       error:
+        | "cover_category_locked_by_publication"
         | "cover_create_conflict"
         | "cover_invalid_input"
         | "cover_repository_unavailable";
     };
+
+export type PresentationRepointResult =
+  | { ok: true; outcome: "moved" | "unchanged" }
+  | {
+      ok: false;
+      error:
+        | "cover_category_locked_by_publication"
+        | "cover_create_conflict"
+        | "cover_repository_unavailable";
+    };
+
+type PresentationWriter = Pick<
+  GuideCoverDatabase,
+  "resourcePresentation" | "resourceCoverVersion"
+>;
 
 type SaveDraftResult =
   | { ok: true; value: ResourceCoverVersion }
@@ -109,6 +125,63 @@ function isExactDraftReplay(
 }
 
 /**
+ * Points a guide that has never been published at a different collection.
+ *
+ * The edition number is a per-collection sequence, so a presentation row is only free to
+ * move while it has none. Once one is stamped, the guide belongs to that collection's
+ * numbering and only the audited collection move may take it out — which is why this
+ * refuses rather than reassigning, and why the update is a compare-and-swap on a null
+ * edition even under the caller's lock.
+ *
+ * Draft and approved covers carry the old collection's kicker, label and visual keys and
+ * can never be published once the presentation points elsewhere. They are retired here so
+ * the editor cannot pick one up as the working cover of a collection it does not belong
+ * to; the rows stay for history. Retiring only relaxes the one-published-row index, and a
+ * null edition cannot collide with the partial unique on (category, edition).
+ */
+async function repointUnpublishedPresentation(
+  database: PresentationWriter,
+  presentation: ResourcePresentation,
+  toCategoryId: string,
+): Promise<PresentationRepointResult> {
+  if (presentation.categoryId === toCategoryId) {
+    return { ok: true, outcome: "unchanged" };
+  }
+  if (presentation.editionNumber !== null) {
+    return { ok: false, error: "cover_category_locked_by_publication" };
+  }
+  const published = await database.resourceCoverVersion.findFirst({
+    where: { resourceId: presentation.resourceId, status: "published" },
+    select: { id: true },
+  });
+  if (published) {
+    return { ok: false, error: "cover_category_locked_by_publication" };
+  }
+
+  // The move commits before anything is retired: a lost compare-and-swap must leave the
+  // guide exactly as it was, and returning from a transaction callback commits it.
+  const moved = await database.resourcePresentation.updateMany({
+    where: {
+      resourceId: presentation.resourceId,
+      categoryId: presentation.categoryId,
+      editionNumber: null,
+    },
+    data: { categoryId: toCategoryId },
+  });
+  if (moved.count !== 1) return { ok: false, error: "cover_create_conflict" };
+
+  await database.resourceCoverVersion.updateMany({
+    where: {
+      resourceId: presentation.resourceId,
+      categoryId: presentation.categoryId,
+      status: { in: ["draft", "approved"] },
+    },
+    data: { status: "retired" },
+  });
+  return { ok: true, outcome: "moved" };
+}
+
+/**
  * The single definition of "a cover a parent may actually be sent".
  *
  * `published` alone is not enough: the row must also have rendered, and it must have a
@@ -152,10 +225,16 @@ export function createGuideCoverRepository(options: {
         const stored = await database.resourcePresentation.findUnique({
           where: { resourceId: input.resourceId },
         });
-        if (!stored || !isExactPresentationReplay(stored, input)) {
-          return { ok: false, error: "cover_create_conflict" };
-        }
-        return { ok: true, value: stored, replayed: true };
+        if (!stored) return { ok: false, error: "cover_create_conflict" };
+        // A row for another collection is not a failure here — this only guarantees the
+        // guide has a presentation. Whether it may move to `input.categoryId` is decided
+        // under the presentation lock, where the old collection's covers can be retired
+        // with it in one transaction.
+        return {
+          ok: true,
+          value: stored,
+          replayed: isExactPresentationReplay(stored, input),
+        };
       }
     },
 
@@ -202,9 +281,18 @@ export function createGuideCoverRepository(options: {
           const presentation = await tx.resourcePresentation.findUnique({
             where: { resourceId: input.resourceId },
           });
-          if (!presentation || presentation.categoryId !== input.categoryId) {
+          if (!presentation) {
             return { ok: false, error: "cover_create_conflict" } as const;
           }
+          // Saving a draft under a different collection is how a creator changes their
+          // mind, and it stays one atomic act: either the guide moves and this revision
+          // exists, or neither happened.
+          const repointed = await repointUnpublishedPresentation(
+            tx,
+            presentation,
+            input.categoryId,
+          );
+          if (!repointed.ok) return { ok: false, error: repointed.error } as const;
 
           const replay = await tx.resourceCoverVersion.findUnique({
             where: { id: input.id },
@@ -328,6 +416,44 @@ export function createGuideCoverRepository(options: {
         if (isUniqueViolation(error)) {
           return { ok: false, error: "cover_revision_conflict" };
         }
+        return { ok: false, error: "cover_repository_unavailable" };
+      }
+    },
+
+    /**
+     * Moves a guide to another collection on its own, for callers that are not also
+     * writing a cover revision. Same policy, same locks as the draft path.
+     */
+    async repointPresentation(input: {
+      resourceId: string;
+      toCategoryId: string;
+    }): Promise<PresentationRepointResult> {
+      try {
+        return await database.$transaction(async (tx) => {
+          const resourceLock = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT "id"
+            FROM resources
+            WHERE "id" = ${input.resourceId}::uuid
+            FOR UPDATE
+          `;
+          const presentationLock = await tx.$queryRaw<Array<{ resourceId: string }>>`
+            SELECT "resource_id" AS "resourceId"
+            FROM resource_presentation
+            WHERE "resource_id" = ${input.resourceId}::uuid
+            FOR UPDATE
+          `;
+          if (resourceLock.length !== 1 || presentationLock.length !== 1) {
+            return { ok: false, error: "cover_create_conflict" } as const;
+          }
+          const presentation = await tx.resourcePresentation.findUnique({
+            where: { resourceId: input.resourceId },
+          });
+          if (!presentation) {
+            return { ok: false, error: "cover_create_conflict" } as const;
+          }
+          return repointUnpublishedPresentation(tx, presentation, input.toCategoryId);
+        });
+      } catch {
         return { ok: false, error: "cover_repository_unavailable" };
       }
     },

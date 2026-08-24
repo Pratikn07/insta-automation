@@ -15,6 +15,11 @@ export interface PresentationCategoryPickerProps {
   onSelect: (categoryId: string) => void;
   /** The category currently chosen in the parent, so the dropdown shows it as selected. */
   selectedCategoryId?: string | null;
+  /**
+   * The collection can no longer change — an edition has been allocated to this guide.
+   * Distinct from `disabled`: adding a reusable category is still allowed.
+   */
+  selectionLocked?: boolean;
   disabled?: boolean;
 }
 
@@ -62,6 +67,7 @@ export function PresentationCategoryPicker({
   categories,
   onSelect,
   selectedCategoryId = null,
+  selectionLocked = false,
   disabled = false,
 }: PresentationCategoryPickerProps) {
   const [showAddForm, setShowAddForm] = useState(false);
@@ -76,6 +82,12 @@ export function PresentationCategoryPicker({
     for (const category of addedCategories) byId.set(category.id, category);
     return [...byId.values()];
   }, [addedCategories, categories]);
+
+  // The value must name an option that is actually rendered. A category id with no matching
+  // option (never chosen, or withdrawn from the list) has to fall back to the placeholder,
+  // otherwise the browser silently shows the first collection as if it were the choice.
+  const selectedOption =
+    visibleCategories.find((category) => category.id === selectedCategoryId) ?? null;
 
   const canCreate =
     form.name.trim().length > 0 &&
@@ -134,8 +146,8 @@ export function PresentationCategoryPicker({
       */}
       <Select
         aria-label="Presentation category"
-        value={selectedCategoryId ?? ""}
-        disabled={disabled}
+        value={selectedOption?.id ?? ""}
+        disabled={disabled || selectionLocked}
         onChange={(event) => {
           const id = event.target.value;
           const category = visibleCategories.find((candidate) => candidate.id === id);
@@ -143,7 +155,7 @@ export function PresentationCategoryPicker({
           onSelect(id);
         }}
       >
-        {selectedCategoryId == null && (
+        {!selectedOption && (
           <option value="" disabled>
             Select a category
           </option>

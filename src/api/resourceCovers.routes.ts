@@ -69,7 +69,9 @@ function creatorId(req: { adminEmail?: string }, res: Response): string | null {
 
 function repositoryFailure(res: Response, error: string) {
   const status =
-    error === "cover_revision_conflict" || error === "cover_create_conflict"
+    error === "cover_revision_conflict" ||
+    error === "cover_create_conflict" ||
+    error === "cover_category_locked_by_publication"
       ? 409
       : error === "cover_invalid_input"
         ? 422
@@ -147,49 +149,42 @@ resourceCoversRouter.put("/:resourceId/presentation", async (req, res) => {
     where: { resourceId: req.params.resourceId },
   });
   if (!existing) {
-    const result = await covers.createOrLoadPresentation({
+    const created = await covers.createOrLoadPresentation({
       resourceId: req.params.resourceId,
       categoryId: parsed.data.categoryId,
     });
-    if (!result.ok) return repositoryFailure(res, result.error);
-    return res.status(result.replayed ? 200 : 201).json({
-      presentation: result.value,
-      replayed: result.replayed,
-    });
-  }
-  if (existing.categoryId === parsed.data.categoryId) {
+    if (!created.ok) return repositoryFailure(res, created.error);
+    if (created.value.categoryId === parsed.data.categoryId) {
+      return res.status(created.replayed ? 200 : 201).json({
+        presentation: created.value,
+        replayed: created.replayed,
+      });
+    }
+    // A concurrent write claimed the row for another collection between the read and the
+    // create. Fall through rather than answering 200 for a collection this did not set.
+  } else if (existing.categoryId === parsed.data.categoryId) {
     return res.json({ presentation: existing, replayed: true });
   }
 
-  const publishedCount = await prisma.resourceCoverVersion.count({
-    where: { resourceId: req.params.resourceId, status: "published" },
+  // Unpublished guides may still change collection; a published one keeps its allocated
+  // edition and must go through the explicit move. The repository decides both under the
+  // presentation lock, so publication cannot slip in between the check and the write.
+  const moved = await covers.repointPresentation({
+    resourceId: req.params.resourceId,
+    toCategoryId: parsed.data.categoryId,
   });
-  if (publishedCount > 0 || existing.editionNumber !== null) {
-    return res.status(409).json({
-      error: "published_category_move_requires_explicit_operation",
-    });
-  }
-  const anyCoverCount = await prisma.resourceCoverVersion.count({
-    where: { resourceId: req.params.resourceId },
-  });
-  if (anyCoverCount > 0) {
-    return res.status(409).json({ error: "presentation_has_cover_versions" });
-  }
-  const updated = await prisma.resourcePresentation.updateMany({
-    where: {
-      resourceId: req.params.resourceId,
-      categoryId: existing.categoryId,
-      editionNumber: null,
-    },
-    data: { categoryId: parsed.data.categoryId },
-  });
-  if (updated.count !== 1) {
-    return res.status(409).json({ error: "cover_revision_conflict" });
+  if (!moved.ok) {
+    if (moved.error === "cover_category_locked_by_publication") {
+      return res.status(409).json({
+        error: "published_category_move_requires_explicit_operation",
+      });
+    }
+    return repositoryFailure(res, moved.error);
   }
   const presentation = await prisma.resourcePresentation.findUnique({
     where: { resourceId: req.params.resourceId },
   });
-  res.json({ presentation, replayed: false });
+  res.json({ presentation, replayed: moved.outcome === "unchanged" });
 });
 
 resourceCoversRouter.post("/:resourceId/presentation/move", async (req, res) => {

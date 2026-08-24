@@ -199,6 +199,8 @@ describe("deriveGuideCoverEditorState", () => {
 
 describe("copyFromCategory", () => {
   it("returns the registered example copy for a built-in category", () => {
+    // #44 made the closing line one shared TinySoho sign-off across every built-in
+    // category; this assertion was left on the old per-category wording.
     expect(copyFromCategory(category)).toEqual({
       headline: "Bedtime can feel softer",
       supportingLine: "A calmer bedtime, one small shift at a time.",
