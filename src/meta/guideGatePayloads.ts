@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { GuideCoverCategorySlug } from "../../shared/guideCoverRegistry.js";
 import {
   guideAccessCopy,
   guideAccessOpening,
@@ -17,11 +18,58 @@ export const GUIDE_GATE_CAPABILITY_CASES = [
 
 export type GuideGateCapabilityCase = (typeof GUIDE_GATE_CAPABILITY_CASES)[number];
 
+/**
+ * Two kinds of label, and they are NOT interchangeable.
+ *
+ * A quick reply's title is posted into the thread as the PARENT'S OWN MESSAGE when tapped.
+ * So a chip label has to be something a parent would plausibly type — it ends up in their
+ * sent history, attributed to them. A generic-template button is a `postback`: tapping it
+ * sends nothing to the thread, so its label is pure interface and can carry personality.
+ *
+ * These were one set of constants, which meant the expressive slot was written to survive
+ * the stricter job and both ended up flat. `confirmFollow` even carried a "✓" into what
+ * became the parent's own outgoing message, which reads as a UI artifact in their words.
+ *
+ * Meta's guidance for any button title: keep it under 20 characters, one to three words,
+ * and avoid punctuation. Asserted in the tests rather than trusted to review.
+ */
 export const GUIDE_GATE_BUTTON_LABELS = {
+  /** Quick reply. Becomes the parent's own message, so it reads as something they'd say. */
   requestGuide: "Yes, send it",
+  /** Quick reply. The "✓" was removed: it appeared inside the parent's own sent message. */
+  confirmFollow: "I'm following",
+  /** Link button on the card. */
   visitProfile: "Visit profile",
-  confirmFollow: "I'm following ✓",
+  /** Postback fallback, used when the caller cannot tell us the category. */
+  cardAction: "Send it over",
 } as const;
+
+/**
+ * The postback label, per category.
+ *
+ * The card already knows its category — it is rendering that category's kicker, palette and
+ * illustration — so naming the thing being sent costs one lookup and makes each card read as
+ * authored rather than templated. `bedtime` deliberately echoes its own kicker ("A TINY WIN
+ * FOR TONIGHT") so the cover and the button read as one thought instead of artwork plus a
+ * form.
+ *
+ * A missing category falls back to `cardAction` rather than throwing: an unlabelled button
+ * is a cosmetic loss, and failing the send over copy would cost the parent their guide.
+ */
+export const GUIDE_GATE_CATEGORY_ACTION_LABELS: Record<GuideCoverCategorySlug, string> = {
+  bedtime: "Send my tiny win",
+  "potty-training": "Send the steps",
+  recipes: "Send the recipes",
+  "montessori-activities": "Send the activity",
+};
+
+export function guideGateCardActionLabel(categorySlug?: string): string {
+  if (!categorySlug) return GUIDE_GATE_BUTTON_LABELS.cardAction;
+  return (
+    GUIDE_GATE_CATEGORY_ACTION_LABELS[categorySlug as GuideCoverCategorySlug] ??
+    GUIDE_GATE_BUTTON_LABELS.cardAction
+  );
+}
 
 type QuickReply = {
   content_type: "text";
@@ -82,6 +130,10 @@ const inputSchema = z.discriminatedUnion("case", [
     profileUrl: httpsUrl,
     coverUrl: httpsUrl,
     actionToken,
+    // Optional so an unknown category degrades to the generic label instead of rejecting
+    // the payload. Not validated against the slug union here: the label resolver already
+    // falls back, and a copy decision must never be able to block a guide.
+    categorySlug: z.string().optional(),
   }),
   z.object({
     case: z.literal("dm_quick_reply"),
@@ -101,6 +153,7 @@ const inputSchema = z.discriminatedUnion("case", [
     profileUrl: httpsUrl,
     coverUrl: httpsUrl,
     actionToken,
+    categorySlug: z.string().optional(),
   }),
 ]);
 
@@ -173,7 +226,7 @@ export function buildGuideGateCapabilityPayload(
           buttons: [
             {
               type: "postback",
-              title: GUIDE_GATE_BUTTON_LABELS.requestGuide,
+              title: guideGateCardActionLabel(input.categorySlug),
               payload: actionPayload(input.actionToken),
             },
           ],
@@ -213,7 +266,7 @@ export function buildGuideGateCapabilityPayload(
             },
             {
               type: "postback",
-              title: GUIDE_GATE_BUTTON_LABELS.confirmFollow,
+              title: guideGateCardActionLabel(input.categorySlug),
               payload: actionPayload(input.actionToken),
             },
           ],

@@ -90,14 +90,14 @@ describe("sendGuideFollowerGate", () => {
                 {
                   title: "Your toddler sleep guide is waiting ✨",
                   subtitle:
-                    "Follow @tinysoho for more ideas like this, then tap I'm following and I'll send it over.",
+                    "Follow @tinysoho for more ideas like this, then tap below and I'll send it over.",
                   image_url: COVER_URL,
                   default_action: { type: "web_url", url: GUIDE_PROFILE_URL },
                   buttons: [
                     { type: "web_url", url: GUIDE_PROFILE_URL, title: "Visit profile" },
                     {
                       type: "postback",
-                      title: "I'm following ✓",
+                      title: "Send it over",
                       payload: ACTION_PAYLOAD,
                     },
                   ],
@@ -172,7 +172,7 @@ describe("sendGuideFollowLag", () => {
           quick_replies: [
             {
               content_type: "text",
-              title: "I'm following ✓",
+              title: "I'm following",
               payload: ACTION_PAYLOAD,
             },
           ],

@@ -38,8 +38,12 @@ function reviewedGuideName(value: string): string {
  * same copy, as the spec requires. These remain reviewed application constants.
  */
 export const guideAccessCopy = {
+  // "tap below" rather than naming the button, because the card's button label is now
+  // per-category ("Send my tiny win", "Send the recipes"...). Copy that names a control is
+  // copy that silently goes wrong the moment the control is reworded, and nothing would
+  // fail — the card renders, the words just stop matching the button beneath them.
   nonFollowerGate:
-    "Follow @tinysoho for more ideas like this, then tap I'm following and I'll send it over.",
+    "Follow @tinysoho for more ideas like this, then tap below and I'll send it over.",
   nonFollowerGateText:
     "Follow @tinysoho for more ideas like this, then reply DONE and I'll send it over.",
   unavailable: "Unable to confirm right now. Please try again a little later.",
