@@ -48,7 +48,50 @@ interface GuideCoverGeometry {
   supportTop: number;
   closingBottom: number;
   textRight: number;
+  /**
+   * Right edge for the supporting line only, when it must differ from the lower-text
+   * default. Absent means the default applies.
+   *
+   * The default clamps the supporting AND closing lines to the artwork box's left edge
+   * minus a gutter, which is right for the DM cover — there the artwork starts at y 385,
+   * directly beside the supporting line, so the two really do compete for width. In the
+   * square the illustration's leading edge sits far BELOW the supporting line, so that
+   * clamp inherits a collision that does not exist and costs the line ~500px of measure
+   * it could have used. That lost measure is why the supporting line had to stay small,
+   * and small is what made it unreadable at the size a card actually renders.
+   *
+   * Deliberately does not widen the closing line. That one sits low, genuinely beside the
+   * artwork, and keeping its narrow clamp is what preserves its clearance.
+   */
+  supportRight?: number;
+  /**
+   * Right edge for the kicker, when the shared 520 cap is too tight. Absent means the cap.
+   *
+   * 520 is generous at 24px and binding at 30: `recipes`' "A LITTLE WIN AT THE TABLE" is
+   * the longest registered kicker and it overflowed as soon as the square raised the size.
+   * The top band is the one place on every template where no artwork reaches, so the only
+   * real limit is the edition label — which is end-anchored at the right inset with a 360
+   * allowance, so it starts at 756 and 700 leaves a clear gutter.
+   */
+  labelRight?: number;
   artwork: { x: number; y: number; width: number; height: number };
+  /**
+   * Uniform scale applied to the illustration about the artwork box's bottom-right
+   * corner. Absent means 1.
+   *
+   * It exists because every illustration draws its shapes at FIXED pixel offsets from
+   * the box's top-left — `y + 230`, `y + 468` and so on — so `height` controls only the
+   * corner bleed, not how large the drawing is. Enlarging a cover therefore cannot be
+   * done by widening the box; the box would grow and the drawing inside it would not.
+   *
+   * Scaling about the bottom-right corner rather than the centre is what keeps the
+   * bleed intact: these compositions are anchored to the canvas corner, and growing
+   * from anywhere else would pull the artwork inward and expose a seam.
+   *
+   * Consequence worth stating: when this is set, `width` and `height` stop describing
+   * the drawn extent. They stay the scale's frame of reference, not its result.
+   */
+  artworkScale?: number;
 }
 
 export interface GuideCoverLayout {
@@ -133,10 +176,62 @@ const TYPOGRAPHY = {
   Omit<GuideCoverTextBlock, "x" | "y" | "maxWidth" | "lines" | "textAnchor">
 >;
 
+type GuideCoverTypeField = keyof typeof TYPOGRAPHY;
+/**
+ * The shape of a resolved type spec. Deliberately the widened form rather than
+ * `(typeof TYPOGRAPHY)[field]`: TYPOGRAPHY is `as const`, so its sizes are literal types
+ * like `24`, and an overridden size is just a number.
+ */
+type GuideCoverType = Omit<
+  GuideCoverTextBlock,
+  "x" | "y" | "maxWidth" | "lines" | "textAnchor"
+>;
+type GuideCoverTypeOverrides = Partial<
+  Record<GuideCoverTypeField, { fontSize: number; lineHeight: number }>
+>;
+
+/**
+ * Type sizes are per-rendition because the renditions are read at different sizes.
+ *
+ * A cover is authored at 1200px wide and rendered in a message card at roughly 515px —
+ * about 0.43x. At that scale the shared kicker and supporting sizes land near 10px and
+ * 15px on the device, which the account owner reported as simply not readable. The
+ * headline survives the same reduction comfortably, so this raises the small text and
+ * leaves the headline alone rather than scaling everything and losing the hierarchy.
+ *
+ * The closing line is untouched on purpose. It is a brand signature, not body copy, and
+ * it is set in the serif at 40 — quieter than the supporting line is exactly right for it.
+ */
+const SQUARE_TYPE_OVERRIDES: GuideCoverTypeOverrides = {
+  kicker: { fontSize: 30, lineHeight: 39 },
+  collectionLabel: { fontSize: 30, lineHeight: 39 },
+  supportingLine: { fontSize: 46, lineHeight: 60 },
+};
+
+/**
+ * The right-panel template gets a smaller supporting line, because it has a narrower
+ * column to put it in: the lavender panel occupies x >= 804 at every height, so the text
+ * measure is 612 against the corner templates' 1032.
+ *
+ * 46 does fit the registered Montessori copy at 612 with the real font, but only just —
+ * it overflowed immediately under the deterministic test metric, which is the signal that
+ * the line had no headroom left for a copy edit. 40 keeps both lines near 80% of the
+ * measure, which is the margin a size should be chosen with. Two column widths wanting two
+ * sizes is ordinary typography, not a special case.
+ */
+const SQUARE_RIGHT_PANEL_TYPE_OVERRIDES: GuideCoverTypeOverrides = {
+  ...SQUARE_TYPE_OVERRIDES,
+  supportingLine: { fontSize: 40, lineHeight: 52 },
+};
+
 function renditionGeometry(
   templateKey: keyof typeof GUIDE_COVER_TEMPLATES,
   rendition: GuideCoverRendition,
-): { canvas: { width: number; height: number }; geometry: GuideCoverGeometry } {
+): {
+  canvas: { width: number; height: number };
+  geometry: GuideCoverGeometry;
+  typeOverrides?: GuideCoverTypeOverrides;
+} {
   const template = GUIDE_COVER_TEMPLATES[templateKey];
   if (rendition === "dm_cover") {
     return {
@@ -146,6 +241,77 @@ function renditionGeometry(
   }
 
   const rightPanel = templateKey === "editorial_right_panel_v1";
+
+  /**
+   * A square rendition exists because Instagram's message-card image slot crops to
+   * roughly 1:1 and takes a CENTRE slice. A landscape cover put there loses its first
+   * letters — verified on device: the 1.91:1 rendition rendered "me can feel softer".
+   * The wider the source, the worse the loss, so the fix is a composition that is
+   * square to begin with rather than one squeezed into a square hole.
+   *
+   * 1200 wide keeps the insets identical to the DM cover. The vertical rhythm and the
+   * small-text sizes are re-cut, because the square is read in a message card at roughly
+   * 0.43x and the landscape sizes do not survive that reduction.
+   */
+  if (rendition === "square_card") {
+    return {
+      canvas: { width: 1200, height: 1200 },
+      typeOverrides: rightPanel
+        ? SQUARE_RIGHT_PANEL_TYPE_OVERRIDES
+        : SQUARE_TYPE_OVERRIDES,
+      geometry: {
+        ...template,
+        // The supporting line sits close under the headline because it IS a subtitle to
+        // it — floated at the vertical midpoint it read as an orphaned third line.
+        //
+        // The closing line moved UP from a 150 bottom margin to 330. At 150 it sat a full
+        // ~420px below the supporting line, which read as a hole in the middle of the cover
+        // rather than as a footer margin, and the account owner called it out on device.
+        // Part of what made it read as a hole was the copy: three of the four closing lines
+        // paraphrased their own supporting line, so the eye crossed a large gap only to
+        // find the same thought restated. With the closing line now a brand signature the
+        // separation has a job, and 330 makes it a considered gap instead of a void.
+        labelTop: 100,
+        headlineTop: 250,
+        supportTop: 470,
+        closingBottom: 330,
+        // Full text measure for the supporting line, which the square can afford and the
+        // DM cover cannot. See `supportRight`. The right panel is excluded: its lavender
+        // column occupies x >= 804 at EVERY height, so there is no band where the text
+        // could borrow the width.
+        supportRight: rightPanel ? undefined : 1116,
+        // Both templates: nothing is drawn in the top band on either one.
+        labelRight: 700,
+        // The artwork box keeps the DM cover's x, NOT a wider one. Moving it 48px left to
+        // fill the square narrowed the text column by the same amount, and
+        // `potty-training`'s supporting line needs all of it — it wrapped to a third row
+        // and failed `maxLines: 2`. Copy that fits the landscape cover must fit here, so
+        // the text measure is inherited rather than re-chosen.
+        //
+        // The right panel is bottom-anchored and keeps its 916 height instead of being
+        // stretched to 1200. Its contents are drawn at fixed offsets from the panel top
+        // (`y + 285` for the tray, `y + 680` for the sweep), so a 1200-tall panel left
+        // roughly 520px of empty lavender below them. Anchoring the panel to the bottom
+        // edge and letting its top land just under the headline keeps the tray centred in
+        // the visible lavender and reads as a deliberate crop.
+        artwork: rightPanel
+          ? { x: 804, y: 284, width: 396, height: 916 }
+          : { x: 684, y: 684, width: 516, height: 516 },
+        // Corner illustrations are enlarged rather than repositioned, so the square reads
+        // as its own composition instead of the landscape one with 284px of dead paper
+        // added underneath. The DM cover's drawing covers ~520 of 916 (57%) of the height;
+        // at 1:1 the identical drawing covered 43%, and the gap between the supporting
+        // line and the top of the illustration opened to ~180px of nothing. 1.31 restores
+        // that 57%, which brings the illustration's leading edge back up alongside the
+        // supporting line the way the landscape cover interlocks them.
+        //
+        // The right panel is exempt: it is a filled rect that already meets three edges,
+        // so scaling it would only push its contents off-canvas.
+        artworkScale: rightPanel ? undefined : 1.31,
+      },
+    };
+  }
+
   return {
     canvas: { width: 1200, height: 628 },
     geometry: {
@@ -163,7 +329,7 @@ function renditionGeometry(
 
 function measure(
   metrics: GuideCoverFontMetrics,
-  typography: (typeof TYPOGRAPHY)[keyof typeof TYPOGRAPHY],
+  typography: GuideCoverType,
   text: string,
 ): number {
   return metrics.measureText({ ...typography, text });
@@ -175,13 +341,19 @@ function wrapText(input: {
   maxWidth: number;
   metrics: GuideCoverFontMetrics;
   text: string;
+  /**
+   * Passed in rather than looked up from TYPOGRAPHY, because a rendition may override the
+   * size. Wrapping against 34 and drawing at 46 overflows the right edge while the layout
+   * reports success — a silent failure with no error code and nothing to assert on.
+   */
+  typography: GuideCoverType;
 }):
   | { ok: true; lines: string[] }
   | {
       ok: false;
       error: { code: "cover_text_overflow"; field: GuideCoverTextField };
     } {
-  const typography = TYPOGRAPHY[input.field];
+  const { typography } = input;
   const words = input.text.split(" ");
   const lines: string[] = [];
   let line = "";
@@ -253,7 +425,7 @@ export function layoutGuideCover(
     };
   }
 
-  const { canvas, geometry } = renditionGeometry(
+  const { canvas, geometry, typeOverrides } = renditionGeometry(
     visualSelection.value.templateKey,
     rendition,
   );
@@ -263,6 +435,11 @@ export function layoutGuideCover(
   const lowerTextWidth = isCorner
     ? geometry.artwork.x - geometry.leftInset - 80
     : leftWidth;
+  // The supporting line may be given its own measure; the closing line never is.
+  const supportWidth =
+    geometry.supportRight !== undefined
+      ? geometry.supportRight - geometry.leftInset
+      : lowerTextWidth;
   const editionLabel = `${categoryText.value.collectionLabel} · ${String(
     edition.value,
   ).padStart(2, "0")}`;
@@ -272,7 +449,10 @@ export function layoutGuideCover(
       field: "kicker",
       text: categoryText.value.kicker,
       maxLines: 1,
-      maxWidth: Math.min(520, leftWidth),
+      maxWidth:
+        geometry.labelRight !== undefined
+          ? geometry.labelRight - geometry.leftInset
+          : Math.min(520, leftWidth),
     },
     collectionLabel: {
       field: "collectionLabel",
@@ -290,7 +470,7 @@ export function layoutGuideCover(
       field: "supportingLine",
       text: draft.value.supportingLine,
       maxLines: 2,
-      maxWidth: lowerTextWidth,
+      maxWidth: supportWidth,
     },
     closingLine: {
       field: "closingLine",
@@ -300,11 +480,27 @@ export function layoutGuideCover(
     },
   } as const;
 
+  /**
+   * The one place a field's effective type is resolved. Wrapping, the emitted block and
+   * the closing line's measured height all read it, so they cannot disagree — measuring
+   * with one size and drawing with another is the failure mode this exists to prevent.
+   */
+  const typographyFor = (
+    field: GuideCoverTypeField,
+  ): GuideCoverType => ({
+    ...TYPOGRAPHY[field],
+    ...(typeOverrides?.[field] ?? {}),
+  });
+
   const wrapped = {} as Record<keyof typeof wrapRequests, string[]>;
   for (const [key, request] of Object.entries(wrapRequests) as Array<
     [keyof typeof wrapRequests, (typeof wrapRequests)[keyof typeof wrapRequests]]
   >) {
-    const result = wrapText({ ...request, metrics: fontMetrics });
+    const result = wrapText({
+      ...request,
+      metrics: fontMetrics,
+      typography: typographyFor(key),
+    });
     if (!result.ok) return result;
     wrapped[key] = result.lines;
   }
@@ -316,23 +512,31 @@ export function layoutGuideCover(
     editionNumber: edition.value,
   };
 
+  /**
+   * `maxWidth` is read from `wrapRequests` rather than passed in, because passing it
+   * separately let the two disagree — and they did. When the supporting line gained its
+   * own wider measure, the wrap used it and the emitted block still declared the old
+   * narrow one. Nothing rendered wrong (the SVG does not clip to maxWidth) so the PNG
+   * looked correct, while every consumer of the block — including the test asserting
+   * nothing leaves the frame — was reading a width ~500px smaller than the text really
+   * occupied. A test passing against an understated number is worse than no test.
+   */
   const makeBlock = (
     field: keyof typeof wrapRequests,
     x: number,
     y: number,
-    maxWidth: number,
     textAnchor: "start" | "end" = "start",
   ): GuideCoverTextBlock => ({
     x,
     y,
-    maxWidth,
+    maxWidth: wrapRequests[field].maxWidth,
     lines: wrapped[field],
-    ...TYPOGRAPHY[field],
+    ...typographyFor(field),
     textAnchor,
   });
 
   const closingHeight =
-    wrapped.closingLine.length * TYPOGRAPHY.closingLine.lineHeight;
+    wrapped.closingLine.length * typographyFor("closingLine").lineHeight;
 
   return {
     ok: true,
@@ -344,36 +548,23 @@ export function layoutGuideCover(
       category: visualSelection.value,
       geometry,
       text: {
-        kicker: makeBlock(
-          "kicker",
-          geometry.leftInset,
-          geometry.labelTop,
-          wrapRequests.kicker.maxWidth,
-        ),
+        kicker: makeBlock("kicker", geometry.leftInset, geometry.labelTop),
         collectionLabel: makeBlock(
           "collectionLabel",
           canvas.width - geometry.rightInset,
           geometry.labelTop,
-          wrapRequests.collectionLabel.maxWidth,
           "end",
         ),
-        headline: makeBlock(
-          "headline",
-          geometry.leftInset,
-          geometry.headlineTop,
-          headlineWidth,
-        ),
+        headline: makeBlock("headline", geometry.leftInset, geometry.headlineTop),
         supportingLine: makeBlock(
           "supportingLine",
           geometry.leftInset,
           geometry.supportTop,
-          lowerTextWidth,
         ),
         closingLine: makeBlock(
           "closingLine",
           geometry.leftInset,
           canvas.height - geometry.closingBottom - closingHeight,
-          lowerTextWidth,
         ),
       },
     },
@@ -481,6 +672,25 @@ function montessoriArtwork(layout: GuideCoverLayout): string {
   </g>`;
 }
 
+/**
+ * The illustration, scaled about the artwork box's bottom-right corner when the
+ * rendition asks for it. See `GuideCoverGeometry.artworkScale` for why a scale is the
+ * only lever available here.
+ *
+ * Emitted as no wrapper at all when the scale is absent, so the DM cover's SVG is
+ * byte-identical to what it was before the square rendition existed — its committed
+ * `pngHash` snapshots stay valid, and a diff in them means a real regression.
+ */
+function scaledIllustrationSvg(layout: GuideCoverLayout): string {
+  const body = illustrationSvg(layout);
+  const scale = layout.geometry.artworkScale;
+  if (scale === undefined || scale === 1) return body;
+  const { x, y, width, height } = layout.geometry.artwork;
+  const anchorX = x + width;
+  const anchorY = y + height;
+  return `<g transform="translate(${anchorX} ${anchorY}) scale(${scale}) translate(${-anchorX} ${-anchorY})">${body}</g>`;
+}
+
 function illustrationSvg(layout: GuideCoverLayout): string {
   switch (layout.category.illustrationKey) {
     case "bedtime_window_house_v1":
@@ -506,7 +716,7 @@ export function renderGuideCoverSvg(
   <defs><clipPath id="${clipId}"><rect width="${canvas.width}" height="${canvas.height}" rx="${geometry.cornerRadius}"/></clipPath><style>${fontFaceCss(fontFaces)}</style></defs>
   <g clip-path="url(#${clipId})">
     <rect width="${canvas.width}" height="${canvas.height}" fill="${c.background}"/>
-    ${illustrationSvg(layout)}
+    ${scaledIllustrationSvg(layout)}
     ${textRenderer(text.kicker, c.ink)}
     ${textRenderer(text.collectionLabel, c.ink)}
     ${textRenderer(text.headline, c.ink)}

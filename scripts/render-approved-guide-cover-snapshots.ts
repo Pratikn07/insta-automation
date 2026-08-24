@@ -16,20 +16,31 @@ const OUTPUT_DIRECTORY = fileURLToPath(
 );
 
 const SNAPSHOTS = [
-  { categorySlug: "bedtime", filename: "bedtime-warm-editorial.png" },
-  {
-    categorySlug: "potty-training",
-    filename: "potty-training-sunlit-ritual.png",
-  },
-  { categorySlug: "recipes", filename: "recipes-corner-table.png" },
+  { categorySlug: "bedtime", stem: "bedtime-warm-editorial" },
+  { categorySlug: "potty-training", stem: "potty-training-sunlit-ritual" },
+  { categorySlug: "recipes", stem: "recipes-corner-table" },
   {
     categorySlug: "montessori-activities",
-    filename: "montessori-activities-discovery-tray.png",
+    stem: "montessori-activities-discovery-tray",
   },
 ] as const satisfies ReadonlyArray<{
   categorySlug: GuideCoverCategorySlug;
-  filename: string;
+  stem: string;
 }>;
+
+/**
+ * Both renditions, because they are judged in different places.
+ *
+ * `dm_cover` is a plain image message, which Instagram shows uncropped — so its
+ * 1200x916 is what the parent sees. `square_card` rides in a generic template,
+ * whose image slot Instagram centre-crops to 1:1; rendering it at 1200x1200
+ * means the crop is a no-op. The pair is the point: the same copy has to survive
+ * both, and only a side-by-side artifact shows whether it does.
+ */
+const RENDITIONS = [
+  { rendition: "dm_cover", suffix: "" },
+  { rendition: "square_card", suffix: "-square" },
+] as const;
 
 await mkdir(OUTPUT_DIRECTORY, { recursive: true });
 
@@ -45,15 +56,19 @@ for (const snapshot of SNAPSHOTS) {
     illustrationKey: category.illustrationKey,
     ...category.exampleCopy,
   };
-  const result = await renderGuideCoverPng(input, "dm_cover");
-  if (!result.ok) {
-    throw new Error(
-      `guide_cover_snapshot_failed:${snapshot.categorySlug}:${result.error.code}`,
+
+  for (const { rendition, suffix } of RENDITIONS) {
+    const result = await renderGuideCoverPng(input, rendition);
+    if (!result.ok) {
+      throw new Error(
+        `guide_cover_snapshot_failed:${snapshot.categorySlug}:${rendition}:${result.error.code}`,
+      );
+    }
+
+    const filename = `${snapshot.stem}${suffix}.png`;
+    await writeFile(`${OUTPUT_DIRECTORY}/${filename}`, result.value.png);
+    process.stdout.write(
+      `${filename} ${result.value.contentHash} ${result.value.pngHash}\n`,
     );
   }
-
-  await writeFile(`${OUTPUT_DIRECTORY}/${snapshot.filename}`, result.value.png);
-  process.stdout.write(
-    `${snapshot.filename} ${result.value.contentHash} ${result.value.pngHash}\n`,
-  );
 }

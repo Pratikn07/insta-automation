@@ -14,7 +14,23 @@ export type GuideCoverDraftField = Exclude<
   GuideCoverTextField,
   "kicker" | "collectionLabel"
 >;
-export type GuideCoverRendition = "dm_cover" | "generic_card";
+/**
+ * Cover renditions, by the surface each one is for.
+ *
+ * - `dm_cover` (1200x916): a plain image message, which Instagram shows uncropped.
+ * - `square_card` (1200x1200): the image slot of a generic template, which Instagram
+ *   centre-crops to roughly 1:1 — so a square source makes the crop a no-op.
+ * - `generic_card` (1200x628): RETIRED. Kept only because the guide_cover_orphan
+ *   rendition CHECK constraint still names it and historical rows may reference it.
+ *
+ * `generic_card` was specified for Messenger's 1.91:1 slot and was deliberately never
+ * published pending the Meta capability spike. The spike ruled against it: on device the
+ * 1.91:1 source rendered the bedtime headline as "me can feel softer", the first word
+ * cropped away entirely. A wider safe area cannot survive a centre crop. Do not reach for
+ * it as the card rendition — `square_card` replaced it. See
+ * docs/meta-verification/2026-08-24-guide-gate-capability-results.json.
+ */
+export type GuideCoverRendition = "dm_cover" | "generic_card" | "square_card";
 export type GuideCoverStableErrorCode =
   | "cover_invalid_input"
   | "cover_invalid_visual_key"
