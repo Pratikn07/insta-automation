@@ -123,7 +123,18 @@ export type GuideAccessActionDependencies = {
     guideName: string;
     actionToken: string;
     capabilities: GuideActionCapabilities;
+    coverUrl?: string;
+    categorySlug?: string;
   }): Promise<MetaSendResult>;
+  /**
+   * The guide's square cover and category, for the card opening. Returns null when the guide
+   * has no published square — the opening then falls back to text rather than sending a card
+   * with an empty image slot.
+   */
+  loadOpeningCard(resourceId: string): Promise<{
+    coverUrl: string;
+    categorySlug: string;
+  } | null>;
   /**
    * Read per outbound action so an operator stop takes effect immediately. Rich
    * controls stay off until the reviewed capability rows say otherwise.
@@ -1191,6 +1202,12 @@ export function createGuideAccessActionService(
     if (issued.kind === "replayed") return "guide_opening_already_sent";
 
     const capabilities = dependencies.richCapabilities();
+    // Resolved BEFORE the send fence. A card needs a cover, and looking one up inside the
+    // fenced send would put a database round-trip between the fence and the single private
+    // reply this comment gets. Null simply means the opening is text.
+    const openingCard = capabilities.privateGeneric
+      ? await dependencies.loadOpeningCard(input.resourceId)
+      : null;
     // Resolved before the send: computing it inside the catch would let a copy
     // validation error replace the provider error and skip the recovery ladder.
     const retryText = guideAccessOpeningText(guideName);
@@ -1202,6 +1219,7 @@ export function createGuideAccessActionService(
           guideName,
           actionToken: issued.token.id,
           capabilities,
+          ...(openingCard ?? {}),
         });
       } catch (error) {
         // Report, then rethrow so `sendAfterFence` classifies exactly as before.
@@ -1269,6 +1287,17 @@ const defaultService = createGuideAccessActionService({
     }),
   sendFollowLag: sendGuideFollowLag,
   sendInitialPrivateReply: sendGuideInitialPrivateReply,
+  async loadOpeningCard(resourceId) {
+    const cover = await prisma.resourceCoverVersion.findFirst({
+      where: { resourceId, status: "published", squareStoragePath: { not: null } },
+      select: { squareStoragePath: true, category: { select: { slug: true } } },
+    });
+    if (!cover?.squareStoragePath) return null;
+    return {
+      coverUrl: publicMediaUrl(cover.squareStoragePath),
+      categorySlug: cover.category.slug,
+    };
+  },
   sendCover: (input) =>
     sendTrackedMedia({
       recipientIgUserId: input.recipientId,
@@ -1300,8 +1329,18 @@ const defaultService = createGuideAccessActionService({
   // `supported`; it is read per action so a stop applies to the next opening.
   richCapabilities: () =>
     guideRichGateEnabled()
-      ? { privateQuickReply: true, dmGenericGate: true, dmQuickReply: true }
-      : { privateQuickReply: false, dmGenericGate: false, dmQuickReply: false },
+      ? {
+          privateQuickReply: true,
+          dmGenericGate: true,
+          dmQuickReply: true,
+          privateGeneric: true,
+        }
+      : {
+          privateQuickReply: false,
+          dmGenericGate: false,
+          dmQuickReply: false,
+          privateGeneric: false,
+        },
   async loadGuideName(resourceId) {
     const resource = await prisma.resource.findUnique({
       where: { id: resourceId },
