@@ -4,10 +4,27 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const create = vi.fn();
 const findUnique = vi.fn();
+const deleteKeyword = vi.fn();
+const deleteConversations = vi.fn();
+const countDeliveries = vi.fn();
+const countAccessAttempts = vi.fn();
+const countReminders = vi.fn();
+const countCandidates = vi.fn();
+const countIntents = vi.fn();
+const transaction = vi.fn();
 const backfillKeyword = vi.fn();
 
 vi.mock("../lib/prisma.js", () => ({
-  prisma: { keyword: { create, findUnique } },
+  prisma: {
+    keyword: { create, findUnique, delete: deleteKeyword },
+    conversation: { deleteMany: deleteConversations },
+    guideDelivery: { count: countDeliveries },
+    guideAccessAttempt: { count: countAccessAttempts },
+    dmRecoveryReminder: { count: countReminders },
+    recoveryCandidate: { count: countCandidates },
+    journeyIntent: { count: countIntents },
+    $transaction: transaction,
+  },
 }));
 vi.mock("../services/keywordBackfillService.js", () => ({
   backfillKeyword: (...a: unknown[]) => backfillKeyword(...a),
@@ -61,10 +78,24 @@ function violation(target: string[]) {
   });
 }
 
+/** Prisma's foreign-key refusal, as the client actually throws it. */
+function foreignKeyViolation() {
+  return Object.assign(new Error("Foreign key constraint failed"), { code: "P2003" });
+}
+
 beforeEach(() => {
   create.mockReset().mockResolvedValue(stored());
   findUnique.mockReset().mockResolvedValue(null);
   backfillKeyword.mockReset().mockResolvedValue(undefined);
+  deleteKeyword.mockReset().mockResolvedValue(stored());
+  deleteConversations.mockReset().mockResolvedValue({ count: 0 });
+  // Nothing blocks the delete unless a test says so.
+  countDeliveries.mockReset().mockResolvedValue(0);
+  countAccessAttempts.mockReset().mockResolvedValue(0);
+  countReminders.mockReset().mockResolvedValue(0);
+  countCandidates.mockReset().mockResolvedValue(0);
+  countIntents.mockReset().mockResolvedValue(0);
+  transaction.mockReset().mockResolvedValue([]);
 });
 
 describe("keyword create replay", () => {
@@ -168,5 +199,108 @@ describe("keyword create replay", () => {
 
     expect(response.body).toEqual({ error: "idempotency_key_mismatch" });
     expect(create).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Each of these previously reached the error middleware as a 500 — which the browser
+ * client turns into an outcome nobody knows, not an `ApiError` — so the only thing the
+ * Keywords page could say was a bare "Delete failed". A named 409 is what lets it say
+ * which record is holding the keyword and that pausing is the way out.
+ */
+describe("keyword delete refusals", () => {
+  const deleteKeywordRequest = () => request(makeApp()).delete(`/api/keywords/${KEYWORD_ID}`);
+
+  beforeEach(() => {
+    findUnique.mockResolvedValue({ id: KEYWORD_ID });
+  });
+
+  it("deletes the keyword and its conversations when nothing holds it", async () => {
+    await deleteKeywordRequest().expect(204);
+
+    expect(transaction).toHaveBeenCalledTimes(1);
+    expect(deleteConversations).toHaveBeenCalledWith({ where: { keywordId: KEYWORD_ID } });
+    expect(deleteKeyword).toHaveBeenCalledWith({ where: { id: KEYWORD_ID } });
+  });
+
+  // A repeat of a delete whose response was lost is the owner asking for a state that
+  // already holds, not an error.
+  it("treats an already-deleted keyword as done", async () => {
+    findUnique.mockResolvedValueOnce(null);
+
+    await deleteKeywordRequest().expect(204);
+
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it("refuses a keyword whose guide already reached someone", async () => {
+    countDeliveries.mockResolvedValueOnce(1);
+
+    const response = await deleteKeywordRequest().expect(409);
+
+    expect(response.body).toEqual({ error: "keyword_has_delivery_history" });
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it("refuses a keyword someone asked for through the follow check", async () => {
+    countAccessAttempts.mockResolvedValueOnce(1);
+
+    const response = await deleteKeywordRequest().expect(409);
+
+    expect(response.body).toEqual({ error: "keyword_has_guide_access_history" });
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it("refuses a keyword holding follow-up records", async () => {
+    countReminders.mockResolvedValueOnce(3);
+
+    const response = await deleteKeywordRequest().expect(409);
+
+    expect(response.body).toEqual({ error: "keyword_has_recovery_history" });
+  });
+
+  // Candidates and reminders are the same answer: one count of zero must not hide the
+  // other's rows.
+  it("counts recovery candidates as well as reminders", async () => {
+    countCandidates.mockResolvedValueOnce(2);
+
+    const response = await deleteKeywordRequest().expect(409);
+
+    expect(response.body).toEqual({ error: "keyword_has_recovery_history" });
+  });
+
+  it("refuses a keyword people have already commented", async () => {
+    countIntents.mockResolvedValueOnce(5);
+
+    const response = await deleteKeywordRequest().expect(409);
+
+    expect(response.body).toEqual({ error: "keyword_has_journey_history" });
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  // Delivery history says more than the journey rows that almost always accompany it.
+  it("names the delivery when both hold the keyword", async () => {
+    countDeliveries.mockResolvedValueOnce(1);
+    countIntents.mockResolvedValueOnce(5);
+
+    const response = await deleteKeywordRequest().expect(409);
+
+    expect(response.body).toEqual({ error: "keyword_has_delivery_history" });
+  });
+
+  it("answers a refusal for a reference no guard names yet", async () => {
+    transaction.mockRejectedValueOnce(foreignKeyViolation());
+
+    const response = await deleteKeywordRequest().expect(409);
+
+    expect(response.body).toEqual({ error: "keyword_still_referenced" });
+  });
+
+  // Anything that is not a blocked reference stays a 500 rather than being dressed up
+  // as a refusal the owner could act on.
+  it("forwards an unrelated failure to the error middleware", async () => {
+    transaction.mockRejectedValueOnce(new Error("connection lost"));
+
+    await deleteKeywordRequest().expect(500);
   });
 });

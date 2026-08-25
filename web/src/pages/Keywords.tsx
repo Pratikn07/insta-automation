@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Plus, Tag, Trash2, MessageSquare, Globe } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
-import { apiRead, apiMutation, ApiError } from "@/lib/api";
+import { apiRead, apiMutation, apiErrorCode } from "@/lib/api";
 import type { Keyword, Resource } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -13,6 +13,32 @@ import { Drawer } from "@/components/ui/drawer";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { EmptyState, LoadFailed } from "@/components/EmptyState";
 import { KeywordForm } from "@/components/KeywordForm";
+
+/**
+ * Why a delete was refused, in words that name the way out.
+ *
+ * The server answers each refusal with a code, and `ApiError.message` is that code
+ * verbatim — so the old fallback showed either `keyword_has_journey_history` or a bare
+ * "Delete failed", neither of which says what is holding the keyword. Every one of
+ * these is terminal, so each ends on the pause toggle: it stops the word matching new
+ * comments without touching the record that blocks the delete.
+ */
+function deleteRefusal(error: unknown): string {
+  switch (apiErrorCode(error)) {
+    case "keyword_has_delivery_history":
+      return "Someone has already been sent a guide through this keyword, so it is kept as a record. Pause it instead.";
+    case "keyword_has_guide_access_history":
+      return "Someone has already asked for a guide through this keyword's follow check, so it is kept as a record. Pause it instead.";
+    case "keyword_has_recovery_history":
+      return "This keyword has follow-up records for people who never finished, so it is kept. Pause it instead.";
+    case "keyword_has_journey_history":
+      return "People have already commented this word, so what they asked for is kept as a record. Pause the keyword instead.";
+    case "keyword_still_referenced":
+      return "Something still points at this keyword, so it can't be deleted. Pause it instead.";
+    default:
+      return "Could not delete this keyword. Check your connection and try again.";
+  }
+}
 
 export function Keywords() {
   const qc = useQueryClient();
@@ -55,9 +81,7 @@ export function Keywords() {
       qc.invalidateQueries({ queryKey: ["keywords"] });
       setConfirmDelete(null);
     },
-    onError: (err) => {
-      toast.error(err instanceof ApiError ? err.message : "Delete failed");
-    },
+    onError: (err) => toast.error(deleteRefusal(err)),
   });
 
   const isLoading = keywordsQ.isPending || resourcesQ.isPending;

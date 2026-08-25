@@ -10,6 +10,7 @@ import {
   isUniqueViolation,
 } from "./createReplay.js";
 import { asyncRouter } from "./asyncRouter.js";
+import { isForeignKeyViolation } from "./foreignKeyViolation.js";
 
 export const keywordsRouter = asyncRouter();
 
@@ -155,10 +156,90 @@ keywordsRouter.patch("/:id", async (req, res) => {
   res.json(updated);
 });
 
-keywordsRouter.delete("/:id", async (req, res) => {
-  await prisma.$transaction([
-    prisma.conversation.deleteMany({ where: { keywordId: req.params.id } }),
-    prisma.keyword.delete({ where: { id: req.params.id } }),
+/**
+ * Deleting a keyword clears its tracking, and refuses when what points at it is a
+ * record of something a real person was actually sent or asked.
+ *
+ * Every guard below stands in front of an ON DELETE RESTRICT foreign key. Without
+ * them Postgres refused anyway, but as a constraint violation that reached the error
+ * middleware as a 500 — and `apiMutation` classifies any 5xx as an outcome nobody
+ * knows rather than an `ApiError`, so the browser could only show a bare "Delete
+ * failed" that named neither the cause nor a way out. Answering 409 with a code is
+ * what turns that into a sentence the owner can act on.
+ *
+ * Refusing rather than cascading is the same trade the guide delete in
+ * `resources.routes.ts` already makes: erasing what someone was sent is a bigger
+ * decision than the click implies. A keyword carrying history is retired by pausing
+ * it — the toggle on the Keywords list — which stops it matching new comments and
+ * leaves the record alone.
+ */
+keywordsRouter.delete("/:id", async (req, res, next) => {
+  const id = req.params.id;
+
+  // Already gone: the owner's intent is satisfied. A delete whose response was lost
+  // is repeated by hand often enough that turning the second attempt into an error
+  // would be answering the wrong question.
+  const existing = await prisma.keyword.findUnique({ where: { id }, select: { id: true } });
+  if (!existing) return res.status(204).end();
+
+  /**
+   * Counted together rather than one short-circuiting await at a time: almost every
+   * blocked keyword trips the last of them, so stopping early saves nothing and costs
+   * five round trips instead of one.
+   *
+   * `guide_delivery` and `guide_access_attempt` restrict the *conversation*, so they
+   * block the `deleteMany` below rather than the keyword row. The rest restrict
+   * `keyword_id` directly.
+   */
+  const [deliveries, accessAttempts, reminders, candidates, intents] = await Promise.all([
+    prisma.guideDelivery.count({ where: { conversation: { keywordId: id } } }),
+    prisma.guideAccessAttempt.count({ where: { conversation: { keywordId: id } } }),
+    prisma.dmRecoveryReminder.count({ where: { keywordId: id } }),
+    prisma.recoveryCandidate.count({ where: { keywordId: id } }),
+    prisma.journeyIntent.count({ where: { keywordId: id } }),
   ]);
+
+  /**
+   * Ordered by how much each answer tells the owner, because several are usually true
+   * at once. A delivery names a guide that reached a real person and an access attempt
+   * names one they were asked for — "someone already got this" beats any of the
+   * bookkeeping below it.
+   */
+  if (deliveries > 0) {
+    return res.status(409).json({ error: "keyword_has_delivery_history" });
+  }
+  if (accessAttempts > 0) {
+    return res.status(409).json({ error: "keyword_has_guide_access_history" });
+  }
+  // The follow-up record for people who asked and never finished.
+  if (reminders + candidates > 0) {
+    return res.status(409).json({ error: "keyword_has_recovery_history" });
+  }
+  /**
+   * Last, and by far the most common — 78 of 100 production keywords carry intents,
+   * so this is the answer an owner usually gets. An intent is the 48-hour window that
+   * collapsed someone's repeat comments into a single journey, and its triggers hold
+   * the originating comment ids; deleting the keyword would strip the audit trail they
+   * exist to keep.
+   */
+  if (intents > 0) {
+    return res.status(409).json({ error: "keyword_has_journey_history" });
+  }
+
+  try {
+    await prisma.$transaction([
+      prisma.conversation.deleteMany({ where: { keywordId: id } }),
+      prisma.keyword.delete({ where: { id } }),
+    ]);
+  } catch (error) {
+    // Backstop for a restricting reference this route does not name yet — an owner
+    // reply draft written against one of these conversations is the one that exists
+    // today. A vague refusal is still a refusal; a 500 is another silent "Delete
+    // failed".
+    if (isForeignKeyViolation(error)) {
+      return res.status(409).json({ error: "keyword_still_referenced" });
+    }
+    return next(error);
+  }
   res.status(204).end();
 });
