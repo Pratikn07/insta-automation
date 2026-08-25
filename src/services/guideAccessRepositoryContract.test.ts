@@ -285,6 +285,77 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
     ).resolves.toMatchObject({ status: "consumed", consumedAt: processingAt });
   });
 
+  it("deduplicates one webhook while accepting another event carrying the same token", async () => {
+    const fixture = await createFixture();
+    const attempt = await createAttempt(fixture);
+    const issued = await firstRepository.issueToken({
+      attemptId: attempt.id,
+      action: "request_guide",
+      now: NOW,
+      expiresAt: new Date(NOW.getTime() + 60 * 60_000),
+    });
+    if (!("token" in issued)) throw new Error("expected token");
+    const firstEventId = randomUUID();
+    const input = {
+      eventId: firstEventId,
+      tokenId: issued.token.id,
+      source: "postback" as const,
+      senderId: fixture.senderId,
+      action: "request_guide" as const,
+      eventAt: NOW,
+      now: new Date(NOW.getTime() + 1_000),
+    };
+
+    await expect(firstRepository.claimActionEvent(input)).resolves.toMatchObject({
+      kind: "claimed",
+      tokenWas: "active",
+      attempt: { state: "checking_follow", followCheckCount: 1 },
+    });
+    await expect(secondRepository.claimActionEvent(input)).resolves.toEqual({
+      kind: "duplicate_event",
+    });
+    await expect(
+      secondRepository.claimActionEvent({ ...input, eventId: randomUUID() }),
+    ).resolves.toMatchObject({
+      kind: "claimed",
+      tokenWas: "consumed",
+      attempt: { state: "checking_follow", followCheckCount: 1 },
+    });
+    await expect(
+      firstClient.guideActionEventReceipt.count({ where: { tokenId: issued.token.id } }),
+    ).resolves.toBe(2);
+  });
+
+  it("allows only one concurrent claim for an exact provider event", async () => {
+    const fixture = await createFixture();
+    const attempt = await createAttempt(fixture);
+    const issued = await firstRepository.issueToken({
+      attemptId: attempt.id,
+      action: "request_guide",
+      now: NOW,
+      expiresAt: new Date(NOW.getTime() + 60 * 60_000),
+    });
+    if (!("token" in issued)) throw new Error("expected token");
+    const input = {
+      eventId: randomUUID(),
+      tokenId: issued.token.id,
+      source: "quick_reply" as const,
+      senderId: fixture.senderId,
+      action: "request_guide" as const,
+      eventAt: NOW,
+      now: new Date(NOW.getTime() + 1_000),
+    };
+
+    const results = await Promise.all([
+      firstRepository.claimActionEvent(input),
+      secondRepository.claimActionEvent(input),
+    ]);
+
+    expect(results.filter((result) => result.kind === "claimed")).toHaveLength(1);
+    expect(results.filter((result) => result.kind === "duplicate_event")).toHaveLength(1);
+    await expect(firstClient.guideActionEventReceipt.count()).resolves.toBe(1);
+  });
+
   it("claims one direct inbound UUID exactly once under concurrent replay", async () => {
     const fixture = await createFixture();
     const attempt = await createAttempt(fixture);

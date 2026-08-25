@@ -183,13 +183,13 @@ model ResourceCoverSuggestion {
   normalizedSourceHash   String                            @map("normalized_source_hash")
   createdAt              DateTime                          @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  resource          Resource             @relation(fields: [resourceId], references: [id], onDelete: Restrict)
-  suggestedCategory PresentationCategory @relation(fields: [suggestedCategoryId], references: [id], onDelete: Restrict)
+  resource          Resource               @relation(fields: [resourceId], references: [id], onDelete: Restrict)
+  suggestedCategory PresentationCategory   @relation(fields: [suggestedCategoryId], references: [id], onDelete: Restrict)
   coverVersions     ResourceCoverVersion[]
 
+  @@unique([resourceId, normalizedSourceHash], map: "resource_cover_suggestion_resource_source_key")
   @@index([resourceId])
   @@index([suggestedCategoryId])
-  @@unique([resourceId, normalizedSourceHash], map: "resource_cover_suggestion_resource_source_key")
   @@map("resource_cover_suggestion")
 }
 
@@ -225,10 +225,10 @@ model ResourceCoverVersion {
   createdAt              DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt              DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  resource   Resource                 @relation(fields: [resourceId], references: [id], onDelete: Restrict)
-  category   PresentationCategory     @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  suggestion ResourceCoverSuggestion? @relation(fields: [suggestionId], references: [id], onDelete: SetNull)
-  orphans    GuideCoverOrphan[]
+  resource            Resource                 @relation(fields: [resourceId], references: [id], onDelete: Restrict)
+  category            PresentationCategory     @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  suggestion          ResourceCoverSuggestion? @relation(fields: [suggestionId], references: [id], onDelete: SetNull)
+  orphans             GuideCoverOrphan[]
   guideAccessAttempts GuideAccessAttempt[]
 
   @@unique([resourceId, revision])
@@ -240,21 +240,21 @@ model ResourceCoverVersion {
 }
 
 model GuideCoverOrphan {
-  id               String                        @id @db.Uuid
-  resourceId       String                        @map("resource_id") @db.Uuid
-  coverVersionId   String                        @map("cover_version_id") @db.Uuid
-  contentHash      String                        @map("content_hash")
-  rendition        String
-  storagePath      String                        @unique @map("storage_path")
-  status           GuideCoverOrphanCleanupStatus @default(pending)
-  attempts         Int                           @default(0)
-  nextAttemptAt    DateTime                      @default(now()) @map("next_attempt_at") @db.Timestamptz(3)
-  claimedAt        DateTime?                     @map("claimed_at") @db.Timestamptz(3)
-  claimExpiresAt   DateTime?                     @map("claim_expires_at") @db.Timestamptz(3)
-  lastErrorCode    String?                       @map("last_error_code")
-  deletedAt        DateTime?                     @map("deleted_at") @db.Timestamptz(3)
-  createdAt        DateTime                      @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt        DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(3)
+  id             String                        @id @db.Uuid
+  resourceId     String                        @map("resource_id") @db.Uuid
+  coverVersionId String                        @map("cover_version_id") @db.Uuid
+  contentHash    String                        @map("content_hash")
+  rendition      String
+  storagePath    String                        @unique @map("storage_path")
+  status         GuideCoverOrphanCleanupStatus @default(pending)
+  attempts       Int                           @default(0)
+  nextAttemptAt  DateTime                      @default(now()) @map("next_attempt_at") @db.Timestamptz(3)
+  claimedAt      DateTime?                     @map("claimed_at") @db.Timestamptz(3)
+  claimExpiresAt DateTime?                     @map("claim_expires_at") @db.Timestamptz(3)
+  lastErrorCode  String?                       @map("last_error_code")
+  deletedAt      DateTime?                     @map("deleted_at") @db.Timestamptz(3)
+  createdAt      DateTime                      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   resource     Resource             @relation(fields: [resourceId], references: [id], onDelete: Restrict)
   coverVersion ResourceCoverVersion @relation(fields: [coverVersionId], references: [id], onDelete: Restrict)
@@ -367,14 +367,14 @@ model Conversation {
   reconciliationReason          String?           @map("reconciliation_reason")
   reconciledAt                  DateTime?         @map("reconciled_at") @db.Timestamptz(3)
 
-  keyword            Keyword              @relation(fields: [keywordId], references: [id])
-  followUpDrafts     ReplyDraft[]         @relation("FollowUpSource")
-  recoveryReminders  DmRecoveryReminder[]
-  canonicalIntent    JourneyIntent?       @relation("ConversationCanonicalIntent", fields: [canonicalIntentId], references: [id], onDelete: SetNull)
-  ownedIntents       JourneyIntent[]      @relation("IntentCanonicalConversation")
-  journeyTriggers    JourneyTrigger[]
-  recoveryCandidates RecoveryCandidate[]
-  guideDeliveries    GuideDelivery[]
+  keyword             Keyword              @relation(fields: [keywordId], references: [id])
+  followUpDrafts      ReplyDraft[]         @relation("FollowUpSource")
+  recoveryReminders   DmRecoveryReminder[]
+  canonicalIntent     JourneyIntent?       @relation("ConversationCanonicalIntent", fields: [canonicalIntentId], references: [id], onDelete: SetNull)
+  ownedIntents        JourneyIntent[]      @relation("IntentCanonicalConversation")
+  journeyTriggers     JourneyTrigger[]
+  recoveryCandidates  RecoveryCandidate[]
+  guideDeliveries     GuideDelivery[]
   guideAccessAttempts GuideAccessAttempt[]
 
   @@index([igUserId, state])
@@ -948,6 +948,13 @@ enum GuideActionTokenStatus {
   @@map("guide_action_token_status")
 }
 
+enum GuideActionEventSource {
+  quick_reply
+  postback
+
+  @@map("guide_action_event_source")
+}
+
 model GuideAccessAttempt {
   id                       String                  @id @db.Uuid
   conversationId           String                  @map("conversation_id") @db.Uuid
@@ -977,19 +984,34 @@ model GuideAccessAttempt {
 }
 
 model GuideActionToken {
-  id        String                 @id @db.Uuid
-  attemptId String                 @map("attempt_id") @db.Uuid
-  action    GuideActionTokenAction
-  status    GuideActionTokenStatus @default(active)
-  expiresAt DateTime               @map("expires_at") @db.Timestamptz(3)
-  consumedAt DateTime?             @map("consumed_at") @db.Timestamptz(3)
-  createdAt DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+  id         String                 @id @db.Uuid
+  attemptId  String                 @map("attempt_id") @db.Uuid
+  action     GuideActionTokenAction
+  status     GuideActionTokenStatus @default(active)
+  expiresAt  DateTime               @map("expires_at") @db.Timestamptz(3)
+  consumedAt DateTime?              @map("consumed_at") @db.Timestamptz(3)
+  createdAt  DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  attempt GuideAccessAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  attempt      GuideAccessAttempt        @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  actionEvents GuideActionEventReceipt[]
 
   @@index([attemptId, status])
   // The active-token expiry index is partial and hand-authored in SQL.
   @@map("guide_action_token")
+}
+
+model GuideActionEventReceipt {
+  id         String                 @id @db.Uuid
+  tokenId    String                 @map("token_id") @db.Uuid
+  source     GuideActionEventSource
+  receivedAt DateTime               @map("received_at") @db.Timestamptz(3)
+  eventAt    DateTime               @map("event_at") @db.Timestamptz(3)
+  createdAt  DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  token GuideActionToken @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+
+  @@index([tokenId])
+  @@map("guide_action_event_receipt")
 }
 
 model GuideDelivery {

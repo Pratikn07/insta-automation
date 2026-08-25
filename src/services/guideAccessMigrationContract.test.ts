@@ -4,7 +4,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 const databaseUrl = process.env.MIGRATION_TEST_DATABASE_URL;
 const describeWithDatabase = databaseUrl ? describe.sequential : describe.skip;
 const LOOPBACK_HOSTS = ["127.0.0.1", "localhost", "::1", "[::1]"];
-const TABLES = ["guide_access_attempt", "guide_action_token"] as const;
+const TABLES = [
+  "guide_access_attempt",
+  "guide_action_event_receipt",
+  "guide_action_token",
+] as const;
 
 type IndexMetadata = {
   index_name: string;
@@ -52,7 +56,11 @@ async function loadIndexMetadata(): Promise<IndexMetadata[]> {
     JOIN pg_class index_row ON index_row.oid = index_catalog.indexrelid
     JOIN pg_namespace namespace_row ON namespace_row.oid = table_row.relnamespace
     WHERE namespace_row.nspname = 'public'
-      AND table_row.relname IN ('guide_access_attempt', 'guide_action_token')
+      AND table_row.relname IN (
+        'guide_access_attempt',
+        'guide_action_event_receipt',
+        'guide_action_token'
+      )
     ORDER BY table_row.relname, index_row.relname
   `;
 }
@@ -79,7 +87,11 @@ describeWithDatabase("guide access attempt migration", () => {
       FROM pg_class class_row
       JOIN pg_namespace namespace_row ON namespace_row.oid = class_row.relnamespace
       WHERE namespace_row.nspname = 'public'
-        AND class_row.relname IN ('guide_access_attempt', 'guide_action_token')
+        AND class_row.relname IN (
+          'guide_access_attempt',
+          'guide_action_event_receipt',
+          'guide_action_token'
+        )
       ORDER BY class_row.relname
     `;
     expect(tables).toEqual(
@@ -90,7 +102,11 @@ describeWithDatabase("guide access attempt migration", () => {
       SELECT grantee, table_name
       FROM information_schema.role_table_grants
       WHERE table_schema = 'public'
-        AND table_name IN ('guide_access_attempt', 'guide_action_token')
+        AND table_name IN (
+          'guide_access_attempt',
+          'guide_action_event_receipt',
+          'guide_action_token'
+        )
         AND grantee IN ('anon', 'authenticated')
       ORDER BY table_name, grantee
     `;
@@ -104,6 +120,7 @@ describeWithDatabase("guide access attempt migration", () => {
       JOIN pg_enum enum_row ON enum_row.enumtypid = type_row.oid
       WHERE type_row.typname IN (
         'guide_access_attempt_state',
+        'guide_action_event_source',
         'guide_follow_result',
         'guide_cover_exposure',
         'guide_action_token_action',
@@ -120,6 +137,8 @@ describeWithDatabase("guide access attempt migration", () => {
       { enum_name: "guide_access_attempt_state", enum_value: "delivered" },
       { enum_name: "guide_access_attempt_state", enum_value: "needs_review" },
       { enum_name: "guide_access_attempt_state", enum_value: "expired" },
+      { enum_name: "guide_action_event_source", enum_value: "quick_reply" },
+      { enum_name: "guide_action_event_source", enum_value: "postback" },
       { enum_name: "guide_action_token_action", enum_value: "request_guide" },
       { enum_name: "guide_action_token_action", enum_value: "check_follow" },
       { enum_name: "guide_action_token_status", enum_value: "active" },
@@ -149,7 +168,11 @@ describeWithDatabase("guide access attempt migration", () => {
       SELECT table_name, column_name, data_type, udt_name, datetime_precision
       FROM information_schema.columns
       WHERE table_schema = 'public'
-        AND table_name IN ('guide_access_attempt', 'guide_action_token')
+        AND table_name IN (
+          'guide_access_attempt',
+          'guide_action_event_receipt',
+          'guide_action_token'
+        )
       ORDER BY table_name, ordinal_position
     `;
 
@@ -168,6 +191,12 @@ describeWithDatabase("guide access attempt migration", () => {
       { table_name: "guide_access_attempt", column_name: "messaging_window_expires_at", data_type: "timestamp with time zone", udt_name: "timestamptz", datetime_precision: 3 },
       { table_name: "guide_access_attempt", column_name: "created_at", data_type: "timestamp with time zone", udt_name: "timestamptz", datetime_precision: 3 },
       { table_name: "guide_access_attempt", column_name: "updated_at", data_type: "timestamp with time zone", udt_name: "timestamptz", datetime_precision: 3 },
+      { table_name: "guide_action_event_receipt", column_name: "id", data_type: "uuid", udt_name: "uuid", datetime_precision: null },
+      { table_name: "guide_action_event_receipt", column_name: "token_id", data_type: "uuid", udt_name: "uuid", datetime_precision: null },
+      { table_name: "guide_action_event_receipt", column_name: "source", data_type: "USER-DEFINED", udt_name: "guide_action_event_source", datetime_precision: null },
+      { table_name: "guide_action_event_receipt", column_name: "received_at", data_type: "timestamp with time zone", udt_name: "timestamptz", datetime_precision: 3 },
+      { table_name: "guide_action_event_receipt", column_name: "event_at", data_type: "timestamp with time zone", udt_name: "timestamptz", datetime_precision: 3 },
+      { table_name: "guide_action_event_receipt", column_name: "created_at", data_type: "timestamp with time zone", udt_name: "timestamptz", datetime_precision: 3 },
       { table_name: "guide_action_token", column_name: "id", data_type: "uuid", udt_name: "uuid", datetime_precision: null },
       { table_name: "guide_action_token", column_name: "attempt_id", data_type: "uuid", udt_name: "uuid", datetime_precision: null },
       { table_name: "guide_action_token", column_name: "action", data_type: "USER-DEFINED", udt_name: "guide_action_token_action", datetime_precision: null },
@@ -199,11 +228,15 @@ describeWithDatabase("guide access attempt migration", () => {
       JOIN pg_namespace namespace_row ON namespace_row.oid = source_table.relnamespace
       WHERE constraint_row.contype = 'f'
         AND namespace_row.nspname = 'public'
-        AND source_table.relname IN ('guide_access_attempt', 'guide_action_token')
+        AND source_table.relname IN (
+          'guide_access_attempt',
+          'guide_action_event_receipt',
+          'guide_action_token'
+        )
       ORDER BY constraint_row.conname
     `;
 
-    expect(foreignKeys).toHaveLength(4);
+    expect(foreignKeys).toHaveLength(5);
     for (const foreignKey of foreignKeys) {
       expect(
         indexes.some(
@@ -256,6 +289,20 @@ describeWithDatabase("guide access attempt migration", () => {
     expect(
       normalizeCatalogExpression(byName.get("guide_action_token_active_expires_at_idx")?.predicate ?? null),
     ).toBe("(status = 'active')");
+    expect(byName.get("guide_action_event_receipt_token_id_idx")).toMatchObject({
+      is_unique: false,
+      is_valid: true,
+      key_columns: ["token_id"],
+      predicate: null,
+      table_name: "guide_action_event_receipt",
+    });
+    expect(byName.get("guide_action_event_receipt_pkey")).toMatchObject({
+      is_unique: true,
+      is_valid: true,
+      key_columns: ["id"],
+      predicate: null,
+      table_name: "guide_action_event_receipt",
+    });
   });
 
   it("restricts attempt snapshots and cascades only tokens", async () => {
@@ -286,7 +333,11 @@ describeWithDatabase("guide access attempt migration", () => {
        AND source_column.attnum = source_key.attnum
       WHERE constraint_row.contype = 'f'
         AND namespace_row.nspname = 'public'
-        AND source_table.relname IN ('guide_access_attempt', 'guide_action_token')
+        AND source_table.relname IN (
+          'guide_access_attempt',
+          'guide_action_event_receipt',
+          'guide_action_token'
+        )
       ORDER BY source_table.relname, source_column.attname
     `;
 
@@ -294,6 +345,7 @@ describeWithDatabase("guide access attempt migration", () => {
       { source_table: "guide_access_attempt", source_column: "conversation_id", target_table: "conversations", on_delete: "RESTRICT" },
       { source_table: "guide_access_attempt", source_column: "cover_version_id", target_table: "resource_cover_version", on_delete: "RESTRICT" },
       { source_table: "guide_access_attempt", source_column: "resource_id", target_table: "resources", on_delete: "RESTRICT" },
+      { source_table: "guide_action_event_receipt", source_column: "token_id", target_table: "guide_action_token", on_delete: "CASCADE" },
       { source_table: "guide_action_token", source_column: "attempt_id", target_table: "guide_access_attempt", on_delete: "CASCADE" },
     ]);
   });

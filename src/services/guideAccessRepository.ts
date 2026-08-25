@@ -4,6 +4,7 @@ import {
   type GuideAccessAttemptState,
   type GuideActionToken,
   type GuideActionTokenAction,
+  type GuideActionTokenStatus,
   type GuideFollowResult,
   type Prisma,
   type PrismaClient,
@@ -11,6 +12,7 @@ import {
 import { prisma } from "../lib/prisma.js";
 import { publishedCoverWhere } from "./guideCoverRepository.js";
 import {
+  GUIDE_ACCESS_WINDOW_MS,
   GUIDE_ACCESS_MAX_FOLLOW_CHECKS,
   GUIDE_ACCESS_MAX_FOLLOW_RESPONSES,
 } from "./guideAccessPolicy.js";
@@ -115,6 +117,28 @@ export type ConsumeGuideActionTokenResult =
   | { kind: "check_limit_reached" }
   | { kind: "state_conflict"; actualState: GuideAccessAttemptState };
 
+export type GuideActionEventSource = "quick_reply" | "postback";
+
+export type ClaimGuideActionEventInput = {
+  eventId: string;
+  tokenId: string;
+  source: GuideActionEventSource;
+  senderId: string;
+  action: GuideActionTokenAction;
+  eventAt: Date;
+  now: Date;
+};
+
+export type ClaimGuideActionEventResult =
+  | {
+      kind: "claimed";
+      attempt: GuideAccessAttempt;
+      tokenWas: GuideActionTokenStatus;
+    }
+  | { kind: "duplicate_event" }
+  | { kind: "wrong_sender" | "wrong_action" | "not_found" }
+  | { kind: "check_limit_reached"; attempt: GuideAccessAttempt };
+
 export type ClaimDirectInboundInput = {
   attemptId: string;
   inboundMessageId: string;
@@ -209,6 +233,7 @@ export interface GuideAccessRepository {
   issueToken(input: IssueGuideActionTokenInput): Promise<IssueGuideActionTokenResult>;
   replaceToken(input: ReplaceGuideActionTokenInput): Promise<ReplaceGuideActionTokenResult>;
   consumeToken(input: ConsumeGuideActionTokenInput): Promise<ConsumeGuideActionTokenResult>;
+  claimActionEvent(input: ClaimGuideActionEventInput): Promise<ClaimGuideActionEventResult>;
   claimDirectInbound(input: ClaimDirectInboundInput): Promise<ClaimDirectInboundResult>;
   beginChecking(input: BeginGuideAccessCheckingInput): Promise<GuideAccessTransitionResult>;
   markAwaitingFollow(
@@ -662,6 +687,99 @@ export function createGuideAccessRepository(
         }
         throw error;
       }
+    },
+
+    async claimActionEvent(input) {
+      requireValidDate(input.eventAt, "guide action provider event time");
+      requireValidDate(input.now, "guide action receipt time");
+
+      return database.$transaction(async (tx) => {
+        // This unlocked read is identity discovery only. The attempt is always locked
+        // before any receipt, token, or workflow state can be changed.
+        const identity = await tx.guideActionToken.findUnique({
+          where: { id: input.tokenId },
+          select: { action: true, attemptId: true },
+        });
+        if (!identity) return { kind: "not_found" as const };
+        if (identity.action !== input.action) return { kind: "wrong_action" as const };
+
+        const attempt = await lockAttempt(tx, identity.attemptId);
+        if (!attempt) return { kind: "not_found" as const };
+        if (attempt.senderId !== input.senderId) return { kind: "wrong_sender" as const };
+
+        const inserted = await tx.$executeRaw`
+          INSERT INTO "guide_action_event_receipt"
+            ("id", "token_id", "source", "received_at", "event_at")
+          VALUES (
+            ${input.eventId}::uuid,
+            ${input.tokenId}::uuid,
+            ${input.source}::"guide_action_event_source",
+            ${input.now},
+            ${input.eventAt}
+          )
+          ON CONFLICT ("id") DO NOTHING
+        `;
+        if (inserted === 0) return { kind: "duplicate_event" as const };
+
+        const token = await lockToken(tx, input.tokenId);
+        if (!token || token.attemptId !== attempt.id) return { kind: "not_found" as const };
+        if (token.action !== input.action) return { kind: "wrong_action" as const };
+
+        const refreshedExpiry = new Date(input.eventAt.getTime() + GUIDE_ACCESS_WINDOW_MS);
+        const effectiveExpiry =
+          refreshedExpiry > attempt.messagingWindowExpiresAt
+            ? refreshedExpiry
+            : attempt.messagingWindowExpiresAt;
+        const retryableReview =
+          attempt.state === "needs_review" && attempt.lastFollowResult === "unknown";
+        const canBeginCheck =
+          attempt.state === compatibleState(input.action) || retryableReview;
+
+        if (canBeginCheck && attempt.followCheckCount >= GUIDE_ACCESS_MAX_FOLLOW_CHECKS) {
+          await tx.guideAccessAttempt.update({
+            where: { id: attempt.id },
+            data: { messagingWindowExpiresAt: effectiveExpiry },
+          });
+          return {
+            kind: "check_limit_reached" as const,
+            attempt: withAttemptUpdate(attempt, {
+              messagingWindowExpiresAt: effectiveExpiry,
+            }),
+          };
+        }
+
+        let updatedAttempt: GuideAccessAttempt;
+        if (canBeginCheck) {
+          updatedAttempt = await tx.guideAccessAttempt.update({
+            where: { id: attempt.id },
+            data: {
+              state: "checking_follow",
+              lastFollowResult: "unknown",
+              lastFollowCheckedAt: null,
+              followCheckCount: { increment: 1 },
+              messagingWindowExpiresAt: effectiveExpiry,
+            },
+          });
+        } else {
+          updatedAttempt = await tx.guideAccessAttempt.update({
+            where: { id: attempt.id },
+            data: { messagingWindowExpiresAt: effectiveExpiry },
+          });
+        }
+
+        if (token.status === "active") {
+          await tx.guideActionToken.update({
+            where: { id: token.id },
+            data: { status: "consumed", consumedAt: input.now },
+          });
+        }
+
+        return {
+          kind: "claimed" as const,
+          attempt: updatedAttempt,
+          tokenWas: token.status,
+        };
+      });
     },
 
     async claimDirectInbound(input) {
