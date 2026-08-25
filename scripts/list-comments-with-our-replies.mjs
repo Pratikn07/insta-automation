@@ -1,5 +1,6 @@
 import "dotenv/config";
-const TOKEN = process.env.IG_ACCESS_TOKEN;
+import { liveToken } from "./lib/live-token.mjs";
+const TOKEN = await liveToken();
 const UID = process.env.IG_USER_ID;
 
 const m = await fetch(`https://graph.instagram.com/v21.0/${UID}/media?fields=id,permalink&limit=30&access_token=${TOKEN}`);

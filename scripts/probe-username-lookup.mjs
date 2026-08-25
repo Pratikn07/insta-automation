@@ -1,10 +1,11 @@
 import dotenv from "dotenv";
 import { PrismaClient } from "@prisma/client";
+import { liveToken } from "./lib/live-token.mjs";
 
 dotenv.config();
 const prisma = new PrismaClient();
 
-const TOKEN = process.env.IG_ACCESS_TOKEN;
+const TOKEN = await liveToken();
 const IG_USER_ID = process.env.IG_USER_ID;
 const VERSION = "v21.0";
 

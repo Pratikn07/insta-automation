@@ -1,4 +1,5 @@
 import dotenv from "dotenv";
+import { liveToken } from "./lib/live-token.mjs";
 
 dotenv.config();
 
@@ -11,7 +12,7 @@ dotenv.config();
 // Usage:  node scripts/probe-gemini-reel.mjs <MEDIA_ID>
 // If no MEDIA_ID is given, it uses the first reel from the account media list.
 
-const TOKEN = process.env.IG_ACCESS_TOKEN;
+const TOKEN = await liveToken();
 const IG_USER_ID = process.env.IG_USER_ID;
 const GEMINI_KEY = process.env.GEMINI_API_KEY;
 const MODEL = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";

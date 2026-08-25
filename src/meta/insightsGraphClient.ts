@@ -2,7 +2,7 @@ import axios, { AxiosError, AxiosInstance } from "axios";
 import { env } from "../config/env.js";
 import { logger } from "../lib/logger.js";
 import { describeGraphError } from "../services/eventLogger.js";
-import { getAccessToken } from "./tokenStore.js";
+import { resolveAccessToken } from "./tokenStore.js";
 
 // A SECOND Graph client, deliberately separate from graphClient.ts.
 //
@@ -19,10 +19,12 @@ export const insightsGraph: AxiosInstance = axios.create({
   timeout: 15_000,
 });
 
-insightsGraph.interceptors.request.use((config) => {
+insightsGraph.interceptors.request.use(async (config) => {
   // Per-request read, same reason as graphClient: the refresh worker rotates the
-  // token in place and a boot-time snapshot would silently go stale.
-  config.params = { access_token: getAccessToken(), ...(config.params ?? {}) };
+  // token in place and a boot-time snapshot would silently go stale. Awaited for
+  // the same reason too — a short-lived script would otherwise spend its whole
+  // life authenticating with the stale env seed. See resolveAccessToken.
+  config.params = { access_token: await resolveAccessToken(), ...(config.params ?? {}) };
   return config;
 });
 

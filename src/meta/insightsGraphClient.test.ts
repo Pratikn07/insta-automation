@@ -2,13 +2,14 @@ import type { AxiosAdapter } from "axios";
 import { AxiosError, AxiosHeaders } from "axios";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { loggerError, getAccessToken } = vi.hoisted(() => ({
+const { loggerError, getAccessToken, resolveAccessToken } = vi.hoisted(() => ({
   loggerError: vi.fn(),
   getAccessToken: vi.fn(() => "IG-ACCESS-TOKEN-SENTINEL"),
+  resolveAccessToken: vi.fn(async () => "IG-ACCESS-TOKEN-SENTINEL"),
 }));
 
 vi.mock("../lib/logger.js", () => ({ logger: { error: loggerError } }));
-vi.mock("./tokenStore.js", () => ({ getAccessToken }));
+vi.mock("./tokenStore.js", () => ({ getAccessToken, resolveAccessToken }));
 
 const { insightsGraph } = await import("./insightsGraphClient.js");
 
