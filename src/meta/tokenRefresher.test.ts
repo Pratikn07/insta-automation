@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   getAccessToken: vi.fn(() => "ACCESS-TOKEN-SENTINEL"),
   persistRefreshedToken: vi.fn(),
   readTokenTiming: vi.fn(),
+  probeTokenLiveness: vi.fn(),
   logEvent: vi.fn(),
   loggerError: vi.fn(),
   loggerDebug: vi.fn(),
@@ -28,6 +29,9 @@ vi.mock("./tokenStore.js", () => ({
   getAccessToken: mocks.getAccessToken,
   persistRefreshedToken: mocks.persistRefreshedToken,
   readTokenTiming: mocks.readTokenTiming,
+}));
+vi.mock("./tokenLiveness.js", () => ({
+  probeTokenLiveness: mocks.probeTokenLiveness,
 }));
 vi.mock("../services/eventLogger.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../services/eventLogger.js")>();
@@ -213,6 +217,73 @@ describe("runTokenRefreshTick privacy", () => {
     });
     const captured = JSON.stringify(mocks.loggerError.mock.calls);
     for (const sentinel of sentinels) expect(captured).not.toContain(sentinel);
+  });
+});
+
+describe("runTokenRefreshTick liveness", () => {
+  const NOW = new Date("2026-08-05T12:00:00.000Z");
+
+  beforeEach(() => {
+    for (const fn of Object.values(mocks)) fn.mockReset();
+    mocks.getAccessToken.mockReturnValue("ACCESS-TOKEN-SENTINEL");
+    mocks.logEvent.mockResolvedValue(undefined);
+    mocks.probeTokenLiveness.mockResolvedValue("live");
+  });
+
+  it("probes liveness (and does not refresh) when a refresh is not yet due", async () => {
+    // Recently refreshed, plenty of runway → not due. This is the common tick, and
+    // it is exactly when an early invalidation would otherwise be invisible.
+    mocks.readTokenTiming.mockResolvedValue({
+      refreshedAt: new Date("2026-08-03T12:00:00.000Z"),
+      expiresAt: new Date("2026-10-01T00:00:00.000Z"),
+    });
+
+    await runTokenRefreshTick(NOW);
+
+    expect(mocks.probeTokenLiveness).toHaveBeenCalledTimes(1);
+    expect(mocks.axiosGet).not.toHaveBeenCalled();
+  });
+
+  it("does not probe on a due tick — the refresh call is its own liveness check", async () => {
+    mocks.readTokenTiming.mockResolvedValue({
+      refreshedAt: new Date("2026-06-01T00:00:00.000Z"),
+      expiresAt: new Date("2026-10-01T00:00:00.000Z"),
+    });
+    mocks.axiosGet.mockResolvedValue({ data: { access_token: "fresh", expires_in: 5_183_944 } });
+
+    await runTokenRefreshTick(NOW);
+
+    expect(mocks.axiosGet).toHaveBeenCalledTimes(1);
+    expect(mocks.probeTokenLiveness).not.toHaveBeenCalled();
+  });
+
+  it("emits the shared ig_token_invalidated signal when a due refresh fails on credentials", async () => {
+    mocks.readTokenTiming.mockResolvedValue({
+      refreshedAt: new Date("2026-06-01T00:00:00.000Z"),
+      expiresAt: new Date("2026-10-01T00:00:00.000Z"),
+    });
+    const error = new AxiosError("invalidated", "ERR_BAD_REQUEST");
+    error.config = { headers: {} as never };
+    error.response = {
+      status: 400,
+      statusText: "Bad Request",
+      headers: {},
+      config: error.config,
+      data: {
+        error: {
+          code: 190,
+          message: "The session has been invalidated because the user changed their password",
+        },
+      },
+    };
+    mocks.axiosGet.mockRejectedValue(error);
+
+    await runTokenRefreshTick(NOW);
+
+    expect(mocks.logEvent).toHaveBeenCalledWith(
+      "ig_token_invalidated",
+      expect.objectContaining({ source: "refresh", graphCode: 190 }),
+    );
   });
 });
 

@@ -259,10 +259,34 @@ export async function readTokenTiming(): Promise<TokenTiming | null> {
   return { expiresAt: row.expiresAt, refreshedAt: row.refreshedAt };
 }
 
-/** Health readout for the dashboard alarm; null when no row exists yet. */
+/**
+ * Health readout for the dashboard alarm; null when no row exists yet.
+ *
+ * `tokenHealth` reasons only from `expires_at`, which misses a token invalidated
+ * EARLY — a password change or revoke leaves expiry untouched while every call
+ * returns 190 (exactly the 2026-08-25 incident). The liveness probe and the refresh
+ * worker record that as an `ig_token_invalidated` event; if the most recent one
+ * post-dates the last good mint (`refreshedAt`), the token is effectively dead now,
+ * so surface the loud "expired" state — which the dashboard already renders red with
+ * "re-mint the token", the correct action either way — regardless of expiry. A
+ * re-mint advances `refreshedAt` past the event, which clears the alarm.
+ */
 export async function readTokenHealth(now = Date.now()): Promise<TokenHealth | null> {
   const timing = await readTokenTiming();
-  return timing ? tokenHealth(timing, now) : null;
+  if (!timing) return null;
+
+  const health = tokenHealth(timing, now);
+  if (health.status === "expired") return health; // already the loud state
+
+  const invalidation = await prisma.eventLog.findFirst({
+    where: { kind: "ig_token_invalidated" },
+    orderBy: { createdAt: "desc" },
+    select: { createdAt: true },
+  });
+  if (invalidation && invalidation.createdAt > timing.refreshedAt) {
+    return { ...health, status: "expired" };
+  }
+  return health;
 }
 
 /** Test seam: drops the cached value so the next read hits the DB. */

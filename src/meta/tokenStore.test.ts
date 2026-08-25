@@ -1,24 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { findUnique, create, loggerWarn, loggerError, envMock } = vi.hoisted(() => ({
-  findUnique: vi.fn(),
-  create: vi.fn(),
-  loggerWarn: vi.fn(),
-  loggerError: vi.fn(),
-  envMock: { IG_ACCESS_TOKEN: "ENV-SEED-LONG-DEAD" as string | undefined },
-}));
+const { findUnique, create, eventLogFindFirst, loggerWarn, loggerError, envMock } = vi.hoisted(
+  () => ({
+    findUnique: vi.fn(),
+    create: vi.fn(),
+    eventLogFindFirst: vi.fn(),
+    loggerWarn: vi.fn(),
+    loggerError: vi.fn(),
+    envMock: { IG_ACCESS_TOKEN: "ENV-SEED-LONG-DEAD" as string | undefined },
+  }),
+);
 
 vi.mock("../lib/prisma.js", () => ({
-  prisma: { igToken: { findUnique, create } },
+  prisma: { igToken: { findUnique, create }, eventLog: { findFirst: eventLogFindFirst } },
 }));
 vi.mock("../lib/logger.js", () => ({
   logger: { warn: loggerWarn, error: loggerError, info: vi.fn(), debug: vi.fn() },
 }));
 vi.mock("../config/env.js", () => ({ env: envMock }));
 
-const { resolveAccessToken, getAccessToken, seedTokenFromEnv, __resetTokenCache } = await import(
-  "./tokenStore.js"
-);
+const { resolveAccessToken, getAccessToken, seedTokenFromEnv, readTokenHealth, __resetTokenCache } =
+  await import("./tokenStore.js");
 
 const LIVE_ROW = {
   accessToken: "DB-LIVE-TOKEN",
@@ -154,5 +156,55 @@ describe("with no env seed configured", () => {
     await seedTokenFromEnv();
 
     expect(create).not.toHaveBeenCalled();
+  });
+});
+
+describe("readTokenHealth", () => {
+  // now is well inside LIVE_ROW's runway (expires 2026-10-23), so expiry-based health
+  // is "healthy" and any red state must come from the invalidation signal.
+  const NOW = Date.parse("2026-08-25T00:00:00.000Z");
+
+  beforeEach(() => {
+    findUnique.mockReset();
+    eventLogFindFirst.mockReset();
+    __resetTokenCache();
+    findUnique.mockResolvedValue(LIVE_ROW);
+  });
+
+  it("reports expiry-based health when no invalidation has been recorded", async () => {
+    eventLogFindFirst.mockResolvedValue(null);
+
+    const health = await readTokenHealth(NOW);
+
+    expect(health?.status).toBe("healthy");
+  });
+
+  // The whole point: a token killed early reads red even though expires_at is far off.
+  it("reports red when an invalidation is newer than the last good mint", async () => {
+    eventLogFindFirst.mockResolvedValue({
+      createdAt: new Date("2026-08-24T18:00:00.000Z"), // after refreshedAt 12:16
+    });
+
+    const health = await readTokenHealth(NOW);
+
+    expect(health?.status).toBe("expired");
+  });
+
+  // A re-mint advances refreshedAt past the old invalidation, so a resolved incident
+  // must not keep the dashboard red forever.
+  it("clears back to expiry-based health once the token is re-minted", async () => {
+    eventLogFindFirst.mockResolvedValue({
+      createdAt: new Date("2026-08-24T06:00:00.000Z"), // before refreshedAt 12:16
+    });
+
+    const health = await readTokenHealth(NOW);
+
+    expect(health?.status).toBe("healthy");
+  });
+
+  it("returns null when there is no token row at all", async () => {
+    findUnique.mockResolvedValue(null);
+
+    await expect(readTokenHealth(NOW)).resolves.toBeNull();
   });
 });

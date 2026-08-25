@@ -97,3 +97,24 @@ export function describeGraphError(err: unknown): GraphErrorMetadata {
     transportCode: null,
   };
 }
+
+// Graph error codes that mean "our credentials are broken", not "this specific
+// request could not be served". 190 is an invalid/expired/invalidated access
+// token; 10 and the 200-299 band are permission/scope losses. All of them fail
+// every call at once, so callers treat them as an operator emergency rather than
+// transient noise. Kept here, beside describeGraphError, so the follow verifier and
+// the token liveness probe share one definition instead of drifting apart.
+const AUTH_FAILURE_GRAPH_CODES = new Set([10, 190]);
+
+/**
+ * Whether a caught Graph/Axios error means our credentials are broken.
+ *
+ * Reads only the numeric `graphCode` that describeGraphError already extracts, so
+ * the error object — whose request config can hold the access token — is never
+ * inspected directly and cannot leak.
+ */
+export function graphErrorIsAuthFailure(err: unknown): boolean {
+  const { graphCode } = describeGraphError(err);
+  if (graphCode === null) return false;
+  return AUTH_FAILURE_GRAPH_CODES.has(graphCode) || (graphCode >= 200 && graphCode <= 299);
+}
