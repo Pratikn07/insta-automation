@@ -8,6 +8,7 @@ const create = vi.fn();
 const countDeliveries = vi.fn();
 const countAccessAttempts = vi.fn();
 const findUpcoming = vi.fn();
+const deleteUpcoming = vi.fn();
 const findKeywords = vi.fn();
 const deleteConversations = vi.fn();
 const deleteKeywords = vi.fn();
@@ -32,7 +33,7 @@ vi.mock("../lib/prisma.js", () => ({
   prisma: {
     guideDelivery: { count: countDeliveries },
     guideAccessAttempt: { count: countAccessAttempts },
-    upcomingAutomation: { findMany: findUpcoming },
+    upcomingAutomation: { findMany: findUpcoming, deleteMany: deleteUpcoming },
     keyword: { findMany: findKeywords, deleteMany: deleteKeywords },
     conversation: { deleteMany: deleteConversations },
     resource: { findMany, findUnique, create, delete: deleteResource },
@@ -104,6 +105,7 @@ beforeEach(() => {
   countDeliveries.mockReset().mockResolvedValue(0);
   countAccessAttempts.mockReset().mockResolvedValue(0);
   findUpcoming.mockReset().mockResolvedValue([]);
+  deleteUpcoming.mockReset().mockResolvedValue({ count: 0 });
   findKeywords.mockReset().mockResolvedValue([]);
   deleteConversations.mockReset().mockReturnValue({ operation: "delete-conversations" });
   deleteKeywords.mockReset().mockReturnValue({ operation: "delete-keywords" });
@@ -123,6 +125,7 @@ beforeEach(() => {
       $queryRaw: lockResource,
       conversation: { deleteMany: deleteConversations },
       keyword: { findMany: findKeywords, deleteMany: deleteKeywords },
+      upcomingAutomation: { deleteMany: deleteUpcoming },
       guideCoverOrphan: { count: countCoverOrphans, deleteMany: deleteCoverOrphans },
       resourceCoverVersion: { count: countCoverVersions, deleteMany: deleteCoverVersions },
       resourceCoverSuggestion: { deleteMany: deleteCoverSuggestions },
@@ -290,29 +293,42 @@ describe("resource deletion", () => {
   });
 
   // Cancelling is the way out, so whether one is available decides the wording.
-  // "Cancel it first" is useless advice about a setup that is already cancelled.
-  it("reports a resolved setup as not clearable", async () => {
-    findUpcoming.mockResolvedValue([
-      { triggerWord: "OLDWORD", status: "cancelled" },
-      { triggerWord: "DONEWORD", status: "bound" },
-    ]);
+  // A bound setup reached a post, which no amount of cancelling undoes.
+  it("reports a setup that cannot be cleared as not clearable", async () => {
+    findUpcoming.mockResolvedValue([{ triggerWord: "DONEWORD", status: "bound" }]);
 
     const response = await request(makeApp()).delete(`/api/resources/${RESOURCE_ID}`).expect(409);
 
     expect(response.body).toMatchObject({
-      triggerWords: ["OLDWORD", "DONEWORD"],
+      triggerWords: ["DONEWORD"],
       clearable: false,
     });
   });
 
-  // Every status, because the constraint counts every row. Checking only the open
-  // ones would have left the same unhandled 500 for an attached or cancelled setup.
-  it("asks about setups of any status", async () => {
+  /**
+   * A cancelled setup is the owner having already abandoned it, so blocking on it
+   * refused the delete with nothing they could do — the old answer admitted as much
+   * by returning `clearable: false` about a row that was already cancelled. Two junk
+   * guides sat undeletable behind exactly this.
+   */
+  it("does not count a cancelled setup as blocking", async () => {
     await request(makeApp()).delete(`/api/resources/${RESOURCE_ID}`).expect(204);
 
     expect(findUpcoming).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { resourceId: RESOURCE_ID } }),
+      expect.objectContaining({
+        where: { resourceId: RESOURCE_ID, status: { not: "cancelled" } },
+      }),
     );
+  });
+
+  // The row still restricts the foreign key, so not blocking on it only helps if the
+  // delete also clears it.
+  it("clears the cancelled setups it stopped blocking on", async () => {
+    await request(makeApp()).delete(`/api/resources/${RESOURCE_ID}`).expect(204);
+
+    expect(deleteUpcoming).toHaveBeenCalledWith({
+      where: { resourceId: RESOURCE_ID, status: "cancelled" },
+    });
   });
 
   it("deletes the guide with its keywords and conversations when nothing holds it", async () => {

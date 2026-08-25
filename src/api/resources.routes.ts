@@ -135,11 +135,17 @@ resourcesRouter.delete("/:id", async (req, res, next) => {
    * side effect of deleting a guide is a bigger decision than the click implies.
    * The trigger words are returned so the answer is actionable.
    *
-   * Every status, not only the open ones — the constraint does not care whether a
-   * setup is waiting, attached or cancelled, so neither can this check.
+   * `cancelled` is excluded, because it is the owner having already made that
+   * decision. Such a setup never bound to a post and holds no keyword, so there is
+   * nothing left for them to cancel — the refusal said as much itself by answering
+   * `clearable: false`, which is a dead end rather than an instruction. Those rows
+   * are deleted with the guide below. Every other status still blocks: `waiting` and
+   * `needs_attention` are live and the owner can clear them on Content, and `bound`
+   * attached to a real post and minted a keyword, which is history in the same sense
+   * a delivery is.
    */
   const blockingSetups = await prisma.upcomingAutomation.findMany({
-    where: { resourceId: id },
+    where: { resourceId: id, status: { not: "cancelled" } },
     select: { triggerWord: true, status: true },
     orderBy: { createdAt: "asc" },
   });
@@ -208,6 +214,9 @@ resourcesRouter.delete("/:id", async (req, res, next) => {
       ).map((keyword) => keyword.id);
       await tx.conversation.deleteMany({ where: { keywordId: { in: keywordIds } } });
       await tx.keyword.deleteMany({ where: { resourceId: id } });
+      // Abandoned intent, cleared with the guide it pointed at. The guard above
+      // already refused every setup that is still live or that reached a post.
+      await tx.upcomingAutomation.deleteMany({ where: { resourceId: id, status: "cancelled" } });
       await tx.guideCoverOrphan.deleteMany({
         where: { resourceId: id, status: "deleted" },
       });
