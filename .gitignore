@@ -26,7 +26,18 @@ prisma/migrations/dev.db*
 # Claude Code's local session state: launch.json, settings.local.json, and a
 # second worktree home under .claude/worktrees that reached 1.6 GB. None of it
 # is shared, and nothing here has ever been tracked.
-.claude/
+.claude/*
+
+# Exception: the graphify skill is shared project config, not session state, so
+# it is tracked. Everything else under .claude/ stays ignored by the rule above.
+!.claude/CLAUDE.md
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/graphify/
+
+# graphify's generated knowledge graph (graph.json/graph.html/GRAPH_REPORT.md).
+# Rebuilt locally with `graphify update .`; not worth versioning.
+graphify-out/
 
 # Impeccable decision-page session state. DESIGN.md and .impeccable/design.json
 # are design authority and are tracked; these are per-run scratch.
