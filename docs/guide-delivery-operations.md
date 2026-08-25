@@ -266,6 +266,20 @@ active review count. For a partial or failed batch, keep the event logs and ledg
 rows; rollback means stop, re-audit, and resolve the remaining rows in
 Conversations—not deleting evidence or editing attempt state with SQL.
 
+### 2026-08-24 production recovery checkpoint
+
+Release `9081819` deployed successfully through Railway
+`04f5be28-0f8b-43cd-b5ae-6c8eed1541e4` and Vercel
+`dpl_9tNbCAzQPZCE8SYN6THhdcupgpRc`. Both forward migrations applied before the
+API became ready; production schema readback and Supabase lint passed.
+
+The first read-only audit found 135 token-status normalizations, six
+counter-constraint reviews, and eight open swallowed actions. No repair write or
+Instagram replay was run. Before using any earlier number, run the audit again:
+exact-count drift is expected as messaging windows close and parents continue
+their journeys. The eight-action replay still requires separate authorization to
+contact parents.
+
 ## The guide cover in a parent's delivery
 
 A published cover image can be prepended to a guide as its first message. This is a

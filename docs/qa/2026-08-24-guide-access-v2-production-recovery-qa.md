@@ -185,3 +185,68 @@ from local tests:
 
 The deployment must stop before Instagram replay and ask for explicit owner approval
 if the read-only audit finds any open `swallowed_opening_action` candidates.
+
+## Production execution evidence
+
+PR [#64](https://github.com/Pratikn07/insta-automation/pull/64) merged to
+`main` as `9081819abbe76c648c656b1879fe916945989ca2` at
+2026-08-25T05:56:35Z.
+
+Railway:
+
+```text
+project: insta-automation
+environment/service: production/api
+deployment: 04f5be28-0f8b-43cd-b5ae-6c8eed1541e4
+commit: 9081819abbe76c648c656b1879fe916945989ca2
+status: SUCCESS
+```
+
+The runtime log shows `20260825010000_repair_guide_access_limits` followed by
+`20260825020000_add_guide_action_event_receipts`, then `All migrations have been
+successfully applied`, then the production server listening. `/health` returned
+`{"ok":true,"env":"production"}`. A targeted scan found no PostgreSQL `23514`,
+action lookup, access review checkpoint, or unrouted quick-reply errors after
+deployment. V2, all-guides, rich-gate, and ledger delivery flags remained enabled;
+the rollout was not stopped.
+
+Vercel:
+
+```text
+project: tinysoho-admin
+deployment: dpl_9tNbCAzQPZCE8SYN6THhdcupgpRc
+commit: 9081819
+target/status: production / Ready
+alias: https://tinysoho-admin.vercel.app
+```
+
+The production asset contains the new access-review count, title, resend/release
+controls, and follow-response summary. A temporary read-only browser check reached
+the Tiny Soho sign-in screen; there was no authenticated browser session, so no
+credential entry or creator mutation was attempted.
+
+Supabase production readback proved the same validated five/three constraint,
+receipt FK/index, RLS, zero `anon`/`authenticated` grants, zero permissive policies,
+and no temporary constraint. `supabase db lint --schema public --level error`
+reported `No schema errors found`. All 61 migrations are current.
+
+The first post-deploy read-only incident audit reported:
+
+```text
+counter_constraint_review: 6 (6 open, 0 closed)
+  Donut 1 · Gummies 1 · WAFFLE 4
+
+swallowed_opening_action: 8 (8 open, 0 closed)
+  Donut 6 · MealPrep 2
+
+logically_expired_active_token: 135 (132 open, 3 closed)
+  19 resource groups; no parent identifiers printed
+```
+
+No repair mode was applied. The six counter-limit journeys remain owner-visible in
+Conversations. The eight swallowed actions remain withheld pending separate owner
+authorization because replay contacts real parents. The 135 status normalizations
+remain a database-only maintenance action pending review of this exact count.
+
+Initial post-deploy monitoring is green. The one-hour, six-hour, and 24-hour checks
+remain future operational checkpoints; they are not retroactively marked complete.
