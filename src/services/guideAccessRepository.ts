@@ -10,33 +10,10 @@ import {
 } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { publishedCoverWhere } from "./guideCoverRepository.js";
-
-/**
- * How many live follow reads one attempt may spend, and how many replies a non-follower
- * may receive. Both were one lower, and between them they ended a parent's journey in
- * silence before that parent had a chance to act on what we asked them to do.
- *
- * Observed on device 2026-08-24. The gate's button is a control that stays in the thread
- * and posts its own label as the parent's words every time it is pressed, so people press
- * it repeatedly. One parent pressed it six times. The first three answered; the rest were
- * dropped without a word, because the budget was spent like this:
- *
- *   tap 1 (the gate's own button)  check 1  -> the follower gate
- *   tap 2                          check 2  -> the re-ask card
- *   tap 3                          check 3  -> "Instagram may take a moment"
- *   tap 4                          refused  -> nothing, ever again
- *
- * The last message we sent told her to go and follow the account and come back. The check
- * budget ran out at exactly the moment she was doing that, so the one read that mattered —
- * the one AFTER she followed — was the one we refused to spend.
- *
- * Five and three are sized to that journey: three checks to run the ladder, a fourth to
- * carry the closing message, and a fifth held back for the parent who does what the closing
- * message asks. Each check is a single Graph read; the cap is here to bound them, not to
- * end conversations.
- */
-const MAX_FOLLOW_CHECKS = 5;
-const MAX_FOLLOW_RESPONSES = 3;
+import {
+  GUIDE_ACCESS_MAX_FOLLOW_CHECKS,
+  GUIDE_ACCESS_MAX_FOLLOW_RESPONSES,
+} from "./guideAccessPolicy.js";
 const ACTIVE_ATTEMPT_STATES: readonly GuideAccessAttemptState[] = [
   "awaiting_request",
   "checking_follow",
@@ -638,7 +615,7 @@ export function createGuideAccessRepository(
           if (attempt.state !== expectedState) {
             return { kind: "state_conflict" as const, actualState: attempt.state };
           }
-          if (attempt.followCheckCount >= MAX_FOLLOW_CHECKS) {
+          if (attempt.followCheckCount >= GUIDE_ACCESS_MAX_FOLLOW_CHECKS) {
             return { kind: "check_limit_reached" as const };
           }
 
@@ -646,7 +623,7 @@ export function createGuideAccessRepository(
             where: {
               id: attempt.id,
               state: expectedState,
-              followCheckCount: { lt: MAX_FOLLOW_CHECKS },
+              followCheckCount: { lt: GUIDE_ACCESS_MAX_FOLLOW_CHECKS },
               messagingWindowExpiresAt: { gt: input.now },
             },
             data: {
@@ -703,7 +680,7 @@ export function createGuideAccessRepository(
 
         // A review reached without a definitive follow answer is retryable: the
         // parent was told to try again later, so their next reply must be able to
-        // re-check. MAX_FOLLOW_CHECKS below still bounds it. A review that holds a
+        // re-check. GUIDE_ACCESS_MAX_FOLLOW_CHECKS below still bounds it. A review that holds a
         // definitive answer (follow-lag limit, or a fault after delivery began)
         // stays terminal and belongs to the owner.
         const retryableReview =
@@ -719,7 +696,7 @@ export function createGuideAccessRepository(
           await expireLockedAttempt(tx, attempt, input.now);
           return { kind: "expired" as const };
         }
-        if (attempt.followCheckCount >= MAX_FOLLOW_CHECKS) {
+        if (attempt.followCheckCount >= GUIDE_ACCESS_MAX_FOLLOW_CHECKS) {
           return { kind: "check_limit_reached" as const };
         }
 
@@ -731,7 +708,7 @@ export function createGuideAccessRepository(
             // Pin the discriminator too, so a concurrent writer that supplies a
             // definitive answer cannot have its terminal review reopened here.
             ...(retryableReview ? { lastFollowResult: "unknown" as const } : {}),
-            followCheckCount: { lt: MAX_FOLLOW_CHECKS },
+            followCheckCount: { lt: GUIDE_ACCESS_MAX_FOLLOW_CHECKS },
             messagingWindowExpiresAt: { gt: input.now },
           },
           data: {
@@ -775,14 +752,14 @@ export function createGuideAccessRepository(
         if (locked.attempt.messagingWindowExpiresAt <= input.now) {
           return expireLockedAttempt(tx, locked.attempt, input.now);
         }
-        if (locked.attempt.followCheckCount >= MAX_FOLLOW_CHECKS) {
+        if (locked.attempt.followCheckCount >= GUIDE_ACCESS_MAX_FOLLOW_CHECKS) {
           return { kind: "state_conflict" as const, actualState: locked.attempt.state };
         }
         const updated = await tx.guideAccessAttempt.updateMany({
           where: {
             id: input.attemptId,
             state: input.expectedState,
-            followCheckCount: { lt: MAX_FOLLOW_CHECKS },
+            followCheckCount: { lt: GUIDE_ACCESS_MAX_FOLLOW_CHECKS },
             messagingWindowExpiresAt: { gt: input.now },
           },
           data: {
@@ -1078,14 +1055,14 @@ export function createGuideAccessRepository(
         if (locked.attempt.messagingWindowExpiresAt <= input.now) {
           return expireLockedAttempt(tx, locked.attempt, input.now);
         }
-        if (locked.attempt.followResponseCount >= MAX_FOLLOW_RESPONSES) {
+        if (locked.attempt.followResponseCount >= GUIDE_ACCESS_MAX_FOLLOW_RESPONSES) {
           return { kind: "limit_reached" as const };
         }
         const updated = await tx.guideAccessAttempt.updateMany({
           where: {
             id: input.attemptId,
             state: input.expectedState,
-            followResponseCount: { lt: MAX_FOLLOW_RESPONSES },
+            followResponseCount: { lt: GUIDE_ACCESS_MAX_FOLLOW_RESPONSES },
             messagingWindowExpiresAt: { gt: input.now },
           },
           data: { followResponseCount: { increment: 1 } },

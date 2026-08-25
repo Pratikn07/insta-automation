@@ -8,6 +8,10 @@ import {
   createGuideAccessRepository,
   type GuideAccessDatabase,
 } from "./guideAccessRepository.js";
+import {
+  GUIDE_ACCESS_MAX_FOLLOW_CHECKS,
+  GUIDE_ACCESS_MAX_FOLLOW_RESPONSES,
+} from "./guideAccessPolicy.js";
 
 const ATTEMPT_ID = "10000000-0000-4000-8000-000000000001";
 const CONVERSATION_ID = "20000000-0000-4000-8000-000000000002";
@@ -18,11 +22,6 @@ const SENDER_ID = "instagram-sender-1";
 const NOW = new Date("2026-08-23T12:00:00.000Z");
 const WINDOW_EXPIRES_AT = new Date("2026-08-24T12:00:00.000Z");
 const TOKEN_EXPIRES_AT = new Date("2026-08-23T12:10:00.000Z");
-// Mirror the module's own budgets. Named rather than inlined so the numbers live in one
-// place here too — they were spelled out at four separate call sites, and a change to
-// either one meant hunting down every literal.
-const MAX_FOLLOW_CHECKS = 5;
-const MAX_FOLLOW_RESPONSES = 3;
 
 function attempt(
   overrides: Partial<GuideAccessAttempt> = {},
@@ -150,6 +149,7 @@ describe("guide access repository", () => {
         conversationId: CONVERSATION_ID,
         resourceId: "60000000-0000-4000-8000-000000000006",
         messagingWindowExpiresAt: new Date("2026-08-25T12:00:00.000Z"),
+        now: NOW,
       }),
     ).resolves.toEqual({
       kind: "loaded",
@@ -254,7 +254,7 @@ describe("guide access repository", () => {
       where: {
         id: ATTEMPT_ID,
         state: "awaiting_request",
-        followCheckCount: { lt: MAX_FOLLOW_CHECKS },
+        followCheckCount: { lt: GUIDE_ACCESS_MAX_FOLLOW_CHECKS },
         messagingWindowExpiresAt: { gt: NOW },
       },
       data: {
@@ -393,7 +393,7 @@ describe("guide access repository", () => {
       where: {
         id: ATTEMPT_ID,
         state: "awaiting_request",
-        followCheckCount: { lt: MAX_FOLLOW_CHECKS },
+        followCheckCount: { lt: GUIDE_ACCESS_MAX_FOLLOW_CHECKS },
         messagingWindowExpiresAt: { gt: NOW },
       },
       data: {
@@ -477,7 +477,7 @@ describe("guide access repository", () => {
       lockedAttempt: attempt({
         state: "awaiting_follow",
         lastFollowResult: "non_follower",
-        followResponseCount: MAX_FOLLOW_RESPONSES,
+        followResponseCount: GUIDE_ACCESS_MAX_FOLLOW_RESPONSES,
       }),
     });
 
@@ -489,7 +489,7 @@ describe("guide access repository", () => {
       lockedAttempt: attempt({
         state: "awaiting_follow",
         lastFollowResult: "non_follower",
-        followResponseCount: MAX_FOLLOW_RESPONSES - 1,
+        followResponseCount: GUIDE_ACCESS_MAX_FOLLOW_RESPONSES - 1,
       }),
     });
 
@@ -506,7 +506,10 @@ describe("guide access repository", () => {
         expectedState: "awaiting_follow",
         now: NOW,
       }),
-    ).resolves.toEqual({ kind: "reserved", responseNumber: MAX_FOLLOW_RESPONSES });
+    ).resolves.toEqual({
+      kind: "reserved",
+      responseNumber: GUIDE_ACCESS_MAX_FOLLOW_RESPONSES,
+    });
     await expect(
       capped.repository.reserveFollowResponse({
         attemptId: ATTEMPT_ID,
@@ -621,7 +624,7 @@ describe("retryable review fence in claimDirectInbound", () => {
         id: ATTEMPT_ID,
         state: "needs_review",
         lastFollowResult: "unknown",
-        followCheckCount: { lt: MAX_FOLLOW_CHECKS },
+        followCheckCount: { lt: GUIDE_ACCESS_MAX_FOLLOW_CHECKS },
         messagingWindowExpiresAt: { gt: NOW },
       },
       data: {
@@ -662,7 +665,7 @@ describe("retryable review fence in claimDirectInbound", () => {
       lockedAttempt: attempt({
         state: "needs_review",
         lastFollowResult: "unknown",
-        followCheckCount: MAX_FOLLOW_CHECKS,
+        followCheckCount: GUIDE_ACCESS_MAX_FOLLOW_CHECKS,
       }),
     });
 

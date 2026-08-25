@@ -316,8 +316,9 @@ describeWithDatabase("guide access attempt migration", () => {
     );
 
     expect(byName.get("guide_access_attempt_follow_counts_check")).toMatch(
-      /follow_check_count >= 0.*follow_check_count <= 3.*follow_response_count >= 0.*follow_response_count <= 2/,
+      /follow_check_count >= 0.*follow_check_count <= 5.*follow_response_count >= 0.*follow_response_count <= 3/,
     );
+    expect(byName.has("guide_access_attempt_follow_counts_check_v2")).toBe(false);
     expect(byName.get("guide_access_attempt_cover_exposure_check")).toMatch(
       /cover_exposure = 'not_shown'.*cover_provider_message_id is null.*cover_exposure = 'accepted'.*nullif.*cover_provider_message_id.*cover_exposure = 'uncertain'.*cover_exposure = 'failed'.*cover_provider_message_id is null/,
     );

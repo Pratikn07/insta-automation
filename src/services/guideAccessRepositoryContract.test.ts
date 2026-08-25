@@ -397,7 +397,7 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
     expect(results.filter((result) => result.kind === "state_conflict")).toHaveLength(1);
   });
 
-  it("reserves only two automatic responses under a three-way race", async () => {
+  it("reserves only three automatic responses under a four-way race", async () => {
     const fixture = await createFixture();
     const attempt = await createAttempt(fixture);
     await firstRepository.beginChecking({
@@ -412,7 +412,12 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
       now: NOW,
     });
 
-    const repositories = [firstRepository, secondRepository, firstRepository];
+    const repositories = [
+      firstRepository,
+      secondRepository,
+      firstRepository,
+      secondRepository,
+    ];
     const results = await Promise.all(
       repositories.map((repository) =>
         repository.reserveFollowResponse({
@@ -423,10 +428,10 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
       ),
     );
 
-    expect(results.filter((result) => result.kind === "reserved")).toHaveLength(2);
+    expect(results.filter((result) => result.kind === "reserved")).toHaveLength(3);
     expect(results.filter((result) => result.kind === "limit_reached")).toHaveLength(1);
     await expect(firstClient.guideAccessAttempt.findUniqueOrThrow({ where: { id: attempt.id } })).resolves.toMatchObject({
-      followResponseCount: 2,
+      followResponseCount: 3,
     });
   });
 
