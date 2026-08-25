@@ -61,7 +61,13 @@ export const envSchema = z.object({
 
   META_APP_SECRET: z.string().min(1),
   META_VERIFY_TOKEN: z.string().min(1),
-  IG_ACCESS_TOKEN: z.string().min(1),
+  // Optional on purpose. The live token lives in the `ig_token` table and rotates itself
+  // every 6h, so this is only a SEED: it creates the row on a brand-new deploy, and it is
+  // the manual rescue path when the stored token has actually died (paste a fresh one into
+  // Railway). A local checkout needs neither, and keeping a copy here only invites a stale
+  // credential — which is exactly what happened on 2026-08-25, when a seed dead since
+  // 6 August was the value every one-off script authenticated with. See tokenStore.ts.
+  IG_ACCESS_TOKEN: z.string().min(1).optional(),
   IG_USER_ID: z.string().min(1),
 
   DATABASE_URL: z.string().url(),

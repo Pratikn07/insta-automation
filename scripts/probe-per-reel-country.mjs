@@ -1,8 +1,9 @@
 import dotenv from "dotenv";
+import { liveToken } from "./lib/live-token.mjs";
 
 dotenv.config();
 
-const TOKEN = process.env.IG_ACCESS_TOKEN;
+const TOKEN = await liveToken();
 const IG_USER_ID = process.env.IG_USER_ID;
 const VERSIONS = ["v23.0", "v22.0", "v21.0"];
 const HOST = "graph.instagram.com";

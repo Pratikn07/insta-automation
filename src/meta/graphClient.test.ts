@@ -2,22 +2,51 @@ import type { AxiosAdapter } from "axios";
 import { AxiosError, AxiosHeaders } from "axios";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { loggerError, getAccessToken } = vi.hoisted(() => ({
+const { loggerError, getAccessToken, resolveAccessToken } = vi.hoisted(() => ({
   loggerError: vi.fn(),
   getAccessToken: vi.fn(() => "IG-ACCESS-TOKEN-SECRET"),
+  resolveAccessToken: vi.fn(async () => "IG-ACCESS-TOKEN-SECRET"),
 }));
 
 vi.mock("../lib/logger.js", () => ({
   logger: { error: loggerError },
 }));
-vi.mock("./tokenStore.js", () => ({ getAccessToken }));
+vi.mock("./tokenStore.js", () => ({ getAccessToken, resolveAccessToken }));
 
 const { graph } = await import("./graphClient.js");
+
+describe("Graph client authentication", () => {
+  beforeEach(() => {
+    loggerError.mockReset();
+    getAccessToken.mockClear();
+    resolveAccessToken.mockClear();
+  });
+
+  // Guards the 2026-08-25 near-miss: the interceptor used to read the token
+  // synchronously, so a short-lived script authenticated every call with the stale
+  // env seed. It must use the awaited form, never the synchronous one.
+  it("authenticates with the awaited token, not the synchronous cache read", async () => {
+    const adapter: AxiosAdapter = async (config) => ({
+      data: { ok: true },
+      status: 200,
+      statusText: "OK",
+      headers: new AxiosHeaders(),
+      config,
+    });
+
+    const res = await graph.get("/me", { adapter });
+
+    expect(res.config.params).toMatchObject({ access_token: "IG-ACCESS-TOKEN-SECRET" });
+    expect(resolveAccessToken).toHaveBeenCalledTimes(1);
+    expect(getAccessToken).not.toHaveBeenCalled();
+  });
+});
 
 describe("Graph client error logging", () => {
   beforeEach(() => {
     loggerError.mockReset();
     getAccessToken.mockClear();
+    resolveAccessToken.mockClear();
   });
 
   it("logs only allowlisted numeric provider metadata", async () => {

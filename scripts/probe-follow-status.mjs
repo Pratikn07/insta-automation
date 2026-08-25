@@ -1,8 +1,9 @@
 import dotenv from "dotenv";
+import { liveToken } from "./lib/live-token.mjs";
 
 dotenv.config();
 
-const TOKEN = process.env.IG_ACCESS_TOKEN;
+const TOKEN = await liveToken();
 const VERSION = "v21.0";
 
 // FEASIBILITY PROBE (read-only, no DB writes). Asks Instagram for the messaging
