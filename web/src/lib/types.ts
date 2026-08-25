@@ -1245,6 +1245,13 @@ export interface GuideAccessMetricsResult {
    * skeleton: the query had succeeded, so nothing retried and nothing said so.
    */
   coverRates?: GuideCoverRates;
+  health?: {
+    awaitingRequest: number;
+    awaitingFollow: number;
+    needsReview: number;
+    logicallyExpiredActiveTokens: number;
+    oldestNeedsReviewAt: string | null;
+  };
 }
 
 export interface FunnelStageCount {

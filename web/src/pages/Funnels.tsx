@@ -142,6 +142,8 @@ export function Funnels() {
         <FunnelBody data={funnelQ.data} dropOff={dropOffQ.data} isDropOffLoading={dropOffQ.isLoading} />
       )}
 
+      <GuideAccessHealthPanel health={coverQ.data?.health} />
+
       <CoverPanel
         rates={coverQ.data?.coverRates}
         isLoading={coverQ.isLoading}
@@ -149,6 +151,41 @@ export function Funnels() {
         isAbsent={coverQ.data !== undefined && coverQ.data.coverRates === undefined}
       />
     </div>
+  );
+}
+
+function GuideAccessHealthPanel({
+  health,
+}: {
+  health: GuideAccessMetricsResult["health"];
+}) {
+  if (!health) return null;
+  if (health.needsReview === 0 && health.logicallyExpiredActiveTokens === 0) return null;
+
+  return (
+    <section aria-label="Guide access health" className="border-t-line border-t pt-8">
+      <Caveat>
+        <b className="font-medium">Guide requests need attention.</b>{" "}
+        {health.needsReview > 0 ? (
+          <>
+            {health.needsReview.toLocaleString()} guide request
+            {health.needsReview === 1 ? " needs" : "s need"} owner review. {" "}
+          </>
+        ) : null}
+        {health.logicallyExpiredActiveTokens > 0 ? (
+          <>
+            {health.logicallyExpiredActiveTokens.toLocaleString()} active action
+            {health.logicallyExpiredActiveTokens === 1 ? " has" : "s have"} already expired. {" "}
+          </>
+        ) : null}
+        <a
+          className="border-b border-current font-medium hover:opacity-80"
+          href="/conversations"
+        >
+          Review conversations
+        </a>
+      </Caveat>
+    </section>
   );
 }
 

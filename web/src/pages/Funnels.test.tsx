@@ -206,4 +206,31 @@ describe("Funnels cover panel", () => {
     // Aggregate-only by construction: a cohort window and nothing else.
     expect(coverCalls[0]).toMatch(/^\/funnels\/guide-access-metrics\?from=[\d-]+&to=[\d-]+$/);
   });
+
+  it("shows a creator warning when live guide requests need review", async () => {
+    respond({
+      cover: {
+        key: "guide-access-v2",
+        window: FUNNEL.window,
+        coverRates: COVER_RATES,
+        health: {
+          awaitingRequest: 2,
+          awaitingFollow: 4,
+          needsReview: 6,
+          logicallyExpiredActiveTokens: 3,
+          oldestNeedsReviewAt: "2026-08-20T10:00:00.000Z",
+        },
+      },
+    });
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByText(/6 guide requests need owner review/i)).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/3 active actions have already expired/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /review conversations/i })).toHaveAttribute(
+      "href",
+      "/conversations",
+    );
+  });
 });

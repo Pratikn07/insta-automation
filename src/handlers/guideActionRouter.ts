@@ -51,7 +51,15 @@ type GuideActionRouterDependencies = {
    * vocabulary with nothing writing them, which reads as a permanent zero rather than as
    * "no parent has tapped a control yet".
    */
-  recordAction(outcome: "received" | "unsupported"): Promise<void>;
+  recordAction(
+    outcome:
+      | "received"
+      | "duplicate"
+      | "replayed"
+      | "expired"
+      | "recovered"
+      | "unsupported",
+  ): Promise<void>;
 };
 
 export type GuideActionRouteInput = {
@@ -82,7 +90,13 @@ export function parseGuideActionPayload(payload: unknown): { tokenId: string } |
 /** Measurement must never fail a parent's tap. */
 async function countAction(
   dependencies: GuideActionRouterDependencies,
-  outcome: "received" | "unsupported",
+  outcome:
+    | "received"
+    | "duplicate"
+    | "replayed"
+    | "expired"
+    | "recovered"
+    | "unsupported",
 ): Promise<void> {
   try {
     await dependencies.recordAction(outcome);
@@ -157,6 +171,16 @@ export function createGuideActionRouter(dependencies: GuideActionRouterDependenc
       outcome,
       eventAt: input.eventAt,
     });
+
+    if (outcome === "duplicate_event") await countAction(dependencies, "duplicate");
+    if (outcome === "action_replayed") await countAction(dependencies, "replayed");
+    if (outcome === "action_expired") await countAction(dependencies, "expired");
+    if (
+      presentation === "fresh_opening_sent" ||
+      presentation === "fresh_follow_action_sent"
+    ) {
+      await countAction(dependencies, "recovered");
+    }
 
     return { kind: "handled", action, outcome, presentation };
   };

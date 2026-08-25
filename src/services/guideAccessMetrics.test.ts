@@ -1,4 +1,5 @@
 import { PrismaClient } from "@prisma/client";
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   GUIDE_ACCESS_AGGREGATE_SQL,
@@ -19,8 +20,10 @@ describe("guide access safe event recording", () => {
     ["opening", "failed"],
     ["opening", "uncertain"],
     ["action", "received"],
+    ["action", "duplicate"],
     ["action", "replayed"],
     ["action", "expired"],
+    ["action", "recovered"],
     ["action", "unsupported"],
     ["fresh_check", "follower"],
     ["fresh_check", "non_follower"],
@@ -131,7 +134,14 @@ describe("guide access aggregate funnel metrics", () => {
       window: { from: FROM.toISOString(), to: TO.toISOString() },
       counts: {
         opening: { accepted: 0, failed: 0, uncertain: 0 },
-        action: { received: 0, replayed: 0, expired: 0, unsupported: 0 },
+        action: {
+          received: 0,
+          duplicate: 0,
+          replayed: 0,
+          expired: 0,
+          recovered: 0,
+          unsupported: 0,
+        },
         fresh_check: { follower: 3, non_follower: 0, unavailable: 0 },
         gate: { shown: 0 },
         recheck: { attempted: 0, confirmed: 0, not_confirmed: 0, unavailable: 0 },
@@ -206,6 +216,36 @@ describe("guide access aggregate funnel metrics", () => {
       p95: null,
       max: null,
     });
+  });
+
+  it("returns a live aggregate health snapshot without exposing parent identity", async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          awaitingRequest: 4n,
+          awaitingFollow: 7n,
+          needsReview: 3n,
+          logicallyExpiredActiveTokens: 2n,
+          oldestNeedsReviewAt: new Date("2026-08-20T10:00:00.000Z"),
+        },
+      ]);
+
+    const result = await runGuideAccessMetrics(
+      { $queryRawUnsafe: query } as GuideAccessMetricsDb,
+      { from: FROM, to: TO },
+      new Date("2026-08-24T20:00:00.000Z"),
+    );
+
+    expect(result.health).toEqual({
+      awaitingRequest: 4,
+      awaitingFollow: 7,
+      needsReview: 3,
+      logicallyExpiredActiveTokens: 2,
+      oldestNeedsReviewAt: "2026-08-20T10:00:00.000Z",
+    });
+    expect(JSON.stringify(result.health)).not.toMatch(/sender|username|tokenId|resource/i);
   });
 });
 
@@ -423,6 +463,98 @@ describeWithDatabase("aggregate SQL against PostgreSQL", () => {
       expect(result.coverRates.gate.accepted.denominator).toBe(3);
     } finally {
       await prisma.eventLog.deleteMany({ where: { kind: "guide_access_v2_metric" } });
+    }
+  });
+
+  it("counts the live blocked backlog and logically expired active tokens in PostgreSQL", async () => {
+    const resourceId = randomUUID();
+    const keywordId = randomUUID();
+    const conversationIds = [randomUUID(), randomUUID(), randomUUID()];
+    const attemptIds = [randomUUID(), randomUUID(), randomUUID()];
+    const createdAt = new Date("2026-08-19T10:00:00.000Z");
+    const now = new Date("2026-08-25T10:00:00.000Z");
+    const windowEnd = new Date("2026-08-26T10:00:00.000Z");
+
+    await prisma.resource.create({ data: { id: resourceId, name: "Health contract" } });
+    await prisma.keyword.create({
+      data: {
+        id: keywordId,
+        keyword: `health-${randomUUID()}`,
+        resourceId,
+        publicReply: "reply",
+        gateMessage: "gate",
+        active: false,
+      },
+    });
+    await prisma.conversation.createMany({
+      data: conversationIds.map((id) => ({
+        id,
+        igUserId: `health-${id}`,
+        keywordId,
+      })),
+    });
+    await prisma.guideAccessAttempt.createMany({
+      data: [
+        {
+          id: attemptIds[0]!,
+          conversationId: conversationIds[0]!,
+          resourceId,
+          state: "awaiting_request",
+          messagingWindowExpiresAt: windowEnd,
+          createdAt,
+          updatedAt: createdAt,
+        },
+        {
+          id: attemptIds[1]!,
+          conversationId: conversationIds[1]!,
+          resourceId,
+          state: "awaiting_follow",
+          lastFollowResult: "non_follower",
+          followCheckCount: 1,
+          messagingWindowExpiresAt: windowEnd,
+          createdAt,
+          updatedAt: createdAt,
+        },
+        {
+          id: attemptIds[2]!,
+          conversationId: conversationIds[2]!,
+          resourceId,
+          state: "needs_review",
+          messagingWindowExpiresAt: windowEnd,
+          createdAt,
+          updatedAt: new Date("2026-08-20T10:00:00.000Z"),
+        },
+      ],
+    });
+    await prisma.guideActionToken.create({
+      data: {
+        id: randomUUID(),
+        attemptId: attemptIds[0]!,
+        action: "request_guide",
+        status: "active",
+        createdAt: new Date("2026-08-24T19:00:00.000Z"),
+        expiresAt: new Date("2026-08-24T20:00:00.000Z"),
+      },
+    });
+
+    try {
+      const result = await runGuideAccessMetrics(
+        prisma,
+        { from: FROM, to: TO },
+        now,
+      );
+      expect(result.health).toEqual({
+        awaitingRequest: 1,
+        awaitingFollow: 1,
+        needsReview: 1,
+        logicallyExpiredActiveTokens: 1,
+        oldestNeedsReviewAt: "2026-08-20T10:00:00.000Z",
+      });
+    } finally {
+      await prisma.guideAccessAttempt.deleteMany({ where: { resourceId } });
+      await prisma.conversation.deleteMany({ where: { id: { in: conversationIds } } });
+      await prisma.keyword.delete({ where: { id: keywordId } });
+      await prisma.resource.delete({ where: { id: resourceId } });
     }
   });
 });
