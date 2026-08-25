@@ -203,6 +203,69 @@ change. `sequenceSender` and that branch may only be removed after a separate,
 named-owner `LEGACY REMOVAL AUTHORIZED` decision that follows a formal
 declaration of controlled stability.
 
+## Guide-access incident audit and repair
+
+The access recovery command is read-only by default. It reports aggregate counts,
+resource names, open/closed messaging-window counts, and oldest/newest timestamps.
+It never prints a parent ID, username, message, token, provider message ID, or
+conversation/attempt ID.
+
+Start every repair from a fresh audit:
+
+```bash
+npm run audit:guide-access-recovery
+```
+
+The three candidate classes are deliberately separate:
+
+- `logically_expired_active_token` is bookkeeping only. Normalizing it changes an
+  expired token's status; it does not change an attempt or send anything.
+- `counter_constraint_review` is a non-follower attempt stranded by the former
+  three-check/two-response database constraint. A guide delivery excludes the row
+  because delivery review owns that recovery.
+- `swallowed_opening_action` is a captured parent action that arrived after the
+  old ten-minute token expired while the full messaging window was still open.
+  Replaying it invokes the normal routed-action service and therefore performs a
+  fresh Meta follow check; it never bypasses the follower gate.
+
+Every write requires the exact count from the immediately preceding audit and an
+actor. A count drift, even by one, aborts before the command opens its write path:
+
+```bash
+npm run audit:guide-access-recovery -- \
+  --mode normalize-token-status --apply --expected-count <COUNT> --actor <OWNER>
+
+npm run audit:guide-access-recovery -- \
+  --mode release-counter-reviews --apply --expected-count <COUNT> --actor <OWNER>
+```
+
+Review every counter candidate in Conversations before releasing it. Release is
+audited and does not send a guide. It expires the blocked attempt so the parent's
+next message can begin a new, fully authorized attempt.
+
+`replay-swallowed-actions` contacts real parents. It requires a second explicit
+switch in addition to the exact count and actor, and it only selects candidates
+whose messaging window is still open:
+
+```bash
+npm run audit:guide-access-recovery -- \
+  --mode replay-swallowed-actions --apply --send-instagram \
+  --expected-count <COUNT> --actor <OWNER>
+```
+
+Do not run that command from generic deployment authorization. First present the
+fresh open-window count and resource breakdown to the owner and obtain explicit
+authorization to contact those parents. The batch is sequential and stops at the
+first uncertain send or `needs_review` outcome; never restart it automatically.
+The durable action-event receipt makes an exact rerun idempotent, but an uncertain
+Instagram result still belongs in the creator review queue.
+
+After any repair, run the default audit again. Token normalization must leave zero
+logically-expired active tokens. Released counter reviews must disappear from the
+active review count. For a partial or failed batch, keep the event logs and ledger
+rows; rollback means stop, re-audit, and resolve the remaining rows in
+Conversations—not deleting evidence or editing attempt state with SQL.
+
 ## The guide cover in a parent's delivery
 
 A published cover image can be prepended to a guide as its first message. This is a
