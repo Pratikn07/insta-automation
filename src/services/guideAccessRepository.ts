@@ -230,6 +230,12 @@ export type ReserveGuideFollowResponseResult =
   | { kind: "attempt_not_found" }
   | { kind: "state_conflict"; actualState: GuideAccessAttemptState };
 
+export type ResetGuideAccessReviewResult =
+  | { kind: "ready"; attempt: GuideAccessAttempt; token: GuideActionToken }
+  | { kind: "not_found" }
+  | { kind: "messaging_window_closed" }
+  | { kind: "delivering" };
+
 export interface GuideAccessRepository {
   createOrLoadAttempt(
     input: CreateGuideAccessAttemptInput,
@@ -293,6 +299,11 @@ export interface GuideAccessRepository {
     actor: string;
     now: Date;
   }): Promise<"released" | "not_found" | "delivering">;
+  resetReviewActionForConversation(input: {
+    conversationId: string;
+    actor: string;
+    now: Date;
+  }): Promise<ResetGuideAccessReviewResult>;
   settleCoverExposure(input: SettleCoverExposureInput): Promise<void>;
   findCoverSnapshot(coverVersionId: string): Promise<GuideAccessCoverSnapshot | null>;
 }
@@ -1152,6 +1163,75 @@ export function createGuideAccessRepository(
           },
         });
         return "released" as const;
+      });
+    },
+
+    async resetReviewActionForConversation(input) {
+      requireValidDate(input.now, "guide access owner resend time");
+      return database.$transaction(async (tx) => {
+        if (!(await lockConversation(tx, input.conversationId))) {
+          return { kind: "not_found" as const };
+        }
+        const active = await tx.guideAccessAttempt.findFirst({
+          where: {
+            conversationId: input.conversationId,
+            state: { in: [...ACTIVE_ATTEMPT_STATES] },
+          },
+          orderBy: { createdAt: "desc" },
+          select: { id: true },
+        });
+        if (!active) return { kind: "not_found" as const };
+        const attempt = await lockAttempt(tx, active.id);
+        if (!attempt || attempt.state !== "needs_review") {
+          return { kind: "not_found" as const };
+        }
+        if (attempt.lastFollowResult === "follower") {
+          return { kind: "delivering" as const };
+        }
+        if (attempt.messagingWindowExpiresAt <= input.now) {
+          await expireLockedAttempt(tx, attempt, input.now);
+          await tx.guideActionToken.updateMany({
+            where: { attemptId: attempt.id, status: "active" },
+            data: { status: "expired" },
+          });
+          return { kind: "messaging_window_closed" as const };
+        }
+
+        await tx.guideActionToken.updateMany({
+          where: { attemptId: attempt.id, status: "active" },
+          data: { status: "cancelled" },
+        });
+        const updated = await tx.guideAccessAttempt.update({
+          where: { id: attempt.id },
+          data: {
+            state: "awaiting_request",
+            lastFollowResult: "unknown",
+            lastFollowCheckedAt: null,
+            followCheckCount: 0,
+            followResponseCount: 0,
+          },
+        });
+        const token = await tx.guideActionToken.create({
+          data: {
+            id: idFactory(),
+            attemptId: attempt.id,
+            action: "request_guide",
+            expiresAt: attempt.messagingWindowExpiresAt,
+          },
+        });
+        await tx.eventLog.create({
+          data: {
+            kind: "guide_access_owner_action",
+            payload: {
+              actor: input.actor,
+              action: "resend_action",
+              conversationId: input.conversationId,
+              attemptId: attempt.id,
+              at: input.now.toISOString(),
+            },
+          },
+        });
+        return { kind: "ready" as const, attempt: updated, token };
       });
     },
 

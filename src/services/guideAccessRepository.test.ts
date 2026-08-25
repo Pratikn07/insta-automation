@@ -96,6 +96,10 @@ function harness(input: {
     guideAccessAttempt: {
       findFirst: vi.fn(async () => input.activeAttempt ?? null),
       create: vi.fn(async () => createdAttempt),
+      update: vi.fn(async (request: { data: Partial<GuideAccessAttempt> }) => ({
+        ...createdAttempt,
+        ...request.data,
+      })),
       updateMany: vi.fn(async () => ({ count: input.attemptUpdateCount ?? 1 })),
     },
     resourceCoverVersion: {
@@ -1068,6 +1072,59 @@ describe("releaseAttemptForConversation", () => {
     ).resolves.toBe("not_found");
 
     expect(test.tx.guideAccessAttempt.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("resetReviewActionForConversation", () => {
+  it("atomically resets a non-delivery review and creates a full-window opening token", async () => {
+    const review = attempt({
+      state: "needs_review",
+      lastFollowResult: "non_follower",
+      followCheckCount: 5,
+      followResponseCount: 3,
+    });
+    const test = harness({ activeAttempt: review, lockedAttempt: review });
+
+    await expect(
+      test.repository.resetReviewActionForConversation({
+        conversationId: CONVERSATION_ID,
+        actor: "owner@example.com",
+        now: NOW,
+      }),
+    ).resolves.toMatchObject({
+      kind: "ready",
+      attempt: { state: "awaiting_request", followCheckCount: 0, followResponseCount: 0 },
+      token: { action: "request_guide", expiresAt: WINDOW_EXPIRES_AT },
+    });
+    expect(test.tx.guideActionToken.updateMany).toHaveBeenCalledWith({
+      where: { attemptId: ATTEMPT_ID, status: "active" },
+      data: { status: "cancelled" },
+    });
+    expect(test.tx.eventLog.create).toHaveBeenCalledWith({
+      data: {
+        kind: "guide_access_owner_action",
+        payload: expect.objectContaining({
+          actor: "owner@example.com",
+          action: "resend_action",
+          conversationId: CONVERSATION_ID,
+          attemptId: ATTEMPT_ID,
+        }),
+      },
+    });
+  });
+
+  it("refuses a review that already reached delivery", async () => {
+    const review = attempt({ state: "needs_review", lastFollowResult: "follower" });
+    const test = harness({ activeAttempt: review, lockedAttempt: review });
+
+    await expect(
+      test.repository.resetReviewActionForConversation({
+        conversationId: CONVERSATION_ID,
+        actor: "owner@example.com",
+        now: NOW,
+      }),
+    ).resolves.toEqual({ kind: "delivering" });
+    expect(test.tx.guideActionToken.create).not.toHaveBeenCalled();
   });
 });
 

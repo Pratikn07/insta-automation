@@ -142,6 +142,7 @@ beforeAll(() => {
 afterEach(async () => {
   if (!databaseUrl || resourceIds.size === 0) return;
   const ids = [...resourceIds];
+  await firstClient.eventLog.deleteMany({ where: { kind: "guide_access_owner_action" } });
   await firstClient.guideAccessAttempt.deleteMany({ where: { resourceId: { in: ids } } });
   await firstClient.conversation.deleteMany({ where: { keyword: { resourceId: { in: ids } } } });
   await firstClient.keyword.deleteMany({ where: { resourceId: { in: ids } } });
@@ -759,5 +760,60 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
     await expect(
       firstClient.guideAccessAttempt.count({ where: { conversationId: fixture.conversationId } }),
     ).resolves.toBe(1);
+  });
+
+  it("atomically replaces a blocked review with one full-window request action", async () => {
+    const fixture = await createFixture();
+    const attempt = await createAttempt(fixture);
+    const original = await firstRepository.issueToken({
+      attemptId: attempt.id,
+      action: "request_guide",
+      now: NOW,
+      expiresAt: attempt.messagingWindowExpiresAt,
+    });
+    if (!("token" in original)) throw new Error("expected original token");
+    await firstClient.guideAccessAttempt.update({
+      where: { id: attempt.id },
+      data: {
+        state: "needs_review",
+        lastFollowResult: "non_follower",
+        followCheckCount: 5,
+        followResponseCount: 3,
+      },
+    });
+
+    const reset = await firstRepository.resetReviewActionForConversation({
+      conversationId: fixture.conversationId,
+      actor: "contract-owner",
+      now: new Date(NOW.getTime() + 60_000),
+    });
+
+    expect(reset.kind).toBe("ready");
+    if (reset.kind !== "ready") throw new Error("expected ready reset");
+    expect(reset.attempt).toMatchObject({
+      id: attempt.id,
+      state: "awaiting_request",
+      lastFollowResult: "unknown",
+      followCheckCount: 0,
+      followResponseCount: 0,
+    });
+    expect(reset.token.expiresAt).toEqual(attempt.messagingWindowExpiresAt);
+    await expect(
+      firstClient.guideActionToken.findUniqueOrThrow({ where: { id: original.token.id } }),
+    ).resolves.toMatchObject({ status: "cancelled" });
+    await expect(
+      firstClient.eventLog.findFirstOrThrow({
+        where: { kind: "guide_access_owner_action" },
+        orderBy: { createdAt: "desc" },
+      }),
+    ).resolves.toMatchObject({
+      payload: {
+        actor: "contract-owner",
+        action: "resend_action",
+        conversationId: fixture.conversationId,
+        attemptId: attempt.id,
+        at: new Date(NOW.getTime() + 60_000).toISOString(),
+      },
+    });
   });
 });

@@ -2,6 +2,7 @@ import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { CURRENT_DM_PROMPT_VERSION } from "../services/replyDraftPolicy.js";
+import { guideAccessReviewService } from "../services/guideAccessReviewService.js";
 import { asyncRouter } from "./asyncRouter.js";
 
 /**
@@ -167,6 +168,16 @@ dmThreadsRouter.get("/", async (req, res) => {
 
   const hasMore = rows.length > limit;
   const items = hasMore ? rows.slice(0, limit) : rows;
+  const accessReviews = await guideAccessReviewService.listForIgUsers(
+    items.map((item) => item.igUserId),
+  );
+  const accessReviewCounts = new Map<string, number>();
+  for (const review of accessReviews) {
+    accessReviewCounts.set(
+      review.igUserId,
+      (accessReviewCounts.get(review.igUserId) ?? 0) + 1,
+    );
+  }
 
   res.json({
     items: items.map(({ messages, drafts, _count, ...thread }) => ({
@@ -174,6 +185,7 @@ dmThreadsRouter.get("/", async (req, res) => {
       latestMessage: messages[0] ?? null,
       draft: serializeDraft(drafts[0]),
       deliveryReviewCount: _count.guideDeliveries,
+      accessReviewCount: accessReviewCounts.get(thread.igUserId) ?? 0,
     })),
     nextCursor: hasMore ? items[items.length - 1]!.id : null,
   });
@@ -215,11 +227,14 @@ dmThreadsRouter.get("/:threadId", async (req, res) => {
   });
   if (!thread) return res.status(404).json({ error: "not_found" });
 
+  const accessReviews = await guideAccessReviewService.listForIgUsers([thread.igUserId]);
+
   const { drafts, messages, guideDeliveries, ...rest } = thread;
   res.json({
     ...rest,
     messages: messages.reverse(),
     draft: serializeDraft(drafts[0]),
     deliveryReviews: guideDeliveries.map(serializeDeliveryReview),
+    accessReviews: accessReviews.map(({ igUserId: _, ...review }) => review),
   });
 });

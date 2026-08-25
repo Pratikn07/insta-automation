@@ -9,10 +9,14 @@ const reviewMocks = vi.hoisted(() => ({
   cancelGuideDelivery: vi.fn(),
 }));
 const releaseAttemptForConversation = vi.hoisted(() => vi.fn());
+const resendAccessAction = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/guideDeliveryReviewService.js", () => reviewMocks);
 vi.mock("../services/guideAccessRepository.js", () => ({
   guideAccessRepository: { releaseAttemptForConversation },
+}));
+vi.mock("../services/guideAccessReviewService.js", () => ({
+  guideAccessReviewService: { resendAction: resendAccessAction },
 }));
 
 const { guideDeliveriesRouter } = await import("./guideDeliveries.routes.js");
@@ -44,6 +48,7 @@ beforeEach(() => {
   reviewMocks.retryUncertainUnit.mockResolvedValue({ status: "processing_started" });
   reviewMocks.cancelGuideDelivery.mockResolvedValue({ status: "accepted" });
   releaseAttemptForConversation.mockReset().mockResolvedValue("released");
+  resendAccessAction.mockReset().mockResolvedValue("sent");
 });
 
 describe("guide delivery owner routes", () => {
@@ -202,5 +207,41 @@ describe("release requires an authenticated owner for its audit trail", () => {
       .expect(401, { error: "owner_auth_required" });
 
     expect(releaseAttemptForConversation).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/guide-deliveries/access/:conversationId/resend-action", () => {
+  const CONVERSATION = "90000000-0000-4000-8000-000000000009";
+  const base = `/api/guide-deliveries/access/${CONVERSATION}/resend-action`;
+
+  it("sends one fresh action only after the owner acknowledges duplicate risk", async () => {
+    await request(makeApp()).post(base).send({ acknowledgeDuplicateRisk: true }).expect(204);
+
+    expect(resendAccessAction).toHaveBeenCalledWith({
+      conversationId: CONVERSATION,
+      actor: OWNER,
+      now: expect.any(Date),
+    });
+  });
+
+  it("does not send without explicit acknowledgement", async () => {
+    await request(makeApp())
+      .post(base)
+      .send({ acknowledgeDuplicateRisk: false })
+      .expect(400, { error: "duplicate_risk_acknowledgement_required" });
+    expect(resendAccessAction).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["not_found", 404, "access_attempt_not_found"],
+    ["messaging_window_closed", 409, "messaging_window_closed"],
+    ["delivering", 409, "access_attempt_delivering"],
+    ["needs_review", 409, "access_attempt_needs_review"],
+  ] as const)("maps %s to a stable owner response", async (result, status, error) => {
+    resendAccessAction.mockResolvedValueOnce(result);
+    await request(makeApp())
+      .post(base)
+      .send({ acknowledgeDuplicateRisk: true })
+      .expect(status, { error });
   });
 });

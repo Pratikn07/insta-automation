@@ -8,6 +8,7 @@ import { Drawer } from "@/components/ui/drawer";
 import { IncomingBubble, OutgoingBubble } from "@/components/ChatBubbles";
 import { displayUser } from "@/lib/utils";
 import { GuideDeliveryReviewCard } from "./GuideDeliveryReviewCard";
+import { GuideAccessReviewCard } from "./GuideAccessReviewCard";
 import { ReplyDraftCard } from "./ReplyDraftCard";
 import { draftActionErrorMessage, isStale, isVisibleDraft } from "./replyDraftView";
 import { isUnknownOutcome } from "@/lib/unknownOutcome";
@@ -173,6 +174,13 @@ export function DmThreadDrawer({
               before the owner composes another reply into the same thread. */}
           {thread.deliveryReviews?.map((review) => (
             <GuideDeliveryReviewCard key={review.id} threadId={thread.id} review={review} />
+          ))}
+          {thread.accessReviews?.map((review) => (
+            <GuideAccessReviewCard
+              key={review.attemptId}
+              threadId={thread.id}
+              review={review}
+            />
           ))}
 
           {isVisibleDraft(draft) && draft && (
