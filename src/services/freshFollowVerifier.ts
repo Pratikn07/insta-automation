@@ -1,17 +1,7 @@
 import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
 import { graph } from "../meta/graphClient.js";
-import { describeGraphError } from "./eventLogger.js";
-
-// Graph error codes that mean "our credentials are broken", not "this parent's
-// status could not be read". 190 is an invalid/expired/invalidated access token;
-// 10 and the 200-299 band are permission/scope losses. All of them fail every
-// call at once, so they earn a distinct, louder error code than transient noise.
-const AUTH_FAILURE_GRAPH_CODES = new Set([10, 190]);
-function isAuthFailureCode(code: number | null): boolean {
-  if (code === null) return false;
-  return AUTH_FAILURE_GRAPH_CODES.has(code) || (code >= 200 && code <= 299);
-}
+import { graphErrorIsAuthFailure } from "./eventLogger.js";
 
 export const FRESH_FOLLOW_UNAVAILABLE_ERROR_CODES = [
   "fresh_follow_read_failed",
@@ -58,8 +48,7 @@ function unavailable(
  * read. That keeps the access token in the error's request config from reaching a log.
  */
 function classifyReadFailure(error: unknown): FreshFollowUnavailableErrorCode {
-  const { graphCode } = describeGraphError(error);
-  return isAuthFailureCode(graphCode) ? "fresh_follow_auth_failed" : "fresh_follow_read_failed";
+  return graphErrorIsAuthFailure(error) ? "fresh_follow_auth_failed" : "fresh_follow_read_failed";
 }
 
 /**

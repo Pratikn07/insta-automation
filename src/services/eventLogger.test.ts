@@ -11,7 +11,20 @@ vi.mock("../lib/logger.js", () => ({
   logger: { error: loggerError },
 }));
 
-const { describeGraphError, logEvent } = await import("./eventLogger.js");
+const { describeGraphError, graphErrorIsAuthFailure, logEvent } = await import("./eventLogger.js");
+
+function graphErrorWithCode(code: number): AxiosError {
+  const error = new AxiosError("graph failure", "ERR_BAD_REQUEST");
+  error.config = { headers: {} as never };
+  error.response = {
+    status: 400,
+    statusText: "Bad Request",
+    headers: {},
+    config: error.config,
+    data: { error: { code } },
+  };
+  return error;
+}
 
 const SENTINELS = [
   "PRIVATE-DM-SENTINEL",
@@ -111,6 +124,26 @@ describe("describeGraphError", () => {
     (error.response!.data as { error: { fbtrace_id: string } }).error.fbtrace_id =
       "PROVIDER-MESSAGE-SENTINEL with spaces";
     expect(describeGraphError(error)).toMatchObject({ traceId: null });
+  });
+});
+
+describe("graphErrorIsAuthFailure", () => {
+  it.each([190, 10, 200, 299])("treats Graph code %s as a credential failure", (code) => {
+    expect(graphErrorIsAuthFailure(graphErrorWithCode(code))).toBe(true);
+  });
+
+  it.each([100, 4, 613, 199, 300])("treats Graph code %s as a non-credential failure", (code) => {
+    expect(graphErrorIsAuthFailure(graphErrorWithCode(code))).toBe(false);
+  });
+
+  it("treats a transport error with no provider code as a non-credential failure", () => {
+    expect(
+      graphErrorIsAuthFailure(new AxiosError("socket hang up", "ECONNRESET")),
+    ).toBe(false);
+  });
+
+  it("treats a non-Graph error as a non-credential failure", () => {
+    expect(graphErrorIsAuthFailure(new Error("nope"))).toBe(false);
   });
 });
 

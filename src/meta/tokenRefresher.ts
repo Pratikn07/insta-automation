@@ -3,6 +3,7 @@ import { logger } from "../lib/logger.js";
 import { logEvent, describeGraphError } from "../services/eventLogger.js";
 import { getAccessToken, persistRefreshedToken, readTokenTiming } from "./tokenStore.js";
 import { isRefreshDue } from "./tokenStoreCore.js";
+import { probeTokenLiveness } from "./tokenLiveness.js";
 
 // The worker that keeps the Instagram token alive.
 //
@@ -87,6 +88,11 @@ export async function runTokenRefreshTick(now = new Date()): Promise<void> {
     const decision = isRefreshDue(timing, now.getTime());
     if (!decision.due) {
       logger.debug({ reason: decision.reason }, "token refresh not due");
+      // Refresh only reaches Meta when due (~weekly), so between refreshes an EARLY
+      // invalidation — a password change or revoke, which does not touch expires_at —
+      // would go unseen until the next refresh. A cheap /me probe every tick closes
+      // that window to hours. Non-throwing, so it can never disturb the tick.
+      await probeTokenLiveness();
       return;
     }
 
@@ -134,5 +140,11 @@ export async function runTokenRefreshTick(now = new Date()): Promise<void> {
       kind: outcome.kind,
       ...detail,
     });
+    // A refresh that fails because the token is invalidated or expired is the same
+    // operator emergency the liveness probe reports. Emit the shared health signal so
+    // readTokenHealth turns the dashboard red no matter which path detected it.
+    if (outcome.kind === "invalidated" || outcome.kind === "expired") {
+      await logEvent("ig_token_invalidated", { source: "refresh", ...detail });
+    }
   }
 }
