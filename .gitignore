@@ -28,16 +28,27 @@ prisma/migrations/dev.db*
 # is shared, and nothing here has ever been tracked.
 .claude/*
 
-# Exception: the graphify skill is shared project config, not session state, so
-# it is tracked. Everything else under .claude/ stays ignored by the rule above.
+# Exception: the graphify skill, the shared hook config and the SessionStart
+# hook are project config, not session state, so they are tracked. Everything
+# else under .claude/ stays ignored by the rule above (incl. settings.local.json).
 !.claude/CLAUDE.md
+!.claude/settings.json
+!.claude/hooks/
 !.claude/skills/
 .claude/skills/*
 !.claude/skills/graphify/
 
-# graphify's generated knowledge graph (graph.json/graph.html/GRAPH_REPORT.md).
-# Rebuilt locally with `graphify update .`; not worth versioning.
-graphify-out/
+# graphify's knowledge graph. Tracked so a fresh session can query it without a
+# rebuild; the SessionStart hook runs `graphify update .` to refresh it. Paths
+# inside graph.json are repo-relative, so it is portable across machines.
+# The local extraction cache, analysis scratch and .graphify_root are not
+# (.graphify_root stores the absolute path of the machine that built the graph).
+graphify-out/cache/
+graphify-out/.graphify_analysis.json
+graphify-out/.graphify_root
+# graphify snapshots the previous graph into a dated dir on every update; that
+# is a full ~6 MB copy per day, so keep the backups local.
+graphify-out/20*/
 
 # Impeccable decision-page session state. DESIGN.md and .impeccable/design.json
 # are design authority and are tracked; these are per-run scratch.
