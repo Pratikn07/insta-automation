@@ -33,7 +33,6 @@ import { recordGuideAccessMetric } from "./guideAccessMetrics.js";
 import { guideCoverDeliverySelector } from "./guideCoverDeliveryRollout.js";
 
 const STANDARD_DM_WINDOW_MS = 24 * 60 * 60 * 1_000;
-const ACTION_TOKEN_TTL_MS = 10 * 60 * 1_000;
 
 export type GuideAccessActionOutcome =
   | "action_consumed"
@@ -217,7 +216,6 @@ export type GuideAccessActionDependencies = {
     error(bindings: Record<string, unknown>, message: string): void;
   };
   now(): Date;
-  actionTokenTtlMs: number;
 };
 
 type AuthorizationContext = {
@@ -243,15 +241,6 @@ type ReviewableAttemptState = Exclude<
   "delivered" | "expired"
 >;
 
-function validateDependencies(dependencies: GuideAccessActionDependencies): void {
-  if (
-    !Number.isFinite(dependencies.actionTokenTtlMs) ||
-    dependencies.actionTokenTtlMs <= 0
-  ) {
-    throw new Error("invalid guide action token ttl");
-  }
-}
-
 function outcomeForState(state: GuideAccessAttemptState): GuideAccessActionOutcome {
   if (state === "delivering" || state === "delivered") {
     return "guide_delivery_already_started";
@@ -267,10 +256,6 @@ function outcomeForTransition(
   if (result.kind === "expired") return "action_expired";
   if (result.kind === "state_conflict") return outcomeForState(result.actualState);
   return "action_consumed";
-}
-
-function tokenExpiry(now: Date, windowExpiresAt: Date, ttlMs: number): Date {
-  return new Date(Math.min(now.getTime() + ttlMs, windowExpiresAt.getTime()));
 }
 
 /**
@@ -290,8 +275,6 @@ function isRetryableReview(attempt: GuideAccessAttempt): boolean {
 export function createGuideAccessActionService(
   dependencies: GuideAccessActionDependencies,
 ) {
-  validateDependencies(dependencies);
-
   async function checkpointNeedsReview(
     attemptId: string,
     candidateStates: ReviewableAttemptState | readonly ReviewableAttemptState[],
@@ -434,16 +417,15 @@ export function createGuideAccessActionService(
     | { kind: "ready"; tokenId: string }
     | { kind: "outcome"; outcome: GuideAccessActionOutcome }
   > {
-    // The messaging window, NOT the ten-minute action TTL.
+    // The complete messaging window. Every visible guide-access control follows the
+    // promise made to the parent; neither action has an independent ten-minute expiry.
     //
     // A follow token has to outlive the errand it asks for. Every message carrying one tells
     // the parent to leave Instagram, follow the account, and come back — and at ten minutes
     // the tap that comes back was silently refused as expired, with nothing sent. The copy
     // even says "wait a little", which is an instruction to exceed it.
     //
-    // The opening's `request_guide` token keeps `actionTokenTtlMs`: it asks for nothing but a
-    // tap, so a short life is right there. This one is bounded by the window, which is the
-    // outer limit on being able to say anything at all.
+    // The messaging window remains the outer limit on being able to answer at all.
     const expiresAt = attempt.messagingWindowExpiresAt;
     if (expiresAt <= now) return { kind: "outcome", outcome: "action_expired" };
 
@@ -1024,6 +1006,7 @@ export function createGuideAccessActionService(
         tokenId,
         action,
         senderId,
+        eventAt,
         now: dependencies.now(),
       });
     } catch {
@@ -1281,7 +1264,7 @@ export function createGuideAccessActionService(
         attemptId: attempt.id,
         action: "request_guide",
         now,
-        expiresAt: tokenExpiry(now, windowExpiresAt, dependencies.actionTokenTtlMs),
+        expiresAt: attempt.messagingWindowExpiresAt,
       });
     } catch {
       dependencies.logger.error(
@@ -1470,7 +1453,6 @@ const defaultService = createGuideAccessActionService({
     return token?.attemptId ?? null;
   },
   now: () => new Date(),
-  actionTokenTtlMs: ACTION_TOKEN_TTL_MS,
   logger,
 });
 

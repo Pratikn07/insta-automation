@@ -500,7 +500,6 @@ function createHarness(input: {
     findAttemptIdByToken,
     logger,
     now: () => NOW,
-    actionTokenTtlMs: 10 * 60_000,
   });
 
   return {
@@ -669,6 +668,20 @@ describe("strict live authorization matrix", () => {
 });
 
 describe("request and follow action orchestration", () => {
+  it("passes the signed provider event time separately from processing time", async () => {
+    const test = createHarness({ freshResults: [live(true)] });
+
+    await expect(request(test)).resolves.toBe("guide_delivery_started");
+
+    expect(test.repository.consumeToken).toHaveBeenCalledWith({
+      tokenId: REQUEST_TOKEN_ID,
+      action: "request_guide",
+      senderId: SENDER_ID,
+      eventAt: EVENT_AT,
+      now: NOW,
+    });
+  });
+
   it("fences awaiting-follow, rotates a check token, and sends the approved gate for fresh false", async () => {
     const test = createHarness({ freshResults: [live(false)] });
 
@@ -1732,9 +1745,12 @@ describe("comment guide request", () => {
     await expect(comment(test)).resolves.toBe("guide_opening_sent");
 
     expect(test.repository.issueToken).toHaveBeenCalledTimes(1);
-    expect(test.repository.issueToken).toHaveBeenCalledWith(
-      expect.objectContaining({ attemptId: ATTEMPT_ID, action: "request_guide" }),
-    );
+    expect(test.repository.issueToken).toHaveBeenCalledWith({
+      attemptId: ATTEMPT_ID,
+      action: "request_guide",
+      now: NOW,
+      expiresAt: WINDOW_END,
+    });
     expect(test.sendInitialPrivateReply).toHaveBeenCalledTimes(1);
     expect(test.sendInitialPrivateReply).toHaveBeenCalledWith(
       expect.objectContaining({

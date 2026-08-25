@@ -300,6 +300,7 @@ describe("guide access repository", () => {
         tokenId: TOKEN_ID,
         action: "request_guide",
         senderId: "different-sender",
+        eventAt: NOW,
         now: NOW,
       }),
     ).resolves.toEqual({ kind: "wrong_sender" });
@@ -315,6 +316,7 @@ describe("guide access repository", () => {
         tokenId: TOKEN_ID,
         action: "check_follow",
         senderId: SENDER_ID,
+        eventAt: NOW,
         now: NOW,
       }),
     ).resolves.toEqual({ kind: "wrong_action" });
@@ -328,6 +330,7 @@ describe("guide access repository", () => {
         tokenId: TOKEN_ID,
         action: "request_guide",
         senderId: SENDER_ID,
+        eventAt: NOW,
         now: NOW,
       }),
     ).resolves.toEqual({ kind: "state_conflict", actualState: "awaiting_follow" });
@@ -341,6 +344,7 @@ describe("guide access repository", () => {
         tokenId: TOKEN_ID,
         action: "request_guide",
         senderId: SENDER_ID,
+        eventAt: NOW,
         now: NOW,
       }),
     ).resolves.toEqual({ kind: "expired" });
@@ -349,6 +353,29 @@ describe("guide access repository", () => {
       data: { status: "expired" },
     });
     expect(test.tx.guideAccessAttempt.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("accepts an in-window provider action when webhook processing is delayed", async () => {
+    const eventAt = new Date(WINDOW_EXPIRES_AT.getTime() - 1);
+    const processingAt = new Date(WINDOW_EXPIRES_AT.getTime() + 60_000);
+    const test = harness({
+      lockedAttempt: attempt({ messagingWindowExpiresAt: WINDOW_EXPIRES_AT }),
+      lockedToken: token({ expiresAt: WINDOW_EXPIRES_AT }),
+    });
+
+    await expect(
+      test.repository.consumeToken({
+        tokenId: TOKEN_ID,
+        action: "request_guide",
+        senderId: SENDER_ID,
+        eventAt,
+        now: processingAt,
+      }),
+    ).resolves.toMatchObject({ kind: "consumed" });
+    expect(test.tx.guideActionToken.updateMany).toHaveBeenCalledWith({
+      where: { id: TOKEN_ID, status: "active" },
+      data: { status: "consumed", consumedAt: processingAt },
+    });
   });
 
   it("expires the attempt and token together when the messaging window closes", async () => {
@@ -361,6 +388,7 @@ describe("guide access repository", () => {
         tokenId: TOKEN_ID,
         action: "request_guide",
         senderId: SENDER_ID,
+        eventAt: NOW,
         now: NOW,
       }),
     ).resolves.toEqual({ kind: "expired" });
@@ -386,6 +414,7 @@ describe("guide access repository", () => {
         tokenId: TOKEN_ID,
         action: "request_guide",
         senderId: SENDER_ID,
+        eventAt: NOW,
         now: NOW,
       }),
     ).resolves.toMatchObject({ kind: "consumed" });
@@ -432,6 +461,7 @@ describe("guide access repository", () => {
       tokenId: TOKEN_ID,
       action: "request_guide",
       senderId: SENDER_ID,
+      eventAt: NOW,
       now: NOW,
     });
 
@@ -446,6 +476,7 @@ describe("guide access repository", () => {
         tokenId: TOKEN_ID,
         action: "request_guide",
         senderId: SENDER_ID,
+        eventAt: NOW,
         now: NOW,
       }),
     ).resolves.toEqual({ kind: "already_consumed" });
@@ -460,6 +491,7 @@ describe("guide access repository", () => {
         tokenId: TOKEN_ID,
         action: "request_guide",
         senderId: SENDER_ID,
+        eventAt: NOW,
         now: NOW,
       }),
     ).resolves.toEqual({ kind: "state_conflict", actualState: "awaiting_request" });

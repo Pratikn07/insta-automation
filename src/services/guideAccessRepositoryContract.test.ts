@@ -238,6 +238,7 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
       tokenId: issued.token.id,
       action: "request_guide" as const,
       senderId: fixture.senderId,
+      eventAt: new Date(NOW.getTime() + 1_000),
       now: new Date(NOW.getTime() + 1_000),
     };
 
@@ -255,6 +256,33 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
       status: "consumed",
       consumedAt: input.now,
     });
+  });
+
+  it("uses provider event time when webhook processing crosses the window boundary", async () => {
+    const fixture = await createFixture();
+    const windowExpiresAt = new Date(NOW.getTime() + 10 * 60_000);
+    const attempt = await createAttempt(fixture, windowExpiresAt);
+    const issued = await firstRepository.issueToken({
+      attemptId: attempt.id,
+      action: "request_guide",
+      now: NOW,
+      expiresAt: windowExpiresAt,
+    });
+    if (!("token" in issued)) throw new Error("expected token");
+    const processingAt = new Date(windowExpiresAt.getTime() + 60_000);
+
+    await expect(
+      firstRepository.consumeToken({
+        tokenId: issued.token.id,
+        action: "request_guide",
+        senderId: fixture.senderId,
+        eventAt: new Date(windowExpiresAt.getTime() - 1),
+        now: processingAt,
+      }),
+    ).resolves.toMatchObject({ kind: "consumed" });
+    await expect(
+      firstClient.guideActionToken.findUniqueOrThrow({ where: { id: issued.token.id } }),
+    ).resolves.toMatchObject({ status: "consumed", consumedAt: processingAt });
   });
 
   it("claims one direct inbound UUID exactly once under concurrent replay", async () => {
@@ -337,6 +365,7 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
         tokenId: firstToken.token.id,
         action: "check_follow",
         senderId: fixture.senderId,
+        eventAt: new Date(NOW.getTime() + 2_000),
         now: new Date(NOW.getTime() + 2_000),
       }),
     ).resolves.toEqual({ kind: "expired" });
@@ -358,6 +387,7 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
         tokenId: issued.token.id,
         action: "request_guide",
         senderId: fixture.senderId,
+        eventAt: NOW,
         now: NOW,
       }),
     ).resolves.toEqual({ kind: "expired" });

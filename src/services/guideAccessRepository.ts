@@ -99,6 +99,9 @@ export type ConsumeGuideActionTokenInput = {
   tokenId: string;
   action: GuideActionTokenAction;
   senderId: string;
+  /** Signed provider event time: decides whether the parent acted inside the window. */
+  eventAt: Date;
+  /** Server processing time: used only for durable row timestamps and leases. */
   now: Date;
 };
 
@@ -578,6 +581,7 @@ export function createGuideAccessRepository(
     },
 
     async consumeToken(input) {
+      requireValidDate(input.eventAt, "guide action provider event time");
       requireValidDate(input.now, "guide action consumption time");
       try {
         return await database.$transaction(async (tx) => {
@@ -596,7 +600,7 @@ export function createGuideAccessRepository(
           if (token.status === "consumed") return { kind: "already_consumed" as const };
           if (token.status !== "active") return { kind: "expired" as const };
           if (token.action !== input.action) return { kind: "wrong_action" as const };
-          if (attempt.messagingWindowExpiresAt <= input.now) {
+          if (attempt.messagingWindowExpiresAt <= input.eventAt) {
             await expireLockedAttempt(tx, attempt, input.now);
             await tx.guideActionToken.updateMany({
               where: { id: token.id, status: "active" },
@@ -604,7 +608,7 @@ export function createGuideAccessRepository(
             });
             return { kind: "expired" as const };
           }
-          if (token.expiresAt <= input.now) {
+          if (token.expiresAt <= input.eventAt) {
             await tx.guideActionToken.updateMany({
               where: { id: token.id, status: "active" },
               data: { status: "expired" },
@@ -624,7 +628,7 @@ export function createGuideAccessRepository(
               id: attempt.id,
               state: expectedState,
               followCheckCount: { lt: GUIDE_ACCESS_MAX_FOLLOW_CHECKS },
-              messagingWindowExpiresAt: { gt: input.now },
+              messagingWindowExpiresAt: { gt: input.eventAt },
             },
             data: {
               state: "checking_follow",
