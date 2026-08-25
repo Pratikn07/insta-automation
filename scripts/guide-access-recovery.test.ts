@@ -66,6 +66,37 @@ describe("guide access recovery classification", () => {
     expect(audit.candidates.map((row) => row.kind)).toEqual(["swallowed_opening_action"]);
   });
 
+  // A token that was already acted on is not evidence of a swallowed tap, whatever its
+  // expiry says. This surfaced for real on 2026-08-25: an owner `resendAction` puts the
+  // attempt back into `awaiting_request`, and the classifier then re-flagged that parent's
+  // long-consumed 10-minute token as needing a replay. Replaying a consumed token cannot
+  // help the parent and sends an operator after somebody who has already been handled.
+  it.each(["consumed", "cancelled"] as const)(
+    "ignores a %s opening token when looking for swallowed taps",
+    (status) => {
+      const audit = classifyRecoveryCandidates([
+        attempt({
+          state: "awaiting_request",
+          lastFollowResult: "unknown",
+          followCheckCount: 0,
+          followResponseCount: 0,
+          tokens: [{
+            id: "token-private",
+            action: "request_guide",
+            status,
+            expiresAt: new Date("2026-08-24T16:40:00.000Z"),
+            createdAt: new Date("2026-08-24T16:30:00.000Z"),
+          }],
+          inboundMessages: [{
+            id: "inbound-private",
+            eventAt: new Date("2026-08-24T17:00:00.000Z"),
+          }],
+        }),
+      ], NOW, START);
+      expect(audit.candidates).toHaveLength(0);
+    },
+  );
+
   it("finds logically expired tokens still labelled active", () => {
     const audit = classifyRecoveryCandidates([
       attempt({

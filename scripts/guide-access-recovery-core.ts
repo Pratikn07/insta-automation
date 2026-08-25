@@ -137,6 +137,13 @@ export function classifyRecoveryCandidates(
       .filter(
         (token) =>
           token.action === "request_guide" &&
+          // Already acted on, so not a swallowed tap however short its expiry looks.
+          // `consumed` means the parent's tap WAS processed; `cancelled` means an owner
+          // resend superseded it. Excluding both matters because a resend also returns the
+          // attempt to `awaiting_request`, which would otherwise re-flag that parent's old
+          // ten-minute token forever. The real incident tokens are all `expired`.
+          token.status !== "consumed" &&
+          token.status !== "cancelled" &&
           token.expiresAt <= now &&
           token.expiresAt < attempt.messagingWindowExpiresAt,
       )
