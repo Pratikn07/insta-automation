@@ -163,6 +163,13 @@ The source documents were checked on 2026-08-13 and 2026-08-14 against older com
 | Approved design, 2026-08-07 | Settings-failure fallback, journey deduplication/reconciliation, and historical recovery | Materially shipped before this canonical register; the remaining production reconciliation decision is `REL-005` |
 | Owner request, 2026-08-20 | Context-aware public comment engagement using follower history | `GROW-008` |
 | Branch design, 2026-08-09 | Explicit save behavior in the sequence editor | `REL-006` |
+| OpenReply audit, 2026-08-25 | Comment reconciliation sweep against the Graph API | `REL-007` |
+| OpenReply audit, 2026-08-25 | Pre-send private-reply rate ceiling | `REL-008` |
+| OpenReply audit, 2026-08-25 | Worker heartbeat and staleness surfacing | `REL-009` |
+| OpenReply audit, 2026-08-25 | Ad-derived `original_media_id` on comment webhooks | `REL-010` |
+| OpenReply audit, 2026-08-25 | Tracked links, click records, and CTR | `GROW-009` |
+| OpenReply audit, 2026-08-25 | Public reply variant pool | `GROW-010`; supplies arms for `GROW-001` |
+| OpenReply audit, 2026-08-25 | `{username}` substitution in outbound copy | `GROW-011` |
 
 ## Portfolio index
 
@@ -176,6 +183,10 @@ The source documents were checked on 2026-08-13 and 2026-08-14 against older com
 | `REL-004` | Rebuild Conversations as one actionable queue and one person view | Candidate — mockups and behavior rules; no spec | M–L | Owner currently scans fragmented object lists instead of people |
 | `REL-005` | Apply or explicitly decline journey reconciliation | Needs decision — pending production action | Ops | Shipped reconciliation code remains inert without an owner-approved write |
 | `REL-006` | Explicit sequence-editor saves | In progress — unmerged branch | Integration | Approved behavior is implemented on a divergent branch but absent from `main` |
+| `REL-007` | Reconcile comments the webhook never delivered | Candidate — confirmed blind spot; gap unmeasured | S then M | Comments Meta never delivers are invisible forever, and every funnel rate is computed over an arrived sample |
+| `REL-008` | Ceiling on private replies before the call | Candidate — behavior confirmed reactive | S | The one hot-path limit discovered by being refused rather than enforced locally |
+| `REL-009` | Liveness for the background workers | Candidate — confirmed observability gap | S | A stopped worker is currently indistinguishable from a quiet period |
+| `REL-010` | Comments that arrive with an ad's media id | Candidate — latent until a reel is promoted | S | A first paid promotion would silently disable the keyword on the promoted reel |
 
 ### Growth and funnel experiments
 
@@ -189,6 +200,9 @@ The source documents were checked on 2026-08-13 and 2026-08-14 against older com
 | `GROW-006` | Broadcast-channel invitation | Needs decision — destination and copy unresolved | S | Invites warm guide recipients into an owned recurring audience |
 | `GROW-007` | Parent ambassador and referral pilot | Candidate | M pilot; L platform | Tests higher-commitment advocacy with observable outcomes |
 | `GROW-008` | Context-aware public comment engagement | Candidate — focused design required | M–L | Uses prior relationship context to make public guide replies feel attentive without exposing private DM facts |
+| `GROW-009` | Tracked links and post-delivery click attribution | Candidate — measurement gap confirmed | S then M | Every funnel currently ends at delivery; nothing observes whether a guide was opened |
+| `GROW-010` | Rotate public acknowledgement copy | Candidate — mechanism absent | S | One fixed string per keyword is the shape duplicate filtering looks for, and the dependency `GROW-001` needs |
+| `GROW-011` | Personalize gate and guide copy with the commenter's name | Candidate — capability present, unused | S | The username is already stored and never used in outbound copy |
 
 ### Parent value and retention
 
@@ -885,6 +899,126 @@ Start in shadow or owner-reviewed mode for one or two guide topics and 50–100 
 
 ---
 
+## GROW-009 — Tracked links and post-delivery click attribution
+
+**Source:** OpenReply audit, 2026-08-25
+
+**State:** Candidate — measurement gap confirmed in code; no design.
+
+**Size:** Small (Slice A), Medium (Slice B).
+
+### Problem
+
+Every funnel this console reports ends at delivery. `/funnels` can say a guide was sent and that a messaging window closed. It cannot say whether anyone opened what was sent. For guides delivered as a link rather than an attached image or PDF, the final step of the parent journey is unmeasured.
+
+There is no tracked-link concept in the server. Searching `src/` for `trackedLink`, `shortlink`, `click`, or `utm` returns nothing on the delivery path.
+
+### Reference implementation
+
+`diwenne/openreply` (MIT) stores `TrackedLink { slug, destinationUrl, automationId }` and `LinkClick { trackedLinkId, ipHash, userAgent, referrer, createdAt }`, rewrites a `{link}` token in outbound copy to `https://<host>/r/<slug>` at send time, and serves `/r/[slug]` as a 302 that records the click first. Its rate helper caps the ratio at 100% because repeat taps and link-preview fetchers can produce more clicks than sends.
+
+### Proposed direction
+
+- **Slice A — record.** Two tables, a `/r/:slug` redirect route, and `{link}` substitution in the sequence sender. Nothing in the console changes; evidence accrues so a later report is not built on zero rows.
+- **Slice B — report.** Add an opened stage to the existing cohort funnels, rendered through `GuardedNumber` and `Caveat`, because a click is weaker evidence than a provider receipt.
+
+### Decisions required
+
+- Whether a redirect this console serves is acceptable in guide copy at all, when the destination is usually the owner's own asset.
+- Whether click evidence is retained per person and joinable to a conversation, or only in aggregate per keyword. Per-person is more useful and is also the more sensitive record.
+- Retention period for `ipHash`, user agent, and referrer.
+
+### Acceptance criteria
+
+- A tracked redirect resolves to its destination even when the click write fails. Measurement must never break delivery.
+- Repeat clicks and preview fetchers cannot push a reported rate above 100%.
+- Click-sourced funnel stages are visually distinguishable from receipt-sourced stages.
+- No click evidence enters the Assistant's readable surface unless that is separately approved.
+
+### Relationship to other work
+
+Distinct from `GROW-001` and `GROW-002`, which measure replies and recovery rather than what happens after a guide lands. Both gain a stronger terminal outcome if this ships first.
+
+---
+
+## GROW-010 — Rotate public acknowledgement copy
+
+**Source:** OpenReply audit, 2026-08-25
+
+**State:** Candidate — mechanism absent; effect size unmeasured.
+
+**Size:** Small.
+
+### Problem
+
+`commentHandler` posts `keyword.publicReply`, one fixed string per keyword, under every matching comment. A reel that gathers hundreds of keyword comments therefore carries hundreds of byte-identical replies from the account. That is the shape platform duplicate-content filtering looks for, and it is also the shape a reader recognises as automated.
+
+We have no evidence that Instagram is currently filtering these replies. We also have no way to detect it, because a filtered reply is still returned as accepted by the API.
+
+### Reference implementation
+
+OpenReply keeps `publicReplyMessages String[]` on the campaign and picks one uniformly at random per comment, falling back to the single legacy string when the pool is empty.
+
+### Proposed direction
+
+Add a variant pool to `Keyword`, keep the existing single string as the fallback so no stored configuration changes meaning, select uniformly at random, and record which variant fired on the existing `public_reply_sent` event so the choice is auditable.
+
+### Decisions required
+
+- Whether variants are authored per keyword or drawn from a small shared Tiny SOHO pool.
+- Whether random selection is acceptable, or whether every public-copy choice must be deterministic and attributable to a policy.
+- Whether this ships as plain rotation or as the delivery mechanism for `GROW-001`'s arms.
+
+### Acceptance criteria
+
+- An empty pool reproduces today's behavior exactly.
+- The exact posted text stays auditable per comment.
+- Selection is recorded before the provider call, so an uncertain outcome still names the text that may have been posted.
+
+### Relationship to other work
+
+`GROW-001` is an A/B test of what the public reply should say. This is the mechanism for holding more than one string at all, and would be a dependency of that test rather than a competitor to it. Rotation alone answers no growth question.
+
+---
+
+## GROW-011 — Personalize gate and guide copy with the commenter's name
+
+**Source:** OpenReply audit, 2026-08-25
+
+**State:** Candidate — capability present, unused.
+
+**Size:** Small.
+
+### Problem
+
+No outbound copy in this system addresses the person by name. Searching the sequence sender, the comment gate copy, and the guide access copy for a name placeholder returns nothing. The username is already available: `rememberUsername` stores it from the comment webhook and `IgUser` retains it.
+
+### Reference implementation
+
+OpenReply substitutes `{username}` at render time with a neutral fallback (`there`) when the name is unknown, in both the private reply and the public reply.
+
+### Proposed direction
+
+One placeholder, substituted at render time, with an explicit fallback that reads naturally rather than leaving an empty slot.
+
+### Decisions required
+
+- Whether an Instagram handle is the right thing to greet a parent by, given that handles are frequently not names.
+- The fallback wording when no username was captured.
+- Whether personalization belongs in public replies as well, where the name is visible to everyone reading the post.
+
+### Acceptance criteria
+
+- A missing username never renders a literal placeholder or an empty gap.
+- Substitution happens at render, so queued retries re-render rather than replaying a stale string.
+- Length checks run after substitution, against `IG_TEXT_CHAR_LIMIT` counted by codepoint.
+
+### Relationship to other work
+
+Independent of `PARENT-001`, which asks the parent a question and personalizes on the answer. This one is cosmetic and cheap; that one is the real retention lever. This must not be mistaken for progress on it.
+
+---
+
 # Reliability and operational correctness
 
 ## REL-001 — Complete the person timeline
@@ -1502,6 +1636,179 @@ The branch also contains extensive unrelated and later work. Do not merge it who
 ### Dependencies and conflicts
 
 This feature depends on the current sequence editor, save-status component, shared message-length policy, and router architecture. It may conflict with later interface migrations on `main`; resolve those conflicts deliberately instead of reverting newer UI work.
+
+---
+
+## REL-007 — Reconcile comments the webhook never delivered
+
+**Source:** OpenReply audit, 2026-08-25
+
+**State:** Candidate — confirmed structural blind spot; gap size unmeasured.
+
+**Size:** Small (Slice A), Medium (Slice B).
+
+### Problem
+
+Every recovery path in this system reads evidence the system already recorded. `keywordBackfillService.backfillKeyword` scans `eventLog` rows of kind `comment_received`. DM recovery and historical recovery select from conversations and journeys that a webhook created. Nothing ever asks Instagram which comments exist.
+
+`src/meta/` calls `/{ig-user-id}/media`, `/{comment-id}/replies`, and `/{ig-user-id}/messages`. It never calls `/{media-id}/comments`. Meta documents comment webhooks as best-effort, and comments collapsed behind "load more", comments from low-signal accounts, and anything the account's Hidden Words filter removes are known omissions. A comment whose webhook was never delivered is therefore not recovered late — it is never seen at all. The person is never gated, never messaged, never counted in a denominator, and never appears in a drop-off.
+
+That has a second consequence the funnels depend on: every rate in `/funnels` is computed over the comments that arrived, not the comments that happened. If webhook delivery is lossy, the console is reporting a biased sample with full confidence. The size of that bias is currently unknown and unknowable from stored data alone.
+
+### Reference implementation
+
+`diwenne/openreply` (MIT) runs a narrow sweep on an interval. For each active campaign it reads recent comments on that campaign's media, keeps only comments that match the keyword and that the account owner has not already replied to, caps the number enqueued per sweep so a viral post drains gradually instead of bursting into a rate-limited comment API, and hands the survivors to the same worker the webhook path uses. Its notes record that Hidden Words removals may not be returned by the Graph API at all, which the sweep documents rather than solves.
+
+### Proposed direction
+
+- **Slice A — measure before building anything.** `MEDIA_FIELDS` in `src/meta/fetchMedia.ts` does not request `comments_count`. Add it, and for each media with an active keyword compare Instagram's reported count against the distinct `comment_received` events recorded for that media. Record the divergence as an operational event and surface nothing. This costs one field on a call already being made, and one week of that number decides whether Slice B is worth building or whether webhook delivery is effectively complete.
+- **Slice B — sweep, only if Slice A shows a real gap.** Add a comment-listing call to the Graph client and a paced worker that resolves unseen matching comments through `resolveJourneyIntent` and the existing gate queue. Reuse, do not duplicate, the live path's idempotency: the per-keyword conversation guard and `claimComment` already make re-processing safe.
+
+### Safety boundary
+
+Meta's private-reply window is seven days from the comment, which `PRIVATE_REPLY_WINDOW_MS` already encodes. A sweep must not enqueue anything outside that window, must respect the same audience and follow policies as the live path, and must never post a public acknowledgement under a comment the owner has already answered by hand. A per-sweep cap is not tuning; without it a viral reel turns one missed webhook into hundreds of comment-API calls.
+
+### Decisions required
+
+- Whether the sweep may act at all, or whether a measured gap should instead be surfaced for the owner to work manually in `/activity`.
+- The lookback window and per-sweep cap, given that recovered comments are by definition older than live ones.
+- Whether recovered conversations are marked with their origin so funnel cohorts can separate webhook-sourced from sweep-sourced people. They should be; `originClassifier` already carries this concept.
+
+### Acceptance criteria
+
+- Slice A adds no new Graph call and changes no behavior.
+- The gap metric is retained per media and per day so a trend is visible, not just a snapshot.
+- A comment the owner already replied to is never touched by the sweep.
+- A comment already handled by the live path cannot produce a second gate, proven by test against the existing journey guard.
+- Every sweep records what it examined, matched, skipped, and enqueued.
+
+### Relationship to other work
+
+Distinct from `keywordBackfillService`, which recovers people we saw but had no keyword for at the time. This recovers people we never saw. Both feed the same gate queue. `REL-005` remains the separate question of whether reconciliation may write at all.
+
+---
+
+## REL-008 — Ceiling on private replies before the call, not after the refusal
+
+**Source:** OpenReply audit, 2026-08-25
+
+**State:** Candidate — behavior confirmed reactive; no incident on record.
+
+**Size:** Small.
+
+### Problem
+
+The gate queue is a recovery mechanism: a private reply is attempted, Meta refuses it, `enqueueGate` records the failure, and the worker retries with backoff inside the seven-day window. That is sound, and it has been carrying real traffic. What does not exist is anything that declines to make the call in the first place. The system discovers the ceiling by being refused by it.
+
+`PRODUCT.md` already states that rate limits are load-bearing rather than tuning. This is the one limit on the hottest path that is not enforced locally.
+
+### Reference implementation
+
+OpenReply reserves a send slot atomically before every private reply against Meta's documented cap of 750 private replies per hour per professional account, requeues the overflow on a fixed delay for a bounded number of attempts, and records an exhausted attempt as a distinct `SKIPPED_RATE_LIMIT` state rather than a failure. Its own note records that the cap is a hard ceiling with no headroom, and that other calls sharing the bucket are a reason to set it lower.
+
+### Proposed direction
+
+An hour-bucketed reservation in Postgres, taken before the send and released if the send is abandoned, with exhaustion recorded as its own state so `/activity` distinguishes "we chose not to send yet" from "Meta refused us". No new infrastructure: a single counter row per hour with a conditional update is enough at this volume, and adding Redis for it would be a larger change than the problem justifies.
+
+### Decisions required
+
+- The local ceiling. Meta's documented figure is a maximum, not a target, and comment replies and follow checks share the account's budget.
+- Whether an exhausted hour delays the gate or drops it for that hour and lets the existing queue carry it.
+- Whether the ceiling is global or per surface, given that recovery workers already have their own hourly and daily caps.
+
+### Acceptance criteria
+
+- A reservation is released on every abandonment path, so an abandoned send cannot silently consume the hour's budget.
+- Reservation failure never loses the gate; it defers it.
+- The bucket cannot be double-spent under concurrent workers, proven by test.
+- Deferred-by-ceiling is reported as its own state, never as a Meta failure.
+
+### Relationship to other work
+
+Complements the gate queue rather than replacing it: refusals from Meta remain possible and still need recovery. Related to `REL-007` only in that a sweep raises send volume and makes a ceiling more valuable.
+
+---
+
+## REL-009 — Liveness for the background workers
+
+**Source:** OpenReply audit, 2026-08-25
+
+**State:** Candidate — confirmed observability gap.
+
+**Size:** Small.
+
+### Problem
+
+`startBackgroundWorkers` registers well over a dozen `setInterval` workers in the single server process: gate retry, snapshots, feed-follow snapshots, Gemini queue, follow recheck, follow-through, token refresh, AI drafts, reply-draft recovery, guide delivery, cover cleanup, and three recovery workers. Nothing reports whether any of them is still running.
+
+`/activity` shows events that happened. A worker that stops happening produces no event, so its silence is indistinguishable from a quiet period. `deploymentHealth` attests to a deployment artifact, not to liveness. The failure mode is a worker that stops on an unhandled rejection and is noticed days later by the absence of the work it was supposed to do.
+
+### Reference implementation
+
+OpenReply writes a worker heartbeat with a TTL and derives health from the heartbeat's age, keeps a capped ring buffer of recent worker alerts, and renders both next to queue depth on a diagnostics page.
+
+### Proposed direction
+
+A heartbeat row per worker name recording last start, last finish, last error, and the interval it expects to run at. Staleness is derived, not stored. Surface it in the existing `AutomationHealthStrip` on `/activity` rather than as a new destination — the information architecture is settled at eleven destinations and this does not earn a twelfth.
+
+### Decisions required
+
+- Whether a stale worker is shown to the owner as a plain fact or as an alert requiring action.
+- Whether the token refresher, whose failure eventually stops everything, warrants distinct treatment.
+- Whether staleness thresholds are per worker or a fixed multiple of each declared interval.
+
+### Acceptance criteria
+
+- A worker that never starts is reported as missing, not as healthy.
+- The heartbeat write cannot fail a worker's actual run.
+- A worker that runs but does nothing is distinguishable from one that has stopped running.
+- The strip degrades to a plain unknown state when heartbeat data is unavailable, rather than reporting health.
+
+### Relationship to other work
+
+Independent of every growth item. It is a prerequisite for trusting any statement of the form "nothing happened", which several funnels and the Assistant both make.
+
+---
+
+## REL-010 — Comments that arrive with an ad's media id
+
+**Source:** OpenReply audit, 2026-08-25
+
+**State:** Candidate — latent; triggers only if a reel with attached keywords is promoted.
+
+**Size:** Small.
+
+### Problem
+
+Keyword matching is post-strict by design: `findKeywordForComment` loads the keywords attached to the comment's media, and a post that has any keyword attached never falls back to a global. That rule is what stops one reel's guide from answering another reel's comment, and it is correct.
+
+It depends on the media id in the webhook being the post the keyword is attached to. `CommentValue` in `src/types/meta.ts` reads `media.id` and nothing else. A comment left on a promoted version of a post carries the ad's media id, not the source post's, so the post's keywords would not be found. The comment then either matches a global or matches nothing, silently, with no signal that a boosted reel has stopped answering.
+
+Nothing in production has hit this, because nothing has been boosted. It is registered so that a first paid promotion does not quietly disable the keyword on the reel being promoted.
+
+### Reference implementation
+
+OpenReply's webhook parser reads `value.media.original_media_id` alongside `value.media.id` and matches campaigns against both, treating them as one id when they are equal.
+
+### Proposed direction
+
+Carry `original_media_id` through `CommentValue`, and let post-scoped lookup consider both ids. Prefer the source post when both resolve.
+
+### Decisions required
+
+- Whether a promoted post's comments should be treated as the same audience as the organic post's for the purposes of the audience policy in `GROW-003`.
+- Whether ad-sourced comments are labelled distinctly in conversations and funnels. They are a different acquisition channel and pooling them silently would corrupt reel-level attribution.
+
+### Acceptance criteria
+
+- A comment carrying only a media id behaves exactly as today.
+- A comment carrying both ids resolves to the source post's keywords.
+- Equal ids are not treated as two distinct posts.
+- Origin remains recoverable per conversation.
+
+### Relationship to other work
+
+Prerequisite for any paid promotion of a reel that carries a keyword. Interacts with `INSIGHT-002` if Trial Reels are ever used, since those also change how a post is addressed.
 
 ---
 
@@ -2652,6 +2959,7 @@ This canonical backlog consolidates:
 - The 2026-08-07 settings-fallback, journey-reconciliation, and historical-recovery design, whose materially shipped work is retained in the delivered/closed sections and whose remaining write decision maps to `REL-005`.
 - The 2026-08-20 audit of every visible local/remote Git ref, linked physical worktree, and branch-only Markdown design or plan.
 - The owner's 2026-08-20 request for history-aware public follower engagement.
+- The 2026-08-25 comparative audit of `diwenne/openreply` (MIT), an open-source Instagram comment-to-DM tool at commit `99dce56`, read for capabilities this system lacks. Seven ideas were registered as `REL-007` through `REL-010` and `GROW-009` through `GROW-011`. Capabilities examined and deliberately not registered are recorded in that audit's summary: multi-tenant workspaces and roles, plan/usage caps, a campaign template library, shareable client report links, SEO landing surfaces, and a BullMQ/Redis queue migration — all of which serve a multi-customer product this one is not.
 
 All 24 source IDs from the three historical registers map to a canonical item above. The cross-ref/worktree audit added `REL-006`; the owner conversation added `GROW-008`. No additional untracked feature register was found. Recent documents that described implementations, runbooks, QA, or operating decisions were not duplicated as new feature ideas unless they introduced a distinct product behavior.
 
