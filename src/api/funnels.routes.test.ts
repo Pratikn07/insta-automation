@@ -130,7 +130,7 @@ describe("GET /api/funnels/guide-access-metrics", () => {
       pct: 20,
     });
     // Aggregate-only all the way to the wire.
-    expect(JSON.stringify(res.body)).not.toMatch(/igUserId|username|http|token/i);
+    expect(JSON.stringify(res.body)).not.toMatch(/igUserId|username|http|tokenId|"token":/i);
   });
 
 
@@ -161,7 +161,9 @@ describe("GET /api/funnels/guide-access-metrics", () => {
       },
       totalEvents: 4,
     });
-    expect(JSON.stringify(res.body)).not.toMatch(/sender|username|token|copy|url|resource/i);
+    expect(JSON.stringify(res.body)).not.toMatch(
+      /sender|username|tokenId|"token":|copy|url|resource/i,
+    );
   });
 
   it("applies the same bounded date-window validation", async () => {

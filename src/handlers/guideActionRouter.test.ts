@@ -27,10 +27,14 @@ function makeRouter(input: {
     .fn()
     .mockResolvedValue(input.checkOutcome ?? "follow_not_confirmed");
   const logger = { error: vi.fn() };
+  const presentOutcome = vi.fn().mockResolvedValue("guide_flow_continued");
+  const recordAction = vi.fn().mockResolvedValue(undefined);
   const route = createGuideActionRouter({
     loadAction,
     requestGuideFromAction,
     checkFollowFromAction,
+    presentOutcome,
+    recordAction,
     logger,
   });
 
@@ -39,6 +43,7 @@ function makeRouter(input: {
     loadAction,
     requestGuideFromAction,
     checkFollowFromAction,
+    presentOutcome,
     logger,
   };
 }
@@ -75,9 +80,16 @@ describe("createGuideActionRouter", () => {
         payload: GUIDE_ACTION_PAYLOAD,
         senderId: SENDER_ID,
         inboundMessageId: INBOUND_MESSAGE_ID,
+        eventId: INBOUND_MESSAGE_ID,
+        source: "quick_reply",
         eventAt: EVENT_AT,
       }),
-    ).resolves.toEqual({ kind: "handled", outcome: "guide_delivery_started" });
+    ).resolves.toEqual({
+      kind: "handled",
+      action: "request_guide",
+      outcome: "guide_delivery_started",
+      presentation: "guide_flow_continued",
+    });
 
     expect(test.loadAction).toHaveBeenCalledOnce();
     expect(test.loadAction).toHaveBeenCalledWith(GUIDE_ACTION_TOKEN);
@@ -87,8 +99,41 @@ describe("createGuideActionRouter", () => {
       SENDER_ID,
       INBOUND_MESSAGE_ID,
       EVENT_AT,
+      INBOUND_MESSAGE_ID,
+      "quick_reply",
     );
     expect(test.checkFollowFromAction).not.toHaveBeenCalled();
+    expect(test.presentOutcome).toHaveBeenCalledOnce();
+    expect(test.presentOutcome).toHaveBeenCalledWith({
+      eventId: INBOUND_MESSAGE_ID,
+      tokenId: GUIDE_ACTION_TOKEN,
+      senderId: SENDER_ID,
+      action: "request_guide",
+      outcome: "guide_delivery_started",
+      eventAt: EVENT_AT,
+    });
+  });
+
+  it("presents an exact duplicate webhook as a no-send outcome", async () => {
+    const test = makeRouter({ action: "request_guide" });
+    test.requestGuideFromAction.mockResolvedValue("duplicate_event");
+    test.presentOutcome.mockResolvedValue("none_duplicate_webhook");
+
+    await expect(
+      test.route({
+        payload: GUIDE_ACTION_PAYLOAD,
+        senderId: SENDER_ID,
+        eventId: INBOUND_MESSAGE_ID,
+        source: "quick_reply",
+        inboundMessageId: INBOUND_MESSAGE_ID,
+        eventAt: EVENT_AT,
+      }),
+    ).resolves.toMatchObject({
+      kind: "handled",
+      outcome: "duplicate_event",
+      presentation: "none_duplicate_webhook",
+    });
+    expect(test.presentOutcome).toHaveBeenCalledOnce();
   });
 
   it("routes check-follow once and uses the token UUID as a safe postback trigger", async () => {
@@ -98,9 +143,16 @@ describe("createGuideActionRouter", () => {
       test.route({
         payload: GUIDE_ACTION_PAYLOAD,
         senderId: SENDER_ID,
+        eventId: INBOUND_MESSAGE_ID,
+        source: "postback",
         eventAt: EVENT_AT,
       }),
-    ).resolves.toEqual({ kind: "handled", outcome: "follow_not_confirmed" });
+    ).resolves.toEqual({
+      kind: "handled",
+      action: "check_follow",
+      outcome: "follow_not_confirmed",
+      presentation: "guide_flow_continued",
+    });
 
     expect(test.checkFollowFromAction).toHaveBeenCalledOnce();
     expect(test.checkFollowFromAction).toHaveBeenCalledWith(
@@ -108,6 +160,8 @@ describe("createGuideActionRouter", () => {
       SENDER_ID,
       GUIDE_ACTION_TOKEN,
       EVENT_AT,
+      INBOUND_MESSAGE_ID,
+      "postback",
     );
     expect(test.requestGuideFromAction).not.toHaveBeenCalled();
   });
@@ -128,9 +182,11 @@ describe("createGuideActionRouter", () => {
         payload: GUIDE_ACTION_PAYLOAD,
         senderId: SENDER_ID,
         inboundMessageId: INBOUND_MESSAGE_ID,
+        eventId: INBOUND_MESSAGE_ID,
+        source: "quick_reply",
         eventAt: EVENT_AT,
       }),
-    ).resolves.toEqual({ kind: "handled", outcome });
+    ).resolves.toMatchObject({ kind: "handled", action, outcome });
 
     expect(
       test.requestGuideFromAction.mock.calls.length +
@@ -146,6 +202,8 @@ describe("createGuideActionRouter", () => {
         payload: `unregistered:action:${GUIDE_ACTION_TOKEN}`,
         senderId: SENDER_ID,
         inboundMessageId: INBOUND_MESSAGE_ID,
+        eventId: INBOUND_MESSAGE_ID,
+        source: "quick_reply",
         eventAt: EVENT_AT,
       }),
     ).resolves.toEqual({ kind: "ignored" });
@@ -163,9 +221,16 @@ describe("createGuideActionRouter", () => {
         payload: GUIDE_ACTION_PAYLOAD,
         senderId: SENDER_ID,
         inboundMessageId: INBOUND_MESSAGE_ID,
+        eventId: INBOUND_MESSAGE_ID,
+        source: "quick_reply",
         eventAt: EVENT_AT,
       }),
-    ).resolves.toEqual({ kind: "handled", outcome: "action_expired" });
+    ).resolves.toEqual({
+      kind: "handled",
+      action: null,
+      outcome: "action_invalid",
+      presentation: "none_invalid_action",
+    });
 
     expect(test.requestGuideFromAction).not.toHaveBeenCalled();
     expect(test.checkFollowFromAction).not.toHaveBeenCalled();
@@ -180,9 +245,16 @@ describe("createGuideActionRouter", () => {
         payload: GUIDE_ACTION_PAYLOAD,
         senderId: SENDER_ID,
         inboundMessageId: INBOUND_MESSAGE_ID,
+        eventId: INBOUND_MESSAGE_ID,
+        source: "quick_reply",
         eventAt: EVENT_AT,
       }),
-    ).resolves.toEqual({ kind: "handled", outcome: "access_attempt_needs_review" });
+    ).resolves.toEqual({
+      kind: "handled",
+      action: null,
+      outcome: "action_invalid",
+      presentation: "none_invalid_action",
+    });
 
     expect(JSON.stringify(test.logger.error.mock.calls)).not.toContain(GUIDE_ACTION_TOKEN);
     expect(test.requestGuideFromAction).not.toHaveBeenCalled();

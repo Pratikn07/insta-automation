@@ -33,9 +33,10 @@ import { recordGuideAccessMetric } from "./guideAccessMetrics.js";
 import { guideCoverDeliverySelector } from "./guideCoverDeliveryRollout.js";
 
 const STANDARD_DM_WINDOW_MS = 24 * 60 * 60 * 1_000;
-const ACTION_TOKEN_TTL_MS = 10 * 60 * 1_000;
 
 export type GuideAccessActionOutcome =
+  | "duplicate_event"
+  | "action_invalid"
   | "action_consumed"
   | "action_replayed"
   | "action_expired"
@@ -217,7 +218,6 @@ export type GuideAccessActionDependencies = {
     error(bindings: Record<string, unknown>, message: string): void;
   };
   now(): Date;
-  actionTokenTtlMs: number;
 };
 
 type AuthorizationContext = {
@@ -243,15 +243,6 @@ type ReviewableAttemptState = Exclude<
   "delivered" | "expired"
 >;
 
-function validateDependencies(dependencies: GuideAccessActionDependencies): void {
-  if (
-    !Number.isFinite(dependencies.actionTokenTtlMs) ||
-    dependencies.actionTokenTtlMs <= 0
-  ) {
-    throw new Error("invalid guide action token ttl");
-  }
-}
-
 function outcomeForState(state: GuideAccessAttemptState): GuideAccessActionOutcome {
   if (state === "delivering" || state === "delivered") {
     return "guide_delivery_already_started";
@@ -267,10 +258,6 @@ function outcomeForTransition(
   if (result.kind === "expired") return "action_expired";
   if (result.kind === "state_conflict") return outcomeForState(result.actualState);
   return "action_consumed";
-}
-
-function tokenExpiry(now: Date, windowExpiresAt: Date, ttlMs: number): Date {
-  return new Date(Math.min(now.getTime() + ttlMs, windowExpiresAt.getTime()));
 }
 
 /**
@@ -290,8 +277,6 @@ function isRetryableReview(attempt: GuideAccessAttempt): boolean {
 export function createGuideAccessActionService(
   dependencies: GuideAccessActionDependencies,
 ) {
-  validateDependencies(dependencies);
-
   async function checkpointNeedsReview(
     attemptId: string,
     candidateStates: ReviewableAttemptState | readonly ReviewableAttemptState[],
@@ -434,16 +419,15 @@ export function createGuideAccessActionService(
     | { kind: "ready"; tokenId: string }
     | { kind: "outcome"; outcome: GuideAccessActionOutcome }
   > {
-    // The messaging window, NOT the ten-minute action TTL.
+    // The complete messaging window. Every visible guide-access control follows the
+    // promise made to the parent; neither action has an independent ten-minute expiry.
     //
     // A follow token has to outlive the errand it asks for. Every message carrying one tells
     // the parent to leave Instagram, follow the account, and come back — and at ten minutes
     // the tap that comes back was silently refused as expired, with nothing sent. The copy
     // even says "wait a little", which is an instruction to exceed it.
     //
-    // The opening's `request_guide` token keeps `actionTokenTtlMs`: it asks for nothing but a
-    // tap, so a short life is right there. This one is bounded by the window, which is the
-    // outer limit on being able to say anything at all.
+    // The messaging window remains the outer limit on being able to answer at all.
     const expiresAt = attempt.messagingWindowExpiresAt;
     if (expiresAt <= now) return { kind: "outcome", outcome: "action_expired" };
 
@@ -1017,13 +1001,18 @@ export function createGuideAccessActionService(
     senderId: string,
     inboundMessageId: string,
     eventAt: Date,
+    eventId: string,
+    source: "quick_reply" | "postback",
   ): Promise<GuideAccessActionOutcome> {
-    let consumed;
+    let claimed;
     try {
-      consumed = await dependencies.repository.consumeToken({
+      claimed = await dependencies.repository.claimActionEvent({
+        eventId,
         tokenId,
+        source,
         action,
         senderId,
+        eventAt,
         now: dependencies.now(),
       });
     } catch {
@@ -1055,52 +1044,48 @@ export function createGuideAccessActionService(
       return review.outcome;
     }
 
-    if (consumed.kind === "already_consumed") return "action_replayed";
+    if (claimed.kind === "duplicate_event") return "duplicate_event";
     if (
-      consumed.kind === "not_found" ||
-      consumed.kind === "wrong_sender" ||
-      consumed.kind === "wrong_action" ||
-      consumed.kind === "expired"
+      claimed.kind === "not_found" ||
+      claimed.kind === "wrong_sender" ||
+      claimed.kind === "wrong_action"
     ) {
-      return "action_expired";
+      return "action_invalid";
     }
-    if (consumed.kind === "state_conflict") {
-      return outcomeForState(consumed.actualState);
-    }
-    if (consumed.kind === "check_limit_reached") {
-      let attemptId: string | null;
-      try {
-        attemptId = await dependencies.findAttemptIdByToken(tokenId);
-      } catch {
-        dependencies.logger.error(
-          { errorCode: "guide_action_limit_lookup_failed" },
-          "Guide action limit lookup failed",
-        );
-        return "access_attempt_needs_review";
+    if (claimed.kind === "check_limit_reached") {
+      if (
+        claimed.attempt.state === "delivered" ||
+        claimed.attempt.state === "expired" ||
+        claimed.attempt.state === "needs_review"
+      ) {
+        return outcomeForState(claimed.attempt.state);
       }
-      if (!attemptId) return "action_expired";
       const review = await checkpointNeedsReview(
-        attemptId,
-        "awaiting_follow",
+        claimed.attempt.id,
+        claimed.attempt.state,
         "follow_check_limit_reached",
         dependencies.now(),
       );
       return review.outcome;
     }
 
+    if (!claimed.checkClaimed || claimed.attempt.state !== "checking_follow") {
+      return outcomeForState(claimed.attempt.state);
+    }
+
     try {
       return await authorizeClaimed({
-        attempt: consumed.attempt,
+        attempt: claimed.attempt,
         senderId,
         triggerKind: action === "check_follow" ? "follow_recovery" : "inbound_reply",
-        triggerId: action === "check_follow" ? tokenId : inboundMessageId,
+        triggerId: eventId,
         threadLookupId: inboundMessageId,
         triggeredAt: eventAt,
         falseResponse: action === "check_follow" ? "lag" : "gate",
       });
     } catch {
       const review = await checkpointNeedsReview(
-        consumed.attempt.id,
+        claimed.attempt.id,
         ["checking_follow", "awaiting_follow", "delivering"],
         "post_consumption_orchestration_failed",
       );
@@ -1113,8 +1098,18 @@ export function createGuideAccessActionService(
     senderId: string,
     inboundMessageId: string,
     eventAt: Date,
+    eventId = inboundMessageId,
+    source: "quick_reply" | "postback" = "quick_reply",
   ): Promise<GuideAccessActionOutcome> {
-    return consumeAction("request_guide", tokenId, senderId, inboundMessageId, eventAt);
+    return consumeAction(
+      "request_guide",
+      tokenId,
+      senderId,
+      inboundMessageId,
+      eventAt,
+      eventId,
+      source,
+    );
   }
 
   async function checkFollowFromAction(
@@ -1122,8 +1117,18 @@ export function createGuideAccessActionService(
     senderId: string,
     inboundMessageId: string,
     eventAt: Date,
+    eventId = inboundMessageId,
+    source: "quick_reply" | "postback" = "quick_reply",
   ): Promise<GuideAccessActionOutcome> {
-    return consumeAction("check_follow", tokenId, senderId, inboundMessageId, eventAt);
+    return consumeAction(
+      "check_follow",
+      tokenId,
+      senderId,
+      inboundMessageId,
+      eventAt,
+      eventId,
+      source,
+    );
   }
 
   async function startDirectDmGuideRequest(
@@ -1281,7 +1286,7 @@ export function createGuideAccessActionService(
         attemptId: attempt.id,
         action: "request_guide",
         now,
-        expiresAt: tokenExpiry(now, windowExpiresAt, dependencies.actionTokenTtlMs),
+        expiresAt: attempt.messagingWindowExpiresAt,
       });
     } catch {
       dependencies.logger.error(
@@ -1470,7 +1475,6 @@ const defaultService = createGuideAccessActionService({
     return token?.attemptId ?? null;
   },
   now: () => new Date(),
-  actionTokenTtlMs: ACTION_TOKEN_TTL_MS,
   logger,
 });
 

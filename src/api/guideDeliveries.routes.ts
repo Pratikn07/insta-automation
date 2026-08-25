@@ -8,6 +8,7 @@ import {
   type GuideDeliveryReviewResult,
 } from "../services/guideDeliveryReviewService.js";
 import { guideAccessRepository } from "../services/guideAccessRepository.js";
+import { guideAccessReviewService } from "../services/guideAccessReviewService.js";
 import { asyncRouter } from "./asyncRouter.js";
 
 export const guideDeliveriesRouter = asyncRouter();
@@ -153,6 +154,36 @@ guideDeliveriesRouter.post("/access/:conversationId/release", async (req, res) =
     // would open a new attempt and send a second guide while the first is still in flight.
     // Cancelling the delivery releases its own attempt correctly.
     return res.status(409).json({ error: "access_attempt_delivering" });
+  }
+  return res.status(204).end();
+});
+
+guideDeliveriesRouter.post("/access/:conversationId/resend-action", async (req, res) => {
+  const actor = owner(req, res);
+  if (!actor) return;
+  const params = accessParamsSchema.safeParse(req.params);
+  if (!params.success) return res.status(404).json({ error: "access_attempt_not_found" });
+  const body = retryBodySchema.safeParse(req.body);
+  if (!body.success) {
+    return res.status(400).json({ error: "duplicate_risk_acknowledgement_required" });
+  }
+
+  const result = await guideAccessReviewService.resendAction({
+    conversationId: params.data.conversationId,
+    actor,
+    now: new Date(),
+  });
+  if (result === "not_found") {
+    return res.status(404).json({ error: "access_attempt_not_found" });
+  }
+  if (result === "messaging_window_closed") {
+    return res.status(409).json({ error: "messaging_window_closed" });
+  }
+  if (result === "delivering") {
+    return res.status(409).json({ error: "access_attempt_delivering" });
+  }
+  if (result === "needs_review") {
+    return res.status(409).json({ error: "access_attempt_needs_review" });
   }
   return res.status(204).end();
 });

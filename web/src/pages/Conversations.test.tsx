@@ -283,7 +283,7 @@ describe("Conversations lenses", () => {
 describe("guide delivery review in Conversations", () => {
   const THREAD_ID = "44444444-4444-4444-8444-444444444444";
 
-  function threadRow(deliveryReviewCount: number) {
+  function threadRow(deliveryReviewCount: number, accessReviewCount = 0) {
     return {
       id: THREAD_ID,
       igUserId: "ig-99",
@@ -303,8 +303,23 @@ describe("guide delivery review in Conversations", () => {
       },
       draft: null,
       deliveryReviewCount,
+      accessReviewCount,
     };
   }
+
+  const ACCESS_REVIEW = {
+    attemptId: "66666666-6666-4666-8666-666666666666",
+    conversationId: "77777777-7777-4777-8777-777777777777",
+    resourceName: "Toddler sleep guide",
+    state: "needs_review",
+    lastFollowResult: "unknown",
+    followCheckCount: 5,
+    followResponseCount: 3,
+    messagingWindowExpiresAt: "2026-08-25T10:00:00.000Z",
+    messagingWindowOpen: true,
+    canRelease: true,
+    canResendAction: true,
+  };
 
   const REVIEW = {
     id: "55555555-5555-4555-8555-555555555555",
@@ -321,17 +336,18 @@ describe("guide delivery review in Conversations", () => {
     ],
   };
 
-  function mockDmThreads(reviewCount: number) {
+  function mockDmThreads(reviewCount: number, accessReviewCount = 0) {
     api.mockImplementation((path: string) => {
       const p = String(path);
       if (p.startsWith("/dm-threads?")) {
-        return Promise.resolve({ items: [threadRow(reviewCount)], nextCursor: null });
+        return Promise.resolve({ items: [threadRow(reviewCount, accessReviewCount)], nextCursor: null });
       }
       if (p === `/dm-threads/${THREAD_ID}`) {
         return Promise.resolve({
-          ...threadRow(reviewCount),
+          ...threadRow(reviewCount, accessReviewCount),
           messages: [],
           deliveryReviews: reviewCount > 0 ? [REVIEW] : [],
+          accessReviews: accessReviewCount > 0 ? [ACCESS_REVIEW] : [],
         });
       }
       if (p.startsWith("/keywords")) return Promise.resolve([]);
@@ -371,5 +387,20 @@ describe("guide delivery review in Conversations", () => {
     expect(await screen.findByText("1 of 3 messages confirmed")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Already delivered" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Cancel delivery" })).toBeEnabled();
+  });
+
+  it("badges and opens an access review independently of delivery review", async () => {
+    mockDmThreads(0, 1);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole("button", { name: "DMs" }));
+    expect(await screen.findByText("Guide access needs review")).toBeInTheDocument();
+    await user.click(await screen.findByText("@geri"));
+
+    expect(await screen.findByText(/Toddler sleep guide · 5 access checks · 3 follow responses/i))
+      .toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Resend action" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Release request" })).toBeEnabled();
   });
 });

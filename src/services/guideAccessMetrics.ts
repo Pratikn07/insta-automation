@@ -10,7 +10,7 @@ const MAX_LATENCY_MS = 7 * 24 * 60 * 60 * 1_000;
 
 export const GUIDE_ACCESS_OUTCOMES = {
   opening: ["accepted", "failed", "uncertain"],
-  action: ["received", "replayed", "expired", "unsupported"],
+  action: ["received", "duplicate", "replayed", "expired", "recovered", "unsupported"],
   // NOTE: every outcome above and below must have a writer. See the test that enforces it.
   fresh_check: ["follower", "non_follower", "unavailable"],
   // `shown` only. `profile_action_offered` was declared here and could never be written:
@@ -203,7 +203,46 @@ export interface GuideAccessMetricsResult {
   coverRates: GuideCoverRates;
   totalEvents: number;
   ownerReviewEvents: number;
+  health: GuideAccessHealth;
 }
+
+export interface GuideAccessHealth {
+  awaitingRequest: number;
+  awaitingFollow: number;
+  needsReview: number;
+  logicallyExpiredActiveTokens: number;
+  oldestNeedsReviewAt: string | null;
+}
+
+type HealthRow = {
+  awaitingRequest: unknown;
+  awaitingFollow: unknown;
+  needsReview: unknown;
+  logicallyExpiredActiveTokens: unknown;
+  oldestNeedsReviewAt: unknown;
+};
+
+export const GUIDE_ACCESS_HEALTH_SQL = `
+SELECT
+  COUNT(*) FILTER (WHERE attempt.state = 'awaiting_request')::bigint AS "awaitingRequest",
+  COUNT(*) FILTER (WHERE attempt.state = 'awaiting_follow')::bigint AS "awaitingFollow",
+  COUNT(*) FILTER (WHERE attempt.state = 'needs_review')::bigint AS "needsReview",
+  MIN(attempt.updated_at) FILTER (WHERE attempt.state = 'needs_review') AS "oldestNeedsReviewAt",
+  (
+    SELECT COUNT(*)::bigint
+    FROM guide_action_token token
+    WHERE token.status = 'active'
+      AND token.expires_at <= $1::timestamptz
+  ) AS "logicallyExpiredActiveTokens"
+FROM guide_access_attempt attempt
+WHERE attempt.state IN (
+  'awaiting_request',
+  'checking_follow',
+  'awaiting_follow',
+  'delivering',
+  'needs_review'
+)
+`.trim();
 
 /**
  * The reader's allowlist, DERIVED from the writer's vocabulary rather than restated.
@@ -336,6 +375,7 @@ function knownOutcome(
 export async function runGuideAccessMetrics(
   db: GuideAccessMetricsDb,
   window: GuideAccessMetricsWindow,
+  now = new Date(),
 ): Promise<GuideAccessMetricsResult> {
   const rows = await db.$queryRawUnsafe<AggregateRow[]>(
     AGGREGATE_SQL,
@@ -343,6 +383,9 @@ export async function runGuideAccessMetrics(
     window.to,
   );
   const counts = emptyCounts();
+  const healthRows =
+    (await db.$queryRawUnsafe<HealthRow[]>(GUIDE_ACCESS_HEALTH_SQL, now)) ?? [];
+  const healthRow = healthRows[0];
   const latenciesMs = Object.fromEntries(
     STAGES.map((stage) => [stage, emptyLatency()]),
   ) as Record<GuideAccessMetricStage, GuideAccessLatencySummary>;
@@ -383,6 +426,21 @@ export async function runGuideAccessMetrics(
     coverRates: coverRates(counts),
     totalEvents,
     ownerReviewEvents: counts.needs_review.marked,
+    health: {
+      awaitingRequest: safeCount(healthRow?.awaitingRequest),
+      awaitingFollow: safeCount(healthRow?.awaitingFollow),
+      needsReview: safeCount(healthRow?.needsReview),
+      logicallyExpiredActiveTokens: safeCount(
+        healthRow?.logicallyExpiredActiveTokens,
+      ),
+      oldestNeedsReviewAt:
+        healthRow?.oldestNeedsReviewAt instanceof Date
+          ? healthRow.oldestNeedsReviewAt.toISOString()
+          : typeof healthRow?.oldestNeedsReviewAt === "string" &&
+              Number.isFinite(new Date(healthRow.oldestNeedsReviewAt).getTime())
+            ? new Date(healthRow.oldestNeedsReviewAt).toISOString()
+            : null,
+    },
   };
 }
 

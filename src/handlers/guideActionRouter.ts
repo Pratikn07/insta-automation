@@ -7,6 +7,10 @@ import {
   requestGuideFromAction,
   type GuideAccessActionOutcome,
 } from "../services/guideAccessActionService.js";
+import {
+  presentGuideActionOutcome,
+  type GuideActionOutcomePresentation,
+} from "../services/guideActionOutcomeService.js";
 
 const GUIDE_ACTION_PAYLOAD_RE =
   /^ts:guide:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
@@ -18,13 +22,25 @@ type GuideActionRouterDependencies = {
     senderId: string,
     inboundMessageId: string,
     eventAt: Date,
+    eventId: string,
+    source: "quick_reply" | "postback",
   ): Promise<GuideAccessActionOutcome>;
   checkFollowFromAction(
     tokenId: string,
     senderId: string,
     inboundMessageId: string,
     eventAt: Date,
+    eventId: string,
+    source: "quick_reply" | "postback",
   ): Promise<GuideAccessActionOutcome>;
+  presentOutcome(input: {
+    eventId: string;
+    tokenId: string;
+    senderId: string;
+    action: GuideActionTokenAction;
+    outcome: GuideAccessActionOutcome;
+    eventAt: Date;
+  }): Promise<GuideActionOutcomePresentation>;
   logger: {
     error(bindings: Record<string, unknown>, message: string): void;
   };
@@ -35,12 +51,22 @@ type GuideActionRouterDependencies = {
    * vocabulary with nothing writing them, which reads as a permanent zero rather than as
    * "no parent has tapped a control yet".
    */
-  recordAction(outcome: "received" | "unsupported"): Promise<void>;
+  recordAction(
+    outcome:
+      | "received"
+      | "duplicate"
+      | "replayed"
+      | "expired"
+      | "recovered"
+      | "unsupported",
+  ): Promise<void>;
 };
 
 export type GuideActionRouteInput = {
   payload: unknown;
   senderId: string;
+  eventId: string;
+  source: "quick_reply" | "postback";
   /** Internal DmMessage UUID for quick replies; postbacks intentionally omit it. */
   inboundMessageId?: string;
   eventAt: Date;
@@ -48,7 +74,12 @@ export type GuideActionRouteInput = {
 
 export type GuideActionRouteResult =
   | { kind: "ignored" }
-  | { kind: "handled"; outcome: GuideAccessActionOutcome };
+  | {
+      kind: "handled";
+      action: GuideActionTokenAction | null;
+      outcome: GuideAccessActionOutcome;
+      presentation: GuideActionOutcomePresentation;
+    };
 
 export function parseGuideActionPayload(payload: unknown): { tokenId: string } | null {
   if (typeof payload !== "string") return null;
@@ -59,7 +90,13 @@ export function parseGuideActionPayload(payload: unknown): { tokenId: string } |
 /** Measurement must never fail a parent's tap. */
 async function countAction(
   dependencies: GuideActionRouterDependencies,
-  outcome: "received" | "unsupported",
+  outcome:
+    | "received"
+    | "duplicate"
+    | "replayed"
+    | "expired"
+    | "recovered"
+    | "unsupported",
 ): Promise<void> {
   try {
     await dependencies.recordAction(outcome);
@@ -87,9 +124,21 @@ export function createGuideActionRouter(dependencies: GuideActionRouterDependenc
         { errorCode: "guide_action_type_lookup_failed" },
         "Guide action type lookup failed",
       );
-      return { kind: "handled", outcome: "access_attempt_needs_review" };
+      return {
+        kind: "handled",
+        action: null,
+        outcome: "action_invalid",
+        presentation: "none_invalid_action",
+      };
     }
-    if (!action) return { kind: "handled", outcome: "action_expired" };
+    if (!action) {
+      return {
+        kind: "handled",
+        action: null,
+        outcome: "action_invalid",
+        presentation: "none_invalid_action",
+      };
+    }
 
     // A postback has no persisted inbound DmMessage UUID. The opaque token UUID
     // is safe as both the thread lookup miss and the durable follow-recovery
@@ -102,15 +151,38 @@ export function createGuideActionRouter(dependencies: GuideActionRouterDependenc
             input.senderId,
             inboundMessageId,
             input.eventAt,
+            input.eventId,
+            input.source,
           )
         : await dependencies.checkFollowFromAction(
             parsed.tokenId,
             input.senderId,
             inboundMessageId,
             input.eventAt,
+            input.eventId,
+            input.source,
           );
 
-    return { kind: "handled", outcome };
+    const presentation = await dependencies.presentOutcome({
+      eventId: input.eventId,
+      tokenId: parsed.tokenId,
+      senderId: input.senderId,
+      action,
+      outcome,
+      eventAt: input.eventAt,
+    });
+
+    if (outcome === "duplicate_event") await countAction(dependencies, "duplicate");
+    if (outcome === "action_replayed") await countAction(dependencies, "replayed");
+    if (outcome === "action_expired") await countAction(dependencies, "expired");
+    if (
+      presentation === "fresh_opening_sent" ||
+      presentation === "fresh_follow_action_sent"
+    ) {
+      await countAction(dependencies, "recovered");
+    }
+
+    return { kind: "handled", action, outcome, presentation };
   };
 }
 
@@ -125,6 +197,7 @@ export const routeGuideAction = createGuideActionRouter({
   recordAction: async (outcome) => {
     await recordGuideAccessMetric("action", outcome);
   },
+  presentOutcome: presentGuideActionOutcome,
   requestGuideFromAction,
   checkFollowFromAction,
   logger,

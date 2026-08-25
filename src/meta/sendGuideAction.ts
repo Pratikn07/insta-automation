@@ -139,6 +139,57 @@ export async function sendGuideInitialPrivateReply(input: {
   );
 }
 
+export async function sendGuideRecoveryAction(input: {
+  recipientId: string;
+  action: "request_guide" | "check_follow";
+  actionToken: string;
+  capabilities: GuideActionCapabilities;
+}): Promise<MetaSendResult> {
+  const token = requiredOpaqueActionToken(input.actionToken);
+  const rich = Boolean(input.capabilities.dmQuickReply);
+  const text =
+    input.action === "request_guide"
+      ? rich
+        ? guideAccessCopy.expiredOpening
+        : guideAccessCopy.expiredOpeningText
+      : rich
+        ? guideAccessCopy.expiredFollow
+        : guideAccessCopy.expiredFollowText;
+
+  const message = rich
+    ? {
+        text,
+        quick_replies: [
+          {
+            content_type: "text" as const,
+            title: input.action === "request_guide" ? "Yes, send it" : "I'm following",
+            payload: `ts:guide:${token}`,
+          },
+        ],
+      }
+    : { text };
+
+  return sendMetaMessage(
+    {
+      recipient: { id: input.recipientId },
+      messaging_type: "RESPONSE",
+      message,
+    },
+    {
+      recipientId: input.recipientId,
+      mode:
+        input.action === "request_guide"
+          ? rich
+            ? "dm_recovery_request"
+            : "dm_text_recovery_request"
+          : rich
+            ? "dm_recovery_follow"
+            : "dm_text_recovery_follow",
+      messageLength: text.length,
+    },
+  );
+}
+
 export async function sendGuideFollowerGate(input: {
   recipientId: string;
   guideName: string;

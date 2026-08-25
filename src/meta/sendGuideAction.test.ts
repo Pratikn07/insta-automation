@@ -10,6 +10,7 @@ const {
   sendGuideFollowerGate,
   sendGuideFollowLag,
   sendGuideInitialPrivateReply,
+  sendGuideRecoveryAction,
 } =
   await import("./sendGuideAction.js");
 
@@ -70,6 +71,44 @@ describe("sendGuideInitialPrivateReply", () => {
       },
       { commentId: COMMENT_ID, mode: "private_quick_reply", messageLength: OPENING.length },
     );
+  });
+});
+
+describe("sendGuideRecoveryAction", () => {
+  it("sends a fresh request control when DM quick replies are supported", async () => {
+    await sendGuideRecoveryAction({
+      recipientId: RECIPIENT_ID,
+      action: "request_guide",
+      actionToken: ACTION_TOKEN,
+      capabilities: { privateQuickReply: false, dmGenericGate: false, dmQuickReply: true },
+    });
+
+    expect(sendMetaMessage).toHaveBeenCalledWith(
+      {
+        recipient: { id: RECIPIENT_ID },
+        messaging_type: "RESPONSE",
+        message: {
+          text: "That button had gone out of date, so I refreshed it for you 💛 Tap below and I'll check access now.",
+          quick_replies: [
+            { content_type: "text", title: "Yes, send it", payload: ACTION_PAYLOAD },
+          ],
+        },
+      },
+      expect.objectContaining({ mode: "dm_recovery_request" }),
+    );
+  });
+
+  it("uses a typed DONE fallback when a follow recovery control is unavailable", async () => {
+    await sendGuideRecoveryAction({
+      recipientId: RECIPIENT_ID,
+      action: "check_follow",
+      actionToken: ACTION_TOKEN,
+      capabilities: TEXT_ONLY_CAPABILITIES,
+    });
+
+    const text = await sentText();
+    expect(text).toMatch(/Reply DONE/u);
+    expect(text).not.toMatch(/\btap\b/iu);
   });
 });
 

@@ -58,6 +58,17 @@ describe("guide access copy", () => {
     );
   });
 
+  it("aligns rich recovery copy with a control and text fallback copy with a reply", () => {
+    expect(guideAccessCopy.expiredOpening).toMatch(/Tap below/u);
+    expect(guideAccessCopy.expiredOpeningText).toMatch(/Reply YES/u);
+    expect(guideAccessCopy.expiredOpeningText).not.toMatch(/\btap\b/iu);
+    expect(guideAccessCopy.expiredFollow).toMatch(/Tap below/u);
+    expect(guideAccessCopy.expiredFollowText).toMatch(/Reply DONE/u);
+    expect(guideAccessCopy.expiredFollowText).not.toMatch(/\btap\b/iu);
+    expect(guideAccessCopy.alreadyDelivered).toBe("I've already sent this guide above 💛");
+    expect(guideAccessCopy.reviewRequired).toContain("flagged it for TinySoho to review");
+  });
+
   it("uses the approved non-follower gate copy", () => {
     expect(guideAccessCopy.nonFollowerGate).toBe(
       "Follow @tinysoho for more ideas like this, then tap below and I'll send it over.",

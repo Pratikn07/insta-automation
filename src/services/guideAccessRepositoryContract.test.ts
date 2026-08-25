@@ -142,6 +142,7 @@ beforeAll(() => {
 afterEach(async () => {
   if (!databaseUrl || resourceIds.size === 0) return;
   const ids = [...resourceIds];
+  await firstClient.eventLog.deleteMany({ where: { kind: "guide_access_owner_action" } });
   await firstClient.guideAccessAttempt.deleteMany({ where: { resourceId: { in: ids } } });
   await firstClient.conversation.deleteMany({ where: { keyword: { resourceId: { in: ids } } } });
   await firstClient.keyword.deleteMany({ where: { resourceId: { in: ids } } });
@@ -238,6 +239,7 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
       tokenId: issued.token.id,
       action: "request_guide" as const,
       senderId: fixture.senderId,
+      eventAt: new Date(NOW.getTime() + 1_000),
       now: new Date(NOW.getTime() + 1_000),
     };
 
@@ -255,6 +257,137 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
       status: "consumed",
       consumedAt: input.now,
     });
+  });
+
+  it("uses provider event time when webhook processing crosses the window boundary", async () => {
+    const fixture = await createFixture();
+    const windowExpiresAt = new Date(NOW.getTime() + 10 * 60_000);
+    const attempt = await createAttempt(fixture, windowExpiresAt);
+    const issued = await firstRepository.issueToken({
+      attemptId: attempt.id,
+      action: "request_guide",
+      now: NOW,
+      expiresAt: windowExpiresAt,
+    });
+    if (!("token" in issued)) throw new Error("expected token");
+    const processingAt = new Date(windowExpiresAt.getTime() + 60_000);
+
+    await expect(
+      firstRepository.consumeToken({
+        tokenId: issued.token.id,
+        action: "request_guide",
+        senderId: fixture.senderId,
+        eventAt: new Date(windowExpiresAt.getTime() - 1),
+        now: processingAt,
+      }),
+    ).resolves.toMatchObject({ kind: "consumed" });
+    await expect(
+      firstClient.guideActionToken.findUniqueOrThrow({ where: { id: issued.token.id } }),
+    ).resolves.toMatchObject({ status: "consumed", consumedAt: processingAt });
+  });
+
+  it("deduplicates one webhook while accepting another event carrying the same token", async () => {
+    const fixture = await createFixture();
+    const attempt = await createAttempt(fixture);
+    const issued = await firstRepository.issueToken({
+      attemptId: attempt.id,
+      action: "request_guide",
+      now: NOW,
+      expiresAt: new Date(NOW.getTime() + 60 * 60_000),
+    });
+    if (!("token" in issued)) throw new Error("expected token");
+    const firstEventId = randomUUID();
+    const input = {
+      eventId: firstEventId,
+      tokenId: issued.token.id,
+      source: "postback" as const,
+      senderId: fixture.senderId,
+      action: "request_guide" as const,
+      eventAt: NOW,
+      now: new Date(NOW.getTime() + 1_000),
+    };
+
+    await expect(firstRepository.claimActionEvent(input)).resolves.toMatchObject({
+      kind: "claimed",
+      tokenWas: "active",
+      attempt: { state: "checking_follow", followCheckCount: 1 },
+    });
+    await expect(secondRepository.claimActionEvent(input)).resolves.toEqual({
+      kind: "duplicate_event",
+    });
+    await expect(
+      secondRepository.claimActionEvent({ ...input, eventId: randomUUID() }),
+    ).resolves.toMatchObject({
+      kind: "claimed",
+      tokenWas: "consumed",
+      attempt: { state: "checking_follow", followCheckCount: 1 },
+    });
+    await expect(
+      firstClient.guideActionEventReceipt.count({ where: { tokenId: issued.token.id } }),
+    ).resolves.toBe(2);
+  });
+
+  it("accepts a follower's opening tap two hours later despite the legacy ten-minute token label", async () => {
+    const fixture = await createFixture();
+    const attempt = await createAttempt(fixture);
+    const issued = await firstRepository.issueToken({
+      attemptId: attempt.id,
+      action: "request_guide",
+      now: NOW,
+      // Production used to mint this while promising the parent the entire DM window.
+      expiresAt: new Date(NOW.getTime() + 10 * 60_000),
+    });
+    if (!("token" in issued)) throw new Error("expected token");
+    await firstClient.guideActionToken.update({
+      where: { id: issued.token.id },
+      data: { status: "expired" },
+    });
+    const tappedAt = new Date(NOW.getTime() + 2 * 60 * 60_000);
+
+    await expect(firstRepository.claimActionEvent({
+      eventId: randomUUID(),
+      tokenId: issued.token.id,
+      source: "quick_reply",
+      senderId: fixture.senderId,
+      action: "request_guide",
+      eventAt: tappedAt,
+      now: new Date(tappedAt.getTime() + 1_000),
+    })).resolves.toMatchObject({
+      kind: "claimed",
+      tokenWas: "expired",
+      checkClaimed: true,
+      attempt: { state: "checking_follow", followCheckCount: 1 },
+    });
+  });
+
+  it("allows only one concurrent claim for an exact provider event", async () => {
+    const fixture = await createFixture();
+    const attempt = await createAttempt(fixture);
+    const issued = await firstRepository.issueToken({
+      attemptId: attempt.id,
+      action: "request_guide",
+      now: NOW,
+      expiresAt: new Date(NOW.getTime() + 60 * 60_000),
+    });
+    if (!("token" in issued)) throw new Error("expected token");
+    const input = {
+      eventId: randomUUID(),
+      tokenId: issued.token.id,
+      source: "quick_reply" as const,
+      senderId: fixture.senderId,
+      action: "request_guide" as const,
+      eventAt: NOW,
+      now: new Date(NOW.getTime() + 1_000),
+    };
+
+    const results = await Promise.all([
+      firstRepository.claimActionEvent(input),
+      secondRepository.claimActionEvent(input),
+    ]);
+
+    expect(results.filter((result) => result.kind === "claimed")).toHaveLength(1);
+    expect(results.filter((result) => result.kind === "duplicate_event")).toHaveLength(1);
+    await expect(firstClient.guideActionEventReceipt.count()).resolves.toBe(1);
   });
 
   it("claims one direct inbound UUID exactly once under concurrent replay", async () => {
@@ -337,6 +470,7 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
         tokenId: firstToken.token.id,
         action: "check_follow",
         senderId: fixture.senderId,
+        eventAt: new Date(NOW.getTime() + 2_000),
         now: new Date(NOW.getTime() + 2_000),
       }),
     ).resolves.toEqual({ kind: "expired" });
@@ -358,6 +492,7 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
         tokenId: issued.token.id,
         action: "request_guide",
         senderId: fixture.senderId,
+        eventAt: NOW,
         now: NOW,
       }),
     ).resolves.toEqual({ kind: "expired" });
@@ -397,7 +532,7 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
     expect(results.filter((result) => result.kind === "state_conflict")).toHaveLength(1);
   });
 
-  it("reserves only two automatic responses under a three-way race", async () => {
+  it("reserves only three automatic responses under a four-way race", async () => {
     const fixture = await createFixture();
     const attempt = await createAttempt(fixture);
     await firstRepository.beginChecking({
@@ -412,7 +547,12 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
       now: NOW,
     });
 
-    const repositories = [firstRepository, secondRepository, firstRepository];
+    const repositories = [
+      firstRepository,
+      secondRepository,
+      firstRepository,
+      secondRepository,
+    ];
     const results = await Promise.all(
       repositories.map((repository) =>
         repository.reserveFollowResponse({
@@ -423,10 +563,10 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
       ),
     );
 
-    expect(results.filter((result) => result.kind === "reserved")).toHaveLength(2);
+    expect(results.filter((result) => result.kind === "reserved")).toHaveLength(3);
     expect(results.filter((result) => result.kind === "limit_reached")).toHaveLength(1);
     await expect(firstClient.guideAccessAttempt.findUniqueOrThrow({ where: { id: attempt.id } })).resolves.toMatchObject({
-      followResponseCount: 2,
+      followResponseCount: 3,
     });
   });
 
@@ -653,5 +793,60 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
     await expect(
       firstClient.guideAccessAttempt.count({ where: { conversationId: fixture.conversationId } }),
     ).resolves.toBe(1);
+  });
+
+  it("atomically replaces a blocked review with one full-window request action", async () => {
+    const fixture = await createFixture();
+    const attempt = await createAttempt(fixture);
+    const original = await firstRepository.issueToken({
+      attemptId: attempt.id,
+      action: "request_guide",
+      now: NOW,
+      expiresAt: attempt.messagingWindowExpiresAt,
+    });
+    if (!("token" in original)) throw new Error("expected original token");
+    await firstClient.guideAccessAttempt.update({
+      where: { id: attempt.id },
+      data: {
+        state: "needs_review",
+        lastFollowResult: "non_follower",
+        followCheckCount: 5,
+        followResponseCount: 3,
+      },
+    });
+
+    const reset = await firstRepository.resetReviewActionForConversation({
+      conversationId: fixture.conversationId,
+      actor: "contract-owner",
+      now: new Date(NOW.getTime() + 60_000),
+    });
+
+    expect(reset.kind).toBe("ready");
+    if (reset.kind !== "ready") throw new Error("expected ready reset");
+    expect(reset.attempt).toMatchObject({
+      id: attempt.id,
+      state: "awaiting_request",
+      lastFollowResult: "unknown",
+      followCheckCount: 0,
+      followResponseCount: 0,
+    });
+    expect(reset.token.expiresAt).toEqual(attempt.messagingWindowExpiresAt);
+    await expect(
+      firstClient.guideActionToken.findUniqueOrThrow({ where: { id: original.token.id } }),
+    ).resolves.toMatchObject({ status: "cancelled" });
+    await expect(
+      firstClient.eventLog.findFirstOrThrow({
+        where: { kind: "guide_access_owner_action" },
+        orderBy: { createdAt: "desc" },
+      }),
+    ).resolves.toMatchObject({
+      payload: {
+        actor: "contract-owner",
+        action: "resend_action",
+        conversationId: fixture.conversationId,
+        attemptId: attempt.id,
+        at: new Date(NOW.getTime() + 60_000).toISOString(),
+      },
+    });
   });
 });

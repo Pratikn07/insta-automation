@@ -3,6 +3,7 @@ import { logger } from "../lib/logger.js";
 import { parseProviderTimestamp } from "../lib/providerTime.js";
 import { recordRecoveryPostback } from "../services/dmRecoveryService.js";
 import { routeGuideAction } from "./guideActionRouter.js";
+import { guidePostbackEventId } from "../services/guideActionEventIdentity.js";
 
 export async function handlePostback(entry: MessagingEntry): Promise<void> {
   const postback = entry.postback;
@@ -34,6 +35,8 @@ export async function handlePostback(entry: MessagingEntry): Promise<void> {
   await routeGuideAction({
     payload: postback.payload,
     senderId: entry.sender.id,
+    eventId: guidePostbackEventId(postback.mid),
+    source: "postback",
     eventAt,
   });
 }

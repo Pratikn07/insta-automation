@@ -759,6 +759,20 @@ export interface GuideDeliveryReview {
   units: GuideDeliveryReviewUnit[];
 }
 
+export interface GuideAccessReview {
+  attemptId: string;
+  conversationId: string;
+  resourceName: string;
+  state: "needs_review";
+  lastFollowResult: "follower" | "non_follower" | "unknown";
+  followCheckCount: number;
+  followResponseCount: number;
+  messagingWindowExpiresAt: string;
+  messagingWindowOpen: boolean;
+  canRelease: boolean;
+  canResendAction: boolean;
+}
+
 export interface DmThreadRow {
   id: string;
   igUserId: string;
@@ -773,6 +787,7 @@ export interface DmThreadRow {
   draft: ReplyDraft | null;
   /** Deliveries awaiting an owner decision. Independent of draft status. */
   deliveryReviewCount: number;
+  accessReviewCount?: number;
 }
 
 export interface DmThreadDetail {
@@ -786,6 +801,7 @@ export interface DmThreadDetail {
   messages: DmMessage[];
   draft: ReplyDraft | null;
   deliveryReviews: GuideDeliveryReview[];
+  accessReviews?: GuideAccessReview[];
 }
 
 // --- AI advisor ---------------------------------------------------------------
@@ -1245,6 +1261,13 @@ export interface GuideAccessMetricsResult {
    * skeleton: the query had succeeded, so nothing retried and nothing said so.
    */
   coverRates?: GuideCoverRates;
+  health?: {
+    awaitingRequest: number;
+    awaitingFollow: number;
+    needsReview: number;
+    logicallyExpiredActiveTokens: number;
+    oldestNeedsReviewAt: string | null;
+  };
 }
 
 export interface FunnelStageCount {

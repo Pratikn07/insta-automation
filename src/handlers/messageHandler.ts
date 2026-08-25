@@ -454,6 +454,8 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     const routed = await routeGuideAction({
       payload: msg.quick_reply.payload,
       senderId,
+      eventId: inbound.messageId,
+      source: "quick_reply",
       inboundMessageId: inbound.messageId,
       eventAt: observedAt,
     });

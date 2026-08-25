@@ -77,6 +77,18 @@ export const guideAccessCopy = {
    */
   followFinal:
     "I still can't see the follow from my side 💛 If you've followed @tinysoho, reply DONE and I'll take one more look.",
+  expiredOpening:
+    "That button had gone out of date, so I refreshed it for you 💛 Tap below and I'll check access now.",
+  expiredOpeningText:
+    "That request had gone out of date, so I refreshed it for you 💛 Reply YES and I'll check access now.",
+  expiredFollow:
+    "I refreshed your follow check for you 💛 Tap below and I'll check access now.",
+  expiredFollowText:
+    "I refreshed your follow check for you 💛 Reply DONE and I'll check access now.",
+  alreadyDelivered: "I've already sent this guide above 💛",
+  reviewRequired:
+    "I couldn't complete that automatically, but I've flagged it for TinySoho to review 💛",
+  checking: "I'm checking your access now 💛",
 } as const;
 
 /**

@@ -4,39 +4,18 @@ import {
   type GuideAccessAttemptState,
   type GuideActionToken,
   type GuideActionTokenAction,
+  type GuideActionTokenStatus,
   type GuideFollowResult,
   type Prisma,
   type PrismaClient,
 } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { publishedCoverWhere } from "./guideCoverRepository.js";
-
-/**
- * How many live follow reads one attempt may spend, and how many replies a non-follower
- * may receive. Both were one lower, and between them they ended a parent's journey in
- * silence before that parent had a chance to act on what we asked them to do.
- *
- * Observed on device 2026-08-24. The gate's button is a control that stays in the thread
- * and posts its own label as the parent's words every time it is pressed, so people press
- * it repeatedly. One parent pressed it six times. The first three answered; the rest were
- * dropped without a word, because the budget was spent like this:
- *
- *   tap 1 (the gate's own button)  check 1  -> the follower gate
- *   tap 2                          check 2  -> the re-ask card
- *   tap 3                          check 3  -> "Instagram may take a moment"
- *   tap 4                          refused  -> nothing, ever again
- *
- * The last message we sent told her to go and follow the account and come back. The check
- * budget ran out at exactly the moment she was doing that, so the one read that mattered —
- * the one AFTER she followed — was the one we refused to spend.
- *
- * Five and three are sized to that journey: three checks to run the ladder, a fourth to
- * carry the closing message, and a fifth held back for the parent who does what the closing
- * message asks. Each check is a single Graph read; the cap is here to bound them, not to
- * end conversations.
- */
-const MAX_FOLLOW_CHECKS = 5;
-const MAX_FOLLOW_RESPONSES = 3;
+import {
+  GUIDE_ACCESS_WINDOW_MS,
+  GUIDE_ACCESS_MAX_FOLLOW_CHECKS,
+  GUIDE_ACCESS_MAX_FOLLOW_RESPONSES,
+} from "./guideAccessPolicy.js";
 const ACTIVE_ATTEMPT_STATES: readonly GuideAccessAttemptState[] = [
   "awaiting_request",
   "checking_follow",
@@ -122,6 +101,9 @@ export type ConsumeGuideActionTokenInput = {
   tokenId: string;
   action: GuideActionTokenAction;
   senderId: string;
+  /** Signed provider event time: decides whether the parent acted inside the window. */
+  eventAt: Date;
+  /** Server processing time: used only for durable row timestamps and leases. */
   now: Date;
 };
 
@@ -134,6 +116,32 @@ export type ConsumeGuideActionTokenResult =
   | { kind: "expired" }
   | { kind: "check_limit_reached" }
   | { kind: "state_conflict"; actualState: GuideAccessAttemptState };
+
+export type GuideActionEventSource = "quick_reply" | "postback";
+
+export type ClaimGuideActionEventInput = {
+  eventId: string;
+  tokenId: string;
+  source: GuideActionEventSource;
+  senderId: string;
+  action: GuideActionTokenAction;
+  eventAt: Date;
+  now: Date;
+};
+
+export type ClaimGuideActionEventResult =
+  | {
+      kind: "claimed";
+      attempt: GuideAccessAttempt;
+      tokenWas: GuideActionTokenStatus;
+      /** True only when this event moved the attempt into a new follow check. */
+      checkClaimed: boolean;
+    }
+  | { kind: "duplicate_event" }
+  | { kind: "wrong_sender" }
+  | { kind: "wrong_action" }
+  | { kind: "not_found" }
+  | { kind: "check_limit_reached"; attempt: GuideAccessAttempt };
 
 export type ClaimDirectInboundInput = {
   attemptId: string;
@@ -222,6 +230,12 @@ export type ReserveGuideFollowResponseResult =
   | { kind: "attempt_not_found" }
   | { kind: "state_conflict"; actualState: GuideAccessAttemptState };
 
+export type ResetGuideAccessReviewResult =
+  | { kind: "ready"; attempt: GuideAccessAttempt; token: GuideActionToken }
+  | { kind: "not_found" }
+  | { kind: "messaging_window_closed" }
+  | { kind: "delivering" };
+
 export interface GuideAccessRepository {
   createOrLoadAttempt(
     input: CreateGuideAccessAttemptInput,
@@ -229,6 +243,7 @@ export interface GuideAccessRepository {
   issueToken(input: IssueGuideActionTokenInput): Promise<IssueGuideActionTokenResult>;
   replaceToken(input: ReplaceGuideActionTokenInput): Promise<ReplaceGuideActionTokenResult>;
   consumeToken(input: ConsumeGuideActionTokenInput): Promise<ConsumeGuideActionTokenResult>;
+  claimActionEvent(input: ClaimGuideActionEventInput): Promise<ClaimGuideActionEventResult>;
   claimDirectInbound(input: ClaimDirectInboundInput): Promise<ClaimDirectInboundResult>;
   beginChecking(input: BeginGuideAccessCheckingInput): Promise<GuideAccessTransitionResult>;
   markAwaitingFollow(
@@ -284,6 +299,11 @@ export interface GuideAccessRepository {
     actor: string;
     now: Date;
   }): Promise<"released" | "not_found" | "delivering">;
+  resetReviewActionForConversation(input: {
+    conversationId: string;
+    actor: string;
+    now: Date;
+  }): Promise<ResetGuideAccessReviewResult>;
   settleCoverExposure(input: SettleCoverExposureInput): Promise<void>;
   findCoverSnapshot(coverVersionId: string): Promise<GuideAccessCoverSnapshot | null>;
 }
@@ -601,6 +621,7 @@ export function createGuideAccessRepository(
     },
 
     async consumeToken(input) {
+      requireValidDate(input.eventAt, "guide action provider event time");
       requireValidDate(input.now, "guide action consumption time");
       try {
         return await database.$transaction(async (tx) => {
@@ -619,7 +640,7 @@ export function createGuideAccessRepository(
           if (token.status === "consumed") return { kind: "already_consumed" as const };
           if (token.status !== "active") return { kind: "expired" as const };
           if (token.action !== input.action) return { kind: "wrong_action" as const };
-          if (attempt.messagingWindowExpiresAt <= input.now) {
+          if (attempt.messagingWindowExpiresAt <= input.eventAt) {
             await expireLockedAttempt(tx, attempt, input.now);
             await tx.guideActionToken.updateMany({
               where: { id: token.id, status: "active" },
@@ -627,7 +648,7 @@ export function createGuideAccessRepository(
             });
             return { kind: "expired" as const };
           }
-          if (token.expiresAt <= input.now) {
+          if (token.expiresAt <= input.eventAt) {
             await tx.guideActionToken.updateMany({
               where: { id: token.id, status: "active" },
               data: { status: "expired" },
@@ -638,7 +659,7 @@ export function createGuideAccessRepository(
           if (attempt.state !== expectedState) {
             return { kind: "state_conflict" as const, actualState: attempt.state };
           }
-          if (attempt.followCheckCount >= MAX_FOLLOW_CHECKS) {
+          if (attempt.followCheckCount >= GUIDE_ACCESS_MAX_FOLLOW_CHECKS) {
             return { kind: "check_limit_reached" as const };
           }
 
@@ -646,8 +667,8 @@ export function createGuideAccessRepository(
             where: {
               id: attempt.id,
               state: expectedState,
-              followCheckCount: { lt: MAX_FOLLOW_CHECKS },
-              messagingWindowExpiresAt: { gt: input.now },
+              followCheckCount: { lt: GUIDE_ACCESS_MAX_FOLLOW_CHECKS },
+              messagingWindowExpiresAt: { gt: input.eventAt },
             },
             data: {
               state: "checking_follow",
@@ -683,6 +704,100 @@ export function createGuideAccessRepository(
       }
     },
 
+    async claimActionEvent(input) {
+      requireValidDate(input.eventAt, "guide action provider event time");
+      requireValidDate(input.now, "guide action receipt time");
+
+      return database.$transaction(async (tx) => {
+        // This unlocked read is identity discovery only. The attempt is always locked
+        // before any receipt, token, or workflow state can be changed.
+        const identity = await tx.guideActionToken.findUnique({
+          where: { id: input.tokenId },
+          select: { action: true, attemptId: true },
+        });
+        if (!identity) return { kind: "not_found" as const };
+        if (identity.action !== input.action) return { kind: "wrong_action" as const };
+
+        const attempt = await lockAttempt(tx, identity.attemptId);
+        if (!attempt) return { kind: "not_found" as const };
+        if (attempt.senderId !== input.senderId) return { kind: "wrong_sender" as const };
+
+        const inserted = await tx.$executeRaw`
+          INSERT INTO "guide_action_event_receipt"
+            ("id", "token_id", "source", "received_at", "event_at")
+          VALUES (
+            ${input.eventId}::uuid,
+            ${input.tokenId}::uuid,
+            ${input.source}::"guide_action_event_source",
+            ${input.now},
+            ${input.eventAt}
+          )
+          ON CONFLICT ("id") DO NOTHING
+        `;
+        if (inserted === 0) return { kind: "duplicate_event" as const };
+
+        const token = await lockToken(tx, input.tokenId);
+        if (!token || token.attemptId !== attempt.id) return { kind: "not_found" as const };
+        if (token.action !== input.action) return { kind: "wrong_action" as const };
+
+        const refreshedExpiry = new Date(input.eventAt.getTime() + GUIDE_ACCESS_WINDOW_MS);
+        const effectiveExpiry =
+          refreshedExpiry > attempt.messagingWindowExpiresAt
+            ? refreshedExpiry
+            : attempt.messagingWindowExpiresAt;
+        const retryableReview =
+          attempt.state === "needs_review" && attempt.lastFollowResult === "unknown";
+        const canBeginCheck =
+          attempt.state === compatibleState(input.action) || retryableReview;
+
+        if (canBeginCheck && attempt.followCheckCount >= GUIDE_ACCESS_MAX_FOLLOW_CHECKS) {
+          await tx.guideAccessAttempt.update({
+            where: { id: attempt.id },
+            data: { messagingWindowExpiresAt: effectiveExpiry },
+          });
+          return {
+            kind: "check_limit_reached" as const,
+            attempt: withAttemptUpdate(attempt, {
+              messagingWindowExpiresAt: effectiveExpiry,
+            }),
+          };
+        }
+
+        let updatedAttempt: GuideAccessAttempt;
+        if (canBeginCheck) {
+          updatedAttempt = await tx.guideAccessAttempt.update({
+            where: { id: attempt.id },
+            data: {
+              state: "checking_follow",
+              lastFollowResult: "unknown",
+              lastFollowCheckedAt: null,
+              followCheckCount: { increment: 1 },
+              messagingWindowExpiresAt: effectiveExpiry,
+            },
+          });
+        } else {
+          updatedAttempt = await tx.guideAccessAttempt.update({
+            where: { id: attempt.id },
+            data: { messagingWindowExpiresAt: effectiveExpiry },
+          });
+        }
+
+        if (token.status === "active") {
+          await tx.guideActionToken.update({
+            where: { id: token.id },
+            data: { status: "consumed", consumedAt: input.now },
+          });
+        }
+
+        return {
+          kind: "claimed" as const,
+          attempt: updatedAttempt,
+          tokenWas: token.status,
+          checkClaimed: canBeginCheck,
+        };
+      });
+    },
+
     async claimDirectInbound(input) {
       requireValidDate(input.now, "direct guide inbound claim time");
       return database.$transaction(async (tx) => {
@@ -703,7 +818,7 @@ export function createGuideAccessRepository(
 
         // A review reached without a definitive follow answer is retryable: the
         // parent was told to try again later, so their next reply must be able to
-        // re-check. MAX_FOLLOW_CHECKS below still bounds it. A review that holds a
+        // re-check. GUIDE_ACCESS_MAX_FOLLOW_CHECKS below still bounds it. A review that holds a
         // definitive answer (follow-lag limit, or a fault after delivery began)
         // stays terminal and belongs to the owner.
         const retryableReview =
@@ -719,7 +834,7 @@ export function createGuideAccessRepository(
           await expireLockedAttempt(tx, attempt, input.now);
           return { kind: "expired" as const };
         }
-        if (attempt.followCheckCount >= MAX_FOLLOW_CHECKS) {
+        if (attempt.followCheckCount >= GUIDE_ACCESS_MAX_FOLLOW_CHECKS) {
           return { kind: "check_limit_reached" as const };
         }
 
@@ -731,7 +846,7 @@ export function createGuideAccessRepository(
             // Pin the discriminator too, so a concurrent writer that supplies a
             // definitive answer cannot have its terminal review reopened here.
             ...(retryableReview ? { lastFollowResult: "unknown" as const } : {}),
-            followCheckCount: { lt: MAX_FOLLOW_CHECKS },
+            followCheckCount: { lt: GUIDE_ACCESS_MAX_FOLLOW_CHECKS },
             messagingWindowExpiresAt: { gt: input.now },
           },
           data: {
@@ -775,14 +890,14 @@ export function createGuideAccessRepository(
         if (locked.attempt.messagingWindowExpiresAt <= input.now) {
           return expireLockedAttempt(tx, locked.attempt, input.now);
         }
-        if (locked.attempt.followCheckCount >= MAX_FOLLOW_CHECKS) {
+        if (locked.attempt.followCheckCount >= GUIDE_ACCESS_MAX_FOLLOW_CHECKS) {
           return { kind: "state_conflict" as const, actualState: locked.attempt.state };
         }
         const updated = await tx.guideAccessAttempt.updateMany({
           where: {
             id: input.attemptId,
             state: input.expectedState,
-            followCheckCount: { lt: MAX_FOLLOW_CHECKS },
+            followCheckCount: { lt: GUIDE_ACCESS_MAX_FOLLOW_CHECKS },
             messagingWindowExpiresAt: { gt: input.now },
           },
           data: {
@@ -1051,6 +1166,75 @@ export function createGuideAccessRepository(
       });
     },
 
+    async resetReviewActionForConversation(input) {
+      requireValidDate(input.now, "guide access owner resend time");
+      return database.$transaction(async (tx) => {
+        if (!(await lockConversation(tx, input.conversationId))) {
+          return { kind: "not_found" as const };
+        }
+        const active = await tx.guideAccessAttempt.findFirst({
+          where: {
+            conversationId: input.conversationId,
+            state: { in: [...ACTIVE_ATTEMPT_STATES] },
+          },
+          orderBy: { createdAt: "desc" },
+          select: { id: true },
+        });
+        if (!active) return { kind: "not_found" as const };
+        const attempt = await lockAttempt(tx, active.id);
+        if (!attempt || attempt.state !== "needs_review") {
+          return { kind: "not_found" as const };
+        }
+        if (attempt.lastFollowResult === "follower") {
+          return { kind: "delivering" as const };
+        }
+        if (attempt.messagingWindowExpiresAt <= input.now) {
+          await expireLockedAttempt(tx, attempt, input.now);
+          await tx.guideActionToken.updateMany({
+            where: { attemptId: attempt.id, status: "active" },
+            data: { status: "expired" },
+          });
+          return { kind: "messaging_window_closed" as const };
+        }
+
+        await tx.guideActionToken.updateMany({
+          where: { attemptId: attempt.id, status: "active" },
+          data: { status: "cancelled" },
+        });
+        const updated = await tx.guideAccessAttempt.update({
+          where: { id: attempt.id },
+          data: {
+            state: "awaiting_request",
+            lastFollowResult: "unknown",
+            lastFollowCheckedAt: null,
+            followCheckCount: 0,
+            followResponseCount: 0,
+          },
+        });
+        const token = await tx.guideActionToken.create({
+          data: {
+            id: idFactory(),
+            attemptId: attempt.id,
+            action: "request_guide",
+            expiresAt: attempt.messagingWindowExpiresAt,
+          },
+        });
+        await tx.eventLog.create({
+          data: {
+            kind: "guide_access_owner_action",
+            payload: {
+              actor: input.actor,
+              action: "resend_action",
+              conversationId: input.conversationId,
+              attemptId: attempt.id,
+              at: input.now.toISOString(),
+            },
+          },
+        });
+        return { kind: "ready" as const, attempt: updated, token };
+      });
+    },
+
     async markExpired(input) {
       requireValidDate(input.now, "guide access expiry time");
       return database.$transaction(async (tx) => {
@@ -1078,14 +1262,14 @@ export function createGuideAccessRepository(
         if (locked.attempt.messagingWindowExpiresAt <= input.now) {
           return expireLockedAttempt(tx, locked.attempt, input.now);
         }
-        if (locked.attempt.followResponseCount >= MAX_FOLLOW_RESPONSES) {
+        if (locked.attempt.followResponseCount >= GUIDE_ACCESS_MAX_FOLLOW_RESPONSES) {
           return { kind: "limit_reached" as const };
         }
         const updated = await tx.guideAccessAttempt.updateMany({
           where: {
             id: input.attemptId,
             state: input.expectedState,
-            followResponseCount: { lt: MAX_FOLLOW_RESPONSES },
+            followResponseCount: { lt: GUIDE_ACCESS_MAX_FOLLOW_RESPONSES },
             messagingWindowExpiresAt: { gt: input.now },
           },
           data: { followResponseCount: { increment: 1 } },

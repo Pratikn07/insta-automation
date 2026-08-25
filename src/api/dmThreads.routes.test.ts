@@ -4,9 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const findMany = vi.fn();
 const findUnique = vi.fn();
+const findAccessReviews = vi.fn();
 
 vi.mock("../lib/prisma.js", () => ({
-  prisma: { dmThread: { findMany, findUnique } },
+  prisma: {
+    dmThread: { findMany, findUnique },
+    guideAccessAttempt: { findMany: findAccessReviews },
+  },
 }));
 
 const { dmThreadsRouter } = await import("./dmThreads.routes.js");
@@ -32,6 +36,7 @@ const messages = Array.from({ length: 201 }, (_, index) => {
 
 beforeEach(() => {
   findMany.mockReset();
+  findAccessReviews.mockReset().mockResolvedValue([]);
   findUnique.mockReset().mockImplementation(async (args: {
     select: { messages: { orderBy: Array<Record<string, "asc" | "desc">>; take: number } };
   }) => {
@@ -84,6 +89,7 @@ describe("GET /api/dm-threads", () => {
     const response = await request(makeApp()).get("/api/dm-threads").expect(200);
 
     expect(response.body.items[0]).toMatchObject({ deliveryReviewCount: 2 });
+    expect(response.body.items[0]).toMatchObject({ accessReviewCount: 0 });
     expect(response.body.items[0]).not.toHaveProperty("_count");
     expect(response.body.items[0]).not.toHaveProperty("guideDeliveries");
     const serialized = JSON.stringify(response.body);
@@ -133,6 +139,36 @@ describe("GET /api/dm-threads/:threadId", () => {
         }),
       }),
     );
+  });
+
+  it("returns a separate bounded guide-access review for the same Instagram user", async () => {
+    findAccessReviews.mockResolvedValueOnce([
+      {
+        id: "10000000-0000-4000-8000-000000000001",
+        conversationId: "20000000-0000-4000-8000-000000000002",
+        state: "needs_review",
+        lastFollowResult: "unknown",
+        followCheckCount: 5,
+        followResponseCount: 3,
+        messagingWindowExpiresAt: new Date("2026-08-26T12:00:00.000Z"),
+        conversation: { igUserId: "ig-user-1" },
+        resource: { name: "R".repeat(250) },
+      },
+    ]);
+
+    const response = await request(makeApp()).get("/api/dm-threads/thread-1").expect(200);
+
+    expect(response.body.accessReviews).toEqual([
+      expect.objectContaining({
+        attemptId: "10000000-0000-4000-8000-000000000001",
+        conversationId: "20000000-0000-4000-8000-000000000002",
+        resourceName: "R".repeat(200),
+        state: "needs_review",
+        canRelease: true,
+      }),
+    ]);
+    const serialized = JSON.stringify(response.body.accessReviews);
+    expect(serialized).not.toMatch(/token|coverUrl|provider|message|errorTrace/i);
   });
 
   it("returns only bounded guide identity context for a follow-up", async () => {

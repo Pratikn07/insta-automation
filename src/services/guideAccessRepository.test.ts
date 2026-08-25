@@ -8,6 +8,10 @@ import {
   createGuideAccessRepository,
   type GuideAccessDatabase,
 } from "./guideAccessRepository.js";
+import {
+  GUIDE_ACCESS_MAX_FOLLOW_CHECKS,
+  GUIDE_ACCESS_MAX_FOLLOW_RESPONSES,
+} from "./guideAccessPolicy.js";
 
 const ATTEMPT_ID = "10000000-0000-4000-8000-000000000001";
 const CONVERSATION_ID = "20000000-0000-4000-8000-000000000002";
@@ -18,11 +22,6 @@ const SENDER_ID = "instagram-sender-1";
 const NOW = new Date("2026-08-23T12:00:00.000Z");
 const WINDOW_EXPIRES_AT = new Date("2026-08-24T12:00:00.000Z");
 const TOKEN_EXPIRES_AT = new Date("2026-08-23T12:10:00.000Z");
-// Mirror the module's own budgets. Named rather than inlined so the numbers live in one
-// place here too — they were spelled out at four separate call sites, and a change to
-// either one meant hunting down every literal.
-const MAX_FOLLOW_CHECKS = 5;
-const MAX_FOLLOW_RESPONSES = 3;
 
 function attempt(
   overrides: Partial<GuideAccessAttempt> = {},
@@ -97,6 +96,10 @@ function harness(input: {
     guideAccessAttempt: {
       findFirst: vi.fn(async () => input.activeAttempt ?? null),
       create: vi.fn(async () => createdAttempt),
+      update: vi.fn(async (request: { data: Partial<GuideAccessAttempt> }) => ({
+        ...createdAttempt,
+        ...request.data,
+      })),
       updateMany: vi.fn(async () => ({ count: input.attemptUpdateCount ?? 1 })),
     },
     resourceCoverVersion: {
@@ -150,6 +153,7 @@ describe("guide access repository", () => {
         conversationId: CONVERSATION_ID,
         resourceId: "60000000-0000-4000-8000-000000000006",
         messagingWindowExpiresAt: new Date("2026-08-25T12:00:00.000Z"),
+        now: NOW,
       }),
     ).resolves.toEqual({
       kind: "loaded",
@@ -254,7 +258,7 @@ describe("guide access repository", () => {
       where: {
         id: ATTEMPT_ID,
         state: "awaiting_request",
-        followCheckCount: { lt: MAX_FOLLOW_CHECKS },
+        followCheckCount: { lt: GUIDE_ACCESS_MAX_FOLLOW_CHECKS },
         messagingWindowExpiresAt: { gt: NOW },
       },
       data: {
@@ -300,6 +304,7 @@ describe("guide access repository", () => {
         tokenId: TOKEN_ID,
         action: "request_guide",
         senderId: "different-sender",
+        eventAt: NOW,
         now: NOW,
       }),
     ).resolves.toEqual({ kind: "wrong_sender" });
@@ -315,6 +320,7 @@ describe("guide access repository", () => {
         tokenId: TOKEN_ID,
         action: "check_follow",
         senderId: SENDER_ID,
+        eventAt: NOW,
         now: NOW,
       }),
     ).resolves.toEqual({ kind: "wrong_action" });
@@ -328,6 +334,7 @@ describe("guide access repository", () => {
         tokenId: TOKEN_ID,
         action: "request_guide",
         senderId: SENDER_ID,
+        eventAt: NOW,
         now: NOW,
       }),
     ).resolves.toEqual({ kind: "state_conflict", actualState: "awaiting_follow" });
@@ -341,6 +348,7 @@ describe("guide access repository", () => {
         tokenId: TOKEN_ID,
         action: "request_guide",
         senderId: SENDER_ID,
+        eventAt: NOW,
         now: NOW,
       }),
     ).resolves.toEqual({ kind: "expired" });
@@ -349,6 +357,29 @@ describe("guide access repository", () => {
       data: { status: "expired" },
     });
     expect(test.tx.guideAccessAttempt.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("accepts an in-window provider action when webhook processing is delayed", async () => {
+    const eventAt = new Date(WINDOW_EXPIRES_AT.getTime() - 1);
+    const processingAt = new Date(WINDOW_EXPIRES_AT.getTime() + 60_000);
+    const test = harness({
+      lockedAttempt: attempt({ messagingWindowExpiresAt: WINDOW_EXPIRES_AT }),
+      lockedToken: token({ expiresAt: WINDOW_EXPIRES_AT }),
+    });
+
+    await expect(
+      test.repository.consumeToken({
+        tokenId: TOKEN_ID,
+        action: "request_guide",
+        senderId: SENDER_ID,
+        eventAt,
+        now: processingAt,
+      }),
+    ).resolves.toMatchObject({ kind: "consumed" });
+    expect(test.tx.guideActionToken.updateMany).toHaveBeenCalledWith({
+      where: { id: TOKEN_ID, status: "active" },
+      data: { status: "consumed", consumedAt: processingAt },
+    });
   });
 
   it("expires the attempt and token together when the messaging window closes", async () => {
@@ -361,6 +392,7 @@ describe("guide access repository", () => {
         tokenId: TOKEN_ID,
         action: "request_guide",
         senderId: SENDER_ID,
+        eventAt: NOW,
         now: NOW,
       }),
     ).resolves.toEqual({ kind: "expired" });
@@ -386,6 +418,7 @@ describe("guide access repository", () => {
         tokenId: TOKEN_ID,
         action: "request_guide",
         senderId: SENDER_ID,
+        eventAt: NOW,
         now: NOW,
       }),
     ).resolves.toMatchObject({ kind: "consumed" });
@@ -393,7 +426,7 @@ describe("guide access repository", () => {
       where: {
         id: ATTEMPT_ID,
         state: "awaiting_request",
-        followCheckCount: { lt: MAX_FOLLOW_CHECKS },
+        followCheckCount: { lt: GUIDE_ACCESS_MAX_FOLLOW_CHECKS },
         messagingWindowExpiresAt: { gt: NOW },
       },
       data: {
@@ -432,6 +465,7 @@ describe("guide access repository", () => {
       tokenId: TOKEN_ID,
       action: "request_guide",
       senderId: SENDER_ID,
+      eventAt: NOW,
       now: NOW,
     });
 
@@ -446,6 +480,7 @@ describe("guide access repository", () => {
         tokenId: TOKEN_ID,
         action: "request_guide",
         senderId: SENDER_ID,
+        eventAt: NOW,
         now: NOW,
       }),
     ).resolves.toEqual({ kind: "already_consumed" });
@@ -460,6 +495,7 @@ describe("guide access repository", () => {
         tokenId: TOKEN_ID,
         action: "request_guide",
         senderId: SENDER_ID,
+        eventAt: NOW,
         now: NOW,
       }),
     ).resolves.toEqual({ kind: "state_conflict", actualState: "awaiting_request" });
@@ -477,7 +513,7 @@ describe("guide access repository", () => {
       lockedAttempt: attempt({
         state: "awaiting_follow",
         lastFollowResult: "non_follower",
-        followResponseCount: MAX_FOLLOW_RESPONSES,
+        followResponseCount: GUIDE_ACCESS_MAX_FOLLOW_RESPONSES,
       }),
     });
 
@@ -489,7 +525,7 @@ describe("guide access repository", () => {
       lockedAttempt: attempt({
         state: "awaiting_follow",
         lastFollowResult: "non_follower",
-        followResponseCount: MAX_FOLLOW_RESPONSES - 1,
+        followResponseCount: GUIDE_ACCESS_MAX_FOLLOW_RESPONSES - 1,
       }),
     });
 
@@ -506,7 +542,10 @@ describe("guide access repository", () => {
         expectedState: "awaiting_follow",
         now: NOW,
       }),
-    ).resolves.toEqual({ kind: "reserved", responseNumber: MAX_FOLLOW_RESPONSES });
+    ).resolves.toEqual({
+      kind: "reserved",
+      responseNumber: GUIDE_ACCESS_MAX_FOLLOW_RESPONSES,
+    });
     await expect(
       capped.repository.reserveFollowResponse({
         attemptId: ATTEMPT_ID,
@@ -621,7 +660,7 @@ describe("retryable review fence in claimDirectInbound", () => {
         id: ATTEMPT_ID,
         state: "needs_review",
         lastFollowResult: "unknown",
-        followCheckCount: { lt: MAX_FOLLOW_CHECKS },
+        followCheckCount: { lt: GUIDE_ACCESS_MAX_FOLLOW_CHECKS },
         messagingWindowExpiresAt: { gt: NOW },
       },
       data: {
@@ -662,7 +701,7 @@ describe("retryable review fence in claimDirectInbound", () => {
       lockedAttempt: attempt({
         state: "needs_review",
         lastFollowResult: "unknown",
-        followCheckCount: MAX_FOLLOW_CHECKS,
+        followCheckCount: GUIDE_ACCESS_MAX_FOLLOW_CHECKS,
       }),
     });
 
@@ -1033,6 +1072,59 @@ describe("releaseAttemptForConversation", () => {
     ).resolves.toBe("not_found");
 
     expect(test.tx.guideAccessAttempt.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("resetReviewActionForConversation", () => {
+  it("atomically resets a non-delivery review and creates a full-window opening token", async () => {
+    const review = attempt({
+      state: "needs_review",
+      lastFollowResult: "non_follower",
+      followCheckCount: 5,
+      followResponseCount: 3,
+    });
+    const test = harness({ activeAttempt: review, lockedAttempt: review });
+
+    await expect(
+      test.repository.resetReviewActionForConversation({
+        conversationId: CONVERSATION_ID,
+        actor: "owner@example.com",
+        now: NOW,
+      }),
+    ).resolves.toMatchObject({
+      kind: "ready",
+      attempt: { state: "awaiting_request", followCheckCount: 0, followResponseCount: 0 },
+      token: { action: "request_guide", expiresAt: WINDOW_EXPIRES_AT },
+    });
+    expect(test.tx.guideActionToken.updateMany).toHaveBeenCalledWith({
+      where: { attemptId: ATTEMPT_ID, status: "active" },
+      data: { status: "cancelled" },
+    });
+    expect(test.tx.eventLog.create).toHaveBeenCalledWith({
+      data: {
+        kind: "guide_access_owner_action",
+        payload: expect.objectContaining({
+          actor: "owner@example.com",
+          action: "resend_action",
+          conversationId: CONVERSATION_ID,
+          attemptId: ATTEMPT_ID,
+        }),
+      },
+    });
+  });
+
+  it("refuses a review that already reached delivery", async () => {
+    const review = attempt({ state: "needs_review", lastFollowResult: "follower" });
+    const test = harness({ activeAttempt: review, lockedAttempt: review });
+
+    await expect(
+      test.repository.resetReviewActionForConversation({
+        conversationId: CONVERSATION_ID,
+        actor: "owner@example.com",
+        now: NOW,
+      }),
+    ).resolves.toEqual({ kind: "delivering" });
+    expect(test.tx.guideActionToken.create).not.toHaveBeenCalled();
   });
 });
 
