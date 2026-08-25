@@ -374,6 +374,8 @@ describe("handleMessage — inbound capture", () => {
     expect(routeGuideAction).toHaveBeenCalledWith({
       payload: GUIDE_ACTION_PAYLOAD,
       senderId: "controlled-recipient",
+      eventId: "message-1",
+      source: "quick_reply",
       inboundMessageId: "message-1",
       eventAt: new Date(GUIDE_ACTION_TIMESTAMP),
     });
@@ -421,6 +423,8 @@ describe("handleMessage — inbound capture", () => {
     expect(routeGuideAction).toHaveBeenCalledWith({
       payload: GUIDE_ACTION_PAYLOAD,
       senderId: "controlled-recipient",
+      eventId: "message-delayed-action",
+      source: "quick_reply",
       inboundMessageId: "message-delayed-action",
       eventAt: new Date(GUIDE_ACTION_TIMESTAMP),
     });
@@ -480,6 +484,8 @@ describe("handleMessage — inbound capture", () => {
     expect(routeGuideAction).toHaveBeenCalledWith({
       payload: "unregistered:action:value",
       senderId: "controlled-recipient",
+      eventId: "message-1",
+      source: "quick_reply",
       inboundMessageId: "message-1",
       eventAt: new Date(GUIDE_ACTION_TIMESTAMP),
     });

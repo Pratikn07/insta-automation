@@ -35,6 +35,8 @@ import { guideCoverDeliverySelector } from "./guideCoverDeliveryRollout.js";
 const STANDARD_DM_WINDOW_MS = 24 * 60 * 60 * 1_000;
 
 export type GuideAccessActionOutcome =
+  | "duplicate_event"
+  | "action_invalid"
   | "action_consumed"
   | "action_replayed"
   | "action_expired"
@@ -999,11 +1001,15 @@ export function createGuideAccessActionService(
     senderId: string,
     inboundMessageId: string,
     eventAt: Date,
+    eventId: string,
+    source: "quick_reply" | "postback",
   ): Promise<GuideAccessActionOutcome> {
-    let consumed;
+    let claimed;
     try {
-      consumed = await dependencies.repository.consumeToken({
+      claimed = await dependencies.repository.claimActionEvent({
+        eventId,
         tokenId,
+        source,
         action,
         senderId,
         eventAt,
@@ -1038,52 +1044,48 @@ export function createGuideAccessActionService(
       return review.outcome;
     }
 
-    if (consumed.kind === "already_consumed") return "action_replayed";
+    if (claimed.kind === "duplicate_event") return "duplicate_event";
     if (
-      consumed.kind === "not_found" ||
-      consumed.kind === "wrong_sender" ||
-      consumed.kind === "wrong_action" ||
-      consumed.kind === "expired"
+      claimed.kind === "not_found" ||
+      claimed.kind === "wrong_sender" ||
+      claimed.kind === "wrong_action"
     ) {
-      return "action_expired";
+      return "action_invalid";
     }
-    if (consumed.kind === "state_conflict") {
-      return outcomeForState(consumed.actualState);
-    }
-    if (consumed.kind === "check_limit_reached") {
-      let attemptId: string | null;
-      try {
-        attemptId = await dependencies.findAttemptIdByToken(tokenId);
-      } catch {
-        dependencies.logger.error(
-          { errorCode: "guide_action_limit_lookup_failed" },
-          "Guide action limit lookup failed",
-        );
-        return "access_attempt_needs_review";
+    if (claimed.kind === "check_limit_reached") {
+      if (
+        claimed.attempt.state === "delivered" ||
+        claimed.attempt.state === "expired" ||
+        claimed.attempt.state === "needs_review"
+      ) {
+        return outcomeForState(claimed.attempt.state);
       }
-      if (!attemptId) return "action_expired";
       const review = await checkpointNeedsReview(
-        attemptId,
-        "awaiting_follow",
+        claimed.attempt.id,
+        claimed.attempt.state,
         "follow_check_limit_reached",
         dependencies.now(),
       );
       return review.outcome;
     }
 
+    if (!claimed.checkClaimed || claimed.attempt.state !== "checking_follow") {
+      return outcomeForState(claimed.attempt.state);
+    }
+
     try {
       return await authorizeClaimed({
-        attempt: consumed.attempt,
+        attempt: claimed.attempt,
         senderId,
         triggerKind: action === "check_follow" ? "follow_recovery" : "inbound_reply",
-        triggerId: action === "check_follow" ? tokenId : inboundMessageId,
+        triggerId: eventId,
         threadLookupId: inboundMessageId,
         triggeredAt: eventAt,
         falseResponse: action === "check_follow" ? "lag" : "gate",
       });
     } catch {
       const review = await checkpointNeedsReview(
-        consumed.attempt.id,
+        claimed.attempt.id,
         ["checking_follow", "awaiting_follow", "delivering"],
         "post_consumption_orchestration_failed",
       );
@@ -1096,8 +1098,18 @@ export function createGuideAccessActionService(
     senderId: string,
     inboundMessageId: string,
     eventAt: Date,
+    eventId = inboundMessageId,
+    source: "quick_reply" | "postback" = "quick_reply",
   ): Promise<GuideAccessActionOutcome> {
-    return consumeAction("request_guide", tokenId, senderId, inboundMessageId, eventAt);
+    return consumeAction(
+      "request_guide",
+      tokenId,
+      senderId,
+      inboundMessageId,
+      eventAt,
+      eventId,
+      source,
+    );
   }
 
   async function checkFollowFromAction(
@@ -1105,8 +1117,18 @@ export function createGuideAccessActionService(
     senderId: string,
     inboundMessageId: string,
     eventAt: Date,
+    eventId = inboundMessageId,
+    source: "quick_reply" | "postback" = "quick_reply",
   ): Promise<GuideAccessActionOutcome> {
-    return consumeAction("check_follow", tokenId, senderId, inboundMessageId, eventAt);
+    return consumeAction(
+      "check_follow",
+      tokenId,
+      senderId,
+      inboundMessageId,
+      eventAt,
+      eventId,
+      source,
+    );
   }
 
   async function startDirectDmGuideRequest(

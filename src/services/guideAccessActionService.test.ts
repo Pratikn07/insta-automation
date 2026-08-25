@@ -192,6 +192,7 @@ function createHarness(input: {
     FOLLOW_TOKEN_5,
   ];
   const consumed = new Set<string>();
+  const actionEvents = new Set<string>();
   const directClaims = new Set<string>();
   const cancelledTokens = new Set<string>();
   let activeFollowToken: string | null = null;
@@ -239,6 +240,77 @@ function createHarness(input: {
       };
       loseAcknowledgement("consumeToken");
       return { kind: "consumed", attempt: { ...current } } as const;
+    }),
+    claimActionEvent: vi.fn(async (request: {
+      eventId: string;
+      tokenId: string;
+      action: "request_guide" | "check_follow";
+    }) => {
+      order.push(`consume:${request.action}`);
+      fail("consumeToken");
+      if (actionEvents.has(request.eventId)) return { kind: "duplicate_event" } as const;
+      actionEvents.add(request.eventId);
+
+      const forced = input.consumeResults?.shift();
+      if (forced) {
+        if (forced.kind === "consumed") {
+          current = { ...forced.attempt };
+          return {
+            kind: "claimed",
+            attempt: { ...current },
+            tokenWas: "active",
+            checkClaimed: true,
+          } as const;
+        }
+        if (forced.kind === "already_consumed") return { kind: "duplicate_event" } as const;
+        if (forced.kind === "wrong_sender") return forced;
+        if (forced.kind === "expired") {
+          current = { ...current, state: "expired" };
+          return {
+            kind: "claimed",
+            attempt: { ...current },
+            tokenWas: "expired",
+            checkClaimed: false,
+          } as const;
+        }
+        if (forced.kind === "check_limit_reached") {
+          return { kind: "check_limit_reached", attempt: { ...current } } as const;
+        }
+        current = { ...current, state: forced.actualState };
+        return {
+          kind: "claimed",
+          attempt: { ...current },
+          tokenWas: "consumed",
+          checkClaimed: false,
+        } as const;
+      }
+
+      const compatible =
+        (request.action === "request_guide" && current.state === "awaiting_request") ||
+        (request.action === "check_follow" && current.state === "awaiting_follow") ||
+        (current.state === "needs_review" && current.lastFollowResult === "unknown");
+      const tokenWas = cancelledTokens.has(request.tokenId)
+        ? "cancelled"
+        : consumed.has(request.tokenId)
+          ? "consumed"
+          : "active";
+      if (compatible) {
+        current = {
+          ...current,
+          state: "checking_follow",
+          lastFollowResult: "unknown",
+          lastFollowCheckedAt: null,
+          followCheckCount: current.followCheckCount + 1,
+        };
+      }
+      consumed.add(request.tokenId);
+      loseAcknowledgement("consumeToken");
+      return {
+        kind: "claimed",
+        attempt: { ...current },
+        tokenWas,
+        checkClaimed: compatible,
+      } as const;
     }),
     claimDirectInbound: vi.fn(async (request: { inboundMessageId: string }) => {
       order.push("claim:direct_inbound");
@@ -540,8 +612,19 @@ async function request(test: ReturnType<typeof createHarness>, senderId = SENDER
   );
 }
 
-async function check(test: ReturnType<typeof createHarness>, tokenId: string) {
-  return test.service.checkFollowFromAction(tokenId, SENDER_ID, INBOUND_ID, EVENT_AT);
+async function check(
+  test: ReturnType<typeof createHarness>,
+  tokenId: string,
+  eventId = tokenId,
+) {
+  return test.service.checkFollowFromAction(
+    tokenId,
+    SENDER_ID,
+    INBOUND_ID,
+    EVENT_AT,
+    eventId,
+    "postback",
+  );
 }
 
 beforeEach(() => {
@@ -673,8 +756,10 @@ describe("request and follow action orchestration", () => {
 
     await expect(request(test)).resolves.toBe("guide_delivery_started");
 
-    expect(test.repository.consumeToken).toHaveBeenCalledWith({
+    expect(test.repository.claimActionEvent).toHaveBeenCalledWith({
+      eventId: INBOUND_ID,
       tokenId: REQUEST_TOKEN_ID,
+      source: "quick_reply",
       action: "request_guide",
       senderId: SENDER_ID,
       eventAt: EVENT_AT,
@@ -1070,7 +1155,7 @@ describe("request and follow action orchestration", () => {
   });
 
   it("uses the bounded lag path when a direct DM rechecks an active follow wait", async () => {
-    const test = createHarness({ freshResults: [live(false), live(false)] });
+    const test = createHarness({ freshResults: [live(false), live(false), live(false)] });
     const directConversation = {
       id: CONVERSATION_ID,
       igUserId: SENDER_ID,
@@ -1160,17 +1245,19 @@ describe("request and follow action orchestration", () => {
     expect(test.startGuideDelivery).toHaveBeenCalledOnce();
   });
 
-  it("rotates the follow token and prevents the previous token from being spent", async () => {
-    const test = createHarness({ freshResults: [live(false), live(false)] });
+  it("rotates the token but lets a distinct tap on the persistent previous card recover", async () => {
+    const test = createHarness({ freshResults: [live(false), live(false), live(false)] });
 
     await expect(request(test)).resolves.toBe("follow_not_confirmed");
     await expect(check(test, FOLLOW_TOKEN_1)).resolves.toBe("follow_not_confirmed");
-    await expect(check(test, FOLLOW_TOKEN_1)).resolves.toBe("action_expired");
+    await expect(
+      check(test, FOLLOW_TOKEN_1, "90000000-0000-4000-8000-000000000009"),
+    ).resolves.toBe("follow_not_confirmed");
 
     expect(test.cancelledTokens).toContain(FOLLOW_TOKEN_1);
-    expect(test.resolveFresh).toHaveBeenCalledTimes(2);
+    expect(test.resolveFresh).toHaveBeenCalledTimes(3);
     expect(test.sendFollowerGate).toHaveBeenCalledOnce();
-    expect(test.sendFollowLag).toHaveBeenCalledOnce();
+    expect(test.sendFollowLag).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -1185,7 +1272,7 @@ describe("stable duplicate and invalid-action outcomes", () => {
     });
 
     await expect(request(test)).resolves.toBe("guide_delivery_started");
-    await expect(request(test)).resolves.toBe("action_replayed");
+    await expect(request(test)).resolves.toBe("duplicate_event");
 
     expect(test.resolveFresh).toHaveBeenCalledOnce();
     expect(test.startGuideDelivery).toHaveBeenCalledOnce();
@@ -1198,7 +1285,7 @@ describe("stable duplicate and invalid-action outcomes", () => {
     const test = createHarness({ consumeResults: [result] });
 
     await expect(request(test, _name === "wrong sender" ? "attacker" : SENDER_ID)).resolves.toBe(
-      "action_expired",
+      _name === "wrong sender" ? "action_invalid" : "action_expired",
     );
     expect(test.resolveFresh).not.toHaveBeenCalled();
     expect(test.startGuideDelivery).not.toHaveBeenCalled();
@@ -1273,7 +1360,7 @@ describe("provider error boundary", () => {
     });
 
     await expect(request(test)).resolves.toBe("access_attempt_needs_review");
-    await expect(request(test)).resolves.toBe("action_replayed");
+    await expect(request(test)).resolves.toBe("duplicate_event");
 
     expect(test.sendFollowerGate).toHaveBeenCalledOnce();
     expect(test.repository.markNeedsReview).toHaveBeenCalledWith({
@@ -1366,7 +1453,7 @@ describe("post-consumption checkpoint failures", () => {
     });
 
     await expect(request(test)).resolves.toBe("access_attempt_needs_review");
-    await expect(request(test)).resolves.toBe("action_replayed");
+    await expect(request(test)).resolves.toBe("duplicate_event");
 
     expect(test.attempt().state).toBe("needs_review");
     expect(test.sendFollowerGate).not.toHaveBeenCalled();
@@ -1385,7 +1472,7 @@ describe("post-consumption checkpoint failures", () => {
     await expect(check(test, FOLLOW_TOKEN_1)).resolves.toBe(
       "access_attempt_needs_review",
     );
-    await expect(check(test, FOLLOW_TOKEN_1)).resolves.toBe("action_replayed");
+    await expect(check(test, FOLLOW_TOKEN_1)).resolves.toBe("duplicate_event");
 
     expect(test.sendFollowLag).not.toHaveBeenCalled();
     expect(test.attempt().state).toBe("needs_review");
@@ -1400,7 +1487,7 @@ describe("post-consumption checkpoint failures", () => {
     });
 
     await expect(request(test)).resolves.toBe("access_attempt_needs_review");
-    await expect(request(test)).resolves.toBe("action_replayed");
+    await expect(request(test)).resolves.toBe("duplicate_event");
 
     expect(test.sendFollowerGate).toHaveBeenCalledOnce();
     expect(test.attempt().state).toBe("needs_review");
@@ -1413,7 +1500,7 @@ describe("post-consumption checkpoint failures", () => {
     });
 
     await expect(request(test)).resolves.toBe("access_attempt_needs_review");
-    await expect(request(test)).resolves.toBe("action_replayed");
+    await expect(request(test)).resolves.toBe("duplicate_event");
 
     expect(test.startGuideDelivery).not.toHaveBeenCalled();
     expect(test.attempt().state).toBe("needs_review");
@@ -1479,7 +1566,7 @@ describe("post-consumption checkpoint failures", () => {
     });
 
     await expect(request(test)).resolves.toBe("access_attempt_needs_review");
-    await expect(request(test)).resolves.toBe("action_replayed");
+    await expect(request(test)).resolves.toBe("duplicate_event");
 
     expect(test.startGuideDelivery).toHaveBeenCalledOnce();
     expect(test.attempt().state).toBe("delivering");
@@ -1523,7 +1610,7 @@ describe("ambiguous repository acknowledgements", () => {
       await expect(first).resolves.toBe("access_attempt_needs_review");
       await expect(
         action === "request" ? request(test) : check(test, FOLLOW_TOKEN_1),
-      ).resolves.toBe("action_replayed");
+      ).resolves.toBe("duplicate_event");
 
       expect(test.attempt().state).toBe("needs_review");
       expect(test.resolveFresh).not.toHaveBeenCalled();
@@ -1590,7 +1677,7 @@ describe("ambiguous repository acknowledgements", () => {
     });
 
     await expect(request(test)).resolves.toBe("access_attempt_needs_review");
-    await expect(request(test)).resolves.toBe("action_replayed");
+    await expect(request(test)).resolves.toBe("duplicate_event");
 
     expect(test.attempt().state).toBe("needs_review");
     expect(test.sendFollowerGate).toHaveBeenCalledOnce();
@@ -1607,7 +1694,7 @@ describe("ambiguous repository acknowledgements", () => {
     });
 
     await expect(request(test)).resolves.toBe("access_attempt_needs_review");
-    await expect(request(test)).resolves.toBe("action_replayed");
+    await expect(request(test)).resolves.toBe("duplicate_event");
 
     expect(test.attempt().state).toBe("needs_review");
     expect(test.resolveFresh).toHaveBeenCalledOnce();

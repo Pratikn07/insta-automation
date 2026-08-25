@@ -134,9 +134,13 @@ export type ClaimGuideActionEventResult =
       kind: "claimed";
       attempt: GuideAccessAttempt;
       tokenWas: GuideActionTokenStatus;
+      /** True only when this event moved the attempt into a new follow check. */
+      checkClaimed: boolean;
     }
   | { kind: "duplicate_event" }
-  | { kind: "wrong_sender" | "wrong_action" | "not_found" }
+  | { kind: "wrong_sender" }
+  | { kind: "wrong_action" }
+  | { kind: "not_found" }
   | { kind: "check_limit_reached"; attempt: GuideAccessAttempt };
 
 export type ClaimDirectInboundInput = {
@@ -778,6 +782,7 @@ export function createGuideAccessRepository(
           kind: "claimed" as const,
           attempt: updatedAttempt,
           tokenWas: token.status,
+          checkClaimed: canBeginCheck,
         };
       });
     },

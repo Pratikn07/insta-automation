@@ -5,6 +5,7 @@ import {
   guidePostbackEvent,
   unknownPostbackEvent,
 } from "../test/fixtures/metaGuideGateEvents.js";
+import { guidePostbackEventId } from "../services/guideActionEventIdentity.js";
 
 const recordRecoveryPostback = vi.fn();
 const routeGuideAction = vi.fn();
@@ -45,6 +46,8 @@ describe("postbackHandler", () => {
     expect(routeGuideAction).toHaveBeenCalledWith({
       payload: "OPEN",
       senderId: "user-1",
+      eventId: guidePostbackEventId("mid-1"),
+      source: "postback",
       eventAt: new Date(timestamp),
     });
     expect(recordRecoveryPostback.mock.invocationCallOrder[0]).toBeLessThan(
@@ -96,13 +99,32 @@ describe("postbackHandler", () => {
     expect(routeGuideAction).toHaveBeenNthCalledWith(1, {
       payload: GUIDE_ACTION_PAYLOAD,
       senderId: "controlled-recipient",
+      eventId: guidePostbackEventId("controlled-template-mid"),
+      source: "postback",
       eventAt: new Date(GUIDE_ACTION_TIMESTAMP),
     });
     expect(routeGuideAction).toHaveBeenNthCalledWith(2, {
       payload: GUIDE_ACTION_PAYLOAD,
       senderId: "controlled-recipient",
+      eventId: guidePostbackEventId("controlled-template-mid"),
+      source: "postback",
       eventAt: new Date(GUIDE_ACTION_TIMESTAMP),
     });
+  });
+
+  it("derives different action-event identities for two real taps carrying the same token", async () => {
+    const first = guidePostbackEvent();
+    const second = guidePostbackEvent();
+    second.postback = { ...second.postback, mid: "controlled-template-mid-2" };
+
+    await handlePostback(first);
+    await handlePostback(second);
+
+    const firstEventId = routeGuideAction.mock.calls[0]?.[0]?.eventId;
+    const secondEventId = routeGuideAction.mock.calls[1]?.[0]?.eventId;
+    expect(firstEventId).toBe(guidePostbackEventId("controlled-template-mid"));
+    expect(secondEventId).toBe(guidePostbackEventId("controlled-template-mid-2"));
+    expect(firstEventId).not.toBe(secondEventId);
   });
 
   it("acknowledges an unknown action payload through recovery evidence only", async () => {
@@ -116,6 +138,8 @@ describe("postbackHandler", () => {
     expect(routeGuideAction).toHaveBeenCalledWith({
       payload: "unregistered:action:value",
       senderId: "controlled-recipient",
+      eventId: guidePostbackEventId("controlled-unknown-mid"),
+      source: "postback",
       eventAt: new Date(GUIDE_ACTION_TIMESTAMP),
     });
     expect(loggerInfo).not.toHaveBeenCalled();
