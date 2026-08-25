@@ -13,9 +13,10 @@ const flags = vi.hoisted(() => ({
   AI_SEND_ENABLED: false,
 }));
 vi.mock("../config/env.js", async (importOriginal) => {
-  const actual = (await importOriginal()) as { env: Record<string, unknown> };
+  const actual = (await importOriginal()) as typeof import("../config/env.js");
   return {
-    env: new Proxy(actual.env, {
+    ...actual,
+    env: new Proxy(actual.env as unknown as Record<string, unknown>, {
       get: (target, property) =>
         property in flags
           ? flags[property as keyof typeof flags]

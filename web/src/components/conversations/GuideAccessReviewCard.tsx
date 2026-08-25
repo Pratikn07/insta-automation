@@ -33,6 +33,7 @@ export function GuideAccessReviewCard({
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["dm-thread", threadId] }),
       queryClient.invalidateQueries({ queryKey: ["dm-threads"] }),
+      queryClient.invalidateQueries({ queryKey: ["conversation-counts"] }),
       queryClient.invalidateQueries({ queryKey: ["funnels", "guide-access-metrics"] }),
     ]);
   }
@@ -78,7 +79,7 @@ export function GuideAccessReviewCard({
             Guide access needs review
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
-            {review.resourceName} · {review.followCheckCount} access checks
+            {review.resourceName} · {review.followCheckCount} access checks · {review.followResponseCount} follow responses
           </p>
         </div>
         {!review.messagingWindowOpen ? (

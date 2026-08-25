@@ -327,6 +327,39 @@ describeWithDatabase("guide access repository PostgreSQL concurrency contract", 
     ).resolves.toBe(2);
   });
 
+  it("accepts a follower's opening tap two hours later despite the legacy ten-minute token label", async () => {
+    const fixture = await createFixture();
+    const attempt = await createAttempt(fixture);
+    const issued = await firstRepository.issueToken({
+      attemptId: attempt.id,
+      action: "request_guide",
+      now: NOW,
+      // Production used to mint this while promising the parent the entire DM window.
+      expiresAt: new Date(NOW.getTime() + 10 * 60_000),
+    });
+    if (!("token" in issued)) throw new Error("expected token");
+    await firstClient.guideActionToken.update({
+      where: { id: issued.token.id },
+      data: { status: "expired" },
+    });
+    const tappedAt = new Date(NOW.getTime() + 2 * 60 * 60_000);
+
+    await expect(firstRepository.claimActionEvent({
+      eventId: randomUUID(),
+      tokenId: issued.token.id,
+      source: "quick_reply",
+      senderId: fixture.senderId,
+      action: "request_guide",
+      eventAt: tappedAt,
+      now: new Date(tappedAt.getTime() + 1_000),
+    })).resolves.toMatchObject({
+      kind: "claimed",
+      tokenWas: "expired",
+      checkClaimed: true,
+      attempt: { state: "checking_follow", followCheckCount: 1 },
+    });
+  });
+
   it("allows only one concurrent claim for an exact provider event", async () => {
     const fixture = await createFixture();
     const attempt = await createAttempt(fixture);
