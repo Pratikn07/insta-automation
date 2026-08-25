@@ -4,12 +4,12 @@
 - cluster-only mode — file stats not available
 
 ## Summary
-- 5702 nodes · 11403 edges · 341 communities (291 shown, 50 thin omitted)
+- 5702 nodes · 11403 edges · 339 communities (291 shown, 48 thin omitted)
 - Extraction: 100% EXTRACTED · 0% INFERRED · 0% AMBIGUOUS · INFERRED: 53 edges (avg confidence: 0.85)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `c81dc638`
+- Built from commit: `f8597a21`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -20,20 +20,21 @@
 - cn
 - Insights.tsx
 - ExperimentDetail.tsx
-- commentHandler.ts
+- dmDeliveryService.ts
 - guide-covers/types.ts
+- prisma.ts
 - src/server.ts
 - Conversations.tsx
 - guideCoverRenderer.ts
 - guideCoverPublishService.ts
-- messageHandler.ts
 - "keywords"
-- prisma.ts
+- messageHandler.ts
 - historicalRecoveryOriginPolicy.ts
 - HistoricalRecovery.tsx
 - journeyReconciliationRunner.ts
+- journeyIntentService.ts
 - DailyAddsChart.tsx
-- dmRecoveryService.ts
+- commentHandler.ts
 - historicalRecoveryWorker.ts
 - recoveryCampaignControl.ts
 - e2e/main.tsx
@@ -43,6 +44,7 @@
 - FollowerFlowPanel.tsx
 - Home.tsx
 - insights.routes.ts
+- guideAccessActionService.ts
 - guideGatePayloads.ts
 - stats.routes.ts
 - MediaUpload.tsx
@@ -52,20 +54,18 @@
 - expandedRecoveryCampaignSelector.ts
 - DmRecoveryList.tsx
 - dependencies
-- ai.routes.ts
 - internalAi.routes.ts
 - recoveryReminders.routes.ts
 - feedFollowSnapshotWorker.ts
 - guideAccessRepository.ts
-- guideAccessActionService.ts
 - DmThreadDrawer.tsx
+- asyncRouter
 - guideDeliveryRepository.ts
 - historicalRecoveryWorker.test.ts
 - codex-runtime/src/server.ts
 - ExpandedRecoveryRolloutOperator
 - messageHandler.test.ts
 - guideCoverPolicy.ts
-- upcomingAutomations.routes.ts
 - guideCoverRepository.ts
 - guideDeliveryCompletion.ts
 - analyticsDay.ts
@@ -87,10 +87,8 @@
 - historicalRecovery.routes.ts
 - presentationCategories.routes.ts
 - commentHandler.test.ts
-- resources.routes.ts
 - engagementFollowUpService.ts
 - messages.routes.ts
-- conversations.routes.ts
 - geminiAnalysisService.ts
 - check-guide-delivery-bypasses.mjs
 - guideAccessActionService.test.ts
@@ -113,6 +111,7 @@
 - GuideCoverPanel.test.tsx
 - JsonRpcPeer
 - scripts
+- ai.routes.ts
 - dmRecoveryService.test.ts
 - spikeService.ts
 - gateQueueWorker.test.ts
@@ -130,6 +129,7 @@
 - historicalRecoveryAttribution.ts
 - originEnrichmentWorker.ts
 - GuideDeliveryReviewCard.tsx
+- upcomingAutomations.routes.ts
 - compilerOptions
 - OperatorState
 - expandedRecoveryRolloutOperator.test.ts
@@ -143,7 +143,6 @@
 - funnel-report.ts
 - standardize-public-replies.ts
 - experimentLifecycle.ts
-- keywords.routes.test.ts
 - dmRecoveryReportingWindow.ts
 - guideDeliveryReviewService.test.ts
 - createGuideDeliveryService
@@ -177,7 +176,7 @@
 - web/package.json
 - compilerOptions
 - watchPatterns
-- geminiQueueWorker.ts
+- describeGraphError
 - webhookRouter.test.ts
 - guideDeliveryMigrationContract.test.ts
 - historicalRecoveryHealth.ts
@@ -206,6 +205,7 @@
 - Funnels.test.tsx
 - package.json
 - messages.routes.test.ts
+- igUserService.ts
 - deploymentHealth.ts
 - experimentSummary.test.ts
 - guideAccessRepositoryContract.test.ts
@@ -310,10 +310,8 @@
 - expanded-recovery-rollout.sh script
 - flagOverrideMigrationContract.test.ts
 - upcomingAutomationMigrationContract.test.ts
-- historicalCampaignRows
-- recoveryTimingExperiment
+- scopedRecoveryRows
 - playwright.config.ts
-- dmThreads.routes.test.ts
 
 ## God Nodes (most connected - your core abstractions)
 1. `prisma` - 98 edges
@@ -342,7 +340,7 @@
 ## Import Cycles
 - None detected.
 
-## Communities (341 total, 50 thin omitted)
+## Communities (339 total, 48 thin omitted)
 
 ### Community 0 - "api.ts"
 Cohesion: 0.05
@@ -354,7 +352,7 @@ Nodes (65): DropOffTable(), formatEntered(), Pill(), recoveryLabel(), STATE_LABE
 
 ### Community 2 - "eventLogger.ts"
 Cohesion: 0.06
-Nodes (57): Env, routeGuideAction, handlePostback(), handleReaction(), recordRecoveryReaction, handleSeen(), markOutboundSeen, recordRecoverySeen (+49 more)
+Nodes (45): express-serve-static-core, Request, requireAdmin(), Env, logger, supabase, CountrySplit, DemographicsResponse (+37 more)
 
 ### Community 3 - "cn"
 Cohesion: 0.06
@@ -368,41 +366,41 @@ Nodes (54): compactNumber, RepeatReelsCard(), apiRead(), CaptureLeader, DIMENSIO
 Cohesion: 0.05
 Nodes (52): activateSettingsVerification, apiGet, cohortSummary, counts, HEALTHY, list, metrics, settingsVerifications (+44 more)
 
-### Community 6 - "commentHandler.ts"
+### Community 6 - "dmDeliveryService.ts"
 Cohesion: 0.06
-Nodes (48): handleComment(), mediaScopeLabel(), OPENING_METRIC_OUTCOME, persistPublicAcknowledgement(), graph, { loggerError, getAccessToken }, MetaPublicReplyResult, replyToComment() (+40 more)
+Nodes (36): graph, { loggerError, getAccessToken }, MetaPublicReplyResult, replyToComment(), GraphSendResponse, sendMedia(), SendMediaArgs, debug (+28 more)
 
 ### Community 7 - "guide-covers/types.ts"
 Cohesion: 0.06
 Nodes (50): GuideCoverLayoutResult, CreateDraftIntent, DraftSaveIntent, EMPTY_COPY, GuideCoverEditorModel, PatchDraftIntent, PatchReconciliation, deriveGuideCoverEditorState() (+42 more)
 
-### Community 8 - "src/server.ts"
+### Community 8 - "prisma.ts"
+Cohesion: 0.06
+Nodes (33): captionKeyword(), main(), main(), assertions(), dryRun(), main(), GATES, main() (+25 more)
+
+### Community 9 - "src/server.ts"
 Cohesion: 0.06
 Nodes (43): classifyRefreshOutcome(), expiryFromExpiresIn(), RefreshFailureKind, RefreshOutcome, runTokenRefreshTick(), mocks, CachedToken, getAccessToken() (+35 more)
 
-### Community 9 - "Conversations.tsx"
+### Community 10 - "Conversations.tsx"
 Cohesion: 0.06
 Nodes (51): IncomingBubble(), OutgoingBubble(), StepBubble(), JourneyRowMarkers, PREDATES_TRACKING_TEXT, NOW, PhoneMockup(), PhoneMockupProps (+43 more)
 
-### Community 10 - "guideCoverRenderer.ts"
+### Community 11 - "guideCoverRenderer.ts"
 Cohesion: 0.06
 Nodes (47): OUTPUT_DIRECTORY, RENDITIONS, SNAPSHOTS, GuideCoverRenderInput, getGuideCoverCategory(), GUIDE_COVER_CATEGORIES, GUIDE_COVER_TEMPLATES, GuideCoverCategory (+39 more)
 
-### Community 11 - "guideCoverPublishService.ts"
+### Community 12 - "guideCoverPublishService.ts"
 Cohesion: 0.04
 Nodes (36): apply, prisma, storage, ApproveGuideCoverResult, createGuideCoverPublishService(), GuideCoverPublishDatabase, GuideCoverPublishError, GuideCoverPublishInput (+28 more)
-
-### Community 12 - "messageHandler.ts"
-Cohesion: 0.08
-Nodes (41): classifyInbound(), deliverOwnedGuide(), graphFailureMetadata(), handleMessage(), isStoryMention(), recordDirectStrictOutcome(), runStrictGuideRequest(), scheduleFollowUpAfterDelivery() (+33 more)
 
 ### Community 13 - ""keywords""
 Cohesion: 0.05
 Nodes (38): "conversations", "event_log", "keywords", "resource_messages", "resources", "ig_users", "dm_message", "dm_thread" (+30 more)
 
-### Community 14 - "prisma.ts"
-Cohesion: 0.07
-Nodes (34): captionKeyword(), main(), main(), assertions(), dryRun(), main(), main(), sleep() (+26 more)
+### Community 14 - "messageHandler.ts"
+Cohesion: 0.09
+Nodes (43): classifyInbound(), deliverOwnedGuide(), graphFailureMetadata(), handleMessage(), isStoryMention(), recordDirectStrictOutcome(), runStrictGuideRequest(), scheduleFollowUpAfterDelivery() (+35 more)
 
 ### Community 15 - "historicalRecoveryOriginPolicy.ts"
 Cohesion: 0.07
@@ -416,141 +414,141 @@ Nodes (35): detailErrorMessage(), HistoricalCandidateDetail, HistoricalCandidate
 Cohesion: 0.06
 Nodes (33): approvedManifestRunId, main(), resumeRunId, write, lockJourneyIdentity(), CREATED_AT, Fixture, AliasState (+25 more)
 
-### Community 18 - "DailyAddsChart.tsx"
+### Community 18 - "journeyIntentService.ts"
+Cohesion: 0.12
+Nodes (15): persistPublicAcknowledgement(), isRetryableConflict(), RAW_QUERY_FAILURE, IntentFixture, findExistingTrigger(), JOURNEY_WINDOW_MS, JourneyDisposition, JourneyPublicAcknowledgement (+7 more)
+
+### Community 19 - "DailyAddsChart.tsx"
 Cohesion: 0.07
 Nodes (32): ChartTooltip(), ChartTooltipProps, model, accessibleDayLabel(), DailyAddsChart(), handlePointerMove(), REGION_COLORS, REGION_LABELS (+24 more)
 
-### Community 19 - "dmRecoveryService.ts"
-Cohesion: 0.09
-Nodes (43): recoverFailedPrivateReply(), ConversationHistoryRole, recordRecoveryDatabaseFailure(), renderRecoveryCopy(), AcceptedGateRecoveryInput, acceptedInsideConfiguredWindow(), CohortDecision, decideExperimentCohort() (+35 more)
+### Community 20 - "commentHandler.ts"
+Cohesion: 0.08
+Nodes (49): mediaScopeLabel(), OPENING_METRIC_OUTCOME, recoverFailedPrivateReply(), ConversationHistoryRole, CommentGate, selectCommentGate(), recordRecoveryDatabaseFailure(), renderRecoveryCopy() (+41 more)
 
-### Community 20 - "historicalRecoveryWorker.ts"
+### Community 21 - "historicalRecoveryWorker.ts"
 Cohesion: 0.09
 Nodes (42): fetchComment(), FetchedComment, reconcileHistoricalRecoveryAttribution(), reconcileHistoricalRecoveryAttributionSafely(), SourceCommentState, claimCandidate(), ClaimedCandidate, countCandidatesSentSince() (+34 more)
 
-### Community 21 - "recoveryCampaignControl.ts"
+### Community 22 - "recoveryCampaignControl.ts"
 Cohesion: 0.07
 Nodes (38): CampaignHealthSignal, classifyInboundHealthSignal(), markInboundCampaignHealthCaptured(), NEGATIVE_REPLY_MESSAGES, normalizeWholeMessage(), OPT_OUT_MESSAGES, reconcilePendingInboundCampaignHealthSignals(), recordCampaignHealthObservation() (+30 more)
 
-### Community 22 - "e2e/main.tsx"
+### Community 23 - "e2e/main.tsx"
 Cohesion: 0.04
 Nodes (39): ADVISOR_ANSWER, COLD_SUMMARY, CONTENT_KEYWORDS, CONTENT_MEDIA, CONTENT_UPCOMING, EDITOR_MESSAGES, EDITOR_RESOURCE, EXPERIMENT_DETAILS (+31 more)
 
-### Community 23 - "advisorService.ts"
+### Community 24 - "advisorService.ts"
 Cohesion: 0.07
 Nodes (36): AdvisorErrorCode, AdvisorService, TurnCompletedNotification, DraftErrorCode, ThreadStartResult, TurnCompletedNotification, TurnStartResult, ADVISOR_BASE_INSTRUCTIONS (+28 more)
 
-### Community 24 - "env.ts"
+### Community 25 - "env.ts"
 Cohesion: 0.06
 Nodes (29): patchSchema, booleanFlag(), FALSE_VALUES, flag, TRUE_VALUES, envSchema, FORBIDDEN_SETTINGS_SIGNATURE, guideDeliveryCohortIgUserIds() (+21 more)
 
-### Community 25 - "logEvent"
+### Community 26 - "logEvent"
 Cohesion: 0.09
 Nodes (35): AccountMedia, fetchAllMedia(), fetchMediaById(), fetchMediaPublishedSince(), GraphMediaItem, invalidateMediaCache(), isReel(), MediaKind (+27 more)
 
-### Community 26 - "FollowerFlowPanel.tsx"
+### Community 27 - "FollowerFlowPanel.tsx"
 Cohesion: 0.11
 Nodes (37): CountryPicker(), CountryPickerProps, BreakdownMode, FollowerFlowPanel(), trendStyles, EmptyPanel(), RangeFilter(), RangeFilterProps (+29 more)
 
-### Community 27 - "Home.tsx"
+### Community 28 - "Home.tsx"
 Cohesion: 0.08
 Nodes (34): feedFollowAttributionPath(), ComparableWeek, compareSettledUsWeeks(), isSettledComparisonDay(), AttentionItem, AttentionKind, deriveAttentionItems(), deriveHomeAttentionState() (+26 more)
 
-### Community 28 - "insights.routes.ts"
+### Community 29 - "insights.routes.ts"
 Cohesion: 0.06
 Nodes (35): createExperimentSchema, FOLLOWER_FLOW_CACHE_TTL_MS, followerFlowCache, tagsSchema, body, createExperiment, experiment, updateExperimentSchema (+27 more)
 
-### Community 29 - "guideGatePayloads.ts"
+### Community 30 - "guideAccessActionService.ts"
+Cohesion: 0.07
+Nodes (35): GuideActionRouteInput, GuideActionRouterDependencies, GuideActionRouteResult, publicMediaUrl(), serverMediaBucket(), ActionKind, AuthorizationContext, checkFollowFromAction (+27 more)
+
+### Community 31 - "guideGatePayloads.ts"
 Cohesion: 0.08
 Nodes (39): GraphSendResponse, runMetaGuideGateCapabilityCli(), GRAPH_VERSION, acceptedResult(), buildCapabilityInputFromEnvironment(), CAPABILITY_CASES, CapabilityEnvironment, GuideGateCapabilityDependencies (+31 more)
 
-### Community 30 - "stats.routes.ts"
+### Community 32 - "stats.routes.ts"
 Cohesion: 0.07
 Nodes (29): eventsQuery, STATS_CACHE_TTL_MS, statsCache, statsRouter, getDashboardStats, createReadThroughCache(), Entry, ReadThroughCache (+21 more)
 
-### Community 31 - "MediaUpload.tsx"
+### Community 33 - "MediaUpload.tsx"
 Cohesion: 0.07
 Nodes (25): accept, Kind, MediaUpload(), handleFile(), MediaUploadProps, { ApiError, apiErrorCode, apiRead, apiMutation }, getSession, refreshSession (+17 more)
 
-### Community 32 - "guideCoverCleanupStorage.ts"
+### Community 34 - "guideCoverCleanupStorage.ts"
 Cohesion: 0.06
 Nodes (30): GUIDE_COVER_RENDITION_FILENAMES, createGuideCoverCleanupStorage(), reconcileExactPath(), GuideCoverCleanupBucket, GuideCoverCleanupProbeResult, GuideCoverCleanupStorage, GuideCoverCleanupStorageResult, GuideCoverObjectIdentity (+22 more)
 
-### Community 33 - "followerFlow.ts"
+### Community 35 - "followerFlow.ts"
 Cohesion: 0.08
 Nodes (36): renderPanel(), series(), stock, FollowerFlowPanelProps, flowStock, markup(), AxisTick, axisTicks() (+28 more)
 
-### Community 34 - "expanded-recovery-audit.ts"
+### Community 36 - "expanded-recovery-audit.ts"
 Cohesion: 0.11
 Nodes (38): arg(), assertExpandedGroupAuditSnapshot(), assertGroup(), AudienceRow, auditGroup(), auditLive(), done(), EXPANDED_SEGMENTS (+30 more)
 
-### Community 35 - "expandedRecoveryCampaignSelector.ts"
+### Community 37 - "expandedRecoveryCampaignSelector.ts"
 Cohesion: 0.08
 Nodes (33): jsonOutput, limitArg, main(), phase, phaseArg, EXPANDED_RECOVERY_SELECTION_VERSION, expandedRecoveryCampaignSelectionRecord(), ExpandedSelectionWithPhase (+25 more)
 
-### Community 36 - "DmRecoveryList.tsx"
+### Community 38 - "DmRecoveryList.tsx"
 Cohesion: 0.07
 Nodes (34): DmRecoveryDrawer(), RECOVERY_CONFLICT_MESSAGE, ApiError, cancel, detail, makeDetail(), markReviewed, renderDrawer() (+26 more)
 
-### Community 37 - "dependencies"
+### Community 39 - "dependencies"
 Cohesion: 0.05
 Nodes (41): class-variance-authority, clsx, cmdk, @dnd-kit/core, @dnd-kit/sortable, framer-motion, @hookform/resolvers, lucide-react (+33 more)
 
-### Community 38 - "ai.routes.ts"
-Cohesion: 0.15
-Nodes (12): createAiRouter(), writeDraftAudit(), deliverApprovedDraft(), sendRuntimeError(), classifySendError(), SendErrorCode, SendOutcome, claimApprovedDraft() (+4 more)
-
-### Community 39 - "internalAi.routes.ts"
+### Community 40 - "internalAi.routes.ts"
 Cohesion: 0.07
 Nodes (32): catalogSchema, internalAiRouter, summarySchema, getBusinessOverview, getConversationSummary, getKeywordGuideCatalog, INTERNAL_TOKEN, makeApp() (+24 more)
 
-### Community 40 - "recoveryReminders.routes.ts"
+### Community 41 - "recoveryReminders.routes.ts"
 Cohesion: 0.06
 Nodes (34): buildTimingExperiment(), CANCELLABLE, cohortSummary(), countQuerySchema, dayQuerySchema, DETAIL_SELECT, iso(), isTimingArm() (+26 more)
 
-### Community 41 - "feedFollowSnapshotWorker.ts"
+### Community 42 - "feedFollowSnapshotWorker.ts"
 Cohesion: 0.08
 Nodes (19): fetchAllFeedPosts(), FeedFollowMetricResult, fetchFeedFollowCount(), FollowsDatum, FollowsResponse, isGraphAuthenticationError(), asDate(), collectFeedFollowSnapshot() (+11 more)
 
-### Community 42 - "guideAccessRepository.ts"
+### Community 43 - "guideAccessRepository.ts"
 Cohesion: 0.05
 Nodes (34): ACTIVE_ATTEMPT_STATES, BeginGuideAccessCheckingInput, ClaimCoverExposureResult, ClaimDirectInboundInput, ClaimDirectInboundResult, ConsumeGuideActionTokenInput, ConsumeGuideActionTokenResult, CreateGuideAccessAttemptInput (+26 more)
-
-### Community 43 - "guideAccessActionService.ts"
-Cohesion: 0.06
-Nodes (38): express-serve-static-core, Request, requireAdmin(), GuideActionRouteInput, GuideActionRouterDependencies, GuideActionRouteResult, publicMediaUrl(), serverMediaBucket() (+30 more)
 
 ### Community 44 - "DmThreadDrawer.tsx"
 Cohesion: 0.11
 Nodes (34): apiErrorCode(), DmThreadDrawer(), handleMutationError(), handleMutationSuccess(), refreshAll(), UNRESOLVED_DRAFT_ACTION_MESSAGE, DmThreadList(), DmThreadListProps (+26 more)
 
-### Community 45 - "guideDeliveryRepository.ts"
+### Community 45 - "asyncRouter"
+Cohesion: 0.09
+Nodes (17): asyncRouter(), forwardRejections(), API_DIR, mount(), VERBS, idempotencyKeyMismatch(), createSchema, RESOURCE_REPLAY_KEYS (+9 more)
+
+### Community 46 - "guideDeliveryRepository.ts"
 Cohesion: 0.06
 Nodes (26): TransportCode, BeginGuideUnitInput, ClaimDueGuideDeliveriesInput, ClaimGuideDeliveryInput, eventIdentity(), ExpiredClaimReconciliation, GRAPH_ERROR_CATEGORIES, GRAPH_ERROR_METADATA_KEYS (+18 more)
 
-### Community 46 - "historicalRecoveryWorker.test.ts"
+### Community 47 - "historicalRecoveryWorker.test.ts"
 Cohesion: 0.05
 Nodes (36): acquireHistoricalTick, campaignFindMany, campaignFindUnique, CANDIDATE, claimCandidate, classifyPublicReplyFailure, completeCampaignIfDrained, conversationCount (+28 more)
 
-### Community 47 - "codex-runtime/src/server.ts"
+### Community 48 - "codex-runtime/src/server.ts"
 Cohesion: 0.10
 Nodes (21): createAdvisorSessionStore(), StoredAdvisorSession, AppServerClient, AppServerDependencies, buildArgs(), disabledFeatures, SpawnAppServer, startAppServerClient() (+13 more)
 
-### Community 48 - "ExpandedRecoveryRolloutOperator"
+### Community 49 - "ExpandedRecoveryRolloutOperator"
 Cohesion: 0.20
 Nodes (5): assertCommandAllowed(), assertOperatorIdentity(), parseSelectionOutput(), ExpandedRecoveryRolloutOperator, requiredEnvironment()
 
-### Community 49 - "messageHandler.test.ts"
+### Community 50 - "messageHandler.test.ts"
 Cohesion: 0.05
 Nodes (32): aiFlags, deliverGuideForTrigger, describeGraphError, findActiveAwaitingDone, findKeywordInMessage, findLatestIncompleteConversation, gateOwner, guideDeliveryOwner (+24 more)
 
-### Community 50 - "guideCoverPolicy.ts"
+### Community 51 - "guideCoverPolicy.ts"
 Cohesion: 0.08
 Nodes (29): DRAFT_FIELDS, GUIDE_COVER_CANVAS, GUIDE_COVER_TEXT_RULES, GuideCoverDraftField, GuideCoverStableErrorCode, GuideCoverTextField, GuideCoverValidationError, GuideCoverValidationResult (+21 more)
-
-### Community 51 - "upcomingAutomations.routes.ts"
-Cohesion: 0.15
-Nodes (12): classifyCreateReplay(), CreateReplayVerdict, isPrimaryKeyViolation(), isUniqueViolation(), normalize(), sameValue(), createSchema, editableFields (+4 more)
 
 ### Community 52 - "guideCoverRepository.ts"
 Cohesion: 0.07
@@ -636,173 +634,173 @@ Nodes (19): categories, createSchema, idSchema, presentationCategoriesRouter, sl
 Cohesion: 0.07
 Nodes (24): bindUpcomingAutomationFromComment, childLogger, claimComment, enqueueGate, extractCandidates, findKeywordForComment, gateOwner, getFollowState (+16 more)
 
-### Community 73 - "resources.routes.ts"
-Cohesion: 0.17
-Nodes (7): createSchema, RESOURCE_REPLAY_KEYS, resourcesRouter, updateSchema, createdResourceIds, NOW, png
-
-### Community 74 - "engagementFollowUpService.ts"
+### Community 73 - "engagementFollowUpService.ts"
 Cohesion: 0.10
 Nodes (18): hasPrismaCode(), LockedThreadRow, scheduleEngagementFollowUp(), ScheduleEngagementFollowUpInput, ScheduleEngagementFollowUpResult, INPUT, rootReplyDraft, $transaction (+10 more)
 
-### Community 75 - "messages.routes.ts"
+### Community 74 - "messages.routes.ts"
 Cohesion: 0.13
 Nodes (22): AuditPrismaClient, reportAuditFailure(), runGuideMessageLengthAudit(), countInstagramCodePoints(), GUIDE_MESSAGE_LIMIT_GUIDANCE, INSTAGRAM_GUIDE_TEXT_LIMIT, INSTAGRAM_GUIDE_WARNING_AT, isInstagramGuideTextTooLong() (+14 more)
 
-### Community 76 - "conversations.routes.ts"
-Cohesion: 0.05
-Nodes (34): ConversationMode, conversationScopeWhere(), conversationsRouter, countsQuerySchema, DeliveryStatus, listQuerySchema, ReadTrackingAvailability, RECOVERY_SUMMARY_SELECT (+26 more)
-
-### Community 77 - "geminiAnalysisService.ts"
+### Community 75 - "geminiAnalysisService.ts"
 Cohesion: 0.11
 Nodes (20): gemini, GeminiDisabledError, geminiEnabled, AnalysisResult, analyzeReel(), analyzeText(), estimateVideoCost(), generate() (+12 more)
 
-### Community 78 - "check-guide-delivery-bypasses.mjs"
+### Community 76 - "check-guide-delivery-bypasses.mjs"
 Cohesion: 0.16
 Nodes (24): bypasses(), canonicalSpecifier(), checkerForSource(), computedName(), constantBinding(), decodePercentEncoding(), exactSenderCall(), exactSenderDefinition() (+16 more)
 
-### Community 79 - "guideAccessActionService.test.ts"
+### Community 77 - "guideAccessActionService.test.ts"
 Cohesion: 0.12
 Nodes (17): GuideActionCapabilities, actionToken(), attempt(), comment(), commentFull(), createHarness(), EVENT_AT, fencedHarness() (+9 more)
 
-### Community 80 - "FollowerDailyAddsPoint"
+### Community 78 - "FollowerDailyAddsPoint"
 Cohesion: 0.13
 Nodes (23): DailyAddsChartProps, buildTotalsNote(), FollowerKpiRow(), FollowerKpiRowProps, numberFormat, comparison, funnel, insufficient (+15 more)
 
-### Community 81 - "guideCoverDraftPersistence.test.ts"
+### Community 79 - "guideCoverDraftPersistence.test.ts"
 Cohesion: 0.15
 Nodes (22): buildDraftSaveIntent(), classifyPatchReconciliation(), copyFromCover(), copyMatches(), createInitialGuideCoverEditor(), mergeCreateSuccess(), bedtime, copy (+14 more)
 
-### Community 82 - "dmRecoveryRepository.test.ts"
+### Community 80 - "dmRecoveryRepository.test.ts"
 Cohesion: 0.09
 Nodes (24): candidate(), controlFindUnique, convoFindFirst, convoFindUnique, count, dispatchCount, dispatchCreate, dispatchFindFirst (+16 more)
 
-### Community 83 - "createGuideAccessActionService"
+### Community 81 - "createGuideAccessActionService"
 Cohesion: 0.20
 Nodes (25): createGuideAccessActionService(), authorizeClaimed(), checkFollowFromAction(), checkpointNeedsReview(), consumeAction(), countCheck(), deliverableCover(), exposeCoverForGate() (+17 more)
 
-### Community 84 - "dependencies"
+### Community 82 - "dependencies"
 Cohesion: 0.08
 Nodes (24): cors, dotenv, fontkit, dependencies, axios, cors, dotenv, express (+16 more)
 
-### Community 85 - "guideCoverPngRenderer.ts"
+### Community 83 - "guideCoverPngRenderer.ts"
 Cohesion: 0.14
 Nodes (20): GUIDE_COVER_FONT_ASSETS, GuideCoverFontFilename, REGISTERED_FILENAMES, resolveGuideCoverFontPath(), GuideCoverRendition, GuideCoverTextBlock, GuideCoverTextMeasureInput, contentHash() (+12 more)
 
-### Community 86 - "recoveryReminders.routes.test.ts"
+### Community 84 - "recoveryReminders.routes.test.ts"
 Cohesion: 0.09
 Nodes (20): activateSettingsBlockedVerification, aggregate, conversationFindMany, count, dispatchFindMany, envMock, eventFindFirst, findMany (+12 more)
 
-### Community 87 - "resources.routes.test.ts"
+### Community 85 - "resources.routes.test.ts"
 Cohesion: 0.09
 Nodes (21): countAccessAttempts, countCoverOrphans, countCoverVersions, countDeliveries, countPublishedCovers, countRenderingCovers, countStoredCoverHistory, create (+13 more)
 
-### Community 88 - "historicalRecoveryClaimContract.test.ts"
+### Community 86 - "historicalRecoveryClaimContract.test.ts"
 Cohesion: 0.09
 Nodes (16): authorizeProspectiveFor(), authorizeWithSibling(), campaignsToClean, ensureControlRow(), Fixture, freshCampaign(), reserveFor(), reserveRaw() (+8 more)
 
-### Community 89 - "sendGuideAction.ts"
+### Community 87 - "sendGuideAction.ts"
 Cohesion: 0.22
 Nodes (19): GUIDE_PROFILE_URL, opaqueActionToken, requiredOpaqueActionToken(), sendCapabilityPayload(), sendGuideFollowerGate(), sendGuideFollowLag(), sendGuideInitialPrivateReply(), TEXT_ONLY_CAPABILITIES (+11 more)
 
-### Community 90 - "internalApiClient.ts"
+### Community 88 - "internalApiClient.ts"
 Cohesion: 0.10
 Nodes (15): ensureToolHandler(), ADVISOR_TOOL_NAMES, AdvisorToolName, catalogArgs, catalogResult, createInternalApiClient(), InternalApiClient, InternalApiErrorCode (+7 more)
 
-### Community 91 - "compilerOptions"
+### Community 89 - "compilerOptions"
 Cohesion: 0.10
 Nodes (20): node, vite.config.ts, compilerOptions, allowImportingTsExtensions, erasableSyntaxOnly, lib, module, moduleDetection (+12 more)
 
-### Community 92 - "insightsService.ts"
+### Community 90 - "insightsService.ts"
 Cohesion: 0.14
 Nodes (19): main(), aggregateRefs(), avg(), captureRate(), conversionByMedia(), ConversionLine, CulturalRef, getLatestGeo() (+11 more)
 
-### Community 93 - "router.ts"
-Cohesion: 0.07
-Nodes (28): RFC-3339, aiRouter, asyncRouter(), forwardRejections(), API_DIR, mount(), VERBS, idempotencyKeyMismatch() (+20 more)
+### Community 91 - "router.ts"
+Cohesion: 0.10
+Nodes (15): aiRouter, DELIVERY_REVIEW_SELECT, DELIVERY_REVIEW_WHERE, dmThreadsRouter, DRAFT_SELECT, listQuerySchema, SelectedDeliveryReview, SelectedDraft (+7 more)
 
-### Community 94 - "resourceCovers.routes.test.ts"
+### Community 92 - "resourceCovers.routes.test.ts"
 Cohesion: 0.10
 Nodes (19): approve, bool, category, copy, countPublished, createOrLoadDraft, createOrLoadPresentation, findCategory (+11 more)
 
-### Community 95 - "guideDeliveryReviewService.ts"
+### Community 93 - "guideDeliveryReviewService.ts"
 Cohesion: 0.10
 Nodes (13): defaultDispatchAfterCommit(), defaultReviewService, LockedReviewDelivery, LockedReviewUnit, ownerActionPayload(), ReviewActionInput, ReviewDatabase, ReviewDependencies (+5 more)
 
-### Community 96 - "GuideCoverPanel.test.tsx"
+### Community 94 - "GuideCoverPanel.test.tsx"
 Cohesion: 0.11
 Nodes (12): apiMutation, apiRead, category, cover(), defaultCopy, inactiveCategory, presentation(), presentationWithCover() (+4 more)
 
-### Community 97 - "JsonRpcPeer"
+### Community 95 - "JsonRpcPeer"
 Cohesion: 0.16
 Nodes (4): JsonRpcId, JsonRpcPeer, PendingRequest, RpcError
 
-### Community 98 - "scripts"
+### Community 96 - "scripts"
 Cohesion: 0.10
 Nodes (20): scripts, audit:guide-message-lengths, build, check:guide-delivery-bypasses, dev, funnel, migrate:deploy, migrate:status (+12 more)
 
-### Community 99 - "dmRecoveryService.test.ts"
+### Community 97 - "ai.routes.ts"
+Cohesion: 0.16
+Nodes (11): createAiRouter(), writeDraftAudit(), deliverApprovedDraft(), sendRuntimeError(), classifySendError(), SendErrorCode, SendOutcome, claimApprovedDraft() (+3 more)
+
+### Community 98 - "dmRecoveryService.test.ts"
 Cohesion: 0.11
 Nodes (18): ACCEPTED_INPUT, assignRecoveryCohortMock, assignRecoveryTimingArmMock, envMock, findMany, igUserFindUnique, lockAndValidateSettingsBlockedVerificationEvidence, loggerError (+10 more)
 
-### Community 100 - "spikeService.ts"
+### Community 99 - "spikeService.ts"
 Cohesion: 0.16
 Nodes (15): SpikeCandidateInfo, SpikeInfo, CandidateRanking, detectSpikes(), MEASURED_BASES, median(), rankCandidates(), ReelSnapshot (+7 more)
 
-### Community 101 - "gateQueueWorker.test.ts"
+### Community 100 - "gateQueueWorker.test.ts"
 Cohesion: 0.10
 Nodes (17): conversation, convoObj, flags, gateOwner, gateQueue, logEvent, logger, recordGuideAccessMetric (+9 more)
 
-### Community 102 - "guideDeliveryPlanner.ts"
+### Community 101 - "guideDeliveryPlanner.ts"
 Cohesion: 0.14
 Nodes (15): appendUnit(), AuthoredGuideMessage, CompiledGuideDeliveryUnit, compileGuideDeliveryPlan(), CompileGuideDeliveryPlanInput, compileUnits(), contentFingerprint(), fingerprintField() (+7 more)
 
-### Community 103 - "navigation.ts"
+### Community 102 - "navigation.ts"
 Cohesion: 0.17
 Nodes (12): renderRoute(), AppShell(), mobileNavigationOpen(), railLink(), Sidebar(), HOME_DESTINATION, NAV_DESTINATIONS, NAV_GROUPS (+4 more)
 
-### Community 104 - "dmRecoveryHealth.ts"
+### Community 103 - "dmRecoveryHealth.ts"
 Cohesion: 0.13
 Nodes (15): AUTO_RECOVERABLE, chooseOpenReason(), closeRecoveryCircuit(), collectObservations(), evaluateRecoveryHealth(), getRecoveryHealthSnapshot(), Observations, openRecoveryCircuit() (+7 more)
 
-### Community 105 - "recoveryCampaignControl.test.ts"
+### Community 104 - "recoveryCampaignControl.test.ts"
 Cohesion: 0.11
 Nodes (17): campaignFindMany, campaignFindUnique, campaignUpdate, campaignUpdateMany, candidateCount, candidateFindMany, candidateUpdateMany, controlUpsert (+9 more)
 
-### Community 106 - "chartPalette.ts"
+### Community 105 - "chartPalette.ts"
 Cohesion: 0.19
 Nodes (15): CHIPS, TOKENS, channel(), CHART_MEAN, CHART_OTHER, CHART_PROVISIONAL, CHART_SEMANTIC_MARK_OPACITY, contrastRatio() (+7 more)
 
-### Community 107 - "dmRecoveryPolicy.ts"
+### Community 106 - "dmRecoveryPolicy.ts"
 Cohesion: 0.16
 Nodes (13): decideRecovery(), RECOVERY_TEMPLATE_VERSION, RecoveryDecision, RecoveryPolicyInput, RecoverySuppressionReason, TERMINAL_STATUSES, assignRecoveryTimingArm(), DM_RECOVERY_TIMING_EXPERIMENT_VERSION (+5 more)
 
-### Community 108 - "dmRecoveryWorker.test.ts"
+### Community 107 - "dmRecoveryWorker.test.ts"
 Cohesion: 0.11
 Nodes (15): authorizeClaimForSend, claimRecovery, count, envMock, evaluateRecoveryHealth, finalizeProspectiveDispatch, listDueRecoveryIds, logEvent (+7 more)
 
-### Community 109 - "feedFollowAttributionCore.ts"
+### Community 108 - "feedFollowAttributionCore.ts"
 Cohesion: 0.14
 Nodes (11): BuildAttributionInput, CalculatedSnapshot, comparisonReason(), FeedAttributionDay, FeedAttributionPost, FeedAttributionPostDelta, FeedAttributionSnapshot, FeedCollectionStatus (+3 more)
 
-### Community 110 - "guideFollowFunnel.ts"
+### Community 109 - "guideFollowFunnel.ts"
 Cohesion: 0.23
 Nodes (14): EntryPathBreakdown, GUIDE_FOLLOW_MIN_SAMPLE, GuideFollowResult, GuideFollowRow, summarizeGuideFollow(), summarize(), WINDOW, FunnelDef (+6 more)
 
-### Community 111 - "graphErrorClassifier.ts"
+### Community 110 - "graphErrorClassifier.ts"
 Cohesion: 0.16
 Nodes (13): classifyDirectMessageSend(), classifyDirectMessageSendFailure, classifyPublicReplyFailure(), classifySourceReadFailure(), DirectMessageSendDisposition, hasVerifiedGraphEnvelope(), isRateLimit(), NEVER_DELIVERED_TRANSPORT (+5 more)
 
-### Community 113 - "historicalRecoveryAttribution.ts"
+### Community 112 - "historicalRecoveryAttribution.ts"
 Cohesion: 0.12
 Nodes (12): attributeCompletion(), AttributedRow, attributeInbound(), attributeRecoveryOutcome(), AttributionInput, AttributionKind, AttributionReconciliationResult, loggerError (+4 more)
 
-### Community 114 - "originEnrichmentWorker.ts"
+### Community 113 - "originEnrichmentWorker.ts"
 Cohesion: 0.18
 Nodes (16): classifyOrigins(), estimateOriginCostUsd(), MAX_ORIGIN_BATCH, OriginCandidate, rosterField(), toVerdict(), compareAndSetOrigin(), emptyResult() (+8 more)
 
-### Community 115 - "GuideDeliveryReviewCard.tsx"
+### Community 114 - "GuideDeliveryReviewCard.tsx"
 Cohesion: 0.14
 Nodes (13): CLOSED_WINDOW_MESSAGE, ERROR_GUIDANCE, GuideDeliveryReviewCard(), onSettledAction(), refreshAll(), apiCall, ApiError, review() (+5 more)
+
+### Community 115 - "upcomingAutomations.routes.ts"
+Cohesion: 0.07
+Nodes (22): RFC-3339, classifyCreateReplay(), CreateReplayVerdict, isPrimaryKeyViolation(), isUniqueViolation(), normalize(), sameValue(), createSchema (+14 more)
 
 ### Community 116 - "compilerOptions"
 Cohesion: 0.12
@@ -833,8 +831,8 @@ Cohesion: 0.12
 Nodes (14): CompleteGenerationInput, DraftActionCode, DraftContext, DraftContextBase, DraftKindContext, FailGenerationInput, FinalizeApprovedDraftSendInput, isUniqueViolation() (+6 more)
 
 ### Community 123 - "installFetchStub"
-Cohesion: 0.18
-Nodes (17): activeScenario(), canonicalConversation(), capture(), currentRecoveryRows(), guideCoverPresentation(), historicalCandidate(), historicalCandidateDetail(), historicalCounts() (+9 more)
+Cohesion: 0.15
+Nodes (16): activeScenario(), canonicalConversation(), capture(), guideCoverPresentation(), historicalCampaign(), historicalCampaignRows(), historicalCandidate(), historicalCandidateDetail() (+8 more)
 
 ### Community 124 - "App.tsx"
 Cohesion: 0.19
@@ -856,253 +854,253 @@ Nodes (13): APPROVED_PUBLIC_REPLY, formatPublicReplyRolloutSummary(), KeywordWhe
 Cohesion: 0.25
 Nodes (12): definitionWithCurrentExperiment(), experimentName(), configuredContext(), configuredExperimentOwnedFlagKeys(), configuredExperimentState(), configuredFlagExperimentKey(), ExperimentLifecycleContext, isV2Active() (+4 more)
 
-### Community 129 - "keywords.routes.test.ts"
-Cohesion: 0.25
-Nodes (4): backfillKeyword, body, create, findUnique
-
-### Community 130 - "dmRecoveryReportingWindow.ts"
+### Community 129 - "dmRecoveryReportingWindow.ts"
 Cohesion: 0.19
 Nodes (13): fail(), RECOVERY_REPORTING_PRESETS, RecoveryDayRange, RecoveryRangeRequest, RecoveryReportingPreset, RecoveryReportingWindow, requestedRange(), resolveRecoveryReportingWindow() (+5 more)
 
-### Community 131 - "guideDeliveryReviewService.test.ts"
+### Community 130 - "guideDeliveryReviewService.test.ts"
 Cohesion: 0.13
 Nodes (8): createGuideDeliveryReviewService(), GuideDeliveryReviewDispatch, GuideDeliveryReviewError, DeliveryFixture, fixtureResourceIds, LOOPBACK_HOSTS, NOW, UnitFixture
 
-### Community 132 - "createGuideDeliveryService"
+### Community 131 - "createGuideDeliveryService"
 Cohesion: 0.20
 Nodes (15): allUnitsSent(), createGuideDeliveryService(), checkpointAfterBoundary(), checkpointFailure(), eligibleCover(), processClaimed(), processClaimedGuideDelivery(), recordCover() (+7 more)
 
-### Community 133 - "historicalRecoveryTickRepository.ts"
+### Community 132 - "historicalRecoveryTickRepository.ts"
 Cohesion: 0.14
 Nodes (8): T0, HistoricalTickLease, isUniqueConflict(), openCampaignBatch(), expiresAt, now, transaction, tx
 
-### Community 134 - "probe-follower-daily-metrics.mjs"
+### Community 133 - "probe-follower-daily-metrics.mjs"
 Cohesion: 0.35
 Nodes (13): breakdownOf(), DAYS, dayWindow(), errStr(), insights(), main(), probeDayBoundary(), probeDemographicsToday() (+5 more)
 
-### Community 135 - "ai.routes.test.ts"
+### Community 134 - "ai.routes.test.ts"
 Cohesion: 0.14
 Nodes (4): AiRouterDependencies, ADVISOR_ANSWER, flags, CodexRuntimeClient
 
-### Community 136 - "experimentSummary.ts"
+### Community 135 - "experimentSummary.ts"
 Cohesion: 0.18
 Nodes (12): ExperimentDefinition, RECOVERY_TIMING_V2_CUTOVER_AT, ArmCount, experimentSummarizer, ExperimentSummary, legacyRecoverySummaryWhere(), NotCounted, ReminderGroup (+4 more)
 
-### Community 137 - "guideDeliveryRepositoryContract.test.ts"
+### Community 136 - "guideDeliveryRepositoryContract.test.ts"
 Cohesion: 0.18
 Nodes (11): CreateGuideDeliveryPlanInput, createGuideDeliveryRepository(), validateRepositoryOptions(), BASE_TIME, createAndClaim(), Fixture, fixtureResourceIds, LOOPBACK_HOSTS (+3 more)
 
-### Community 138 - "guideDeliveryService.test.ts"
+### Community 137 - "guideDeliveryService.test.ts"
 Cohesion: 0.16
 Nodes (10): GuideDeliveryUnitRecord, PlannedDeliveryRecord, GuideDeliveryServiceRepository, deliveryRecord(), deliveryUnit(), harness(), HarnessOptions, input (+2 more)
 
-### Community 139 - "originEnrichmentWorker.test.ts"
+### Community 138 - "originEnrichmentWorker.test.ts"
 Cohesion: 0.14
 Nodes (10): classifyOrigins, count, env, findMany, logEvent, loggerError, STILL_DUE, $transaction (+2 more)
 
-### Community 140 - "publicRecoveryDispatchBackfillContract.test.ts"
+### Community 139 - "publicRecoveryDispatchBackfillContract.test.ts"
 Cohesion: 0.23
 Nodes (11): deploy(), fixtureClient(), fixtureDatabases, fixtureDatabaseUrl(), ids, prismaBinary, seedCollisionFixture(), seedCommon() (+3 more)
 
-### Community 141 - "replyDraftWorker.test.ts"
+### Community 140 - "replyDraftWorker.test.ts"
 Cohesion: 0.14
 Nodes (12): aiFlags, claimOneQueuedDraft, completeGeneration, context, expireDueFollowUps, failGeneration, generateDmDraft, getConnectionStatus (+4 more)
 
-### Community 142 - "upcomingAutomationBinding.test.ts"
+### Community 141 - "upcomingAutomationBinding.test.ts"
 Cohesion: 0.14
 Nodes (13): backfillKeyword, invalidateMediaCache, keywordCreate, keywordFindMany, logEvent, media, queryRaw, resourceFindUnique (+5 more)
 
-### Community 143 - "compilerOptions"
+### Community 142 - "compilerOptions"
 Cohesion: 0.14
 Nodes (14): compilerOptions, declaration, esModuleInterop, forceConsistentCasingInFileNames, module, moduleResolution, noImplicitOverride, noUncheckedIndexedAccess (+6 more)
 
-### Community 144 - "legacyProviderBodyRedaction.ts"
+### Community 143 - "legacyProviderBodyRedaction.ts"
 Cohesion: 0.29
 Nodes (9): runLegacyProviderBodyRedactionCli(), COUNT_LEGACY_PROVIDER_BODIES_SQL, formatLegacyProviderBodySummary(), LEGACY_PROVIDER_BODY_KEY, LEGACY_PROVIDER_BODY_KINDS, LegacyProviderBodyPrisma, LegacyProviderBodySummary, REDACT_LEGACY_PROVIDER_BODIES_SQL (+1 more)
 
-### Community 145 - "recoveryRemindersCursor.ts"
+### Community 144 - "recoveryRemindersCursor.ts"
 Cohesion: 0.22
 Nodes (10): daySchema, decodeRecoveryCursor(), encodeRecoveryCursor(), invalidCursor(), payloadSchema, RecoveryCursorRequestScope, RecoveryCursorScope, scopeObjectSchema (+2 more)
 
-### Community 146 - "upcomingAutomations.routes.test.ts"
+### Community 145 - "upcomingAutomations.routes.test.ts"
 Cohesion: 0.15
 Nodes (9): create, findMany, findUnique, logEvent, resourceFindUnique, storedRow, update, updateMany (+1 more)
 
-### Community 147 - "calendar.tsx"
+### Community 146 - "calendar.tsx"
 Cohesion: 0.31
 Nodes (9): RangeCalendar(), RangeCalendarProps, buildMonthGrid(), DayCell, MonthGrid, monthLabel(), monthOf(), shiftMonth() (+1 more)
 
-### Community 148 - "codex-runtime/package.json"
+### Community 147 - "codex-runtime/package.json"
 Cohesion: 0.17
 Nodes (11): engines, node, name, private, scripts, build, dev, start (+3 more)
 
-### Community 149 - "accountService.ts"
+### Community 148 - "accountService.ts"
 Cohesion: 0.20
 Nodes (8): AccountReadResult, asFiniteNumber(), ConnectionStatus, createAccountService(), readRateLimits(), DeviceLoginStart, LoginStartResult, RateLimitsResult
 
-### Community 150 - "advisorService.test.ts"
+### Community 149 - "advisorService.test.ts"
 Cohesion: 0.20
 Nodes (8): createAdvisorService(), openThread(), openThreadOnce(), ASK, config, makeHarness(), VALID_ANSWER, InternalApiError
 
-### Community 151 - "startRuntime"
+### Community 150 - "startRuntime"
 Cohesion: 0.18
 Nodes (7): createDraftService(), draftRequest, VALID_OUTPUT, main(), RunningRuntime, RuntimeSignalSource, startRuntime()
 
-### Community 152 - "flagRegistry.ts"
+### Community 151 - "flagRegistry.ts"
 Cohesion: 0.26
 Nodes (7): BY_KEY, FlagDefinition, FlagGroup, FlagKind, FlagOverrideValue, resolveBoolean(), resolvePercent()
 
-### Community 153 - "dmRecoveryDatabaseContract.test.ts"
+### Community 152 - "dmRecoveryDatabaseContract.test.ts"
 Cohesion: 0.18
 Nodes (9): ColumnRow, EnumValueRow, IndexRow, PolicyRow, RecoveryFixture, reminderData(), RlsRow, TableRow (+1 more)
 
-### Community 154 - "guideAccessRepository.test.ts"
+### Community 153 - "guideAccessRepository.test.ts"
 Cohesion: 0.23
 Nodes (10): createGuideAccessRepository(), GuideAccessDatabase, attempt(), harness(), NOW, queryName(), QueryResult, token() (+2 more)
 
-### Community 155 - "guideDeliveryRepository.test.ts"
+### Community 154 - "guideDeliveryRepository.test.ts"
 Cohesion: 0.23
 Nodes (10): GuideDeliveryDatabase, CapturedQuery, captureQuery(), createRecordingDatabase(), expectDeliveryFence(), expectUnitFence(), normalizedSql(), NOW (+2 more)
 
-### Community 157 - "historicalRecoveryCandidateDetail.ts"
+### Community 156 - "historicalRecoveryCandidateDetail.ts"
 Cohesion: 0.20
 Nodes (9): CANDIDATE_DETAIL_SELECT, HistoricalCandidateDetail, optionalDate(), payloadString(), candidateFindUnique, eventFindMany, feedFindUnique, igUserFindUnique (+1 more)
 
-### Community 158 - "historicalRecoverySelectorContract.test.ts"
+### Community 157 - "historicalRecoverySelectorContract.test.ts"
 Cohesion: 0.17
 Nodes (3): COMMENT_AT, Fixture, NOW
 
-### Community 159 - "settingsBlockedVerificationAdminService.ts"
+### Community 158 - "settingsBlockedVerificationAdminService.ts"
 Cohesion: 0.24
 Nodes (7): activateSettingsBlockedVerification(), rethrowAdminTransactionError(), retireSettingsBlockedVerification(), safeActor(), SettingsBlockedVerificationAdminError, SettingsBlockedVerificationAdminRejection, validTarget()
 
-### Community 160 - "web/package.json"
+### Community 159 - "web/package.json"
 Cohesion: 0.17
 Nodes (11): name, private, scripts, build, dev, lint, preview, test (+3 more)
 
-### Community 161 - "compilerOptions"
+### Community 160 - "compilerOptions"
 Cohesion: 0.18
 Nodes (11): compilerOptions, esModuleInterop, forceConsistentCasingInFileNames, module, moduleResolution, noImplicitOverride, noUncheckedIndexedAccess, outDir (+3 more)
 
-### Community 162 - "watchPatterns"
+### Community 161 - "watchPatterns"
 Cohesion: 0.18
 Nodes (9): prisma, prisma, build, watchPatterns, src/**, $schema, package.json, package-lock.json (+1 more)
 
-### Community 163 - "geminiQueueWorker.ts"
-Cohesion: 0.27
-Nodes (7): main(), pendingCount(), computeProfileColumns(), runGeminiQueueTick(), sleep(), spentTodayUsd(), startOfTodayUtc()
+### Community 162 - "describeGraphError"
+Cohesion: 0.11
+Nodes (26): handleComment(), routeGuideAction, handlePostback(), handleReaction(), recordRecoveryReaction, handleSeen(), markOutboundSeen, recordRecoverySeen (+18 more)
 
-### Community 164 - "webhookRouter.test.ts"
+### Community 163 - "webhookRouter.test.ts"
 Cohesion: 0.18
 Nodes (10): describeGraphError, handleComment, handleMessage, handlePostback, handleReaction, handleSeen, logEvent, logger (+2 more)
 
-### Community 165 - "guideDeliveryMigrationContract.test.ts"
+### Community 164 - "guideDeliveryMigrationContract.test.ts"
 Cohesion: 0.24
 Nodes (9): findFullWorkerIndexLookalikes(), findProtectedWorkerIndexDrift(), hasProtectedWorkerKeyShape(), IndexMetadata, LOOPBACK_HOSTS, matchesExpectedDueIndexPredicate(), normalizeCatalogExpression(), PROTECTED_WORKER_INDEX_SHAPES (+1 more)
 
-### Community 166 - "historicalRecoveryHealth.ts"
+### Community 165 - "historicalRecoveryHealth.ts"
 Cohesion: 0.27
 Nodes (7): CampaignHealth, CampaignStopReason, chooseStopReason(), evaluateCampaignHealth(), observe(), STOP_THRESHOLDS, pauseCampaign()
 
-### Community 167 - "publicRecoveryDispatchPostgresContract.test.ts"
+### Community 166 - "publicRecoveryDispatchPostgresContract.test.ts"
 Cohesion: 0.20
 Nodes (4): setHistoricalReservationAfterLocksTestHook(), setHistoricalReservationBeforeControlLockTestHook(), createCampaign(), createCandidate()
 
-### Community 168 - "Assistant.test.tsx"
+### Community 167 - "Assistant.test.tsx"
 Cohesion: 0.20
 Nodes (6): ANSWER, api, ApiError, CONNECTION, renderPage(), typeQuestion()
 
-### Community 169 - "backfill-journey-triggers.ts"
+### Community 168 - "backfill-journey-triggers.ts"
 Cohesion: 0.24
 Nodes (7): backfillJourneyTriggers(), BackfillSummary, Candidate, loadCandidates(), main(), WRITE, Fixture
 
-### Community 170 - "conversations.routes.test.ts"
+### Community 169 - "conversations.routes.test.ts"
 Cohesion: 0.20
 Nodes (6): conversationCount, conversationFindMany, conversationGroupBy, gateQueueFindMany, getIgUsers, TRACKING_START
 
-### Community 171 - "experiments.routes.test.ts"
+### Community 170 - "experiments.routes.test.ts"
 Cohesion: 0.20
 Nodes (8): ENDED, lifecycle, NOT_STARTED, ownedFlagKeys, RUNNING, snapshot, summarize, TIMING_RUNNING
 
-### Community 172 - "historicalRecoveryLifecycleContract.test.ts"
+### Community 171 - "historicalRecoveryLifecycleContract.test.ts"
 Cohesion: 0.22
 Nodes (4): approve(), Fixture, sealSnapshot(), T0
 
-### Community 173 - "keywordMatchCore.ts"
+### Community 172 - "keywordMatchCore.ts"
 Cohesion: 0.33
 Nodes (7): CommentMatch, firstMatch(), KeywordCandidate, MatchMode, rankDmCandidates(), resolveCommentMatch(), resolveDmFallback()
 
-### Community 174 - "replyDraftWorker.ts"
+### Community 173 - "replyDraftWorker.ts"
 Cohesion: 0.40
 Nodes (9): claimOneQueuedDraft(), completeGeneration(), expireDueFollowUps(), failGeneration(), loadDraftContext(), describeDraftError(), generateOne(), newRequestId() (+1 more)
 
-### Community 175 - "upcomingAutomationWorker.test.ts"
+### Community 174 - "upcomingAutomationWorker.test.ts"
 Cohesion: 0.20
 Nodes (7): bindUpcomingAutomationToMedia, describeGraphError, eventFindFirst, fetchMediaPublishedSince, logEvent, upcomingFindMany, upcomingUpdateMany
 
-### Community 176 - "Conversations.test.tsx"
+### Community 175 - "Conversations.test.tsx"
 Cohesion: 0.22
 Nodes (6): api, mockDmThreads(), recoveryCounts, recoveryList, recoveryMetrics, threadRow()
 
-### Community 177 - "Home.test.tsx"
+### Community 176 - "Home.test.tsx"
 Cohesion: 0.27
 Nodes (8): api, clearFunnel(), pending(), point(), renderHome(), responses, settledFlow(), stage()
 
-### Community 178 - "Sequences.test.tsx"
+### Community 177 - "Sequences.test.tsx"
 Cohesion: 0.24
 Nodes (7): api, ApiError, apiMutation, attemptDelete(), openCreateForm(), renderPage(), toastError
 
-### Community 179 - "dependencies"
+### Community 178 - "dependencies"
 Cohesion: 0.22
 Nodes (9): dependencies, express, @openai/codex, pino, zod, express, pino, zod (+1 more)
 
-### Community 180 - "shared/**"
+### Community 179 - "shared/**"
 Cohesion: 0.22
 Nodes (8): shared/**, paths, @shared/*, compilerOptions, paths, files, @shared/*, references
 
-### Community 181 - "experiments.routes.ts"
+### Community 180 - "experiments.routes.ts"
 Cohesion: 0.28
 Nodes (6): experimentsRouter, BY_KEY, EXPERIMENT_REGISTRY, ExperimentArm, ExperimentState, summarizeExperiment()
 
-### Community 182 - "flags.routes.test.ts"
+### Community 181 - "flags.routes.test.ts"
 Cohesion: 0.22
 Nodes (5): flagExperimentKey, logEvent, refresh, snapshot, upsert
 
-### Community 183 - "metaGuideGateEvents.ts"
+### Community 182 - "metaGuideGateEvents.ts"
 Cohesion: 0.33
 Nodes (7): loggerInfo, recordRecoveryPostback, routeGuideAction, GUIDE_ACTION_PAYLOAD, GUIDE_ACTION_TIMESTAMP, guidePostbackEvent(), unknownPostbackEvent()
 
-### Community 184 - "guideCoverGateExposure.test.ts"
+### Community 183 - "guideCoverGateExposure.test.ts"
 Cohesion: 0.22
 Nodes (7): COVER, findFirst, logEvent, loggerError, loggerWarn, sendTrackedMedia, STEP
 
-### Community 185 - "historicalRecoveryHealthContract.test.ts"
+### Community 184 - "historicalRecoveryHealthContract.test.ts"
 Cohesion: 0.31
 Nodes (6): autoPause(), candidates(), Fixture, runningCampaign(), sealCampaignForResume(), T0
 
-### Community 186 - "historicalRecoverySelector.test.ts"
+### Community 185 - "historicalRecoverySelector.test.ts"
 Cohesion: 0.22
 Nodes (6): campaignCreate, candidateCreateMany, candidateSourceCreateMany, exclusionCreateMany, NOW, queryRaw
 
-### Community 187 - "UpcomingAutomations.test.tsx"
+### Community 186 - "UpcomingAutomations.test.tsx"
 Cohesion: 0.22
 Nodes (6): apiMutation, apiRead, navigate, renew, resources, waiting
 
-### Community 188 - "PresentationCategoryPicker.test.tsx"
+### Community 187 - "PresentationCategoryPicker.test.tsx"
 Cohesion: 0.22
 Nodes (4): apiMutation, feedingTips, recipes, ResizeObserverStub
 
-### Community 189 - "Funnels.test.tsx"
+### Community 188 - "Funnels.test.tsx"
 Cohesion: 0.22
 Nodes (5): api, COVER_RATES, DROP_OFF, EMPTY_COVER_RATES, FUNNEL
 
-### Community 190 - "package.json"
+### Community 189 - "package.json"
 Cohesion: 0.25
 Nodes (7): description, engines, node, name, private, type, version
 
-### Community 191 - "messages.routes.test.ts"
+### Community 190 - "messages.routes.test.ts"
 Cohesion: 0.29
 Nodes (6): create, findFirst, findUnique, makeApp(), sendMessageRequest(), update
+
+### Community 191 - "igUserService.ts"
+Cohesion: 0.11
+Nodes (21): main(), sleep(), ConversationMode, conversationScopeWhere(), conversationsRouter, countsQuerySchema, DeliveryStatus, listQuerySchema (+13 more)
 
 ### Community 192 - "deploymentHealth.ts"
 Cohesion: 0.36
@@ -1340,24 +1338,24 @@ Nodes (4): CapabilitiesScenario(), DmApprovalScenario(), GuideCoverAuthoringScen
 Cohesion: 0.67
 Nodes (3): DOM, lib, ES2023
 
-### Community 340 - "dmThreads.routes.test.ts"
-Cohesion: 0.40
-Nodes (3): findMany, findUnique, messages
+### Community 298 - "scopedRecoveryRows"
+Cohesion: 0.50
+Nodes (5): currentRecoveryRows(), isTimingRecoveryScenario(), recoveryRange(), recoveryScenario(), scopedRecoveryRows()
 
 ## Knowledge Gaps
 - **2014 isolated node(s):** `KeywordFormState`, `SequenceMode`, `SwitchProps`, `EditorState`, `GuideMode` (+2009 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **50 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **48 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `prisma` connect `prisma.ts` to `eventLogger.ts`, `historicalRecoveryTickRepository.ts`, `commentHandler.ts`, `src/server.ts`, `experimentSummary.ts`, `guideCoverPublishService.ts`, `messageHandler.ts`, `journeyReconciliationRunner.ts`, `dmRecoveryService.ts`, `historicalRecoveryWorker.ts`, `recoveryCampaignControl.ts`, `env.ts`, `logEvent`, `insights.routes.ts`, `historicalRecoveryCandidateDetail.ts`, `stats.routes.ts`, `settingsBlockedVerificationAdminService.ts`, `guideCoverCleanupStorage.ts`, `expandedRecoveryCampaignSelector.ts`, `geminiQueueWorker.ts`, `ai.routes.ts`, `internalAi.routes.ts`, `recoveryReminders.routes.ts`, `backfill-journey-triggers.ts`, `feedFollowSnapshotWorker.ts`, `guideAccessActionService.ts`, `guideAccessRepository.ts`, `guideDeliveryRepository.ts`, `historicalRecoveryHealth.ts`, `guideCoverPolicy.ts`, `upcomingAutomations.routes.ts`, `guideCoverRepository.ts`, `guideDeliveryCompletion.ts`, `analyticsDay.ts`, `resourceCovers.routes.ts`, `historicalRecoverySelector.ts`, `funnels.routes.ts`, `followerFlowService.ts`, `dmRecoveryRepository.ts`, `historicalRecovery.routes.ts`, `presentationCategories.routes.ts`, `resources.routes.ts`, `engagementFollowUpService.ts`, `messages.routes.ts`, `conversations.routes.ts`, `insightsService.ts`, `router.ts`, `guideDeliveryReviewService.ts`, `spikeService.ts`, `dmRecoveryHealth.ts`, `historicalRecoveryAttribution.ts`, `originEnrichmentWorker.ts`, `replyDraftService.ts`?**
-  _High betweenness centrality (0.144) - this node is a cross-community bridge._
+- **Why does `prisma` connect `prisma.ts` to `eventLogger.ts`, `historicalRecoveryTickRepository.ts`, `dmDeliveryService.ts`, `experimentSummary.ts`, `src/server.ts`, `guideCoverPublishService.ts`, `messageHandler.ts`, `journeyReconciliationRunner.ts`, `journeyIntentService.ts`, `commentHandler.ts`, `historicalRecoveryWorker.ts`, `recoveryCampaignControl.ts`, `env.ts`, `logEvent`, `historicalRecoveryCandidateDetail.ts`, `insights.routes.ts`, `guideAccessActionService.ts`, `settingsBlockedVerificationAdminService.ts`, `stats.routes.ts`, `guideCoverCleanupStorage.ts`, `expandedRecoveryCampaignSelector.ts`, `historicalRecoveryHealth.ts`, `backfill-journey-triggers.ts`, `recoveryReminders.routes.ts`, `internalAi.routes.ts`, `feedFollowSnapshotWorker.ts`, `guideAccessRepository.ts`, `asyncRouter`, `guideDeliveryRepository.ts`, `guideCoverPolicy.ts`, `guideCoverRepository.ts`, `guideDeliveryCompletion.ts`, `analyticsDay.ts`, `resourceCovers.routes.ts`, `historicalRecoverySelector.ts`, `funnels.routes.ts`, `followerFlowService.ts`, `igUserService.ts`, `dmRecoveryRepository.ts`, `historicalRecovery.routes.ts`, `presentationCategories.routes.ts`, `engagementFollowUpService.ts`, `messages.routes.ts`, `insightsService.ts`, `router.ts`, `guideDeliveryReviewService.ts`, `ai.routes.ts`, `spikeService.ts`, `dmRecoveryHealth.ts`, `historicalRecoveryAttribution.ts`, `originEnrichmentWorker.ts`, `upcomingAutomations.routes.ts`, `replyDraftService.ts`?**
+  _High betweenness centrality (0.164) - this node is a cross-community bridge._
 - **Why does `countInstagramCodePoints()` connect `messages.routes.ts` to `api.ts`, `guideDeliveryPlanner.ts`?**
-  _High betweenness centrality (0.042) - this node is a cross-community bridge._
+  _High betweenness centrality (0.050) - this node is a cross-community bridge._
 - **Why does `INSTAGRAM_GUIDE_TEXT_LIMIT` connect `messages.routes.ts` to `api.ts`, `guideDeliveryPlanner.ts`?**
-  _High betweenness centrality (0.038) - this node is a cross-community bridge._
+  _High betweenness centrality (0.047) - this node is a cross-community bridge._
 - **What connects `KeywordFormState`, `SequenceMode`, `SwitchProps` to the rest of the system?**
   _2014 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `api.ts` be split into smaller, more focused modules?**
@@ -1365,4 +1363,4 @@ _Questions this graph is uniquely positioned to answer:_
 - **Should `lib/types.ts` be split into smaller, more focused modules?**
   _Cohesion score 0.031664964249233915 - nodes in this community are weakly interconnected._
 - **Should `eventLogger.ts` be split into smaller, more focused modules?**
-  _Cohesion score 0.05727848101265823 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.0625 - nodes in this community are weakly interconnected._
