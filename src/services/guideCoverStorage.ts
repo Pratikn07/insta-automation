@@ -1,6 +1,6 @@
 import type { GuideCoverRendition } from "../../shared/guideCoverPolicy.js";
 import { GUIDE_COVER_RENDITION_FILENAMES } from "../../shared/guideCoverPolicy.js";
-import { publicMediaUrl, serverMediaBucket } from "../lib/supabase.js";
+import { guideCoverMediaBucket, guideCoverPublicUrl } from "../lib/guideCoverProvider.js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const HASH_PATTERN = /^[a-f0-9]{64}$/u;
@@ -90,8 +90,8 @@ export function createGuideCoverStorage(options: {
   publicUrl?: (path: string) => string;
 } = {}) {
   const bucket =
-    options.bucket ?? (serverMediaBucket() as unknown as GuideCoverStorageBucket);
-  const publicUrl = options.publicUrl ?? publicMediaUrl;
+    options.bucket ?? (guideCoverMediaBucket() as unknown as GuideCoverStorageBucket);
+  const publicUrl = options.publicUrl ?? guideCoverPublicUrl;
 
   return {
     async verifyExact(

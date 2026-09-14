@@ -1,6 +1,6 @@
 import type { DmMessageSource } from "@prisma/client";
 import { env } from "../config/env.js";
-import { publicMediaUrl } from "../lib/supabase.js";
+import { guideCoverPublicUrl } from "../lib/guideCoverProvider.js";
 import { guideCoverDeliverySelector } from "./guideCoverDeliveryRollout.js";
 import { recordGuideAccessMetric } from "./guideAccessMetrics.js";
 import { logger } from "../lib/logger.js";
@@ -627,7 +627,7 @@ const defaultService = createGuideDeliveryService({
   sendText: sendTrackedText,
   sendMedia: sendTrackedMedia,
   finalizeGuideDelivery,
-  coverMediaUrl: publicMediaUrl,
+  coverMediaUrl: guideCoverPublicUrl,
   coverDecision: (decision) => guideCoverDeliverySelector.decide(decision),
   recordCoverMetric: async (outcome) => {
     await recordGuideAccessMetric("cover_delivery", outcome);

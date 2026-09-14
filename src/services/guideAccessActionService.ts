@@ -5,7 +5,7 @@ import type {
 } from "@prisma/client";
 import { logger } from "../lib/logger.js";
 import { prisma } from "../lib/prisma.js";
-import { publicMediaUrl } from "../lib/supabase.js";
+import { guideCoverPublicUrl } from "../lib/guideCoverProvider.js";
 import {
   sendGuideFollowerGate,
   sendGuideFollowLag,
@@ -1405,7 +1405,7 @@ const defaultService = createGuideAccessActionService({
     });
     if (!cover?.squareStoragePath) return null;
     return {
-      coverUrl: publicMediaUrl(cover.squareStoragePath),
+      coverUrl: guideCoverPublicUrl(cover.squareStoragePath),
       categorySlug: cover.category.slug,
     };
   },
@@ -1416,7 +1416,7 @@ const defaultService = createGuideAccessActionService({
       url: input.mediaUrl,
       source: "keyword_automation",
     }),
-  coverMediaUrl: publicMediaUrl,
+  coverMediaUrl: guideCoverPublicUrl,
   coverDecision: (decision) => guideCoverDeliverySelector.decide(decision),
   recordCoverMetric: async (outcome) => {
     await recordGuideAccessMetric("cover_gate", outcome);

@@ -3,7 +3,7 @@ import type { Response } from "express";
 
 import type { GuideCoverDraft } from "../../shared/guideCoverPolicy.js";
 import { prisma } from "../lib/prisma.js";
-import { publicMediaUrl } from "../lib/supabase.js";
+import { guideCoverPublicUrl } from "../lib/guideCoverProvider.js";
 import { flags } from "../services/flagService.js";
 import { createGuideCoverCollectionMoveService } from "../services/guideCoverCollectionMoveService.js";
 import { createGuideCoverPublishService } from "../services/guideCoverPublishService.js";
@@ -109,7 +109,7 @@ resourceCoversRouter.get("/:resourceId/published-cover", async (req, res) => {
       editionNumber: cover.editionNumber,
       contentHash: cover.contentHash,
       dmStoragePath: cover.dmStoragePath,
-      publicUrl: publicMediaUrl(cover.dmStoragePath!),
+      publicUrl: guideCoverPublicUrl(cover.dmStoragePath!),
       publishedAt: cover.publishedAt,
     },
   });
