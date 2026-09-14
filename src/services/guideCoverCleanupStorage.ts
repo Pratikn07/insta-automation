@@ -2,7 +2,7 @@ import {
   GUIDE_COVER_RENDITION_FILENAMES,
   type GuideCoverRendition,
 } from "../../shared/guideCoverPolicy.js";
-import { serverMediaBucket } from "../lib/supabase.js";
+import { guideCoverMediaBucket } from "../lib/guideCoverProvider.js";
 
 const UUID_SOURCE = "[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 // Alternation derived from the shared filename map: a rendition the path builder can write
@@ -85,7 +85,7 @@ export function createGuideCoverCleanupStorage(options: {
   bucket?: GuideCoverCleanupBucket;
 } = {}) {
   const bucket =
-    options.bucket ?? (serverMediaBucket() as unknown as GuideCoverCleanupBucket);
+    options.bucket ?? (guideCoverMediaBucket() as unknown as GuideCoverCleanupBucket);
 
   async function reconcileExactPath(
     path: string,

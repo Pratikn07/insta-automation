@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { GUIDE_PROFILE_URL } from "../meta/sendGuideAction.js";
 import { buildGuideGateCapabilityPayload } from "../meta/guideGatePayloads.js";
 import { sendMetaMessage } from "../meta/sendMessage.js";
-import { publicMediaUrl } from "../lib/supabase.js";
+import { guideCoverPublicUrl } from "../lib/guideCoverProvider.js";
 import { prisma } from "../lib/prisma.js";
 import { flags } from "./flagService.js";
 import { guideAccessCardTitle, guideAccessCopy } from "./guideAccessCopy.js";
@@ -92,7 +92,7 @@ export async function loadGateCard(
       select: { squareStoragePath: true },
     });
     if (!cover?.squareStoragePath) return null;
-    return { coverUrl: publicMediaUrl(cover.squareStoragePath) };
+    return { coverUrl: guideCoverPublicUrl(cover.squareStoragePath) };
   } catch {
     return null;
   }

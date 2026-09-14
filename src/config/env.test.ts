@@ -79,6 +79,31 @@ describe("env configuration schema for DM recovery", () => {
     ).toBe(true);
   });
 
+  it("requires both settings for the external guide-cover media gateway", () => {
+    expect(
+      envSchema.safeParse({
+        ...baseEnv,
+        GUIDE_COVER_MEDIA_BASE_URL: "https://media.example.test",
+      }).success,
+    ).toBe(false);
+    expect(
+      envSchema.safeParse({
+        ...baseEnv,
+        GUIDE_COVER_MEDIA_WRITE_TOKEN: "a".repeat(32),
+      }).success,
+    ).toBe(false);
+    expect(
+      envSchema.parse({
+        ...baseEnv,
+        GUIDE_COVER_MEDIA_BASE_URL: "https://media.example.test",
+        GUIDE_COVER_MEDIA_WRITE_TOKEN: "a".repeat(32),
+      }),
+    ).toMatchObject({
+      GUIDE_COVER_MEDIA_BASE_URL: "https://media.example.test",
+      GUIDE_COVER_MEDIA_WRITE_TOKEN: "a".repeat(32),
+    });
+  });
+
   it("uses conservative bounded guide-cover orphan cleanup settings", () => {
     expect(envSchema.parse(baseEnv)).toMatchObject({
       GUIDE_COVER_ORPHAN_BATCH: 10,

@@ -76,6 +76,8 @@ export const envSchema = z.object({
   SUPABASE_URL: z.string().url(),
   SUPABASE_SERVICE_KEY: z.string().min(1),
   SUPABASE_BUCKET: z.string().min(1).default("insta-resources"),
+  GUIDE_COVER_MEDIA_BASE_URL: z.string().url().optional(),
+  GUIDE_COVER_MEDIA_WRITE_TOKEN: z.string().min(32).optional(),
 
   // Comma-separated allowlist of one or more admin emails. Each entry must be a
   // valid email so a typo can't silently widen access. Parsed into a list in
@@ -307,6 +309,13 @@ export const envSchema = z.object({
   DM_RECOVERY_DB_FAILURE_THRESHOLD: z.coerce.number().int().min(2).max(20).default(3),
   DM_RECOVERY_MIN_ACCEPTED_HEALTH_SAMPLE: z.coerce.number().int().min(5).max(500).default(20),
 }).superRefine((value, ctx) => {
+  if (Boolean(value.GUIDE_COVER_MEDIA_BASE_URL) !== Boolean(value.GUIDE_COVER_MEDIA_WRITE_TOKEN)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [value.GUIDE_COVER_MEDIA_BASE_URL ? "GUIDE_COVER_MEDIA_WRITE_TOKEN" : "GUIDE_COVER_MEDIA_BASE_URL"],
+      message: "GUIDE_COVER_MEDIA_BASE_URL and GUIDE_COVER_MEDIA_WRITE_TOKEN must both be set or both unset",
+    });
+  }
   if (value.AI_FOLLOW_UPS_ENABLED && !value.AI_DRAFTS_ENABLED) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,

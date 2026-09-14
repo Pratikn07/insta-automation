@@ -1,0 +1,12 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tinysoho-guide-cover-media",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-13",
+  "r2_buckets": [
+    {
+      "binding": "MEDIA",
+      "bucket_name": "insta-automation-media"
+    }
+  ]
+}

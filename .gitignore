@@ -16,6 +16,7 @@ prisma/migrations/dev.db*
 
 # Playwright MCP session artifacts (console logs + page snapshots)
 .playwright-mcp/
+.wrangler/
 
 # Local Superpowers brainstorming companion
 .superpowers/
