@@ -17,6 +17,7 @@ const markInboundCampaignHealthCaptured = vi.fn();
 const queueReplyDraft = vi.fn();
 const scheduleEngagementFollowUp = vi.fn();
 const findKeywordInMessage = vi.fn();
+const findDmKeywordCandidates = vi.fn();
 const findActiveAwaitingDone = vi.fn();
 const findLatestIncompleteConversation = vi.fn();
 const hasCompletedKeyword = vi.fn();
@@ -60,6 +61,9 @@ vi.mock("../services/campaignHealthObservation.js", () => ({
   recordInboundCampaignHealthSignals,
   markInboundCampaignHealthCaptured,
 }));
+vi.mock("../services/historicalRecoveryAttribution.js", () => ({
+  attributeRecoveryOutcomeSafely: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock("../services/replyDraftService.js", () => ({ queueReplyDraft }));
 vi.mock("../services/engagementFollowUpService.js", () => ({ scheduleEngagementFollowUp }));
 // `textContainsKeyword` stays REAL: it is a pure length-gate over the message text with no
@@ -68,6 +72,7 @@ vi.mock("../services/engagementFollowUpService.js", () => ({ scheduleEngagementF
 vi.mock("../services/keywordService.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../services/keywordService.js")>()),
   findKeywordInMessage,
+  findDmKeywordCandidates,
 }));
 // The resolver is contract-tested against real Postgres; here the DM path's own
 // contract is that it records the trigger and still delivers.
@@ -108,6 +113,8 @@ const aiFlags = {
   GUIDE_DELIVERY_ENABLED: true,
   GUIDE_DELIVERY_ROLLOUT_PERCENT: 25,
   GUIDE_DELIVERY_COHORT_IG_USER_IDS: "controlled-1",
+  GUIDE_DM_INTENT_GUARD_ENABLED: false,
+  GUIDE_DM_INTENT_GUARD_IG_USER_IDS: "",
 };
 vi.mock("../config/env.js", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown> & {
@@ -126,6 +133,8 @@ vi.mock("../config/env.js", async (importOriginal) => {
         if (prop === "GUIDE_DELIVERY_COHORT_IG_USER_IDS") {
           return aiFlags.GUIDE_DELIVERY_COHORT_IG_USER_IDS;
         }
+        if (prop === "GUIDE_DM_INTENT_GUARD_ENABLED") return aiFlags.GUIDE_DM_INTENT_GUARD_ENABLED;
+        if (prop === "GUIDE_DM_INTENT_GUARD_IG_USER_IDS") return aiFlags.GUIDE_DM_INTENT_GUARD_IG_USER_IDS;
         return target[prop as string];
       },
     }),
@@ -134,6 +143,8 @@ vi.mock("../config/env.js", async (importOriginal) => {
 
 const { handleMessage } = await import("./messageHandler.js");
 const { env } = await import("../config/env.js");
+const { extractCandidates } = await import("../services/keywordService.js");
+const dmGuideIntent = await import("../services/dmGuideIntent.js");
 
 // --- fixtures ----------------------------------------------------------------
 function inbound(text: string, overrides: Partial<MessagingEntry> = {}): MessagingEntry {
@@ -170,6 +181,7 @@ beforeEach(() => {
     queueReplyDraft,
     scheduleEngagementFollowUp,
     findKeywordInMessage,
+    findDmKeywordCandidates,
     findActiveAwaitingDone,
     findLatestIncompleteConversation,
     hasCompletedKeyword,
@@ -205,6 +217,21 @@ beforeEach(() => {
     outcome: "guide_delivery_started",
   });
   findKeywordInMessage.mockResolvedValue(null);
+  findDmKeywordCandidates.mockImplementation(async (text: string) => {
+    const meaningfulTokens = extractCandidates(text);
+    const keyword = await findKeywordInMessage(text);
+    return {
+      meaningfulTokens,
+      matches: keyword
+        ? [{
+            keyword,
+            matchedToken: keyword.keyword,
+            tokenPosition: meaningfulTokens.indexOf(keyword.keyword),
+            inferredFromPost: keyword.inferredFromPost ?? null,
+          }]
+        : [],
+    };
+  });
   findActiveAwaitingDone.mockResolvedValue(null);
   findLatestIncompleteConversation.mockResolvedValue(null);
   hasCompletedKeyword.mockResolvedValue(false);
@@ -237,6 +264,8 @@ beforeEach(() => {
   aiFlags.GUIDE_DELIVERY_ENABLED = true;
   aiFlags.GUIDE_DELIVERY_ROLLOUT_PERCENT = 25;
   aiFlags.GUIDE_DELIVERY_COHORT_IG_USER_IDS = "controlled-1";
+  aiFlags.GUIDE_DM_INTENT_GUARD_ENABLED = false;
+  aiFlags.GUIDE_DM_INTENT_GUARD_IG_USER_IDS = "";
 });
 
 describe("handleMessage — inbound capture", () => {
@@ -529,7 +558,9 @@ describe("handleMessage — branch order is unchanged", () => {
       expect.objectContaining({ igUserId: "ig-user-1", keywordId: "keyword-1" }),
       expect.any(Function),
     );
-    expect(findActiveAwaitingDone).not.toHaveBeenCalled();
+    // The guard reads the open request for safe decision telemetry, but the new
+    // keyword still wins and the older request is never advanced.
+    expect(findActiveAwaitingDone).toHaveBeenCalledWith("ig-user-1");
     // A follower gets the NEW keyword's guide instantly — never the stale gate's.
     expect(sendSequence).toHaveBeenCalledWith(
       expect.objectContaining({ messages: keywordFixture.resource.messages }),
@@ -1735,5 +1766,222 @@ describe("strict follower gate v2 — reply to an open strict opening", () => {
 
     expect(startDirectDmGuideRequest).not.toHaveBeenCalled();
     expect(sendSequence).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("DM intent guard — production routing regressions", () => {
+  const screenshotReply =
+    "Thank you! This list is gold. I'm actually working on a French activity book for kids to help parents raising bilingual kids. Love your page!";
+  const activity = {
+    ...keywordFixture,
+    id: "keyword-activity",
+    keyword: "ACTIVITY",
+    resource: { ...keywordFixture.resource, id: "resource-activity", name: "Activity" },
+  };
+  const waffle = {
+    ...keywordFixture,
+    id: "keyword-waffle",
+    keyword: "WAFFLE",
+    resource: { ...keywordFixture.resource, id: "resource-waffle", name: "Waffle" },
+  };
+  const podcast = {
+    id: "convo-podcast",
+    keywordId: "keyword-podcast",
+    keyword: {
+      keyword: "PODCAST",
+      resource: { id: "resource-podcast", name: "Podcast", messages: [] },
+    },
+  };
+
+  beforeEach(() => {
+    aiFlags.GUIDE_DM_INTENT_GUARD_ENABLED = true;
+    gateOwner.mockReturnValue("v2");
+  });
+
+  function expectOwnerReviewWithoutAutomation() {
+    expect(resolveJourneyIntent).not.toHaveBeenCalled();
+    expect(startDirectDmGuideRequest).not.toHaveBeenCalled();
+    expect(sendTrackedText).not.toHaveBeenCalled();
+    expect(sendSequence).not.toHaveBeenCalled();
+    expect(deliverGuideForTrigger).not.toHaveBeenCalled();
+    expect(markCompleted).not.toHaveBeenCalled();
+    expect(markGated).not.toHaveBeenCalled();
+    expect(markThreadResolved).not.toHaveBeenCalled();
+    expect(queueReplyDraft).toHaveBeenCalledWith({ threadId: "thread-1", inboundMessageId: "message-1" });
+  }
+
+  it("does not hijack an open Podcast request when the screenshot reply mentions activity", async () => {
+    findKeywordInMessage.mockResolvedValue(activity);
+    findActiveAwaitingDone.mockResolvedValue(podcast);
+
+    await handleMessage(inbound(screenshotReply));
+
+    expectOwnerReviewWithoutAutomation();
+    expect(logEvent).toHaveBeenCalledWith("message_unhandled", expect.objectContaining({
+      hadOpenConversation: true,
+    }));
+  });
+
+  it.each(["WAFFLE", "waffle please", "Please send me the WAFFLE recipe"])(
+    "keeps the clear request %s on the strict delivery path",
+    async (text) => {
+      findKeywordInMessage.mockResolvedValue(waffle);
+
+      await handleMessage(inbound(text));
+
+      expect(resolveJourneyIntent).toHaveBeenCalledWith(
+        expect.objectContaining({ keywordId: "keyword-waffle" }), expect.any(Function),
+      );
+      expect(startDirectDmGuideRequest).toHaveBeenCalledOnce();
+      expect(queueReplyDraft).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([false, true])("rejects a conversational keyword mention with prior completion=%s", async (completed) => {
+    findKeywordInMessage.mockResolvedValue(waffle);
+    hasCompletedKeyword.mockResolvedValue(completed);
+
+    await handleMessage(inbound("We made WAFFLE for breakfast today"));
+
+    expectOwnerReviewWithoutAutomation();
+  });
+
+  it("rejects an explicit negative instruction even though SEND is a request signal", async () => {
+    findKeywordInMessage.mockResolvedValue(waffle);
+    findActiveAwaitingDone.mockResolvedValue(podcast);
+
+    await handleMessage(inbound("Please do not send the WAFFLE recipe"));
+
+    expectOwnerReviewWithoutAutomation();
+  });
+
+  it.each([
+    "YES", "YES PLEASE", "PLEASE SEND", "SEND", "SEND IT", "SEND IT PLEASE",
+    "DONE", "FOLLOWED", "I FOLLOWED", "I AM FOLLOWING", "IM FOLLOWING", "I'M FOLLOWING", "READY",
+  ])("advances an open request only for the full confirmation %s", async (text) => {
+    findActiveAwaitingDone.mockResolvedValue(podcast);
+
+    await handleMessage(inbound(text));
+
+    expect(startDirectDmGuideRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "convo-podcast", resourceId: "resource-podcast" }),
+      expect.objectContaining({ id: "message-1" }),
+    );
+    expect(queueReplyDraft).not.toHaveBeenCalled();
+  });
+
+  it.each(["Thanks", "Hi", "Yes, this list was useful yesterday", "Done with work for today", ""])(
+    "does not advance an open request for unrelated text: %s",
+    async (text) => {
+      findActiveAwaitingDone.mockResolvedValue(podcast);
+
+      await handleMessage(inbound(text));
+
+      expectOwnerReviewWithoutAutomation();
+    },
+  );
+
+  it.each(["image", "sticker"])("does not advance an open request for a %s", async (type) => {
+    findActiveAwaitingDone.mockResolvedValue(podcast);
+
+    await handleMessage(inbound("", {
+      message: { mid: "mid-attachment", attachments: [{ type, payload: { url: "https://cdn.test/item" } }] },
+    }));
+
+    expectOwnerReviewWithoutAutomation();
+  });
+
+  it("keeps a clear new-guide request ahead of an older open request", async () => {
+    findKeywordInMessage.mockResolvedValue(waffle);
+    findActiveAwaitingDone.mockResolvedValue(podcast);
+
+    await handleMessage(inbound("WAFFLE please"));
+
+    expect(startDirectDmGuideRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ resourceId: "resource-waffle" }), expect.any(Object),
+    );
+  });
+
+  it("enforces the exact controlled-sender allowlist even while the global guard is off", async () => {
+    aiFlags.GUIDE_DM_INTENT_GUARD_ENABLED = false;
+    aiFlags.GUIDE_DM_INTENT_GUARD_IG_USER_IDS = " ig-user-1, another-user ";
+    findKeywordInMessage.mockResolvedValue(activity);
+
+    await handleMessage(inbound(screenshotReply));
+
+    expectOwnerReviewWithoutAutomation();
+  });
+
+  it("records the safe shadow decision while retaining legacy routing when enforcement is off", async () => {
+    aiFlags.GUIDE_DM_INTENT_GUARD_ENABLED = false;
+    findKeywordInMessage.mockResolvedValue(activity);
+    findActiveAwaitingDone.mockResolvedValue(podcast);
+
+    await handleMessage(inbound(screenshotReply));
+
+    expect(startDirectDmGuideRequest).toHaveBeenCalledOnce();
+    expect(logEvent).toHaveBeenCalledWith("dm_guide_intent_evaluated", expect.objectContaining({
+      enforced: false,
+      keywordClassification: "rejected_conversational",
+      legacyAction: "would_start_keyword",
+      guardedAction: "owner_review",
+    }));
+  });
+
+  it("keeps private DM text, username, and keyword values out of new intent telemetry", async () => {
+    findKeywordInMessage.mockResolvedValue(activity);
+    findActiveAwaitingDone.mockResolvedValue(podcast);
+
+    await handleMessage(inbound(screenshotReply));
+
+    const event = logEvent.mock.calls.find(([kind]) => kind === "dm_guide_intent_evaluated");
+    expect(event?.[1]).toMatchObject({
+      enforced: true,
+      keywordClassification: "rejected_conversational",
+      keywordHitCount: 1,
+      distinctGuideCount: 1,
+      hadOpenRequest: true,
+      guardedAction: "owner_review",
+    });
+    const emitted = JSON.stringify(event);
+    expect(emitted).not.toContain(screenshotReply);
+    expect(emitted).not.toContain("ACTIVITY");
+    expect(emitted).not.toContain("geri");
+  });
+
+  it("does not fall through to open-request automation if keyword loading fails", async () => {
+    findDmKeywordCandidates.mockRejectedValue(new Error("database unavailable"));
+    findActiveAwaitingDone.mockResolvedValue(podcast);
+
+    await expect(handleMessage(inbound("YES"))).rejects.toThrow("database unavailable");
+
+    expect(startDirectDmGuideRequest).not.toHaveBeenCalled();
+    expect(sendSequence).not.toHaveBeenCalled();
+  });
+
+  it("fails closed to owner review if the classifier throws under enforcement", async () => {
+    findKeywordInMessage.mockResolvedValue(waffle);
+    findActiveAwaitingDone.mockResolvedValue(podcast);
+    const spy = vi.spyOn(dmGuideIntent, "classifyDmKeywordIntent").mockImplementationOnce(() => {
+      throw new Error("private classifier detail");
+    });
+    try {
+      await handleMessage(inbound("WAFFLE"));
+      expectOwnerReviewWithoutAutomation();
+      expect(JSON.stringify(logger.error.mock.calls)).not.toContain("private classifier detail");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("does not let an intent metrics write failure change accepted routing", async () => {
+    findKeywordInMessage.mockResolvedValue(waffle);
+    logEvent.mockImplementation(async (kind) => {
+      if (kind === "dm_guide_intent_evaluated") throw new Error("metric unavailable");
+    });
+
+    await expect(handleMessage(inbound("WAFFLE"))).resolves.toBeUndefined();
+
+    expect(startDirectDmGuideRequest).toHaveBeenCalledOnce();
   });
 });
