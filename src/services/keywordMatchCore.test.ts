@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   rankDmCandidates,
   resolveCommentMatch,
+  resolveDmKeywordCandidates,
   resolveDmFallback,
   type KeywordCandidate,
 } from "./keywordMatchCore.js";
@@ -133,5 +134,86 @@ describe("rankDmCandidates / resolveDmFallback", () => {
     rankDmCandidates(input);
 
     expect(input.map((c) => c.id)).toEqual(["kw-a", "kw-b"]);
+  });
+});
+
+describe("resolveDmKeywordCandidates", () => {
+  it("selects keyword rows in message-token order, independent of database order", () => {
+    const waffle = kw({ id: "kw-waffle", keyword: "WAFFLE" });
+    const recipe = kw({ id: "kw-recipe", keyword: "RECIPE" });
+
+    expect(resolveDmKeywordCandidates(["PLEASE", "WAFFLE", "RECIPE"], [recipe, waffle]))
+      .toEqual([
+        {
+          keyword: waffle,
+          matchedToken: "WAFFLE",
+          tokenPosition: 1,
+          inferredFromPost: null,
+        },
+        {
+          keyword: recipe,
+          matchedToken: "RECIPE",
+          tokenPosition: 2,
+          inferredFromPost: null,
+        },
+      ]);
+  });
+
+  it("prefers a global row over newer post-scoped rows for the same token", () => {
+    const global = kw({ id: "kw-global", keyword: "SLEEP" });
+    const scoped = kw({
+      id: "kw-scoped",
+      keyword: "SLEEP",
+      mediaId: "post-1",
+      mediaPostedAt: new Date("2026-09-01"),
+    });
+
+    expect(resolveDmKeywordCandidates(["SLEEP"], [scoped, global])).toEqual([
+      {
+        keyword: global,
+        matchedToken: "SLEEP",
+        tokenPosition: 0,
+        inferredFromPost: null,
+      },
+    ]);
+  });
+
+  it("uses the newest post fallback independently for each token", () => {
+    const oldSleep = kw({
+      id: "sleep-old",
+      keyword: "SLEEP",
+      mediaId: "post-old",
+      mediaPostedAt: new Date("2026-01-01"),
+    });
+    const newSleep = kw({
+      id: "sleep-new",
+      keyword: "SLEEP",
+      mediaId: "post-new",
+      mediaPostedAt: new Date("2026-08-01"),
+    });
+    const potty = kw({
+      id: "potty-only",
+      keyword: "POTTY",
+      mediaId: "post-potty",
+      mediaPostedAt: new Date("2026-02-01"),
+    });
+
+    expect(resolveDmKeywordCandidates(["POTTY", "SLEEP"], [newSleep, oldSleep, potty]))
+      .toMatchObject([
+        { keyword: { id: "potty-only" }, tokenPosition: 0, inferredFromPost: "post-potty" },
+        { keyword: { id: "sleep-new" }, tokenPosition: 1, inferredFromPost: "post-new" },
+      ]);
+  });
+
+  it("breaks duplicate-global ties by stable id", () => {
+    const laterId = kw({ id: "kw-z", keyword: "WAFFLE" });
+    const earlierId = kw({ id: "kw-a", keyword: "WAFFLE" });
+
+    expect(resolveDmKeywordCandidates(["WAFFLE"], [laterId, earlierId])[0]?.keyword.id)
+      .toBe("kw-a");
+  });
+
+  it("returns no candidates when no row matches a token", () => {
+    expect(resolveDmKeywordCandidates(["HELLO"], [kw({ keyword: "SLEEP" })])).toEqual([]);
   });
 });

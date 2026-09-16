@@ -13,6 +13,8 @@
 // the globals. Converting a post is then a single action — attach one keyword and
 // that post stops answering to globals.
 
+import type { ResolvedDmKeyword } from "./dmGuideIntent.js";
+
 /** The subset of a Keyword row the matching decision actually needs. */
 export interface KeywordCandidate {
   id: string;
@@ -117,4 +119,37 @@ export function rankDmCandidates<T extends KeywordCandidate>(candidates: T[]): T
  */
 export function resolveDmFallback<T extends KeywordCandidate>(candidates: T[]): T | null {
   return rankDmCandidates(candidates)[0] ?? null;
+}
+
+/**
+ * Resolve every keyword token in a DM without allowing database row order to
+ * choose the guide. Each token prefers a stable global row; when only scoped
+ * rows exist, that token independently uses the existing newest-post fallback.
+ */
+export function resolveDmKeywordCandidates<T extends KeywordCandidate>(
+  tokens: readonly string[],
+  candidates: readonly T[],
+): ResolvedDmKeyword<T>[] {
+  const resolved: ResolvedDmKeyword<T>[] = [];
+  const seenRows = new Set<string>();
+
+  tokens.forEach((token, tokenPosition) => {
+    const matching = candidates.filter((candidate) => candidate.keyword === token);
+    const globals = matching
+      .filter((candidate) => candidate.mediaId === null)
+      .sort((a, b) => a.id.localeCompare(b.id));
+    const selected =
+      globals[0] ?? resolveDmFallback(matching.filter((candidate) => candidate.mediaId !== null));
+    if (!selected || seenRows.has(selected.id)) return;
+
+    seenRows.add(selected.id);
+    resolved.push({
+      keyword: selected,
+      matchedToken: token,
+      tokenPosition,
+      inferredFromPost: selected.mediaId,
+    });
+  });
+
+  return resolved;
 }
