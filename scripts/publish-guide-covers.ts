@@ -24,10 +24,10 @@
 import { createHash, randomUUID } from "node:crypto";
 
 import { PrismaClient } from "@prisma/client";
+import { guideCoverPublicUrl } from "../src/lib/guideCoverProvider.js";
 import { createGuideCoverRepository } from "../src/services/guideCoverRepository.js";
 import { createGuideCoverPublishService } from "../src/services/guideCoverPublishService.js";
 import { renderGuideCoverPng } from "../src/services/guideCoverPngRenderer.js";
-import { publicMediaUrl } from "../src/lib/supabase.js";
 import type { GuideCoverRenderInput } from "../shared/guideCoverPolicy.js";
 
 const ACTOR = "publish-guide-covers-script";
@@ -471,7 +471,7 @@ async function main(): Promise<void> {
       }
       // The app's own helper, so the attached URL is byte-identical to the one the
       // publish pipeline returned rather than a second reconstruction of it.
-      const url = publicMediaUrl(cover.dmStoragePath);
+      const url = guideCoverPublicUrl(cover.dmStoragePath);
 
       // Idempotent on (resource_id, order): a re-run updates the same slot rather than
       // colliding with the unique index or adding a second cover.
