@@ -169,6 +169,10 @@ export const envSchema = z.object({
   // Creator-only cover drafting and publication. It never changes an existing
   // published cover when off; it only closes the authoring mutation surface.
   GUIDE_COVER_AUTHORING_ENABLED: booleanFlag(false),
+  // Safety guard for free-text Instagram DMs. It evaluates every eligible DM,
+  // but changes routing only when globally enabled or the sender is allowlisted.
+  GUIDE_DM_INTENT_GUARD_ENABLED: booleanFlag(false),
+  GUIDE_DM_INTENT_GUARD_IG_USER_IDS: z.string().default(""),
   // Parent-facing guide access is separately fenced from creator authoring.
   // Both switches default off. The strict flow additionally requires an exact
   // controlled account or resource match, so an empty pilot list reaches nobody.

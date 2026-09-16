@@ -22,6 +22,7 @@ function envFlagKeys(): string[] {
 
 describe("flag registry coverage", () => {
   it.each([
+    "GUIDE_DM_INTENT_GUARD_ENABLED",
     "GUIDE_FOLLOW_GATE_V2_ENABLED",
     "GUIDE_RICH_GATE_ENABLED",
     "GUIDE_COVER_DELIVERY_ENABLED",
@@ -36,6 +37,17 @@ describe("flag registry coverage", () => {
       });
     },
   );
+
+  it("describes the DM intent guard as a stoppable safety correction, not an experiment", () => {
+    const definition = flagDefinition("GUIDE_DM_INTENT_GUARD_ENABLED");
+    expect(definition).toMatchObject({
+      group: "outbound",
+      kind: "boolean",
+      pageMayEnable: false,
+      pageMayStop: true,
+    });
+    expect(definition?.experimentKey).toBeUndefined();
+  });
 
   it("registers guide cover authoring as a reversible assistive feature", () => {
     expect(flagDefinition("GUIDE_COVER_AUTHORING_ENABLED")).toMatchObject({
