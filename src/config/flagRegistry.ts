@@ -89,6 +89,20 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
     experimentKey: "guide-delivery-rollout",
   },
   {
+    key: "GUIDE_DM_INTENT_GUARD_ENABLED",
+    name: "Clear DM requests only",
+    group: "outbound",
+    kind: "boolean",
+    doesWhat:
+      "Allows guide automation only when a private message clearly requests a guide or clearly confirms an open request.",
+    affectsWho:
+      "People sending new private messages. Requests already being delivered are not changed.",
+    ifOff:
+      "Private messages keep the older permissive routing while the safer decision is measured without changing what gets sent.",
+    pageMayEnable: false,
+    pageMayStop: true,
+  },
+  {
     key: "GUIDE_FOLLOW_GATE_V2_ENABLED",
     name: "Strict guide access",
     group: "outbound",

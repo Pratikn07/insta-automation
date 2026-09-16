@@ -9,7 +9,13 @@ import {
   markGated,
   openConversationIn,
 } from "../services/conversationService.js";
-import { findKeywordInMessage, textContainsKeyword } from "../services/keywordService.js";
+import { findDmKeywordCandidates, textContainsKeyword } from "../services/keywordService.js";
+import {
+  classifyDmKeywordIntent,
+  classifyOpenRequestReply,
+  type DmKeywordIntent,
+  type OpenRequestReplyIntent,
+} from "../services/dmGuideIntent.js";
 import { resolveJourneyIntent } from "../services/journeyIntentService.js";
 import { sendSequence } from "../services/sequenceSender.js";
 import {
@@ -38,7 +44,7 @@ import {
   markInboundCampaignHealthCaptured,
   recordInboundCampaignHealthSignals,
 } from "../services/campaignHealthObservation.js";
-import { env, guideDeliveryCohortIgUserIds } from "../config/env.js";
+import { env, guideDeliveryCohortIgUserIds, parseIdentifierSet } from "../config/env.js";
 import { routeGuideAction } from "./guideActionRouter.js";
 import { guideFollowGateV2Selector } from "../services/guideFollowGateV2Rollout.js";
 import { startDirectDmGuideRequest } from "../services/guideAccessActionService.js";
@@ -119,8 +125,7 @@ async function runStrictGuideRequest(input: {
   }
 }
 
-// Kept only as an analytics hint now — it is NO LONGER the trigger. Any reply to
-// an open gate delivers the guide (people say "Hi"/"Followed"/"Yes", not "Done").
+// Exact DONE retains the existing recovery path after the internal gate expires.
 const DONE_RE = /^\s*done\s*[!.]*\s*$/i;
 
 // Follow-aware closing line, sent AFTER the guide. Hybrid policy: everyone still
@@ -514,47 +519,29 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     return;
   }
 
-  // ---- 1. New keyword → (re)send the gate ----------------------------------
-  // Checked FIRST so someone with an open "sleep" gate who DMs "potty" starts a
-  // potty gate rather than completing the sleep one.
-  const matchedKeyword = await findKeywordInMessage(text);
+  // Resolve all matching rows in token order. A lookup failure deliberately
+  // propagates: it must never turn into permission to advance an older request.
+  const lookup = await findDmKeywordCandidates(text);
+  const firstMatch = lookup.matches[0];
+  const matchedKeyword = firstMatch
+    ? { ...firstMatch.keyword, inferredFromPost: firstMatch.inferredFromPost }
+    : null;
+  const enforced =
+    flags.bool("GUIDE_DM_INTENT_GUARD_ENABLED") ||
+    parseIdentifierSet(env.GUIDE_DM_INTENT_GUARD_IG_USER_IDS).has(senderId);
 
-  // Do they already own this guide? Read once, here, because the answer decides both
-  // whether the match is trustworthy at all (below) and which trigger kind the delivery
-  // gets further down.
+  // Keep the old repeat-only safeguard while enforcement is off. This makes
+  // shadow mode a measurement, not an unannounced behaviour change.
   const alreadyCompleted = matchedKeyword
     ? await hasCompletedKeyword(senderId, matchedKeyword.id)
     : false;
-
-  /**
-   * A guide they ALREADY have is only re-sent when the message is shaped like an ask.
-   *
-   * `findKeywordInMessage` scans every word of a DM with no length gate, deliberately: a
-   * cold DM saying "sleep" is someone typing a word they saw on a reel, and being generous
-   * there is right. It stops being right once the conversation is under way, because the
-   * keyword set on this account is ordinary English — WAFFLE, DINNER, MUFFIN, SLEEP, PLAY.
-   * Observed on device 2026-08-24: a parent who had just received the waffle guide wrote
-   * "Thank you! Do you have a waffle maker reco?" and we answered by re-sending the guide
-   * she was thanking us for, cover image and all. Her actual question never reached the
-   * owner's drafts queue, which is where it belonged.
-   *
-   * `textContainsKeyword` is the COMMENT rule — every word of a short message, first word
-   * only of a long one — already calibrated on 30 days of production comments. Reused rather
-   * than reinvented so there is one length gate and one number to tune. It still accepts the
-   * shapes a real re-ask takes ("waffle", "waffle again please", "WAFFLE send it over when
-   * you can"), because those either are short or lead with the word.
-   *
-   * Scoped to redelivery on purpose: a first delivery stays as generous as it was, so this
-   * can never cost anyone a guide they do not already have. The most it can cost is a
-   * duplicate, and a suppressed message is not dropped — it falls through to the draft
-   * branch below, and the thread stays unresolved for the owner either way.
-   */
   const suppressedRedelivery =
     matchedKeyword !== null &&
     alreadyCompleted &&
     !textContainsKeyword(text, matchedKeyword.keyword);
+  const legacyKeyword = suppressedRedelivery ? null : matchedKeyword;
 
-  if (suppressedRedelivery) {
+  if (!enforced && suppressedRedelivery) {
     logger.info(
       { senderId, mid: msg.mid, keyword: matchedKeyword.keyword },
       "Keyword inside a longer DM for a guide they already have — not redelivering",
@@ -567,7 +554,78 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     });
   }
 
-  const keyword = suppressedRedelivery ? null : matchedKeyword;
+  // Loading the open request is read-only. It supplies both routing and truthful
+  // shadow telemetry; a clear new keyword still takes priority over this request.
+  let convo = await findActiveAwaitingDone(senderId);
+  let recoveredInactiveGate = false;
+  if (!convo && DONE_RE.test(text)) {
+    convo = await findLatestIncompleteConversation(senderId);
+    recoveredInactiveGate = convo !== null;
+  }
+
+  type ResolvedKeywordRow = (typeof lookup.matches)[number]["keyword"];
+  let keywordIntent: DmKeywordIntent<ResolvedKeywordRow> | null = null;
+  let replyIntent: OpenRequestReplyIntent | null = null;
+  let classifierFailed = false;
+  try {
+    keywordIntent = classifyDmKeywordIntent(lookup.meaningfulTokens, lookup.matches);
+    replyIntent = classifyOpenRequestReply(text, messageType);
+  } catch {
+    classifierFailed = true;
+    logger.error(
+      { errorCode: "dm_guide_intent_classifier_failed", enforced },
+      "DM guide intent classification failed",
+    );
+  }
+
+  const acceptedKeyword =
+    !classifierFailed && keywordIntent && "selected" in keywordIntent && messageType === "text"
+      ? {
+          ...keywordIntent.selected.keyword,
+          inferredFromPost: keywordIntent.selected.inferredFromPost,
+        }
+      : null;
+  const acceptedReply = !classifierFailed && replyIntent?.kind === "accepted_confirmation";
+  const guardedAction = classifierFailed
+    ? "owner_review"
+    : acceptedKeyword
+      ? "start_keyword"
+      : convo && acceptedReply
+        ? "advance_open_request"
+        : "owner_review";
+
+  // Only aggregate-safe decisions/counts and the existing internal inbound
+  // association leave this boundary. Never log text, username or keyword values.
+  try {
+    await logEvent("dm_guide_intent_evaluated", {
+      inboundMessageId: inbound.messageId,
+      enforced,
+      keywordClassification: keywordIntent?.kind ?? "classifier_failed",
+      replyClassification: convo ? replyIntent?.kind ?? "classifier_failed" : "not_applicable",
+      replyRejectionReason:
+        convo && replyIntent?.kind === "rejected_reply" ? replyIntent.reason : null,
+      meaningfulTokenCount: lookup.meaningfulTokens.length,
+      keywordHitCount: keywordIntent?.keywordHitCount ?? lookup.matches.length,
+      distinctGuideCount: keywordIntent?.distinctGuideCount ?? null,
+      selectedKeywordPosition:
+        keywordIntent && "selected" in keywordIntent ? keywordIntent.selected.tokenPosition : null,
+      hadOpenRequest: convo !== null,
+      legacyAction: legacyKeyword
+        ? "would_start_keyword"
+        : convo
+          ? "would_advance_open_request"
+          : "would_not_automate",
+      guardedAction,
+    });
+  } catch {
+    logger.warn(
+      { errorCode: "dm_guide_intent_metric_failed" },
+      "DM guide intent metric could not be recorded",
+    );
+  }
+
+  // ---- 1. Clear new keyword → existing journey and strict delivery path ----
+  const keyword = enforced ? acceptedKeyword : legacyKeyword;
   if (keyword) {
     // Attach the ask to this person's canonical journey for this keyword, so the
     // dashboard counts one request rather than one per ask. Measured: 257 of the
@@ -593,11 +651,11 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
       },
       (tx) => openConversationIn(tx, senderId, keyword.id),
     );
-    const convo = { id: journey.conversationId! };
+    const keywordConversation = { id: journey.conversationId! };
 
     logger.info(
       {
-        conversationId: convo.id,
+        conversationId: keywordConversation.id,
         keyword: keyword.keyword,
         senderId,
         disposition: journey.disposition,
@@ -606,7 +664,7 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
       "Keyword matched in DM",
     );
     await logEvent("keyword_matched", {
-      conversationId: convo.id,
+      conversationId: keywordConversation.id,
       keyword: keyword.keyword,
       source: "dm",
       senderId,
@@ -633,7 +691,7 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     // strength of a past send. The strict path replaces both with a live check.
     if (strictGateOwnerFor(senderId, keyword.resource.id) === "v2") {
       await runStrictGuideRequest({
-        conversationId: convo.id,
+        conversationId: keywordConversation.id,
         senderId,
         resourceId: keyword.resource.id,
         guideName: keyword.resource.name,
@@ -648,7 +706,7 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     if (profile.isFollower === true || alreadyCompleted) {
       try {
         await deliverOwnedGuide({
-          conversationId: convo.id,
+          conversationId: keywordConversation.id,
           resourceId: keyword.resource.id,
           messages: keyword.resource.messages,
           senderId,
@@ -668,11 +726,11 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
         // Conversation stays awaiting_done, so any follow-up reply from the user
         // re-attempts delivery via the open-gate branch below.
         logger.error(
-          { ...graphFailureMetadata(err), conversationId: convo.id },
+          { ...graphFailureMetadata(err), conversationId: keywordConversation.id },
           "Instant DM sequence failed",
         );
         await logEvent("sequence_failed", {
-          conversationId: convo.id,
+          conversationId: keywordConversation.id,
           source: "dm_instant",
           ...graphFailureMetadata(err),
         });
@@ -686,7 +744,7 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
       // failures and reports whether the parent actually saw it, so a cover problem can
       // never cost them the gate message that converts.
       await sendCoverBeforeGate({
-        conversationId: convo.id,
+        conversationId: keywordConversation.id,
         resourceId: keyword.resource.id,
         recipientIgUserId: senderId,
         messages: keyword.resource.messages,
@@ -698,18 +756,18 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
       });
       // Stamp gatedAt so the DONE-window runs from delivery — aligns the DM path
       // with the comment path's markGated behavior.
-      await markGated(convo.id);
+      await markGated(keywordConversation.id);
       // The gate IS our answer to this inbound, so the thread no longer needs the
       // owner's attention.
       await markThreadResolved({
         threadId: inbound.threadId,
         inboundMessageId: inbound.messageId,
       });
-      await logEvent("dm_sent", { conversationId: convo.id, kind: "gate", source: "dm" });
+      await logEvent("dm_sent", { conversationId: keywordConversation.id, kind: "gate", source: "dm" });
     } catch (err) {
       logger.warn(graphFailureMetadata(err), "Gate DM (from inbound message) failed");
       await logEvent("dm_failed", {
-        conversationId: convo.id,
+        conversationId: keywordConversation.id,
         stage: "gate_inbound_dm",
         senderId,
         ...graphFailureMetadata(err),
@@ -718,19 +776,10 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     return;
   }
 
-  // ---- 2. Any reply to an OPEN gate → continue the request ----------------
-  // The user received the gate and replied with intent — regardless of the exact
-  // wording ("Hi", "Followed", "Yes", a sticker, or "Done"). This is the flexible
-  // matching that recovers the users who never typed the magic word. When the
-  // internal gate has expired, only an explicit DONE recovers the latest request;
-  // that fresh inbound message opens Meta's current 24-hour sending window.
-  let convo = await findActiveAwaitingDone(senderId);
-  let recoveredInactiveGate = false;
-  if (!convo && DONE_RE.test(text)) {
-    convo = await findLatestIncompleteConversation(senderId);
-    recoveredInactiveGate = convo !== null;
-  }
-  if (convo) {
+  // ---- 2. Explicit confirmation of an OPEN request → continue it ----------
+  // Under enforcement, unrelated text/media never count as confirmation and a
+  // classifier fault never falls back to the permissive legacy route.
+  if (convo && (!enforced || acceptedReply)) {
     // ---- Strict follower gate V2 --------------------------------------------
     // With rich controls off — the only mode available until the capability rows
     // are `supported` — the strict opening is text ("Want me to send it here?"),
@@ -844,7 +893,7 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
       mid: msg.mid,
       messageType,
       textLength: text.length,
-      matched: "any_reply",
+      matched: enforced ? "accepted_confirmation" : "any_reply",
       looksLikeDone: DONE_RE.test(text),
       recoveredInactiveGate,
     });
@@ -879,20 +928,20 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     return;
   }
 
-  // ---- 3. No keyword, no open gate → queue a draft for the owner ------------
+  // ---- 3. No accepted automation intent → queue a draft for the owner -------
   // Historically this branch was silent: 673 people wrote something real and got
   // nothing back. It now queues an AI draft for the owner to approve. Nothing is
   // sent from here — approval is a separate, explicit action, which is also what
   // keeps a considered reply inside Meta's rules.
   logger.debug(
     { senderId, mid: msg.mid, messageType, textLength: text.length },
-    "Inbound DM with no keyword and no open gate",
+    "Inbound DM requires owner review",
   );
   await logEvent("message_unhandled", {
     senderId,
     mid: msg.mid,
     textLength: text.length,
-    hadOpenConversation: false,
+    hadOpenConversation: convo !== null,
   });
 
   if (!flags.bool("AI_DRAFTS_ENABLED")) return;

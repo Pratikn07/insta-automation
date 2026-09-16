@@ -533,3 +533,169 @@ As above: rollback stops *new* sends and never deletes ledger rows.
    owner actions as any other unit. The review card labels it "Guide cover" rather
    than a numbered message, so the owner knows they are deciding about the image and
    not about an authored step.
+
+## DM guide intent guard
+
+`GUIDE_DM_INTENT_GUARD_ENABLED=true` applies the deterministic DM policy before an
+ordinary text message can enter or advance guide delivery. A message containing only
+one to three meaningful tokens still accepts a keyword such as `WAFFLE` or
+`waffle please`. A longer message must contain an explicit request signal, so
+`Please send me the WAFFLE recipe` is accepted while a conversational sentence that
+merely mentions `WAFFLE` is sent to owner review. Negative requests always lose, and
+only the exact approved confirmation phrases advance an existing open request.
+Stickers, images, blank text, thanks, and unrelated replies do not advance it.
+
+The global flag defaults to `false`. `GUIDE_DM_INTENT_GUARD_IG_USER_IDS` is an exact,
+comma-separated sender allowlist for a controlled test while the global flag is off.
+The handler still records `dm_guide_intent_evaluated` in shadow mode, so operators can
+compare the legacy and guarded decisions before enablement. Comments and structured
+quick replies/postbacks are unchanged. No database migration is required.
+
+### Observe before and after enablement
+
+This query reports the decisions without returning DM text, usernames, keyword values,
+or provider payloads:
+
+```sql
+SELECT
+  payload->>'enforced' AS enforced,
+  payload->>'keywordClassification' AS keyword_classification,
+  payload->>'replyClassification' AS reply_classification,
+  payload->>'guardedAction' AS guarded_action,
+  count(*) AS messages
+FROM event_log
+WHERE kind = 'dm_guide_intent_evaluated'
+  AND created_at >= now() - interval '24 hours'
+GROUP BY 1, 2, 3, 4
+ORDER BY messages DESC;
+```
+
+This is the shadow-mode impact estimate. It isolates DMs for which legacy routing and
+the guarded routing disagree:
+
+```sql
+SELECT
+  payload->>'legacyAction' AS legacy_action,
+  payload->>'guardedAction' AS guarded_action,
+  count(*) AS messages
+FROM event_log
+WHERE kind = 'dm_guide_intent_evaluated'
+  AND created_at >= now() - interval '24 hours'
+  AND payload->>'legacyAction' IS DISTINCT FROM
+      CASE payload->>'guardedAction'
+        WHEN 'start_keyword' THEN 'would_start_keyword'
+        WHEN 'advance_open_request' THEN 'would_advance_open_request'
+        ELSE 'would_not_automate'
+      END
+GROUP BY 1, 2
+ORDER BY messages DESC;
+```
+
+For recent guarded owner-review decisions, this query checks the causal records that
+must remain absent: a journey opened from the inbound DM, a durable delivery using the
+inbound DM as its trigger, or a keyword-automation outbound before the next inbound on
+that thread. It returns IDs and timestamps only, never message text.
+
+```sql
+WITH rejected AS (
+  SELECT
+    id AS event_id,
+    created_at AS evaluated_at,
+    (payload->>'inboundMessageId')::uuid AS inbound_message_id
+  FROM event_log
+  WHERE kind = 'dm_guide_intent_evaluated'
+    AND payload->>'enforced' = 'true'
+    AND payload->>'guardedAction' = 'owner_review'
+    AND created_at >= now() - interval '24 hours'
+), bounded AS (
+  SELECT
+    rejected.*,
+    inbound.thread_id,
+    inbound.created_at AS inbound_created_at,
+    (
+      SELECT min(later.created_at)
+      FROM dm_message AS later
+      WHERE later.thread_id = inbound.thread_id
+        AND later.direction = 'inbound'
+        AND later.created_at > inbound.created_at
+    ) AS next_inbound_at
+  FROM rejected
+  JOIN dm_message AS inbound ON inbound.id = rejected.inbound_message_id
+)
+SELECT
+  bounded.event_id,
+  bounded.inbound_message_id,
+  bounded.evaluated_at,
+  EXISTS (
+    SELECT 1
+    FROM journey_source_event AS source
+    WHERE source.comment_id = bounded.inbound_message_id::text
+  ) AS opened_journey,
+  EXISTS (
+    SELECT 1
+    FROM guide_delivery AS delivery
+    WHERE delivery.trigger_id = bounded.inbound_message_id
+  ) AS created_delivery,
+  EXISTS (
+    SELECT 1
+    FROM dm_message AS outbound
+    WHERE outbound.thread_id = bounded.thread_id
+      AND outbound.direction = 'outbound'
+      AND outbound.source = 'keyword_automation'
+      AND outbound.created_at >= bounded.inbound_created_at
+      AND outbound.created_at < coalesce(
+        bounded.next_inbound_at,
+        bounded.inbound_created_at + interval '10 minutes'
+      )
+  ) AS sent_keyword_automation
+FROM bounded
+ORDER BY bounded.evaluated_at DESC
+LIMIT 100;
+```
+
+All three booleans must be `false` for guarded owner-review decisions. Review any true
+row individually because concurrent activity in the same thread can make the outbound
+time correlation conservative.
+
+The event payload has a closed operational contract. Check for unexpected or private
+keys after deployment:
+
+```sql
+SELECT key, count(*) AS rows_containing_key
+FROM event_log
+CROSS JOIN LATERAL jsonb_object_keys(payload) AS key
+WHERE kind = 'dm_guide_intent_evaluated'
+  AND created_at >= now() - interval '24 hours'
+GROUP BY key
+ORDER BY key;
+```
+
+Allowed keys are `inboundMessageId`, `enforced`, `keywordClassification`,
+`replyClassification`, `replyRejectionReason`, `meaningfulTokenCount`,
+`keywordHitCount`, `distinctGuideCount`, `selectedKeywordPosition`,
+`hadOpenRequest`, `legacyAction`, and `guardedAction`. A
+`keywordClassification = 'classifier_failed'` row requires immediate log review.
+Also inspect service logs for `dm_guide_intent_classifier_failed` and
+`dm_guide_intent_metric_failed`.
+
+### Production enablement and verification
+
+1. Deploy the exact pushed `main` SHA to the backend service and wait for a successful
+   build and start with a healthy `/health` response.
+2. Confirm shadow rows are arriving and contain only the allowed fields above.
+3. Set `GUIDE_DM_INTENT_GUARD_ENABLED=true` in the backend production environment and
+   wait for the resulting restart/deployment to become healthy.
+4. Confirm fresh rows have `enforced = 'true'`, then run the causal-record query above.
+5. Confirm the deployed source SHA, effective flag state, clean boot logs, and fresh
+   database rows. If an approved internal Instagram account is available, send one
+   explicit request and one conversational mention. Otherwise do not manufacture a
+   customer DM; wait for organic traffic and state that provider-level controlled
+   testing is pending.
+
+### Rollback
+
+Set the runtime override for `GUIDE_DM_INTENT_GUARD_ENABLED` to `false`, or set the
+Railway environment variable to `false` and wait for a healthy restart. This restores
+legacy DM routing for new inbound decisions; it does not change already-created
+journeys, access attempts, deliveries, or outbound messages. Keep shadow telemetry on,
+verify new rows have `enforced = 'false'`, and investigate before re-enabling.

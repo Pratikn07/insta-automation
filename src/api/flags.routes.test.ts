@@ -2,6 +2,8 @@ import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { FLAG_REGISTRY } from "../config/flagRegistry.js";
+
 const upsert = vi.fn();
 const refresh = vi.fn();
 const snapshot = vi.fn();
@@ -85,12 +87,12 @@ describe("flags API", () => {
     expect(drafts.ifOff.length).toBeGreaterThan(10);
   });
 
-  it("returns all twenty-four, even those with no stored row", async () => {
+  it("returns every registered flag, even those with no stored row", async () => {
     snapshot.mockReturnValue([]);
 
     const response = await request(app()).get("/api/flags").expect(200);
 
-    expect(response.body.flags).toHaveLength(24);
+    expect(response.body.flags).toHaveLength(FLAG_REGISTRY.length);
   });
 
   /**

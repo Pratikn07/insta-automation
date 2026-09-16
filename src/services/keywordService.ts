@@ -1,5 +1,5 @@
 import { prisma } from "../lib/prisma.js";
-import { resolveCommentMatch, resolveDmFallback } from "./keywordMatchCore.js";
+import { resolveCommentMatch, resolveDmKeywordCandidates } from "./keywordMatchCore.js";
 
 export function normalizeKeyword(text: string): string {
   return text.trim().toUpperCase();
@@ -95,23 +95,26 @@ const WITH_SEQUENCE = { resource: { include: { messages: true } } } as const;
  * Every word is scanned with no length gate, since a DM is an intentional
  * message — so "sleep", "Sleep", "sleep🙏" and "DM me sleep" all resolve.
  */
+export async function findDmKeywordCandidates(text: string) {
+  const meaningfulTokens = extractCandidates(text);
+  if (meaningfulTokens.length === 0) return { meaningfulTokens, matches: [] };
+
+  const rows = await prisma.keyword.findMany({
+    where: { keyword: { in: meaningfulTokens }, active: true },
+    include: WITH_SEQUENCE,
+  });
+
+  return {
+    meaningfulTokens,
+    matches: resolveDmKeywordCandidates(meaningfulTokens, rows),
+  };
+}
+
+/** Backward-compatible first-match view for older internal callers. */
 export async function findKeywordInMessage(text: string) {
-  const candidates = extractCandidates(text);
-  if (candidates.length === 0) return null;
-
-  const global = await prisma.keyword.findFirst({
-    where: { keyword: { in: candidates }, mediaId: null, active: true },
-    include: WITH_SEQUENCE,
-  });
-  if (global) return { ...global, inferredFromPost: null as string | null };
-
-  // No global carries the word — fall back to the newest post that does.
-  const scoped = await prisma.keyword.findMany({
-    where: { keyword: { in: candidates }, mediaId: { not: null }, active: true },
-    include: WITH_SEQUENCE,
-  });
-  const pick = resolveDmFallback(scoped);
-  return pick ? { ...pick, inferredFromPost: pick.mediaId } : null;
+  const { matches } = await findDmKeywordCandidates(text);
+  const first = matches[0];
+  return first ? { ...first.keyword, inferredFromPost: first.inferredFromPost } : null;
 }
 
 /**

@@ -17,6 +17,29 @@ const baseEnv = {
 };
 
 describe("env configuration schema for DM recovery", () => {
+  it("defaults the DM intent guard off with an empty controlled-recipient allowlist", () => {
+    expect(envSchema.parse(baseEnv)).toMatchObject({
+      GUIDE_DM_INTENT_GUARD_ENABLED: false,
+      GUIDE_DM_INTENT_GUARD_IG_USER_IDS: "",
+    });
+  });
+
+  it("parses the DM intent guard with strict boolean semantics", () => {
+    expect(
+      envSchema.parse({
+        ...baseEnv,
+        GUIDE_DM_INTENT_GUARD_ENABLED: "true",
+        GUIDE_DM_INTENT_GUARD_IG_USER_IDS: " account-1, account-2 ",
+      }),
+    ).toMatchObject({
+      GUIDE_DM_INTENT_GUARD_ENABLED: true,
+      GUIDE_DM_INTENT_GUARD_IG_USER_IDS: " account-1, account-2 ",
+    });
+    expect(
+      envSchema.safeParse({ ...baseEnv, GUIDE_DM_INTENT_GUARD_ENABLED: "flase" }).success,
+    ).toBe(false);
+  });
+
   it("defaults the strict follower and rich-message gates off with empty allowlists", () => {
     expect(envSchema.parse(baseEnv)).toMatchObject({
       GUIDE_FOLLOW_GATE_V2_ENABLED: false,
