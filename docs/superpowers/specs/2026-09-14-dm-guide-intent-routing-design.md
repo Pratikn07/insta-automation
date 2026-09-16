@@ -1,10 +1,10 @@
 # TinySoho DM Guide Intent Routing Design
 
-**Status:** Approved in chat; written specification ready for owner review
+**Status:** Approved and implemented
 
 **Date:** 2026-09-14
 
-**Implementation status:** Not started
+**Implementation status:** Implemented and verified locally; production deployment is tracked separately
 
 **Production base audited:** `origin/main` and Railway production at
 `c39290f0d2c613d759ec246faf256b513fe00133`
