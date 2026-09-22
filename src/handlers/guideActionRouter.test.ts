@@ -14,7 +14,11 @@ const EVENT_AT = new Date("2026-08-23T01:30:00.000Z");
 
 function makeRouter(input: {
   action?: "request_guide" | "check_follow" | null;
-  requestOutcome?: "guide_delivery_started" | "action_expired";
+  requestOutcome?:
+    | "guide_delivery_started"
+    | "action_expired"
+    | "guide_audience_blocked"
+    | "guide_audience_deferred";
   checkOutcome?: "follow_not_confirmed" | "action_expired" | "action_replayed";
 } = {}) {
   const loadAction = vi
@@ -135,6 +139,30 @@ describe("createGuideActionRouter", () => {
     });
     expect(test.presentOutcome).toHaveBeenCalledOnce();
   });
+
+  it.each(["guide_audience_blocked", "guide_audience_deferred"] as const)(
+    "does not present a %s outcome",
+    async (outcome) => {
+      const test = makeRouter({ action: "request_guide", requestOutcome: outcome });
+
+      await expect(
+        test.route({
+          payload: GUIDE_ACTION_PAYLOAD,
+          senderId: SENDER_ID,
+          inboundMessageId: INBOUND_MESSAGE_ID,
+          eventId: INBOUND_MESSAGE_ID,
+          source: "quick_reply",
+          eventAt: EVENT_AT,
+        }),
+      ).resolves.toMatchObject({
+        kind: "handled",
+        outcome,
+        presentation: "none_audience_policy",
+      });
+
+      expect(test.presentOutcome).not.toHaveBeenCalled();
+    },
+  );
 
   it("routes check-follow once and uses the token UUID as a safe postback trigger", async () => {
     const test = makeRouter({ action: "check_follow" });

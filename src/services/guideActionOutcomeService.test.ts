@@ -101,6 +101,21 @@ describe("guide action outcome presentation", () => {
     expect(test.sendText).not.toHaveBeenCalled();
   });
 
+  it.each(["guide_audience_blocked", "guide_audience_deferred"] as const)(
+    "sends nothing when the guide audience policy returns %s",
+    async (outcome) => {
+      const test = harness();
+
+      await expect(test.present({ ...baseInput, outcome })).resolves.toBe(
+        "none_audience_policy",
+      );
+
+      expect(test.dependencies.loadContext).not.toHaveBeenCalled();
+      expect(test.sendRecoveryAction).not.toHaveBeenCalled();
+      expect(test.sendText).not.toHaveBeenCalled();
+    },
+  );
+
   it("refreshes a follow action when an older opening is tapped after the gate", async () => {
     const test = harness("awaiting_follow");
     await expect(test.present({ ...baseInput, outcome: "action_replayed" })).resolves.toBe(
