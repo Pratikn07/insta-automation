@@ -29,6 +29,7 @@ const resolveActiveSettingsBlockedVerification = vi.fn();
 const gateOwner = vi.fn();
 const startCommentGuideRequest = vi.fn();
 const recordGuideAccessMetric = vi.fn();
+const authorizeNewGuideAction = vi.fn();
 
 const RESOURCE_ID = "30000000-0000-4000-8000-000000000003";
 
@@ -100,6 +101,9 @@ vi.mock("../services/guideAccessActionService.js", () => ({ startCommentGuideReq
 vi.mock("../services/guideAccessMetrics.js", () => ({
   recordGuideAccessMetric,
 }));
+vi.mock("../services/guideAudienceAuthorization.js", () => ({
+  guideAudienceAuthorization: { authorizeNewGuideAction },
+}));
 
 const { handleComment } = await import("./commentHandler.js");
 
@@ -162,6 +166,7 @@ beforeEach(() => {
     gateOwner,
     startCommentGuideRequest,
     recordGuideAccessMetric,
+    authorizeNewGuideAction,
     ...Object.values(childLogger),
   ]) {
     fn.mockReset();
@@ -172,6 +177,7 @@ beforeEach(() => {
   gateOwner.mockReturnValue("v1");
   startCommentGuideRequest.mockResolvedValue({ outcome: "guide_opening_sent" });
   recordGuideAccessMetric.mockResolvedValue("recorded");
+  authorizeNewGuideAction.mockResolvedValue({ kind: "allow", enforced: false });
 
   // The database enforces this in production; here a set stands in for it.
   const claimed = new Set<string>();
@@ -749,6 +755,39 @@ describe("duplicate journey suppression", () => {
 
     const matched = logEvent.mock.calls.find(([kind]) => kind === "keyword_matched");
     expect(matched?.[1]).toMatchObject({ journeyDisposition: "reused_active" });
+  });
+});
+
+describe("guide audience policy — comment path", () => {
+  const COMMENT = {
+    id: "comment-audience-1",
+    text: "sleep",
+    from: { id: "ig-parent", username: "parent" },
+    media: { id: "reel-1", media_product_type: "REELS" },
+  };
+
+  it.each([
+    { result: { kind: "block", auditId: "audit-1" }, label: "blocked" },
+    {
+      result: { kind: "defer", auditId: "audit-2", reason: "provider_timeout" },
+      label: "deferred",
+    },
+  ])("sends nothing when a matched comment is $label", async ({ result }) => {
+    authorizeNewGuideAction.mockResolvedValue(result);
+
+    await handleComment(COMMENT);
+
+    expect(authorizeNewGuideAction).toHaveBeenCalledWith({
+      igUserId: "ig-parent",
+      source: "comment",
+      commentId: COMMENT.id,
+      resourceId: RESOURCE_ID,
+    });
+    expect(resolveJourneyIntent).not.toHaveBeenCalled();
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(sendTrackedPrivateReply).not.toHaveBeenCalled();
+    expect(startCommentGuideRequest).not.toHaveBeenCalled();
+    expect(enqueueGate).not.toHaveBeenCalled();
   });
 });
 

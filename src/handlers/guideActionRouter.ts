@@ -163,14 +163,17 @@ export function createGuideActionRouter(dependencies: GuideActionRouterDependenc
             input.source,
           );
 
-    const presentation = await dependencies.presentOutcome({
-      eventId: input.eventId,
-      tokenId: parsed.tokenId,
-      senderId: input.senderId,
-      action,
-      outcome,
-      eventAt: input.eventAt,
-    });
+    const presentation =
+      outcome === "guide_audience_blocked" || outcome === "guide_audience_deferred"
+        ? "none_audience_policy"
+        : await dependencies.presentOutcome({
+            eventId: input.eventId,
+            tokenId: parsed.tokenId,
+            senderId: input.senderId,
+            action,
+            outcome,
+            eventAt: input.eventAt,
+          });
 
     if (outcome === "duplicate_event") await countAction(dependencies, "duplicate");
     if (outcome === "action_replayed") await countAction(dependencies, "replayed");

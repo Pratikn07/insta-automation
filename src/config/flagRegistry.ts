@@ -103,6 +103,20 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
     pageMayStop: true,
   },
   {
+    key: "GUIDE_AUDIENCE_BLOCK_ENABLED",
+    name: "Guide audience safety screen",
+    group: "outbound",
+    kind: "boolean",
+    doesWhat:
+      "Stops new guide automation when the private audience screen returns a blocked or unreliable result.",
+    affectsWho:
+      "New keyword comments, guide DMs, follow actions, and redelivery requests. Deliveries already under way are unchanged.",
+    ifOff:
+      "Guide automation follows the existing path and the private screen cannot alter a send.",
+    pageMayEnable: false,
+    pageMayStop: true,
+  },
+  {
     key: "GUIDE_FOLLOW_GATE_V2_ENABLED",
     name: "Strict guide access",
     group: "outbound",

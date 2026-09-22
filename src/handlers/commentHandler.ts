@@ -41,6 +41,7 @@ import { bindUpcomingAutomationFromComment } from "../services/upcomingAutomatio
 import { guideFollowGateV2Selector } from "../services/guideFollowGateV2Rollout.js";
 import { startCommentGuideRequest } from "../services/guideAccessActionService.js";
 import { recordGuideAccessMetric } from "../services/guideAccessMetrics.js";
+import { guideAudienceAuthorization } from "../services/guideAudienceAuthorization.js";
 
 /**
  * Human-readable scope for a media-attached keyword, from the webhook's
@@ -277,6 +278,23 @@ export async function handleComment(comment: CommentValue): Promise<void> {
   // Claimed after keyword matching so a non-matching comment consumes nothing.
   if (!(await claimComment(comment.id, senderId))) {
     log.debug("Comment already handled — skipping duplicate delivery");
+    return;
+  }
+
+  // A blocked/deferred guide decision must stop BEFORE the public acknowledgement:
+  // the user explicitly does not want a comment, private gate, recovery, or guide.
+  // The authorization service already writes the safe internal audit record.
+  try {
+    const audienceDecision = await guideAudienceAuthorization.authorizeNewGuideAction({
+      igUserId: senderId,
+      source: "comment",
+      commentId: comment.id,
+      resourceId: keyword.resourceId,
+    });
+    if (audienceDecision.kind !== "allow") return;
+  } catch {
+    // A broken safety boundary must not fall through to a Meta send.
+    log.error({ errorCode: "guide_audience_authorization_failed", igUserId: senderId }, "Guide audience authorization failed");
     return;
   }
 

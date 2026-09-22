@@ -135,6 +135,9 @@ describe("experiment registry", () => {
     expect(standalone).toEqual([
       // A production safety correction with no approved permissive comparison arm.
       "GUIDE_DM_INTENT_GUARD_ENABLED",
+      // A fail-closed authorization boundary. Comparing an enforced audience
+      // policy with a permissive arm would be an unsafe product experiment.
+      "GUIDE_AUDIENCE_BLOCK_ENABLED",
       // These are safety switches, not an invitation to compare strict access
       // against an ungated arm that violates the approved product rule.
       "GUIDE_FOLLOW_GATE_V2_ENABLED",
