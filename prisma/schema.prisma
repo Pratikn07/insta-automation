@@ -421,8 +421,10 @@ model IgUser {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  recoveryReminders        DmRecoveryReminder[]
-  publicRecoveryDispatches PublicRecoveryDispatch[]
+  recoveryReminders            DmRecoveryReminder[]
+  publicRecoveryDispatches     PublicRecoveryDispatch[]
+  guideAudienceClassifications GuideAudienceClassification[]
+  guideAudienceDecisions       GuideAudienceDecision[]
 
   @@index([audienceSegment, originMethod])
   @@map("ig_users")
@@ -953,6 +955,98 @@ enum GuideActionEventSource {
   postback
 
   @@map("guide_action_event_source")
+}
+
+// Guide delivery uses an isolated audience proxy provenance. These values must
+// never be reused for the Gemini-based historical-recovery fields on IgUser.
+enum GuideAudienceOrigin {
+  south_asian
+  us_western
+  other
+  unknown
+
+  @@map("guide_audience_origin")
+}
+
+enum GuideAudienceConfidence {
+  high
+  low
+
+  @@map("guide_audience_confidence")
+}
+
+enum GuideAudienceDecisionKind {
+  block
+  defer
+
+  @@map("guide_audience_decision_kind")
+}
+
+enum GuideAudienceActionSource {
+  comment
+  dm
+  quick_reply
+  postback
+  redelivery
+
+  @@map("guide_audience_action_source")
+}
+
+enum GuideAudienceDeferReason {
+  identity_unavailable
+  identity_changed
+  provider_unavailable
+  provider_timeout
+  invalid_provider_response
+  persistence_failed
+
+  @@map("guide_audience_defer_reason")
+}
+
+model GuideAudienceClassification {
+  id           String                  @id @default(uuid()) @db.Uuid
+  igUserId     String                  @map("ig_user_id")
+  identityHash String                  @map("identity_hash") @db.Char(64)
+  origin       GuideAudienceOrigin
+  confidence   GuideAudienceConfidence
+  evidence     String                  @db.VarChar(200)
+  provider     String                  @db.VarChar(64)
+  modelId      String                  @map("model_id") @db.VarChar(160)
+  method       String                  @db.VarChar(64)
+  classifiedAt DateTime                @map("classified_at") @db.Timestamptz(3)
+  createdAt    DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  igUser    IgUser                  @relation(fields: [igUserId], references: [id], onDelete: Restrict)
+  decisions GuideAudienceDecision[]
+
+  @@unique([igUserId, identityHash, method])
+  @@index([igUserId, classifiedAt])
+  @@map("guide_audience_classification")
+}
+
+model GuideAudienceDecision {
+  id               String                    @id @default(uuid()) @db.Uuid
+  igUserId         String                    @map("ig_user_id")
+  identityHash     String                    @map("identity_hash") @db.Char(64)
+  kind             GuideAudienceDecisionKind
+  source           GuideAudienceActionSource
+  conversationId   String?                   @map("conversation_id") @db.Uuid
+  commentId        String?                   @map("comment_id")
+  inboundMessageId String?                   @map("inbound_message_id") @db.Uuid
+  resourceId       String?                   @map("resource_id") @db.Uuid
+  classificationId String?                   @map("classification_id") @db.Uuid
+  deferReason      GuideAudienceDeferReason? @map("defer_reason")
+  provider         String                    @db.VarChar(64)
+  modelId          String                    @map("model_id") @db.VarChar(160)
+  method           String                    @db.VarChar(64)
+  createdAt        DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  igUser         IgUser                       @relation(fields: [igUserId], references: [id], onDelete: Restrict)
+  classification GuideAudienceClassification? @relation(fields: [classificationId], references: [id], onDelete: SetNull)
+
+  @@index([igUserId, createdAt])
+  @@index([kind, createdAt])
+  @@map("guide_audience_decision")
 }
 
 model GuideAccessAttempt {
