@@ -98,9 +98,9 @@ function toVerdict(raw: unknown, requestedIds: ReadonlySet<string>): GuideAudien
 
   if (typeof result.evidence !== "string") return invalidProviderResponse();
   const evidence = result.evidence.trim();
-  if (!evidence) return invalidProviderResponse();
+  if (!evidence || evidence.length > EVIDENCE_LIMIT) return invalidProviderResponse();
 
-  return { id, origin, confidence, evidence: evidence.slice(0, EVIDENCE_LIMIT) };
+  return { id, origin, confidence, evidence };
 }
 
 function parseVerdicts(content: unknown, candidates: readonly GuideAudienceCandidate[]): GuideAudienceVerdict[] {

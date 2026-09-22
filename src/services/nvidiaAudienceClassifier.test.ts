@@ -118,4 +118,33 @@ describe("NVIDIA guide audience classifier", () => {
       message: "nvidia_audience_provider_timeout",
     });
   });
+
+  it.each([
+    ["blank evidence", ""],
+    ["overlong evidence", "e".repeat(201)],
+  ])("rejects %s rather than altering the provider result", async (_label, evidence) => {
+    const classifier = createNvidiaAudienceClassifier({
+      apiKey: "test-key",
+      model: MODEL,
+      timeoutMs: 1_000,
+      http: {
+        post: vi.fn().mockResolvedValue(
+          providerReply([
+            {
+              id: "person-1",
+              origin: "unknown",
+              confidence: "low",
+              evidence,
+            },
+          ]),
+        ),
+      } as never,
+    });
+
+    await expect(
+      classifier.classify([{ id: "person-1", name: null, username: "generic" }]),
+    ).rejects.toMatchObject<NvidiaAudienceClassifierError>({
+      category: "invalid_provider_response",
+    });
+  });
 });

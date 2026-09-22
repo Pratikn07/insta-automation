@@ -24,6 +24,46 @@ function fails closed: a non-object input, a disabled flag, a blank
 non-boolean membership answer, or an out-of-range percentage all return
 `"legacy"`.
 
+## Guide audience authorization screen
+
+This is a separate, fail-closed safety boundary for **new** guide actions. It
+uses only the account's saved display name and username as an internal proxy;
+it is not a statement of a person's geography, ethnicity, nationality, or
+religion. A schema-valid `unknown`, `other`, or `us_western` result continues
+the existing guide path. A `south_asian` result at either confidence level, or
+any unavailable/malformed/changed-input result, produces no public reply, DM,
+quick reply, recovery notice, redelivery, or new guide-delivery plan.
+
+The Railway production **api** service has these controls:
+
+```text
+NVIDIA_API_KEY=                 # server-only secret; never source or logs
+NVIDIA_AUDIENCE_MODEL=nvidia/nemotron-3.5-lightning-30b-a3b
+NVIDIA_AUDIENCE_TIMEOUT_MS=8000
+GUIDE_AUDIENCE_BLOCK_ENABLED=false
+```
+
+`NVIDIA_API_KEY` is a server-only secret. Do not place it in source control,
+browser configuration, tickets, screenshots, application logs, or Railway
+control-plane logs. `GUIDE_AUDIENCE_BLOCK_ENABLED=false` is the deployment
+default: while false, the provider is not called and existing guide behavior is
+unchanged.
+
+**Hard activation gate:** an NVIDIA Developer/free key may be used only for
+development and test validation. Before setting
+`GUIDE_AUDIENCE_BLOCK_ENABLED=true`, secure a production-eligible NVIDIA
+serving arrangement and obtain explicit owner authorization for that separate
+production release. A disabled deployment is not live enforcement.
+
+Audits are service-only PostgreSQL tables:
+`guide_audience_classification` stores the current hashed identity snapshot and
+validated verdict; `guide_audience_decision` stores the block/defer event. Query
+only the intended safe fields: `created_at`, `kind`, `source`, `defer_reason`,
+`provider`, `model_id`, `method`, `origin`, `confidence`, and aggregate counts.
+Do not retrieve or add raw names, usernames, prompts, provider bodies, inbound
+message text, or credentials to this audit path. Existing `guide_delivery` rows
+are expressly outside this screen and must not be cancelled or changed.
+
 ## Safe initial configuration
 
 Deploy with exactly these values. They are also the schema defaults
