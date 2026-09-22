@@ -26,6 +26,7 @@ describe("flag registry coverage", () => {
     "GUIDE_FOLLOW_GATE_V2_ENABLED",
     "GUIDE_RICH_GATE_ENABLED",
     "GUIDE_COVER_DELIVERY_ENABLED",
+    "GUIDE_AUDIENCE_BLOCK_ENABLED",
   ])(
     "registers %s as an operator-stoppable outbound flag that the page cannot enable",
     (key) => {
