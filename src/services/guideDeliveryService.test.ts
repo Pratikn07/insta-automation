@@ -133,6 +133,7 @@ type HarnessOptions = {
   }>;
   maxAttempts?: number;
   claimLeaseMs?: number;
+  audienceDecision?: "allow" | "block" | "defer";
 };
 
 function harness(options: HarnessOptions = {}) {
@@ -314,6 +315,12 @@ function harness(options: HarnessOptions = {}) {
   const recordCoverMismatch = vi.fn(async () => undefined);
   const coverDecision = vi.fn(() => "include" as "include" | "omit");
   const recordCoverMetric = vi.fn(async () => undefined);
+  const authorizeGuideAudience = vi.fn(async () => {
+    const decision = options.audienceDecision ?? "allow";
+    if (decision === "allow") return { kind: "allow" as const, enforced: true };
+    if (decision === "block") return { kind: "block" as const, auditId: "audit-1" };
+    return { kind: "defer" as const, auditId: "audit-2", reason: "provider_timeout" };
+  });
 
   function service() {
     return createGuideDeliveryService({
@@ -326,6 +333,7 @@ function harness(options: HarnessOptions = {}) {
       coverDecision,
       recordCoverMetric,
       recordCoverMismatch,
+      authorizeGuideAudience,
       sleep,
       now: () => now,
       logger,
@@ -346,6 +354,7 @@ function harness(options: HarnessOptions = {}) {
     coverDecision,
     recordCoverMetric,
     recordCoverMismatch,
+    authorizeGuideAudience,
     sleep,
     logger,
     order,
@@ -359,6 +368,20 @@ function harness(options: HarnessOptions = {}) {
 }
 
 describe("deliverGuideForTrigger", () => {
+  it.each([
+    { decision: "block" as const, want: "guide_audience_blocked" },
+    { decision: "defer" as const, want: "guide_audience_deferred" },
+  ])("does not create a new plan or send when audience authorization is $decision", async ({ decision, want }) => {
+    const test = harness({ audienceDecision: decision });
+
+    await expect(test.service()(input)).resolves.toBe(want);
+
+    expect(test.repository.findByTrigger).toHaveBeenCalledOnce();
+    expect(test.repository.createOrLoadPlan).not.toHaveBeenCalled();
+    expect(test.sendText).not.toHaveBeenCalled();
+    expect(test.sendMedia).not.toHaveBeenCalled();
+  });
+
   it("preflights the whole guide so a later invalid caption causes zero provider calls", async () => {
     const privateCaption = `PRIVATE-CAPTION-${"💛".repeat(985)}`;
     const test = harness({

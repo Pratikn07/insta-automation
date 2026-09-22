@@ -179,6 +179,10 @@ function createHarness(input: {
     | { kind: "attempt_expired" }
     | { kind: "state_conflict"; actualState: GuideAccessAttempt["state"] }
   >;
+  audienceDecision?:
+    | { kind: "allow"; enforced: boolean }
+    | { kind: "block"; auditId: string }
+    | { kind: "defer"; auditId: string | null; reason: string };
 }) {
   let current = input.initialAttempt ?? attempt();
   let nextToken = 0;
@@ -546,11 +550,15 @@ function createHarness(input: {
   const findAttemptIdByToken = vi.fn(
     async (tokenId: string) => tokenAttempt.get(tokenId) ?? null,
   );
+  const authorizeGuideAudience = vi.fn(async () =>
+    input.audienceDecision ?? { kind: "allow" as const, enforced: false },
+  );
 
   const service = createGuideAccessActionService({
     repository: repository as never,
     resolveFollowStatusFresh: resolveFresh,
     startGuideDelivery,
+    authorizeGuideAudience,
     sendFollowerGate,
     sendText,
     sendFollowLag,
@@ -579,6 +587,7 @@ function createHarness(input: {
     repository,
     resolveFresh,
     startGuideDelivery,
+    authorizeGuideAudience,
     sendFollowerGate,
     sendText,
     sendFollowLag,
@@ -603,12 +612,18 @@ function createHarness(input: {
   };
 }
 
-async function request(test: ReturnType<typeof createHarness>, senderId = SENDER_ID) {
+async function request(
+  test: ReturnType<typeof createHarness>,
+  senderId = SENDER_ID,
+  source: "quick_reply" | "postback" = "quick_reply",
+) {
   return test.service.requestGuideFromAction(
     REQUEST_TOKEN_ID,
     senderId,
     INBOUND_ID,
     EVENT_AT,
+    INBOUND_ID,
+    source,
   );
 }
 
@@ -632,6 +647,53 @@ beforeEach(() => {
 });
 
 describe("strict live authorization matrix", () => {
+  it.each([
+    { decision: { kind: "block" as const, auditId: "audit-1" }, want: "guide_audience_blocked" },
+    {
+      decision: { kind: "defer" as const, auditId: "audit-2", reason: "provider_timeout" },
+      want: "guide_audience_deferred",
+    },
+  ])("halts a guide action on audience $want without a follow check or send", async ({ decision, want }) => {
+    const test = createHarness({ audienceDecision: decision });
+
+    await expect(request(test)).resolves.toBe(want);
+
+    expect(test.resolveFresh).not.toHaveBeenCalled();
+    expect(test.startGuideDelivery).not.toHaveBeenCalled();
+    expect(test.sendFollowerGate).not.toHaveBeenCalled();
+    expect(test.sendText).not.toHaveBeenCalled();
+  });
+
+  it("uses the actual postback source for a blocked action", async () => {
+    const test = createHarness({ audienceDecision: { kind: "block", auditId: "audit-1" } });
+
+    await expect(request(test, SENDER_ID, "postback")).resolves.toBe("guide_audience_blocked");
+
+    expect(test.authorizeGuideAudience).toHaveBeenCalledWith(
+      expect.objectContaining({ source: "postback" }),
+    );
+  });
+
+  it("halts a direct guide request before it creates an access attempt", async () => {
+    const test = createHarness({ audienceDecision: { kind: "block", auditId: "audit-1" } });
+
+    await expect(
+      test.service.startDirectDmGuideRequest(
+        {
+          id: CONVERSATION_ID,
+          igUserId: SENDER_ID,
+          resourceId: RESOURCE_ID,
+          guideName: "toddler sleep guide",
+        },
+        { id: DIRECT_INBOUND_ID, threadId: THREAD_ID, eventAt: EVENT_AT },
+      ),
+    ).resolves.toBe("guide_audience_blocked");
+
+    expect(test.repository.createOrLoadAttempt).not.toHaveBeenCalled();
+    expect(test.resolveFresh).not.toHaveBeenCalled();
+    expect(test.startGuideDelivery).not.toHaveBeenCalled();
+  });
+
   it.each([
     {
       name: "cached true/fresh false",

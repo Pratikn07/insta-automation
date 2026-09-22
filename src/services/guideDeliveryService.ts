@@ -25,6 +25,11 @@ import {
   type GuideDeliveryUnitRecord,
   type PlannedDeliveryRecord,
 } from "./guideDeliveryRepository.js";
+import {
+  guideAudienceAuthorization,
+  type AuthorizeNewGuideActionInput,
+  type GuideAudienceAuthorization,
+} from "./guideAudienceAuthorization.js";
 
 const STEP_DELAY_MS = 800;
 
@@ -63,7 +68,9 @@ export type GuideDeliveryResult =
   | "preflight_failed"
   | "needs_review"
   | "retry_scheduled"
-  | "already_processing";
+  | "already_processing"
+  | "guide_audience_blocked"
+  | "guide_audience_deferred";
 
 export type GuideDeliveryServiceRepository = Pick<
   GuideDeliveryRepository,
@@ -131,6 +138,10 @@ type GuideDeliveryServiceDependencies = {
   maxAttempts: number;
   claimLeaseMs: number;
   retryDelayMs: number;
+  /** Applied only before a NEW delivery plan; existing rows are never revoked. */
+  authorizeGuideAudience?: (
+    input: AuthorizeNewGuideActionInput,
+  ) => Promise<GuideAudienceAuthorization>;
 };
 
 function validateOptions(dependencies: GuideDeliveryServiceDependencies): void {
@@ -539,6 +550,24 @@ export function createGuideDeliveryService(dependencies: GuideDeliveryServiceDep
     });
 
     if (!delivery) {
+      let audience: GuideAudienceAuthorization;
+      try {
+        audience = await (
+          dependencies.authorizeGuideAudience ??
+          guideAudienceAuthorization.authorizeNewGuideAction
+        )({
+          igUserId: input.igUserId,
+          source: input.triggerKind === "explicit_redelivery" ? "redelivery" : "dm",
+          conversationId: input.conversationId,
+          inboundMessageId: input.triggerId,
+          resourceId: input.resourceId,
+        });
+      } catch {
+        return "guide_audience_deferred";
+      }
+      if (audience.kind === "block") return "guide_audience_blocked";
+      if (audience.kind === "defer") return "guide_audience_deferred";
+
       const messages = await dependencies.loadResourceMessages(input.resourceId);
       const cover = eligibleCover(input);
       const plan = compileGuideDeliveryPlan({
@@ -639,6 +668,8 @@ const defaultService = createGuideDeliveryService({
   maxAttempts: env.GUIDE_DELIVERY_MAX_ATTEMPTS,
   claimLeaseMs: env.GUIDE_DELIVERY_LEASE_MS,
   retryDelayMs: env.GUIDE_DELIVERY_RETRY_BASE_MS,
+  authorizeGuideAudience: (input) =>
+    guideAudienceAuthorization.authorizeNewGuideAction(input),
 });
 
 export const deliverGuideForTrigger = defaultService;

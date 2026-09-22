@@ -34,6 +34,7 @@ const routeGuideAction = vi.fn();
 const gateOwner = vi.fn();
 const startDirectDmGuideRequest = vi.fn();
 const recordGuideAccessMetric = vi.fn();
+const authorizeNewGuideAction = vi.fn();
 const logEvent = vi.fn();
 const SAFE_UNKNOWN = {
   category: "unknown_error",
@@ -97,6 +98,9 @@ vi.mock("../services/guideFollowGateV2Rollout.js", () => ({
 vi.mock("../services/guideAccessActionService.js", () => ({ startDirectDmGuideRequest }));
 vi.mock("../services/guideAccessMetrics.js", () => ({
   recordGuideAccessMetric,
+}));
+vi.mock("../services/guideAudienceAuthorization.js", () => ({
+  guideAudienceAuthorization: { authorizeNewGuideAction },
 }));
 vi.mock("../services/eventLogger.js", () => ({
   logEvent,
@@ -198,6 +202,7 @@ beforeEach(() => {
     gateOwner,
     startDirectDmGuideRequest,
     recordGuideAccessMetric,
+    authorizeNewGuideAction,
     logEvent,
     describeGraphError,
   ]) {
@@ -249,6 +254,7 @@ beforeEach(() => {
   gateOwner.mockReturnValue("v1");
   startDirectDmGuideRequest.mockResolvedValue("guide_delivery_started");
   recordGuideAccessMetric.mockResolvedValue("recorded");
+  authorizeNewGuideAction.mockResolvedValue({ kind: "allow", enforced: false });
   guideDeliveryOwner.mockReturnValue("legacy");
   deliverGuideForTrigger.mockResolvedValue("completed");
   queueReplyDraft.mockResolvedValue({ id: "draft-1" });
@@ -266,6 +272,53 @@ beforeEach(() => {
   aiFlags.GUIDE_DELIVERY_COHORT_IG_USER_IDS = "controlled-1";
   aiFlags.GUIDE_DM_INTENT_GUARD_ENABLED = false;
   aiFlags.GUIDE_DM_INTENT_GUARD_IG_USER_IDS = "";
+});
+
+describe("guide audience policy — direct DM", () => {
+  it.each([
+    { result: { kind: "block", auditId: "audit-1" }, label: "blocked" },
+    {
+      result: { kind: "defer", auditId: "audit-2", reason: "provider_timeout" },
+      label: "deferred",
+    },
+  ])("sends nothing and creates no guide journey when a keyword DM is $label", async ({ result }) => {
+    authorizeNewGuideAction.mockResolvedValue(result);
+    findKeywordInMessage.mockResolvedValue(keywordFixture);
+
+    await handleMessage(inbound("SLEEP"));
+
+    expect(authorizeNewGuideAction).toHaveBeenCalledWith({
+      igUserId: "ig-user-1",
+      source: "dm",
+      inboundMessageId: "message-1",
+      resourceId: "resource-1",
+    });
+    expect(resolveJourneyIntent).not.toHaveBeenCalled();
+    expect(startDirectDmGuideRequest).not.toHaveBeenCalled();
+    expect(deliverGuideForTrigger).not.toHaveBeenCalled();
+    expect(sendSequence).not.toHaveBeenCalled();
+    expect(sendTrackedText).not.toHaveBeenCalled();
+    expect(queueReplyDraft).not.toHaveBeenCalled();
+  });
+
+  it("does not redeliver an already-completed guide when authorization blocks it", async () => {
+    authorizeNewGuideAction.mockResolvedValue({ kind: "block", auditId: "audit-1" });
+    findKeywordInMessage.mockResolvedValue(keywordFixture);
+    hasCompletedKeyword.mockResolvedValue(true);
+
+    await handleMessage(inbound("SLEEP"));
+
+    expect(authorizeNewGuideAction).toHaveBeenCalledWith({
+      igUserId: "ig-user-1",
+      source: "redelivery",
+      inboundMessageId: "message-1",
+      resourceId: "resource-1",
+    });
+    expect(startDirectDmGuideRequest).not.toHaveBeenCalled();
+    expect(deliverGuideForTrigger).not.toHaveBeenCalled();
+    expect(sendSequence).not.toHaveBeenCalled();
+    expect(sendTrackedText).not.toHaveBeenCalled();
+  });
 });
 
 describe("handleMessage — inbound capture", () => {

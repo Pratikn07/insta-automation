@@ -1,4 +1,5 @@
 import type {
+  GuideAudienceActionSource,
   GuideAccessAttempt,
   GuideAccessAttemptState,
   GuideFollowResult,
@@ -28,6 +29,11 @@ import {
   type DeliverGuideForTriggerInput,
   type GuideDeliveryResult,
 } from "./guideDeliveryService.js";
+import {
+  guideAudienceAuthorization,
+  type AuthorizeNewGuideActionInput,
+  type GuideAudienceAuthorization,
+} from "./guideAudienceAuthorization.js";
 import { guideRichGateEnabled } from "./guideFollowGateV2Rollout.js";
 import { recordGuideAccessMetric } from "./guideAccessMetrics.js";
 import { guideCoverDeliverySelector } from "./guideCoverDeliveryRollout.js";
@@ -48,7 +54,9 @@ export type GuideAccessActionOutcome =
   | "access_attempt_needs_review"
   | "guide_opening_sent"
   | "guide_opening_already_sent"
-  | "guide_opening_failed";
+  | "guide_opening_failed"
+  | "guide_audience_blocked"
+  | "guide_audience_deferred";
 
 export type CommentGuideRequestFailure = {
   /** The provider error, for the caller's existing failure classifier. */
@@ -109,6 +117,9 @@ export type GuideAccessActionDependencies = {
   repository: GuideAccessRepository;
   resolveFollowStatusFresh(igUserId: string): Promise<FreshFollowResult>;
   startGuideDelivery(input: DeliverGuideForTriggerInput): Promise<GuideDeliveryResult>;
+  authorizeGuideAudience(
+    input: AuthorizeNewGuideActionInput,
+  ): Promise<GuideAudienceAuthorization>;
   /**
    * The three capability-bearing sends, declared as PROPERTIES with arrow types rather than
    * method shorthand — and that distinction is the whole reason this bug survived.
@@ -231,6 +242,7 @@ type AuthorizationContext = {
   guideName?: string;
   threadId?: string | null;
   redeliveryIntro?: string;
+  audienceSource: GuideAudienceActionSource;
 };
 
 type ReviewCheckpoint = {
@@ -277,6 +289,20 @@ function isRetryableReview(attempt: GuideAccessAttempt): boolean {
 export function createGuideAccessActionService(
   dependencies: GuideAccessActionDependencies,
 ) {
+  async function audienceOutcome(
+    input: AuthorizeNewGuideActionInput,
+  ): Promise<"guide_audience_blocked" | "guide_audience_deferred" | null> {
+    try {
+      const decision = await dependencies.authorizeGuideAudience(input);
+      if (decision.kind === "block") return "guide_audience_blocked";
+      if (decision.kind === "defer") return "guide_audience_deferred";
+      return null;
+    } catch {
+      // An unavailable policy boundary must not become permission to contact a person.
+      return "guide_audience_deferred";
+    }
+  }
+
   async function checkpointNeedsReview(
     attemptId: string,
     candidateStates: ReviewableAttemptState | readonly ReviewableAttemptState[],
@@ -963,6 +989,15 @@ export function createGuideAccessActionService(
   async function authorizeClaimed(
     context: AuthorizationContext,
   ): Promise<GuideAccessActionOutcome> {
+    const audience = await audienceOutcome({
+      igUserId: context.senderId,
+      source: context.audienceSource,
+      conversationId: context.attempt.conversationId,
+      inboundMessageId: context.triggerId,
+      resourceId: context.attempt.resourceId,
+    });
+    if (audience) return audience;
+
     let fresh: FreshFollowResult | null = null;
     // `"lag"` means this parent has already been asked to follow, so the check about to
     // run is a RE-check. Recorded as its own stage: "still not following after telling us
@@ -1082,6 +1117,7 @@ export function createGuideAccessActionService(
         threadLookupId: inboundMessageId,
         triggeredAt: eventAt,
         falseResponse: action === "check_follow" ? "lag" : "gate",
+        audienceSource: source,
       });
     } catch {
       const review = await checkpointNeedsReview(
@@ -1146,6 +1182,15 @@ export function createGuideAccessActionService(
       );
       return "access_attempt_needs_review";
     }
+
+    const audience = await audienceOutcome({
+      igUserId: conversation.igUserId,
+      source: conversation.deliveryTriggerKind === "explicit_redelivery" ? "redelivery" : "dm",
+      conversationId: conversation.id,
+      inboundMessageId: inbound.id,
+      resourceId: conversation.resourceId,
+    });
+    if (audience) return audience;
 
     const now = dependencies.now();
     const created = await dependencies.repository.createOrLoadAttempt({
@@ -1219,6 +1264,8 @@ export function createGuideAccessActionService(
             : "gate",
         guideName: conversation.guideName,
         threadId: inbound.threadId,
+        audienceSource:
+          conversation.deliveryTriggerKind === "explicit_redelivery" ? "redelivery" : "dm",
         ...(conversation.redeliveryIntro
           ? { redeliveryIntro: conversation.redeliveryIntro }
           : {}),
@@ -1364,6 +1411,15 @@ export function createGuideAccessActionService(
   async function startCommentGuideRequest(
     input: CommentGuideRequest,
   ): Promise<CommentGuideRequestResult> {
+    const audience = await audienceOutcome({
+      igUserId: input.igUserId,
+      source: "comment",
+      conversationId: input.conversationId,
+      commentId: input.commentId,
+      resourceId: input.resourceId,
+    });
+    if (audience) return { outcome: audience };
+
     let openingSendFailure: CommentGuideRequestFailure | undefined;
     const outcome = await runCommentGuideRequest(input, (failure) => {
       openingSendFailure = failure;
@@ -1383,6 +1439,8 @@ const defaultService = createGuideAccessActionService({
   repository: guideAccessRepository,
   resolveFollowStatusFresh,
   startGuideDelivery: deliverGuideForTrigger,
+  authorizeGuideAudience: (input) =>
+    guideAudienceAuthorization.authorizeNewGuideAction(input),
   // The gate carries the same square cover as the opening. `coverUrl` defaults to empty
   // rather than being required, because a guide with no published square must still be able
   // to send a text gate — sendGuideFollowerGate falls back when it is absent.

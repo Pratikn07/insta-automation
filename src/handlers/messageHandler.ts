@@ -49,6 +49,7 @@ import { routeGuideAction } from "./guideActionRouter.js";
 import { guideFollowGateV2Selector } from "../services/guideFollowGateV2Rollout.js";
 import { startDirectDmGuideRequest } from "../services/guideAccessActionService.js";
 import { recordGuideAccessMetric } from "../services/guideAccessMetrics.js";
+import { guideAudienceAuthorization } from "../services/guideAudienceAuthorization.js";
 
 /**
  * The only outcomes this branch still measures itself.
@@ -122,6 +123,25 @@ async function runStrictGuideRequest(input: {
       { ...graphFailureMetadata(err), conversationId: input.conversationId },
       "Strict guide request failed",
     );
+  }
+}
+
+async function mayStartGuideAction(input: {
+  igUserId: string;
+  source: "dm" | "redelivery";
+  conversationId?: string;
+  inboundMessageId: string;
+  resourceId: string;
+}): Promise<boolean> {
+  try {
+    const decision = await guideAudienceAuthorization.authorizeNewGuideAction(input);
+    return decision.kind === "allow";
+  } catch {
+    logger.error(
+      { errorCode: "guide_audience_authorization_failed", igUserId: input.igUserId },
+      "Guide audience authorization failed",
+    );
+    return false;
   }
 }
 
@@ -227,6 +247,18 @@ async function deliverOwnedGuide(input: {
   legacyEventContext: Readonly<Record<string, string | boolean>>;
   sendClosingNudge: boolean;
 }): Promise<void> {
+  if (
+    !(await mayStartGuideAction({
+      igUserId: input.senderId,
+      source: input.triggerKind === "explicit_redelivery" ? "redelivery" : "dm",
+      conversationId: input.conversationId,
+      inboundMessageId: input.triggerId,
+      resourceId: input.resourceId,
+    }))
+  ) {
+    return;
+  }
+
   const owner = guideDeliveryOwner({
     enabled: flags.bool("GUIDE_DELIVERY_ENABLED"),
     rolloutPercent: flags.percent("GUIDE_DELIVERY_ROLLOUT_PERCENT"),
@@ -627,6 +659,17 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
   // ---- 1. Clear new keyword → existing journey and strict delivery path ----
   const keyword = enforced ? acceptedKeyword : legacyKeyword;
   if (keyword) {
+    if (
+      !(await mayStartGuideAction({
+        igUserId: senderId,
+        source: alreadyCompleted ? "redelivery" : "dm",
+        inboundMessageId: inbound.messageId,
+        resourceId: keyword.resource.id,
+      }))
+    ) {
+      return;
+    }
+
     // Attach the ask to this person's canonical journey for this keyword, so the
     // dashboard counts one request rather than one per ask. Measured: 257 of the
     // 342 same-person-same-keyword repeats inside 48 hours arrive by DM, more than
@@ -780,6 +823,19 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
   // Under enforcement, unrelated text/media never count as confirmation and a
   // classifier fault never falls back to the permissive legacy route.
   if (convo && (!enforced || acceptedReply)) {
+    const completedKeyword = await hasCompletedKeyword(senderId, convo.keywordId);
+    if (
+      !(await mayStartGuideAction({
+        igUserId: senderId,
+        source: completedKeyword ? "redelivery" : "dm",
+        conversationId: convo.id,
+        inboundMessageId: inbound.messageId,
+        resourceId: convo.keyword.resource.id,
+      }))
+    ) {
+      return;
+    }
+
     // ---- Strict follower gate V2 --------------------------------------------
     // With rich controls off — the only mode available until the capability rows
     // are `supported` — the strict opening is text ("Want me to send it here?"),
@@ -795,7 +851,7 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
         senderId,
         resourceId: convo.keyword.resource.id,
         guideName: convo.keyword.resource.name,
-        redelivery: await hasCompletedKeyword(senderId, convo.keywordId),
+        redelivery: completedKeyword,
         inboundMessageId: inbound.messageId,
         threadId: inbound.threadId,
         observedAt,
@@ -807,7 +863,7 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     // "sleep" on two reels → two open gates). The old behavior closed the gate
     // silently — an unlock instruction followed by nothing, for our most engaged
     // users. Now: acknowledge and redeliver.
-    if (await hasCompletedKeyword(senderId, convo.keywordId)) {
+    if (completedKeyword) {
       logger.info(
         { conversationId: convo.id, keyword: convo.keyword.keyword, senderId },
         "Open-gate reply for an already-delivered keyword — redelivering",
