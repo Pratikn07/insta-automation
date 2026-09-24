@@ -43,6 +43,40 @@ export class NvidiaAudienceClassifierError extends Error {
   }
 }
 
+/**
+ * Recovery is never on the webhook path, so it may make one controlled retry
+ * after the only transient provider category we can safely recognize. Other
+ * provider failures remain immediate deferrals; retrying them would turn an
+ * authorization fault into an uncontrolled batch delay.
+ */
+export function createTimeoutRetryingAudienceClassifier(
+  provider: AudienceClassificationProvider,
+  maxAttempts = 2,
+): AudienceClassificationProvider {
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 3) {
+    throw new Error("invalid NVIDIA audience recovery attempt count");
+  }
+
+  return {
+    async classify(candidates) {
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          return await provider.classify(candidates);
+        } catch (error) {
+          if (
+            error instanceof NvidiaAudienceClassifierError &&
+            error.category === "provider_timeout" &&
+            attempt < maxAttempts
+          ) {
+            continue;
+          }
+          throw error;
+        }
+      }
+    },
+  };
+}
+
 type NvidiaChatResponse = {
   choices?: Array<{ message?: { content?: unknown } }>;
 };

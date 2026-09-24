@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   NvidiaAudienceClassifierError,
   createNvidiaAudienceClassifier,
+  createTimeoutRetryingAudienceClassifier,
+  type AudienceClassificationProvider,
 } from "./nvidiaAudienceClassifier.js";
 
 const MODEL = "nvidia/nemotron-3.5-lightning-30b-a3b";
@@ -15,6 +17,42 @@ function providerReply(results: unknown[]) {
 }
 
 describe("NVIDIA guide audience classifier", () => {
+  it("retries exactly once after a bounded provider timeout for an offline recovery run", async () => {
+    const provider: AudienceClassificationProvider = {
+      classify: vi.fn()
+        .mockRejectedValueOnce(new NvidiaAudienceClassifierError("provider_timeout"))
+        .mockResolvedValue({
+          modelId: MODEL,
+          method: "nvidia_guide_audience_v1",
+          verdicts: [{
+            id: "person-1",
+            origin: "unknown",
+            confidence: "low",
+            evidence: "generic handle, no cue",
+          }],
+        }),
+    };
+
+    const retrying = createTimeoutRetryingAudienceClassifier(provider, 2);
+
+    await expect(
+      retrying.classify([{ id: "person-1", name: null, username: "generic" }]),
+    ).resolves.toMatchObject({ verdicts: [expect.objectContaining({ id: "person-1" })] });
+    expect(provider.classify).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry a non-timeout NVIDIA failure", async () => {
+    const provider: AudienceClassificationProvider = {
+      classify: vi.fn().mockRejectedValue(new NvidiaAudienceClassifierError("provider_unavailable")),
+    };
+    const retrying = createTimeoutRetryingAudienceClassifier(provider, 2);
+
+    await expect(
+      retrying.classify([{ id: "person-1", name: null, username: "generic" }]),
+    ).rejects.toMatchObject({ category: "provider_unavailable" });
+    expect(provider.classify).toHaveBeenCalledOnce();
+  });
+
   it("sends a bounded JSON roster with thinking disabled and returns a complete valid verdict", async () => {
     const post = vi.fn().mockResolvedValue(
       providerReply([

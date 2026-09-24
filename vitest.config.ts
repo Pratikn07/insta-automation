@@ -7,6 +7,7 @@ export default defineConfig({
       "src/**/*.test.ts",
       "shared/**/*.test.ts",
       "scripts/guide-access-recovery.test.ts",
+      "scripts/guide-audience-timeout-recovery.test.ts",
     ],
     // Contract tests share one disposable Postgres database. Most fixtures use unique
     // prefixes, but production reconcilers intentionally scan all running campaigns

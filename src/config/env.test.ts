@@ -22,6 +22,7 @@ describe("env configuration schema for DM recovery", () => {
     expect(envSchema.parse(baseEnv)).toMatchObject({
       NVIDIA_AUDIENCE_MODEL: "nvidia/nemotron-3.5-lightning-30b-a3b",
       NVIDIA_AUDIENCE_TIMEOUT_MS: 8_000,
+      NVIDIA_AUDIENCE_RECOVERY_TIMEOUT_MS: 30_000,
       GUIDE_AUDIENCE_BLOCK_ENABLED: false,
     });
     expect(
@@ -29,11 +30,13 @@ describe("env configuration schema for DM recovery", () => {
         ...baseEnv,
         NVIDIA_API_KEY: "test-key",
         NVIDIA_AUDIENCE_TIMEOUT_MS: "9000",
+        NVIDIA_AUDIENCE_RECOVERY_TIMEOUT_MS: "12000",
         GUIDE_AUDIENCE_BLOCK_ENABLED: "true",
       }),
     ).toMatchObject({
       NVIDIA_API_KEY: "test-key",
       NVIDIA_AUDIENCE_TIMEOUT_MS: 9_000,
+      NVIDIA_AUDIENCE_RECOVERY_TIMEOUT_MS: 12_000,
       GUIDE_AUDIENCE_BLOCK_ENABLED: true,
     });
   });
