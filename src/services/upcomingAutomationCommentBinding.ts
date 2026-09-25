@@ -93,7 +93,10 @@ export async function bindUpcomingAutomationFromComment(input: {
     return { kind: "graph_error", blockLegacyFallback: true };
   }
 
-  const instruction = parseUpcomingCaptionInstruction(media.caption);
+  const instruction = parseUpcomingCaptionInstruction(
+    media.caption,
+    waiting.map((setup) => setup.triggerWord),
+  );
   if (instruction.kind !== "matched") {
     const errorCode =
       instruction.kind === "missing"

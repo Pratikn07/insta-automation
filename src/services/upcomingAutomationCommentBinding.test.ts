@@ -92,6 +92,34 @@ describe("bindUpcomingAutomationFromComment", () => {
     expect(result).toEqual({ kind: "bound", blockLegacyFallback: false });
   });
 
+  it("finds and binds an upcoming setup with an exact two-word trigger", async () => {
+    upcomingFindMany.mockResolvedValue([
+      { id: "setup-phrase", triggerWord: "HIGH CHAIR", status: "waiting" },
+    ]);
+    fetchMediaById.mockResolvedValue({ ...media, caption: "Comment HIGH CHAIR" });
+
+    const result = await bindUpcomingAutomationFromComment({
+      candidates: ["HIGH CHAIR", "HIGHCHAIR", "HIGH", "CHAIR"],
+      mediaId: "media-1",
+      commentId: "comment-1",
+    });
+
+    expect(upcomingFindMany).toHaveBeenCalledWith({
+      where: {
+        triggerWord: { in: ["HIGH CHAIR", "HIGHCHAIR", "HIGH", "CHAIR"] },
+        status: { in: ["waiting", "needs_attention"] },
+      },
+      select: { id: true, triggerWord: true, status: true },
+    });
+    expect(bindUpcomingAutomationToMedia).toHaveBeenCalledWith({
+      setupId: "setup-phrase",
+      media: { ...media, caption: "Comment HIGH CHAIR" },
+      source: "webhook",
+      excludeCommentId: "comment-1",
+    });
+    expect(result).toEqual({ kind: "bound", blockLegacyFallback: false });
+  });
+
   it.each([
     [null, "caption_instruction_missing"],
     ["Save this for later", "caption_instruction_missing"],

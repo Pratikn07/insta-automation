@@ -30,7 +30,7 @@ export type MatchMode = "post_strict" | "global_fallback";
 
 export interface CommentMatch<T extends KeywordCandidate> {
   keyword: T;
-  /** The token that fired. Same value as keyword.keyword; kept for observability. */
+  /** The configured token or phrase that fired; kept for observability. */
   matchedToken: string;
   mode: MatchMode;
 }
@@ -39,8 +39,8 @@ export interface CommentMatch<T extends KeywordCandidate> {
  * Resolve the keyword a COMMENT should fire.
  *
  * `postKeywords` is every ACTIVE keyword attached to the post the comment landed
- * on; `globalKeywords` is every active global. `tokens` is the pre-normalized,
- * length-gated token list from scannableCommentTokens.
+ * on; `globalKeywords` is every active global. `tokens` is the ordered list of
+ * exact single-word, adjacent-phrase, and compact-alias keys from the comment.
  *
  * The rule, and the whole point of this module:
  *
@@ -71,10 +71,11 @@ export function resolveCommentMatch<T extends KeywordCandidate>(
 }
 
 /**
- * First candidate matching any token, in TOKEN order.
+ * First candidate matching any scan key, in comment order.
  *
- * Token order, not candidate order, so the earliest word the commenter actually
- * typed wins — "DM EGG" fires EGG regardless of how the rows came back.
+ * Comment order, not database row order, so the earliest matching word or phrase
+ * the commenter actually typed wins — "DM EGG" fires EGG regardless of how the
+ * rows came back.
  */
 function firstMatch<T extends KeywordCandidate>(tokens: string[], candidates: T[]): T | null {
   for (const token of tokens) {

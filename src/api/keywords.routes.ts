@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
-import { normalizeKeyword } from "../services/keywordService.js";
+import { isValidKeywordPhrase, normalizeKeyword } from "../services/keywordService.js";
 import { backfillKeyword } from "../services/keywordBackfillService.js";
 import { mediaTimestamp } from "./mediaTimestamp.js";
 import {
@@ -15,7 +15,12 @@ export const keywordsRouter = asyncRouter();
 
 const createSchema = z.object({
   id: z.string().uuid(),
-  keyword: z.string().min(1).max(60),
+  keyword: z
+    .string()
+    .trim()
+    .min(1)
+    .max(60)
+    .refine(isValidKeywordPhrase, "Keyword must be one or two alphanumeric words"),
   resourceId: z.string().uuid(),
   publicReply: z.string().min(1).max(280),
   gateMessage: z.string().min(1).max(1000),

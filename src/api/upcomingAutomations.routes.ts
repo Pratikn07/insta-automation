@@ -4,7 +4,7 @@ import { env } from "../config/env.js";
 import { flags } from "../services/flagService.js";
 import { prisma } from "../lib/prisma.js";
 import { logEvent } from "../services/eventLogger.js";
-import { normalizeKeyword } from "../services/keywordService.js";
+import { isValidKeywordPhrase, normalizeKeyword } from "../services/keywordService.js";
 import {
   classifyCreateReplay,
   idempotencyKeyMismatch,
@@ -35,7 +35,7 @@ const keywordToken = z
   .trim()
   .min(1)
   .max(60)
-  .regex(/^[A-Za-z0-9]+$/, "Keyword must be one letters-and-numbers token");
+  .refine(isValidKeywordPhrase, "Keyword must be one or two alphanumeric words");
 
 const editableFields = z.object({
   keyword: keywordToken.optional(),

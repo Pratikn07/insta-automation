@@ -13,7 +13,9 @@ vi.mock("../services/keywordBackfillService.js", () => ({
   backfillKeyword: (...a: unknown[]) => backfillKeyword(...a),
 }));
 vi.mock("../services/keywordService.js", () => ({
-  normalizeKeyword: (value: string) => value.trim().toUpperCase(),
+  normalizeKeyword: (value: string) => value.trim().replace(/\s+/g, " ").toUpperCase(),
+  isValidKeywordPhrase: (value: string) =>
+    /^[A-Za-z0-9]+(?:\s+[A-Za-z0-9]+)?$/.test(value.trim()),
 }));
 
 const { keywordsRouter } = await import("./keywords.routes.js");
@@ -76,6 +78,25 @@ describe("keyword create replay", () => {
     });
     expect(backfillKeyword).toHaveBeenCalledWith(KEYWORD_ID);
   });
+
+  it("accepts and canonicalizes a two-word keyword", async () => {
+    await request(makeApp())
+      .post("/api/keywords")
+      .send({ ...body, keyword: "  high   chair  " })
+      .expect(201);
+
+    expect(create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ keyword: "HIGH CHAIR" }),
+    });
+  });
+
+  it.each(["one two three", "POTTY!", "under_score", "🥑"])(
+    "rejects an invalid keyword phrase: %j",
+    async (keyword) => {
+      await request(makeApp()).post("/api/keywords").send({ ...body, keyword }).expect(400);
+      expect(create).not.toHaveBeenCalled();
+    },
+  );
 
   it("requires the UUID", async () => {
     const { id: _id, ...withoutId } = body;

@@ -98,6 +98,24 @@ describe("runUpcomingAutomationDiscoveryTick", () => {
     expect(result).toEqual({ status: "ok", scanned: 2, bound: 2 });
   });
 
+  it("discovers a two-word setup from the exact caption phrase", async () => {
+    upcomingFindMany.mockResolvedValue([
+      waiting("setup-phrase", "HIGH CHAIR", "2026-08-16T18:00:00.000Z"),
+    ]);
+    fetchMediaPublishedSince.mockResolvedValue([
+      media("media-phrase", "Comment HIGH CHAIR", "2026-08-27T17:30:00+0000", "reel"),
+    ]);
+
+    const result = await runUpcomingAutomationDiscoveryTick();
+
+    expect(bindUpcomingAutomationToMedia).toHaveBeenCalledWith({
+      setupId: "setup-phrase",
+      media: expect.objectContaining({ id: "media-phrase" }),
+      source: "worker",
+    });
+    expect(result).toEqual({ status: "ok", scanned: 1, bound: 1 });
+  });
+
   it("never guesses when more than one newly published post matches one setup", async () => {
     upcomingFindMany.mockResolvedValue([
       waiting("setup-1", "SLEEP", "2026-08-16T18:00:00.000Z"),

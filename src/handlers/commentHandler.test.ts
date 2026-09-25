@@ -2,6 +2,7 @@ import { AxiosError } from "axios";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const extractCandidates = vi.fn();
+const scannableCommentMatchCandidates = vi.fn();
 const findKeywordForComment = vi.fn();
 const bindUpcomingAutomationFromComment = vi.fn();
 const markGated = vi.fn();
@@ -54,6 +55,7 @@ vi.mock("../lib/supabase.js", () => ({
 }));
 vi.mock("../services/keywordService.js", () => ({
   extractCandidates,
+  scannableCommentMatchCandidates,
   findKeywordForComment,
 }));
 vi.mock("../services/upcomingAutomationCommentBinding.js", () => ({
@@ -146,6 +148,7 @@ function graphFailure(code = 100, subcode = 2534025): AxiosError {
 beforeEach(() => {
   for (const fn of [
     extractCandidates,
+    scannableCommentMatchCandidates,
     findKeywordForComment,
     bindUpcomingAutomationFromComment,
     openConversationIn,
@@ -185,6 +188,7 @@ beforeEach(() => {
     claimed.has(commentId) ? false : (claimed.add(commentId), true),
   );
   extractCandidates.mockReturnValue(["sleep"]);
+  scannableCommentMatchCandidates.mockReturnValue(["SLEEP"]);
   findKeywordForComment.mockResolvedValue({
     mode: "global_fallback",
     matchedToken: "sleep",
@@ -231,6 +235,7 @@ describe("upcoming automation webhook fast path", () => {
 
   it("binds the first live comment before matching and completes the normal guide flow", async () => {
     extractCandidates.mockReturnValue(["HIGHCHAIR"]);
+    scannableCommentMatchCandidates.mockReturnValue(["HIGHCHAIR"]);
     bindUpcomingAutomationFromComment.mockResolvedValue({
       kind: "bound",
       blockLegacyFallback: false,
@@ -276,6 +281,7 @@ describe("upcoming automation webhook fast path", () => {
 
   it("never reaches a legacy global guide after an upcoming caption rejection", async () => {
     extractCandidates.mockReturnValue(["HIGHCHAIR"]);
+    scannableCommentMatchCandidates.mockReturnValue(["HIGHCHAIR"]);
     bindUpcomingAutomationFromComment.mockResolvedValue({
       kind: "rejected",
       blockLegacyFallback: true,

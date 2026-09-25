@@ -155,6 +155,17 @@ describe("upcoming automations API", () => {
     });
   });
 
+  it("accepts and canonicalizes a two-word trigger phrase", async () => {
+    await request(makeApp())
+      .post("/api/upcoming-automations")
+      .send({ ...validBody, keyword: " high   chair " })
+      .expect(201);
+
+    expect(create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ triggerWord: "HIGH CHAIR" }),
+    });
+  });
+
   it("refuses a create with no client-owned id", async () => {
     const { id: _omitted, ...noId } = validBody;
 
@@ -213,8 +224,8 @@ describe("upcoming automations API", () => {
     expect(response.body).toEqual({ error: "idempotency_conflict" });
   });
 
-  it.each(["two words", "POTTY!", "🥑", "under_score"])(
-    "rejects a trigger that is not one letters-and-numbers token: %j",
+  it.each(["one two three", "POTTY!", "🥑", "under_score"])(
+    "rejects a trigger that is not one or two letters-and-numbers words: %j",
     async (keyword) => {
       await request(makeApp())
         .post("/api/upcoming-automations")

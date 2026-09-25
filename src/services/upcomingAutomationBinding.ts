@@ -40,7 +40,7 @@ function mediaDate(timestamp: string | null): Date | null {
 }
 
 function captionError(setup: UpcomingAutomation, media: AccountMedia): string | null {
-  const instruction = parseUpcomingCaptionInstruction(media.caption);
+  const instruction = parseUpcomingCaptionInstruction(media.caption, [setup.triggerWord]);
   if (instruction.kind === "missing") return "caption_instruction_missing";
   if (instruction.kind === "ambiguous") return "caption_instruction_ambiguous";
   return instruction.keyword === setup.triggerWord ? null : "caption_instruction_mismatch";
