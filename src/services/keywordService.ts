@@ -2,7 +2,17 @@ import { prisma } from "../lib/prisma.js";
 import { resolveCommentMatch, resolveDmKeywordCandidates } from "./keywordMatchCore.js";
 
 export function normalizeKeyword(text: string): string {
-  return text.trim().toUpperCase();
+  return text.trim().replace(/\s+/g, " ").toUpperCase();
+}
+
+/** A configured trigger is one or two ASCII letters-and-numbers words. */
+export function isValidKeywordPhrase(text: string): boolean {
+  const words = text.trim().split(/\s+/);
+  return (
+    words.length >= 1 &&
+    words.length <= 2 &&
+    words.every((word) => /^[A-Za-z0-9]+$/.test(word))
+  );
 }
 
 /** Strip everything but letters/digits from a token — "Potty🙏" → "POTTY". */
@@ -38,6 +48,20 @@ export function extractCandidates(text: string): string[] {
 }
 
 /**
+ * Ordered word tokens for exact comment matching. Unlike extractCandidates this
+ * keeps repeats, since phrase adjacency is positional ("DAY DAY" is not "DAY").
+ */
+function extractOrderedCandidates(text: string): string[] {
+  const out: string[] = [];
+  for (const raw of text.split(/\s+/)) {
+    if (!raw || raw.startsWith("@")) continue;
+    const norm = normalizeToken(raw);
+    if (norm) out.push(norm);
+  }
+  return out;
+}
+
+/**
  * The tokens a COMMENT is matched against: every candidate for a short comment,
  * or just the first for a long one (keeps paragraph comments high-precision).
  * Single source of the length-gate rule — shared with the backfill scanner.
@@ -45,6 +69,42 @@ export function extractCandidates(text: string): string[] {
 export function scannableCommentTokens(text: string): string[] {
   const cands = extractCandidates(text);
   return cands.length <= MAX_COMMENT_SCAN_TOKENS ? cands : cands.slice(0, 1);
+}
+
+/**
+ * Candidate keys for comment matching, ordered by their position in the comment.
+ * Short comments scan every word; long comments retain the first-word-only rule
+ * for single-word triggers but allow a two-word CTA at the very start. Each
+ * adjacent pair also contributes its joined alias so legacy DAY1 keys match
+ * "DAY 1" without substring matching.
+ */
+export function scannableCommentMatchCandidates(text: string): string[] {
+  const tokens = extractOrderedCandidates(text);
+  if (tokens.length === 0) return [];
+
+  const scanAll = extractCandidates(text).length <= MAX_COMMENT_SCAN_TOKENS;
+  const singleTokenCount = scanAll ? tokens.length : 1;
+  const phraseStartCount = scanAll ? Math.max(0, tokens.length - 1) : Math.min(1, tokens.length - 1);
+  const seen = new Set<string>();
+  const candidates: string[] = [];
+  const add = (candidate: string) => {
+    if (seen.has(candidate)) return;
+    seen.add(candidate);
+    candidates.push(candidate);
+  };
+
+  for (let index = 0; index < Math.max(singleTokenCount, phraseStartCount); index += 1) {
+    const first = tokens[index];
+    if (first === undefined) continue;
+    if (index < phraseStartCount) {
+      const second = tokens[index + 1]!;
+      add(`${first} ${second}`);
+      add(`${first}${second}`);
+    }
+    if (index < singleTokenCount) add(first);
+  }
+
+  return candidates;
 }
 
 /**
@@ -61,7 +121,7 @@ export function scannableCommentTokens(text: string): string[] {
  * (post_strict | global_fallback) for adoption auditing — or null.
  */
 export async function findKeywordForComment(text: string, mediaId?: string | null) {
-  const scan = scannableCommentTokens(text);
+  const scan = scannableCommentMatchCandidates(text);
   if (scan.length === 0) return null;
 
   // Fetch the post's keywords and the globals in one round trip, then let the
@@ -118,13 +178,13 @@ export async function findKeywordInMessage(text: string) {
 }
 
 /**
- * Does the text contain the keyword as a standalone word, under the same
- * length-gate the live comment matcher uses? So "Potty🙏" and "DM EGG" match,
- * but a long "cook him one egg…" does not. Used by the late-keyword backfill so
- * historical scanning and live matching agree.
+ * Does the text contain the keyword as an exact one- or two-word phrase, under
+ * the same length gate as live matching? Compact aliases such as `DAY1` also
+ * match `Day 1`. Used by late-keyword backfill so historical and live scanning
+ * agree.
  */
 export function textContainsKeyword(text: string, keyword: string): boolean {
-  const target = normalizeToken(keyword);
+  const target = normalizeKeyword(keyword);
   if (!target) return false;
-  return scannableCommentTokens(text).includes(target);
+  return scannableCommentMatchCandidates(text).includes(target);
 }

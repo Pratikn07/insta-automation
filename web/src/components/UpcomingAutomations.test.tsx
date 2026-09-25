@@ -116,14 +116,14 @@ describe("UpcomingAutomations", () => {
     );
   });
 
-  it("validates one alphanumeric keyword token before creation", async () => {
+  it("rejects more than two alphanumeric words before creation", async () => {
     const user = userEvent.setup();
     renderUpcoming();
 
     await user.click(await screen.findByRole("button", { name: /Set up another/ }));
-    await user.type(screen.getByLabelText("Keyword"), "two words");
+    await user.type(screen.getByLabelText("Keyword"), "three words here");
 
-    expect(screen.getByText("Use one word with letters and numbers only.")).toBeInTheDocument();
+    expect(screen.getByText("Use one or two words with letters and numbers only.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Create setup" })).toBeDisabled();
   });
 
@@ -143,7 +143,7 @@ describe("UpcomingAutomations", () => {
     renderUpcoming();
 
     await user.click(await screen.findByRole("button", { name: /Set up another/ }));
-    await user.type(screen.getByLabelText("Keyword"), "highchair");
+    await user.type(screen.getByLabelText("Keyword"), "high chair");
     // Create new is the default, so picking an existing guide is an explicit choice.
     await user.click(screen.getByRole("button", { name: /Use existing/ }));
     await user.selectOptions(screen.getByLabelText("Guide"), resources[0]!.id);
@@ -159,7 +159,7 @@ describe("UpcomingAutomations", () => {
         operationId: OPERATION_ID,
         body: JSON.stringify({
           id: OPERATION_ID,
-          keyword: "HIGHCHAIR",
+          keyword: "HIGH CHAIR",
           resourceId: resources[0]!.id,
           publicReply: "Sent! Check your DMs.",
           gateMessage: "Follow and reply DONE.",

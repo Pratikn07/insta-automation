@@ -95,7 +95,10 @@ export async function runUpcomingAutomationDiscoveryTick(): Promise<UpcomingDisc
   const rejected = new Set<string>();
 
   for (const item of media) {
-    const instruction = parseUpcomingCaptionInstruction(item.caption);
+    const instruction = parseUpcomingCaptionInstruction(
+      item.caption,
+      waiting.map((setup) => setup.triggerWord),
+    );
     if (instruction.kind === "missing") continue;
 
     if (instruction.kind === "ambiguous") {

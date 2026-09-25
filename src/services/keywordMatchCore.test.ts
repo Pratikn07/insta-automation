@@ -74,6 +74,31 @@ describe("resolveCommentMatch", () => {
     expect(resolveCommentMatch(["EGG", "MILK"], post, [])?.keyword.id).toBe("kw-egg");
   });
 
+  it("prefers an exact two-word phrase over its individual words", () => {
+    const phrase = kw({ id: "kw-day-one", keyword: "DAY 1", mediaId: "postA" });
+    const day = kw({ id: "kw-day", keyword: "DAY", mediaId: "postA" });
+
+    const match = resolveCommentMatch(["DAY 1", "DAY1", "DAY", "1"], [day, phrase], []);
+
+    expect(match?.keyword.id).toBe("kw-day-one");
+    expect(match?.matchedToken).toBe("DAY 1");
+  });
+
+  it("matches a legacy compact keyword against an exact adjacent-word alias", () => {
+    const legacy = kw({ id: "kw-day1", keyword: "DAY1", mediaId: "postA" });
+
+    const match = resolveCommentMatch(["DAY 1", "DAY1", "DAY", "1"], [legacy], []);
+
+    expect(match?.keyword.id).toBe("kw-day1");
+    expect(match?.matchedToken).toBe("DAY1");
+  });
+
+  it("does not use substring matching for a compact alias", () => {
+    const legacy = kw({ id: "kw-day1", keyword: "DAY1", mediaId: "postA" });
+
+    expect(resolveCommentMatch(["DAY 10", "DAY10", "DAY", "10"], [legacy], [])).toBeNull();
+  });
+
   it("returns null for an empty token list", () => {
     expect(resolveCommentMatch([], [kw({ keyword: "SLEEP", mediaId: "postA" })], [])).toBeNull();
   });

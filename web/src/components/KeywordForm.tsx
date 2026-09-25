@@ -39,6 +39,8 @@ const KIND = {
   carousel: { icon: Images, noun: "carousel" },
 } as const;
 
+const KEYWORD_PHRASE = /^[A-Za-z0-9]+(?:\s+[A-Za-z0-9]+)?$/;
+
 interface KeywordFormState {
   keyword: string;
   sequenceMode: SequenceMode;
@@ -182,8 +184,10 @@ export function KeywordForm({
       ? form.newSequenceName.trim().length > 0
       : form.resourceId.length > 0;
 
+  const keywordValid = KEYWORD_PHRASE.test(form.keyword.trim());
+
   const canSave =
-    form.keyword.trim().length > 0 &&
+    keywordValid &&
     sequenceValid &&
     form.publicReply.trim().length > 0 &&
     form.gateMessage.trim().length > 0 &&
@@ -215,7 +219,10 @@ export function KeywordForm({
           />
         )}
 
-        <Field label="Keyword" hint="Auto-uppercased. People comment this exactly to trigger.">
+        <Field
+          label="Keyword"
+          hint="Use one or two letters-and-numbers words. People comment the exact phrase to trigger."
+        >
           <Input
             value={form.keyword}
             onChange={(e) => setForm((f) => ({ ...f, keyword: e.target.value }))}

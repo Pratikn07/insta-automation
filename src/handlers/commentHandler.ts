@@ -1,5 +1,9 @@
 import type { CommentValue } from "../types/meta.js";
-import { extractCandidates, findKeywordForComment } from "../services/keywordService.js";
+import {
+  extractCandidates,
+  findKeywordForComment,
+  scannableCommentMatchCandidates,
+} from "../services/keywordService.js";
 import { openConversationIn, markGated } from "../services/conversationService.js";
 import {
   recordJourneyPublicAcknowledgement,
@@ -227,15 +231,17 @@ export async function handleComment(comment: CommentValue): Promise<void> {
 
   // All-token matching: scan every word of a short comment (not just the first),
   // so "@tinysoho sleep", "DM EGG", and "Potty🙏" resolve. Long comments fall back
-  // to first-word only — see scannableCommentTokens.
+  // to first-word-only for single-key triggers, while exact two-word phrases at
+  // the start remain eligible — see scannableCommentMatchCandidates.
   const candidates = extractCandidates(comment.text);
   if (candidates.length === 0) return;
+  const upcomingCandidates = scannableCommentMatchCandidates(comment.text);
 
   // A native-scheduled post has no local keyword until Meta publishes it. If a
   // comment intersects a reserved word, bind from the real caption first so the
   // same first comment can continue through the ordinary post-scoped flow.
   const upcoming = await bindUpcomingAutomationFromComment({
-    candidates,
+    candidates: upcomingCandidates,
     mediaId: comment.media?.id,
     commentId: comment.id,
   });

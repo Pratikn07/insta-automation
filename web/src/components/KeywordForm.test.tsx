@@ -158,4 +158,40 @@ describe("KeywordForm create identity", () => {
       await screen.findByDisplayValue("It’s waiting for you 💛 Check your DMs (and Requests)!"),
     ).toBeInTheDocument();
   });
+
+  it("allows a two-word keyword phrase", async () => {
+    const user = userEvent.setup();
+    apiMutation.mockImplementation((path: string) =>
+      Promise.resolve(
+        String(path) === "/resources"
+          ? { id: "res-1" }
+          : { id: "kw-1", resourceId: "res-1" },
+      ),
+    );
+    renderForm();
+
+    fireEvent.change(await screen.findByPlaceholderText("RECIPE"), {
+      target: { value: "HIGH CHAIR" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Toddler Activity Guide"), {
+      target: { value: "High Chair Guide" },
+    });
+    await user.click(screen.getByRole("button", { name: SUBMIT }));
+
+    await waitFor(() => expect(callsTo("/keywords").length).toBe(1));
+    expect(bodyOf(callsTo("/keywords")[0]!).keyword).toBe("HIGH CHAIR");
+  });
+
+  it("blocks a phrase with more than two words", async () => {
+    renderForm();
+
+    fireEvent.change(await screen.findByPlaceholderText("RECIPE"), {
+      target: { value: "HIGH CHAIR GUIDE" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Toddler Activity Guide"), {
+      target: { value: "High Chair Guide" },
+    });
+
+    expect(screen.getByRole("button", { name: SUBMIT })).toBeDisabled();
+  });
 });

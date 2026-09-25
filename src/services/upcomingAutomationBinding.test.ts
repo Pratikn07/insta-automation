@@ -112,6 +112,24 @@ describe("bindUpcomingAutomationToMedia", () => {
     });
   });
 
+  it("validates and stores an exact two-word caption trigger", async () => {
+    const phraseSetup = { ...setup, triggerWord: "HIGH CHAIR" };
+    const phraseMedia = { ...media, caption: "Comment HIGH CHAIR" };
+    upcomingFindUnique.mockResolvedValue(phraseSetup);
+
+    const result = await bindUpcomingAutomationToMedia({
+      setupId: setup.id,
+      media: phraseMedia,
+      source: "worker",
+    });
+
+    expect(result).toEqual({ kind: "bound", keywordId: "keyword-1", adopted: false });
+    expect(keywordCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({ keyword: "HIGH CHAIR" }),
+      select: { id: true },
+    });
+  });
+
   it("adopts an identical manually attached keyword", async () => {
     keywordFindMany.mockResolvedValue([
       {

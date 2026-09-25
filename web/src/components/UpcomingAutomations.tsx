@@ -552,7 +552,7 @@ function UpcomingEditor({
   onCancel: () => void;
   onSubmit: () => void;
 }) {
-  const tokenValid = /^[A-Za-z0-9]+$/.test(value.keyword.trim());
+  const tokenValid = /^[A-Za-z0-9]+(?:\s+[A-Za-z0-9]+)?$/.test(value.keyword.trim());
   /**
    * A named new guide is enough; it does not need steps yet.
    *
@@ -587,7 +587,9 @@ function UpcomingEditor({
         </h3>
         <p className="mt-1 text-xs text-muted-foreground">
           The caption you publish must contain{" "}
-          <span className="font-mono">Comment {value.keyword.trim().toUpperCase() || "KEYWORD"}</span>{" "}
+          <span className="font-mono">
+            Comment {value.keyword.trim().replace(/\s+/g, " ").toUpperCase() || "KEYWORD"}
+          </span>{" "}
           — that is how the post is recognised, so a different word attaches nothing.
         </p>
       </div>
@@ -603,7 +605,9 @@ function UpcomingEditor({
             onChange={(event) => onChange({ ...value, keyword: event.target.value })}
           />
           {value.keyword.length > 0 && !tokenValid && (
-            <p className="text-xs text-urgent">Use one word with letters and numbers only.</p>
+            <p className="text-xs text-urgent">
+              Use one or two words with letters and numbers only.
+            </p>
           )}
         </div>
         <div className="space-y-1.5">
