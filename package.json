@@ -18,7 +18,6 @@
     "standardize:public-replies": "tsx scripts/standardize-public-replies.ts",
     "audit:guide-message-lengths": "tsx scripts/audit-guide-message-lengths.ts",
     "audit:guide-access-recovery": "tsx scripts/guide-access-recovery.ts",
-    "recovery:guide-audience-timeouts": "tsx scripts/guide-audience-timeout-recovery.ts",
     "verify:meta-guide-gate": "tsx scripts/meta-guide-gate-capability-spike.ts",
     "render:guide-cover-snapshots": "tsx scripts/render-approved-guide-cover-snapshots.ts",
     "check:guide-delivery-bypasses": "node scripts/check-guide-delivery-bypasses.mjs",
