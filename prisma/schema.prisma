@@ -957,8 +957,10 @@ enum GuideActionEventSource {
   @@map("guide_action_event_source")
 }
 
-// Guide delivery uses an isolated audience proxy provenance. These values must
-// never be reused for the Gemini-based historical-recovery fields on IgUser.
+// Audit vocabulary for the guide audience gate. The gate itself does NOT own a
+// verdict: it reads and writes ig_users.inferred_origin at origin_method =
+// 'llm_v3', the same column the enrichment worker and the DM-recovery gate use.
+// These enums exist only to type this audit table's own columns.
 enum GuideAudienceOrigin {
   south_asian
   us_western

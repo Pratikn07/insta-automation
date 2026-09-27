@@ -123,20 +123,6 @@ export const envSchema = z.object({
   // fall back to low-confidence) but the app still boots and serves everything else.
   GEMINI_API_KEY: z.string().optional(),
   GEMINI_MODEL: z.string().default("gemini-2.5-flash"),
-  // Server-only NVIDIA NIM credential used by the guide-specific audience
-  // classifier. The app must keep serving its existing guide paths when absent.
-  NVIDIA_API_KEY: z.string().min(1).optional(),
-  NVIDIA_AUDIENCE_MODEL: z.string().default("nvidia/nemotron-3.5-lightning-30b-a3b"),
-  NVIDIA_AUDIENCE_TIMEOUT_MS: z.coerce.number().int().min(500).max(30_000).default(8_000),
-  // Offline recovery is a deliberate, bounded operator action rather than a
-  // webhook request. It gets the full provider timeout so a slow-but-healthy
-  // response does not recreate the incident's 8-second deferrals.
-  NVIDIA_AUDIENCE_RECOVERY_TIMEOUT_MS: z.coerce
-    .number()
-    .int()
-    .min(500)
-    .max(30_000)
-    .default(30_000),
   // This is intentionally an outbound operator flag. A deployment starts with
   // enforcement off and the console may stop, but never enable, it.
   GUIDE_AUDIENCE_BLOCK_ENABLED: booleanFlag(false),

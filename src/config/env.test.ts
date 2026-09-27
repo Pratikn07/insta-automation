@@ -17,28 +17,18 @@ const baseEnv = {
 };
 
 describe("env configuration schema for DM recovery", () => {
-  it("keeps NVIDIA guide-audience enforcement disabled unless explicitly configured", () => {
-    expect(envSchema.parse(baseEnv)).not.toHaveProperty("NVIDIA_API_KEY");
-    expect(envSchema.parse(baseEnv)).toMatchObject({
-      NVIDIA_AUDIENCE_MODEL: "nvidia/nemotron-3.5-lightning-30b-a3b",
-      NVIDIA_AUDIENCE_TIMEOUT_MS: 8_000,
-      NVIDIA_AUDIENCE_RECOVERY_TIMEOUT_MS: 30_000,
-      GUIDE_AUDIENCE_BLOCK_ENABLED: false,
-    });
+  it("keeps guide-audience enforcement disabled unless explicitly configured", () => {
+    expect(envSchema.parse(baseEnv).GUIDE_AUDIENCE_BLOCK_ENABLED).toBe(false);
     expect(
-      envSchema.parse({
-        ...baseEnv,
-        NVIDIA_API_KEY: "test-key",
-        NVIDIA_AUDIENCE_TIMEOUT_MS: "9000",
-        NVIDIA_AUDIENCE_RECOVERY_TIMEOUT_MS: "12000",
-        GUIDE_AUDIENCE_BLOCK_ENABLED: "true",
-      }),
-    ).toMatchObject({
-      NVIDIA_API_KEY: "test-key",
-      NVIDIA_AUDIENCE_TIMEOUT_MS: 9_000,
-      NVIDIA_AUDIENCE_RECOVERY_TIMEOUT_MS: 12_000,
-      GUIDE_AUDIENCE_BLOCK_ENABLED: true,
-    });
+      envSchema.parse({ ...baseEnv, GUIDE_AUDIENCE_BLOCK_ENABLED: "true" })
+        .GUIDE_AUDIENCE_BLOCK_ENABLED,
+    ).toBe(true);
+  });
+
+  // The gate reuses GEMINI_API_KEY. A second provider credential surviving here
+  // would mean a second classifier survived with it.
+  it("does not carry a provider credential for the audience classifier", () => {
+    expect(envSchema.parse(baseEnv)).not.toHaveProperty("NVIDIA_API_KEY");
   });
 
   it("defaults the guide audience deadline to three seconds", () => {
