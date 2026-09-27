@@ -47,6 +47,13 @@ prisma/migrations/dev.db*
 graphify-out/cache/
 graphify-out/.graphify_analysis.json
 graphify-out/.graphify_root
+graphify-out/.graphify_incremental.json
+graphify-out/.graphify_learning.json
+graphify-out/.graphify_python
+graphify-out/.vocab.txt
+# Per-session query scratch and self-notes: local to whoever ran the query.
+graphify-out/memory/
+graphify-out/reflections/
 # graphify snapshots the previous graph into a dated dir on every update; that
 # is a full ~6 MB copy per day, so keep the backups local.
 graphify-out/20*/
