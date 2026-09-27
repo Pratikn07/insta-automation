@@ -772,14 +772,8 @@ describe("guide audience policy — comment path", () => {
     media: { id: "reel-1", media_product_type: "REELS" },
   };
 
-  it.each([
-    { result: { kind: "block", auditId: "audit-1" }, label: "blocked" },
-    {
-      result: { kind: "defer", auditId: "audit-2", reason: "provider_timeout" },
-      label: "deferred",
-    },
-  ])("sends nothing when a matched comment is $label", async ({ result }) => {
-    authorizeNewGuideAction.mockResolvedValue(result);
+  it("sends nothing when a matched comment is blocked", async () => {
+    authorizeNewGuideAction.mockResolvedValue({ kind: "block", auditId: "audit-1" });
 
     await handleComment(COMMENT);
 
@@ -794,6 +788,23 @@ describe("guide audience policy — comment path", () => {
     expect(sendTrackedPrivateReply).not.toHaveBeenCalled();
     expect(startCommentGuideRequest).not.toHaveBeenCalled();
     expect(enqueueGate).not.toHaveBeenCalled();
+  });
+
+  // Fail open. A gate that cannot reach a verdict silenced 46 of 60 people
+  // during the NVIDIA incident, 21 of them confirmed US audience.
+  it("still replies when the audience gate throws", async () => {
+    authorizeNewGuideAction.mockRejectedValue(new Error("boom"));
+    // The send now runs to completion, so the gate DM has to return a receipt.
+    sendTrackedPrivateReply.mockResolvedValue({
+      instagramMessageId: "mid-1",
+      dmMessageId: "dm-1",
+      acceptedAt: new Date("2026-09-27T12:00:00.000Z"),
+    });
+
+    await handleComment(COMMENT);
+
+    expect(replyToComment).toHaveBeenCalledTimes(1);
+    expect(sendTrackedPrivateReply).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -133,7 +133,7 @@ type HarnessOptions = {
   }>;
   maxAttempts?: number;
   claimLeaseMs?: number;
-  audienceDecision?: "allow" | "block" | "defer";
+  audienceDecision?: "allow" | "block" | "throws";
 };
 
 function harness(options: HarnessOptions = {}) {
@@ -317,9 +317,9 @@ function harness(options: HarnessOptions = {}) {
   const recordCoverMetric = vi.fn(async () => undefined);
   const authorizeGuideAudience = vi.fn(async () => {
     const decision = options.audienceDecision ?? "allow";
-    if (decision === "allow") return { kind: "allow" as const, enforced: true };
     if (decision === "block") return { kind: "block" as const, auditId: "audit-1" };
-    return { kind: "defer" as const, auditId: "audit-2", reason: "provider_timeout" };
+    if (decision === "throws") throw new Error("audience boundary unavailable");
+    return { kind: "allow" as const, enforced: true };
   });
 
   function service() {
@@ -368,18 +368,24 @@ function harness(options: HarnessOptions = {}) {
 }
 
 describe("deliverGuideForTrigger", () => {
-  it.each([
-    { decision: "block" as const, want: "guide_audience_blocked" },
-    { decision: "defer" as const, want: "guide_audience_deferred" },
-  ])("does not create a new plan or send when audience authorization is $decision", async ({ decision, want }) => {
-    const test = harness({ audienceDecision: decision });
+  it("does not create a new plan or send when audience authorization blocks", async () => {
+    const test = harness({ audienceDecision: "block" });
 
-    await expect(test.service()(input)).resolves.toBe(want);
+    await expect(test.service()(input)).resolves.toBe("guide_audience_blocked");
 
     expect(test.repository.findByTrigger).toHaveBeenCalledOnce();
     expect(test.repository.createOrLoadPlan).not.toHaveBeenCalled();
     expect(test.sendText).not.toHaveBeenCalled();
     expect(test.sendMedia).not.toHaveBeenCalled();
+  });
+
+  // Fail open — an unreachable boundary is not a south_asian verdict.
+  it("delivers when the audience boundary is unavailable", async () => {
+    const test = harness({ audienceDecision: "throws" });
+
+    await expect(test.service()(input)).resolves.not.toBe("guide_audience_blocked");
+
+    expect(test.repository.createOrLoadPlan).toHaveBeenCalled();
   });
 
   it("preflights the whole guide so a later invalid caption causes zero provider calls", async () => {

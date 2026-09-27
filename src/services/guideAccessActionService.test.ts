@@ -181,8 +181,9 @@ function createHarness(input: {
   >;
   audienceDecision?:
     | { kind: "allow"; enforced: boolean }
-    | { kind: "block"; auditId: string }
-    | { kind: "defer"; auditId: string | null; reason: string };
+    | { kind: "block"; auditId: string };
+  /** Simulates an unreachable policy boundary, which must fail open. */
+  audienceThrows?: boolean;
 }) {
   let current = input.initialAttempt ?? attempt();
   let nextToken = 0;
@@ -550,9 +551,10 @@ function createHarness(input: {
   const findAttemptIdByToken = vi.fn(
     async (tokenId: string) => tokenAttempt.get(tokenId) ?? null,
   );
-  const authorizeGuideAudience = vi.fn(async () =>
-    input.audienceDecision ?? { kind: "allow" as const, enforced: false },
-  );
+  const authorizeGuideAudience = vi.fn(async () => {
+    if (input.audienceThrows) throw new Error("audience boundary unavailable");
+    return input.audienceDecision ?? { kind: "allow" as const, enforced: false };
+  });
 
   const service = createGuideAccessActionService({
     repository: repository as never,
@@ -647,21 +649,27 @@ beforeEach(() => {
 });
 
 describe("strict live authorization matrix", () => {
-  it.each([
-    { decision: { kind: "block" as const, auditId: "audit-1" }, want: "guide_audience_blocked" },
-    {
-      decision: { kind: "defer" as const, auditId: "audit-2", reason: "provider_timeout" },
-      want: "guide_audience_deferred",
-    },
-  ])("halts a guide action on audience $want without a follow check or send", async ({ decision, want }) => {
-    const test = createHarness({ audienceDecision: decision });
+  it("halts a guide action on an audience block without a follow check or send", async () => {
+    const test = createHarness({
+      audienceDecision: { kind: "block" as const, auditId: "audit-1" },
+    });
 
-    await expect(request(test)).resolves.toBe(want);
+    await expect(request(test)).resolves.toBe("guide_audience_blocked");
 
     expect(test.resolveFresh).not.toHaveBeenCalled();
     expect(test.startGuideDelivery).not.toHaveBeenCalled();
     expect(test.sendFollowerGate).not.toHaveBeenCalled();
     expect(test.sendText).not.toHaveBeenCalled();
+  });
+
+  // Fail open. Withholding on an unavailable boundary silenced 46 of 60 people
+  // during the NVIDIA incident, 21 of them confirmed US audience.
+  it("proceeds to the follow check when the audience boundary is unavailable", async () => {
+    const test = createHarness({ audienceThrows: true });
+
+    await expect(request(test)).resolves.not.toBe("guide_audience_blocked");
+
+    expect(test.resolveFresh).toHaveBeenCalled();
   });
 
   it("uses the actual postback source for a blocked action", async () => {

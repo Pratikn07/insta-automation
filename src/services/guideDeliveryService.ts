@@ -69,8 +69,7 @@ export type GuideDeliveryResult =
   | "needs_review"
   | "retry_scheduled"
   | "already_processing"
-  | "guide_audience_blocked"
-  | "guide_audience_deferred";
+  | "guide_audience_blocked";
 
 export type GuideDeliveryServiceRepository = Pick<
   GuideDeliveryRepository,
@@ -550,9 +549,9 @@ export function createGuideDeliveryService(dependencies: GuideDeliveryServiceDep
     });
 
     if (!delivery) {
-      let audience: GuideAudienceAuthorization;
+      let blocked = false;
       try {
-        audience = await (
+        const audience = await (
           dependencies.authorizeGuideAudience ??
           guideAudienceAuthorization.authorizeNewGuideAction
         )({
@@ -562,11 +561,12 @@ export function createGuideDeliveryService(dependencies: GuideDeliveryServiceDep
           inboundMessageId: input.triggerId,
           resourceId: input.resourceId,
         });
+        blocked = audience.kind === "block";
       } catch {
-        return "guide_audience_deferred";
+        // Fail open — see guideAccessActionService.audienceOutcome.
+        blocked = false;
       }
-      if (audience.kind === "block") return "guide_audience_blocked";
-      if (audience.kind === "defer") return "guide_audience_deferred";
+      if (blocked) return "guide_audience_blocked";
 
       const messages = await dependencies.loadResourceMessages(input.resourceId);
       const cover = eligibleCover(input);
