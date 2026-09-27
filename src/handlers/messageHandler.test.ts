@@ -254,7 +254,7 @@ beforeEach(() => {
   gateOwner.mockReturnValue("v1");
   startDirectDmGuideRequest.mockResolvedValue("guide_delivery_started");
   recordGuideAccessMetric.mockResolvedValue("recorded");
-  authorizeNewGuideAction.mockResolvedValue({ kind: "allow", enforced: false });
+  authorizeNewGuideAction.mockResolvedValue({ kind: "allow" });
   guideDeliveryOwner.mockReturnValue("legacy");
   deliverGuideForTrigger.mockResolvedValue("completed");
   queueReplyDraft.mockResolvedValue({ id: "draft-1" });

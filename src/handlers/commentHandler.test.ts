@@ -180,7 +180,7 @@ beforeEach(() => {
   gateOwner.mockReturnValue("v1");
   startCommentGuideRequest.mockResolvedValue({ outcome: "guide_opening_sent" });
   recordGuideAccessMetric.mockResolvedValue("recorded");
-  authorizeNewGuideAction.mockResolvedValue({ kind: "allow", enforced: false });
+  authorizeNewGuideAction.mockResolvedValue({ kind: "allow" });
 
   // The database enforces this in production; here a set stands in for it.
   const claimed = new Set<string>();
