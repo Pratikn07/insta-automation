@@ -13,6 +13,11 @@ import {
   MAX_ORIGIN_BATCH,
   type OriginCandidate,
 } from "./originClassifier.js";
+import {
+  compareAndSetOrigin,
+  ORIGIN_STILL_DUE,
+  originVerdictWriteData,
+} from "./originVerdictStore.js";
 
 export type OriginEnrichmentResult = {
   examined: number;
@@ -83,41 +88,6 @@ async function spentTodayUsd(): Promise<number> {
   // and an over-estimate otherwise, which errs toward stopping early.
   const batches = Math.ceil(classifiedToday / MAX_ORIGIN_BATCH);
   return batches * estimateOriginCostUsd(MAX_ORIGIN_BATCH) + unrecordedSpendToday();
-}
-
-const ORIGIN_STILL_DUE = {
-  OR: [
-    { originCheckedAt: null },
-    { originMethod: null },
-    { originMethod: { not: CURRENT_ORIGIN_METHOD } },
-  ],
-} satisfies Prisma.IgUserWhereInput;
-
-/**
- * Persist classifier output only for the exact identity snapshot that was sent to
- * Gemini and only while it still needs this method revision. A profile update clears
- * origin fields; matching name and username prevents a delayed old response from
- * immediately restoring a verdict for the prior identity.
- */
-async function compareAndSetOrigin(
-  writes: Array<{
-    candidate: OriginCandidate;
-    data: Prisma.IgUserUpdateManyMutationInput;
-  }>,
-): Promise<number> {
-  if (writes.length === 0) return 0;
-  const results = await prisma.$transaction(
-    writes.map(({ candidate, data }) => prisma.igUser.updateMany({
-      where: {
-        id: candidate.id,
-        username: candidate.username,
-        name: candidate.name,
-        ...ORIGIN_STILL_DUE,
-      },
-      data,
-    })),
-  );
-  return results.reduce((count, write) => count + write.count, 0);
 }
 
 /**
@@ -219,17 +189,7 @@ async function tickBody(): Promise<OriginEnrichmentResult> {
   result.classified += await compareAndSetOrigin(
     verdicts.flatMap((v) => {
       const candidate = candidateById.get(v.id);
-      return candidate ? [{
-        candidate,
-        data: {
-          inferredOrigin: v.origin,
-          originConfidence: v.confidence,
-          originMethod: CURRENT_ORIGIN_METHOD,
-          originEvidence: v.evidence,
-          audienceSegment: v.audienceSegment,
-          originCheckedAt: now,
-        },
-      }] : [];
+      return candidate ? [{ candidate, data: originVerdictWriteData(v, now) }] : [];
     }),
   );
 
