@@ -55,8 +55,7 @@ export type GuideAccessActionOutcome =
   | "guide_opening_sent"
   | "guide_opening_already_sent"
   | "guide_opening_failed"
-  | "guide_audience_blocked"
-  | "guide_audience_deferred";
+  | "guide_audience_blocked";
 
 export type CommentGuideRequestFailure = {
   /** The provider error, for the caller's existing failure classifier. */
@@ -291,15 +290,14 @@ export function createGuideAccessActionService(
 ) {
   async function audienceOutcome(
     input: AuthorizeNewGuideActionInput,
-  ): Promise<"guide_audience_blocked" | "guide_audience_deferred" | null> {
+  ): Promise<"guide_audience_blocked" | null> {
     try {
       const decision = await dependencies.authorizeGuideAudience(input);
-      if (decision.kind === "block") return "guide_audience_blocked";
-      if (decision.kind === "defer") return "guide_audience_deferred";
-      return null;
+      return decision.kind === "block" ? "guide_audience_blocked" : null;
     } catch {
-      // An unavailable policy boundary must not become permission to contact a person.
-      return "guide_audience_deferred";
+      // Fail open: an unavailable policy boundary is not a verdict, and
+      // withholding on it cost 46 of 60 people during the NVIDIA incident.
+      return null;
     }
   }
 

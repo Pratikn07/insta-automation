@@ -17,8 +17,7 @@ function makeRouter(input: {
   requestOutcome?:
     | "guide_delivery_started"
     | "action_expired"
-    | "guide_audience_blocked"
-    | "guide_audience_deferred";
+    | "guide_audience_blocked";
   checkOutcome?: "follow_not_confirmed" | "action_expired" | "action_replayed";
 } = {}) {
   const loadAction = vi
@@ -140,7 +139,7 @@ describe("createGuideActionRouter", () => {
     expect(test.presentOutcome).toHaveBeenCalledOnce();
   });
 
-  it.each(["guide_audience_blocked", "guide_audience_deferred"] as const)(
+  it.each(["guide_audience_blocked"] as const)(
     "does not present a %s outcome",
     async (outcome) => {
       const test = makeRouter({ action: "request_guide", requestOutcome: outcome });

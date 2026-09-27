@@ -101,7 +101,7 @@ describe("guide action outcome presentation", () => {
     expect(test.sendText).not.toHaveBeenCalled();
   });
 
-  it.each(["guide_audience_blocked", "guide_audience_deferred"] as const)(
+  it.each(["guide_audience_blocked"] as const)(
     "sends nothing when the guide audience policy returns %s",
     async (outcome) => {
       const test = harness();

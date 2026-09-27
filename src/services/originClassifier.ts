@@ -184,8 +184,16 @@ function toVerdict(raw: unknown, requestedIds: Set<string>): OriginVerdict | nul
  * matching analyzeReel. Network and parse failures propagate to the caller,
  * which owns the retry and budget policy.
  */
+/**
+ * Per-call deadline. The instance default (120s, sized for video analysis) is
+ * far too long for a webhook-path name screen, and the guide gate needs a
+ * ceiling it can also inject in tests without waiting for it.
+ */
+export type ClassifyOriginsOptions = { timeoutMs?: number };
+
 export async function classifyOrigins(
   candidates: OriginCandidate[],
+  options: ClassifyOriginsOptions = {},
 ): Promise<OriginClassificationResult> {
   if (!geminiEnabled) throw new GeminiDisabledError();
   if (candidates.length === 0) {
@@ -235,6 +243,7 @@ export async function classifyOrigins(
         responseSchema: RESPONSE_SCHEMA,
       },
     },
+    options.timeoutMs === undefined ? undefined : { timeout: options.timeoutMs },
   );
 
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";

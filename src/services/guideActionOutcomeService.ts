@@ -168,12 +168,7 @@ export function createGuideActionOutcomeService(
   ): Promise<GuideActionOutcomePresentation> {
     if (input.outcome === "duplicate_event") return "none_duplicate_webhook";
     if (input.outcome === "action_invalid") return "none_invalid_action";
-    if (
-      input.outcome === "guide_audience_blocked" ||
-      input.outcome === "guide_audience_deferred"
-    ) {
-      return "none_audience_policy";
-    }
+    if (input.outcome === "guide_audience_blocked") return "none_audience_policy";
 
     const requiresPresentation =
       input.outcome === "action_expired" ||
