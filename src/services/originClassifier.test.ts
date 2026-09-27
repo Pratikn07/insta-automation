@@ -379,6 +379,24 @@ describe("classifyOrigins", () => {
     await classifyOrigins([{ id: "u1", username: "x", name: "y" }]);
     expect(post.mock.calls[0][1].generationConfig.maxOutputTokens).toBeGreaterThan(0);
   });
+
+  it("applies the caller's deadline to the request instead of the client default", async () => {
+    post.mockResolvedValue(reply([]));
+    await classifyOrigins([{ id: "1", username: "sarah", name: "Sarah Jones" }], {
+      timeoutMs: 3_000,
+    });
+    expect(post).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(Object),
+      { timeout: 3_000 },
+    );
+  });
+
+  it("leaves the client default in place when no deadline is given", async () => {
+    post.mockResolvedValue(reply([]));
+    await classifyOrigins([{ id: "1", username: "sarah", name: "Sarah Jones" }]);
+    expect(post).toHaveBeenCalledWith(expect.any(String), expect.any(Object), undefined);
+  });
 });
 
 describe("estimateOriginCostUsd", () => {

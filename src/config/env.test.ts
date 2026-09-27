@@ -41,6 +41,16 @@ describe("env configuration schema for DM recovery", () => {
     });
   });
 
+  it("defaults the guide audience deadline to three seconds", () => {
+    expect(envSchema.parse(baseEnv).GUIDE_AUDIENCE_TIMEOUT_MS).toBe(3_000);
+  });
+
+  it("accepts an operator override for the guide audience deadline", () => {
+    expect(
+      envSchema.parse({ ...baseEnv, GUIDE_AUDIENCE_TIMEOUT_MS: "5000" }).GUIDE_AUDIENCE_TIMEOUT_MS,
+    ).toBe(5_000);
+  });
+
   it("defaults the DM intent guard off with an empty controlled-recipient allowlist", () => {
     expect(envSchema.parse(baseEnv)).toMatchObject({
       GUIDE_DM_INTENT_GUARD_ENABLED: false,

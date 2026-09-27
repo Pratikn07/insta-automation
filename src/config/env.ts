@@ -140,6 +140,12 @@ export const envSchema = z.object({
   // This is intentionally an outbound operator flag. A deployment starts with
   // enforcement off and the console may stop, but never enable, it.
   GUIDE_AUDIENCE_BLOCK_ENABLED: booleanFlag(false),
+  // Ceiling on the inline Gemini call the guide audience gate makes on a cache
+  // miss. 3,000ms is 2.3x the slowest measured single-candidate call (1,327ms,
+  // p50 811ms). Every premature cutoff sends to a South Asian user, so a tight
+  // budget costs more than a slightly later DM — and server.ts:69 acks Meta
+  // before dispatch, so this can never trip a webhook timeout.
+  GUIDE_AUDIENCE_TIMEOUT_MS: z.coerce.number().int().min(500).max(30_000).default(3_000),
   // Max Gemini spend per UTC day (USD). The queue worker stops for the day once
   // summed cost crosses this — a hard guard against runaway analysis cost.
   GEMINI_DAILY_BUDGET_USD: z.coerce.number().min(0).default(5),
