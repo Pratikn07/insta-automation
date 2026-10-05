@@ -332,6 +332,11 @@ describe("env configuration schema for DM recovery", () => {
     ).toBe(true);
   });
 
+  it("allows the explicit all-user rollout without experiment dates", () => {
+    const result = envSchema.safeParse({...baseEnv, DM_RECOVERY_ENABLED: "true", DM_RECOVERY_TWO_HOUR_ALL_ENABLED: "true"});
+    expect(result.success).toBe(true);
+  });
+
   it("normalizes empty string experiment dates to undefined", () => {
     const parsed = envSchema.parse({
       ...baseEnv,

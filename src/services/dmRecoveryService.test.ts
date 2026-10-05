@@ -35,6 +35,7 @@ const envMock = {
   DM_RECOVERY_EXPERIMENT_END_AT: "2026-08-15T00:00:00Z",
   DM_RECOVERY_POST_EXPERIMENT_ENABLED: false,
   DM_RECOVERY_WESTERN_ONLY: false,
+  DM_RECOVERY_TWO_HOUR_ALL_ENABLED: false,
 };
 
 vi.mock("../config/env.js", () => ({ env: envMock }));
@@ -189,11 +190,49 @@ beforeEach(() => {
   envMock.DM_RECOVERY_EXPERIMENT_END_AT = "2026-08-15T00:00:00Z";
   envMock.DM_RECOVERY_POST_EXPERIMENT_ENABLED = false;
   envMock.DM_RECOVERY_WESTERN_ONLY = false;
+  envMock.DM_RECOVERY_TWO_HOUR_ALL_ENABLED = false;
 });
 
 // ── scheduleAcceptedGateRecovery ─────────────────────────────────────────
 
 describe("scheduleAcceptedGateRecovery", () => {
+  describe("two-hour all-user policy", () => {
+    beforeEach(() => { envMock.DM_RECOVERY_TWO_HOUR_ALL_ENABLED = true; });
+
+    it.each(["2026-08-06T08:00:00Z", "2026-10-05T08:00:00Z"])(
+      "assigns every eligible opening at %s to two hours without randomization",
+      async (accepted) => {
+        assignRecoveryTimingArmMock.mockReturnValue("no_reminder");
+        const acceptedAt = new Date(accepted);
+        await scheduleAcceptedGateRecovery({ ...ACCEPTED_INPUT, acceptedAt });
+        expect(assignRecoveryTimingArmMock).not.toHaveBeenCalled();
+        expect(assignRecoveryCohortMock).not.toHaveBeenCalled();
+        expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
+          create: expect.objectContaining({
+            status: "waiting", cohort: "treatment", timingArm: "two_hour",
+            experimentVersionSnapshot: "read-recovery-two-hour-all-v1",
+            eligibleAt: new Date(acceptedAt.getTime() + 2 * 3600_000),
+            publicReplyText: expect.stringContaining("I sent you a DM"),
+          }),
+          update: {},
+        }));
+      },
+    );
+
+    it("keeps existing experiment rows immutable on duplicate scheduling", async () => {
+      upsert.mockResolvedValue(makeRow({timingArm: "six_hour", experimentVersionSnapshot: "read-recovery-timing-v2"}));
+      await scheduleAcceptedGateRecovery(ACCEPTED_INPUT);
+      expect(upsert.mock.calls[0][0].update).toEqual({});
+    });
+
+    it("retains audience suppression after the experiment closes", async () => {
+      envMock.DM_RECOVERY_WESTERN_ONLY = true;
+      igUserFindUnique.mockResolvedValue({username: "person", name: "Person", inferredOrigin: "south_asian", originConfidence: "high", originMethod: CURRENT_ORIGIN_METHOD});
+      await scheduleAcceptedGateRecovery({...ACCEPTED_INPUT, acceptedAt: new Date("2026-10-05T08:00:00Z")});
+      expect(upsert.mock.calls[0][0].create).toMatchObject({status: "suppressed", suppressionReason: "audience_out_of_market"});
+    });
+  });
+
   describe("read-recovery-timing-v2 assignment", () => {
     beforeEach(() => {
       envMock.DM_RECOVERY_EXPERIMENT_VERSION = "read-recovery-timing-v2";

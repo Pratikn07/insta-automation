@@ -60,6 +60,17 @@ export interface FlagDefinition {
 export const FLAG_REGISTRY: readonly FlagDefinition[] = [
   // ── Outbound: these reach real people ────────────────────────────────────
   {
+    key: "DM_RECOVERY_TWO_HOUR_ALL_ENABLED",
+    name: "Two-hour reminders for all eligible requests",
+    group: "outbound",
+    kind: "boolean",
+    doesWhat: "Schedules one public reminder two hours after every eligible new guide opening. Recovery reminders must also be enabled to send.",
+    affectsWho: "People who requested a guide in a comment and have not opened, replied to, or completed the guide flow. Existing audience and cooldown checks still apply.",
+    ifOff: "New requests use the existing experiment policy. Reminders already scheduled keep their original timing; stop Recovery reminders to stop all sends.",
+    pageMayEnable: false,
+    pageMayStop: true,
+  },
+  {
     key: "DM_RECOVERY_ENABLED",
     name: "Recovery reminders",
     group: "outbound",

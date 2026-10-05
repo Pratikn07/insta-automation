@@ -20,7 +20,7 @@ import {
   startPublicRecoveryDispatch,
 } from "./publicRecoveryDispatchRepository.js";
 import { resolveCanonicalConversation } from "./canonicalConversation.js";
-import { DM_RECOVERY_TIMING_EXPERIMENT_VERSION } from "./dmRecoveryTimingExperiment.js";
+import { DM_RECOVERY_TIMING_EXPERIMENT_VERSION, DM_RECOVERY_TWO_HOUR_ALL_VERSION } from "./dmRecoveryTimingExperiment.js";
 
 export type ClaimedRecovery = DmRecoveryReminder & { claimToken: string };
 
@@ -331,6 +331,11 @@ const DUE_SELECTION_HEADROOM = 3;
 const SENDABLE_ASSIGNMENT_WHERE: Prisma.DmRecoveryReminderWhereInput = {
   OR: [
     { experimentVersionSnapshot: null },
+    {
+      experimentVersionSnapshot: DM_RECOVERY_TWO_HOUR_ALL_VERSION,
+      cohort: "treatment",
+      timingArm: "two_hour",
+    },
     {
       experimentVersionSnapshot: DM_RECOVERY_TIMING_EXPERIMENT_VERSION,
       cohort: "treatment",

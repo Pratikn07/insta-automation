@@ -16,6 +16,7 @@ import {
 import {
   assignRecoveryTimingArm,
   DM_RECOVERY_TIMING_EXPERIMENT_VERSION,
+  DM_RECOVERY_TWO_HOUR_ALL_VERSION,
   timingScheduleForArm,
   type RecoveryTimingArm,
 } from "./dmRecoveryTimingExperiment.js";
@@ -233,12 +234,14 @@ export async function scheduleAcceptedGateRecovery(
     env.DM_RECOVERY_EXPERIMENT_VERSION ===
     DM_RECOVERY_TIMING_EXPERIMENT_VERSION;
   const insideWindow = acceptedInsideConfiguredWindow(input.acceptedAt);
+  const twoHourAll = flags.bool("DM_RECOVERY_TWO_HOUR_ALL_ENABLED");
   const inMarket =
     !flags.bool("DM_RECOVERY_WESTERN_ONLY") || audience.origin !== "south_asian";
   const publicReplyText = renderRecoveryCopy(
     "no_confirmed_read",
     input.keywordSnapshot,
     audience.handle,
+    twoHourAll,
   );
 
   let status: DmRecoveryStatus;
@@ -252,15 +255,15 @@ export async function scheduleAcceptedGateRecovery(
     suppressionReason: "audience_out_of_market";
   } | null = null;
 
-  if (isV2 && insideWindow && inMarket) {
-    timingArm = assignRecoveryTimingArm(input.igUserId);
+  if (twoHourAll && inMarket) {
+    timingArm = "two_hour";
     const schedule = timingScheduleForArm(timingArm, input.acceptedAt);
     status = schedule.status;
     cohort = schedule.cohort;
     eligibleAt = schedule.eligibleAt;
     lastErrorCategory = null;
-    experimentVersionSnapshot = DM_RECOVERY_TIMING_EXPERIMENT_VERSION;
-  } else if (isV2 && insideWindow) {
+    experimentVersionSnapshot = DM_RECOVERY_TWO_HOUR_ALL_VERSION;
+  } else if (twoHourAll || (isV2 && insideWindow && !inMarket)) {
     status = "suppressed";
     cohort = "not_applicable";
     eligibleAt = new Date(input.acceptedAt.getTime());
@@ -269,6 +272,14 @@ export async function scheduleAcceptedGateRecovery(
       suppressedAt: input.acceptedAt,
       suppressionReason: "audience_out_of_market",
     };
+  } else if (isV2 && insideWindow && inMarket) {
+    timingArm = assignRecoveryTimingArm(input.igUserId);
+    const schedule = timingScheduleForArm(timingArm, input.acceptedAt);
+    status = schedule.status;
+    cohort = schedule.cohort;
+    eligibleAt = schedule.eligibleAt;
+    lastErrorCategory = null;
+    experimentVersionSnapshot = DM_RECOVERY_TIMING_EXPERIMENT_VERSION;
   } else {
     // V2 reaches this branch only for a terminal pre/post-window exclusion. The
     // configurable delay and holdout below remain the live v1 behavior.

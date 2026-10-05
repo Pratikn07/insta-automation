@@ -233,6 +233,8 @@ export const envSchema = z.object({
 
   // --- DM Recovery Reminders ---
   DM_RECOVERY_ENABLED: booleanFlag(false),
+  // One-time two-hour rollout, separate from the frozen randomized experiment.
+  DM_RECOVERY_TWO_HOUR_ALL_ENABLED: booleanFlag(false),
   /**
    * Historical recovery (Feature 4) sending. Separate from DM_RECOVERY_ENABLED so
    * the prospective feature can run without the historical campaigns, which contact
@@ -398,7 +400,11 @@ export const envSchema = z.object({
     });
   }
 
-  if (value.DM_RECOVERY_ENABLED && (!hasStart || !hasEnd)) {
+  if (
+    value.DM_RECOVERY_ENABLED &&
+    !value.DM_RECOVERY_TWO_HOUR_ALL_ENABLED &&
+    (!hasStart || !hasEnd)
+  ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["DM_RECOVERY_ENABLED"],

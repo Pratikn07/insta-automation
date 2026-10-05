@@ -13,12 +13,15 @@ import {
   sendGuideInitialPrivateReply,
   type GuideActionCapabilities,
 } from "../meta/sendGuideAction.js";
+import { env } from "../config/env.js";
+import { recordOutboundMessage, type RecordOutboundInput } from "./dmThreadService.js";
+import type { TrackedPrivateReplyReceipt } from "./dmDeliveryService.js";
 import type { MetaSendResult } from "../types/meta.js";
 import { sendTrackedMedia, sendTrackedText } from "./dmDeliveryService.js";
 import { describeGraphError } from "./eventLogger.js";
 import { resolveFollowStatusFresh, type FreshFollowResult } from "./freshFollowVerifier.js";
 import { classifyDirectMessageSend } from "./graphErrorClassifier.js";
-import { guideAccessCopy, guideAccessOpeningText } from "./guideAccessCopy.js";
+import { guideAccessCopy, guideAccessOpening, guideAccessOpeningText } from "./guideAccessCopy.js";
 import {
   guideAccessRepository,
   type GuideAccessRepository,
@@ -75,6 +78,8 @@ export type CommentGuideRequestResult = {
    * an attempt already past its opening) or when a non-send step failed.
    */
   openingSendFailure?: CommentGuideRequestFailure;
+  /** Set only after Meta confirms a provider message ID. */
+  openingReceipt?: TrackedPrivateReplyReceipt;
 };
 
 /**
@@ -159,6 +164,10 @@ export type GuideAccessActionDependencies = {
     coverUrl?: string;
     categorySlug?: string;
   }) => Promise<MetaSendResult>;
+  /** Best-effort history recording after Meta accepts the opening. */
+  recordOpeningMessage?: (
+    input: RecordOutboundInput,
+  ) => Promise<{ messageId: string } | null>;
   sendInitialPrivateReply: (input: {
     commentId: string;
     guideName: string;
@@ -1281,6 +1290,7 @@ export function createGuideAccessActionService(
   async function runCommentGuideRequest(
     input: CommentGuideRequest,
     onSendFailure: (failure: CommentGuideRequestFailure) => void,
+    onAccepted: (receipt: TrackedPrivateReplyReceipt) => void,
   ): Promise<GuideAccessActionOutcome> {
     const now = dependencies.now();
     const windowExpiresAt =
@@ -1392,6 +1402,31 @@ export function createGuideAccessActionService(
           retryText,
         });
       }
+      if (receipt.messageId) {
+        const acceptedAt = dependencies.now();
+        let dmMessageId: string | null = null;
+        try {
+          const recorded = await dependencies.recordOpeningMessage?.({
+            igAccountId: env.IG_USER_ID,
+            igUserId: input.igUserId,
+            instagramMessageId: receipt.messageId,
+            text: (capabilities.privateGeneric && openingCard) || capabilities.privateQuickReply
+              ? guideAccessOpening
+              : guideAccessOpeningText,
+            messageType: openingCard ? "image" : "text",
+            mediaUrl: openingCard?.coverUrl ?? null,
+            source: "keyword_automation",
+            instagramTimestamp: acceptedAt,
+          });
+          dmMessageId = recorded?.messageId ?? null;
+        } catch {
+          dependencies.logger.error(
+            { errorCode: "opening_history_write_failed" },
+            "Delivered opening history could not be recorded",
+          );
+        }
+        onAccepted({ instagramMessageId: receipt.messageId, dmMessageId, acceptedAt });
+      }
       return receipt;
     });
     if (disposition === "sent") return "guide_opening_sent";
@@ -1419,10 +1454,17 @@ export function createGuideAccessActionService(
     if (audience) return { outcome: audience };
 
     let openingSendFailure: CommentGuideRequestFailure | undefined;
-    const outcome = await runCommentGuideRequest(input, (failure) => {
-      openingSendFailure = failure;
-    });
-    return openingSendFailure ? { outcome, openingSendFailure } : { outcome };
+    const accepted: { receipt?: TrackedPrivateReplyReceipt } = {};
+    const outcome = await runCommentGuideRequest(
+      input,
+      (failure) => { openingSendFailure = failure; },
+      (receipt) => { accepted.receipt = receipt; },
+    );
+    return {
+      outcome,
+      ...(openingSendFailure ? { openingSendFailure } : {}),
+      ...(accepted.receipt ? { openingReceipt: accepted.receipt } : {}),
+    };
   }
 
   return {
@@ -1454,6 +1496,7 @@ const defaultService = createGuideAccessActionService({
   // be a card; `sendGuideFollowLag` falls back to text when either is missing.
   sendFollowLag: sendGuideFollowLag,
   sendInitialPrivateReply: sendGuideInitialPrivateReply,
+  recordOpeningMessage: recordOutboundMessage,
   async loadOpeningCard(resourceId) {
     const cover = await prisma.resourceCoverVersion.findFirst({
       where: { resourceId, status: "published", squareStoragePath: { not: null } },
