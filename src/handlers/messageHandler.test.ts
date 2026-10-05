@@ -254,7 +254,7 @@ beforeEach(() => {
   gateOwner.mockReturnValue("v1");
   startDirectDmGuideRequest.mockResolvedValue("guide_delivery_started");
   recordGuideAccessMetric.mockResolvedValue("recorded");
-  authorizeNewGuideAction.mockResolvedValue({ kind: "allow", enforced: false });
+  authorizeNewGuideAction.mockResolvedValue({ kind: "allow" });
   guideDeliveryOwner.mockReturnValue("legacy");
   deliverGuideForTrigger.mockResolvedValue("completed");
   queueReplyDraft.mockResolvedValue({ id: "draft-1" });
@@ -275,14 +275,8 @@ beforeEach(() => {
 });
 
 describe("guide audience policy — direct DM", () => {
-  it.each([
-    { result: { kind: "block", auditId: "audit-1" }, label: "blocked" },
-    {
-      result: { kind: "defer", auditId: "audit-2", reason: "provider_timeout" },
-      label: "deferred",
-    },
-  ])("sends nothing and creates no guide journey when a keyword DM is $label", async ({ result }) => {
-    authorizeNewGuideAction.mockResolvedValue(result);
+  it("sends nothing and creates no guide journey when a keyword DM is blocked", async () => {
+    authorizeNewGuideAction.mockResolvedValue({ kind: "block", auditId: "audit-1" });
     findKeywordInMessage.mockResolvedValue(keywordFixture);
 
     await handleMessage(inbound("SLEEP"));
@@ -299,6 +293,19 @@ describe("guide audience policy — direct DM", () => {
     expect(sendSequence).not.toHaveBeenCalled();
     expect(sendTrackedText).not.toHaveBeenCalled();
     expect(queueReplyDraft).not.toHaveBeenCalled();
+  });
+
+  // Fail open: an unreachable policy boundary is not a south_asian verdict.
+  // Asserted at journey resolution, the step immediately after the gate, because
+  // which sender the journey then reaches depends on the strict-gate rollout —
+  // the gate's own contract is simply that it stops withholding.
+  it("continues past the audience gate when it throws", async () => {
+    authorizeNewGuideAction.mockRejectedValue(new Error("boom"));
+    findKeywordInMessage.mockResolvedValue(keywordFixture);
+
+    await handleMessage(inbound("SLEEP"));
+
+    expect(resolveJourneyIntent).toHaveBeenCalledTimes(1);
   });
 
   it("does not redeliver an already-completed guide when authorization blocks it", async () => {

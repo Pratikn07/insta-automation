@@ -6,7 +6,7 @@ import {
   guideAccessOpening,
   guideAccessOpeningText,
 } from "./guideAccessCopy.js";
-import { createGuideAccessActionService } from "./guideAccessActionService.js";
+import { createGuideAccessActionService, type GuideAccessActionDependencies } from "./guideAccessActionService.js";
 import type { GuideActionCapabilities } from "../meta/sendGuideAction.js";
 
 const TEXT_ONLY: GuideActionCapabilities = {
@@ -155,6 +155,7 @@ function createHarness(input: {
     | { kind: "attempt_not_found" }
     | { kind: "state_conflict"; actualState: GuideAccessAttempt["state"] }
   >;
+  recordOpeningMessage?: GuideAccessActionDependencies["recordOpeningMessage"];
   sendInitialPrivateReply?: (input: {
     commentId: string;
     guideName: string;
@@ -181,8 +182,9 @@ function createHarness(input: {
   >;
   audienceDecision?:
     | { kind: "allow"; enforced: boolean }
-    | { kind: "block"; auditId: string }
-    | { kind: "defer"; auditId: string | null; reason: string };
+    | { kind: "block"; auditId: string };
+  /** Simulates an unreachable policy boundary, which must fail open. */
+  audienceThrows?: boolean;
 }) {
   let current = input.initialAttempt ?? attempt();
   let nextToken = 0;
@@ -550,9 +552,10 @@ function createHarness(input: {
   const findAttemptIdByToken = vi.fn(
     async (tokenId: string) => tokenAttempt.get(tokenId) ?? null,
   );
-  const authorizeGuideAudience = vi.fn(async () =>
-    input.audienceDecision ?? { kind: "allow" as const, enforced: false },
-  );
+  const authorizeGuideAudience = vi.fn(async () => {
+    if (input.audienceThrows) throw new Error("audience boundary unavailable");
+    return input.audienceDecision ?? { kind: "allow" as const, enforced: false };
+  });
 
   const service = createGuideAccessActionService({
     repository: repository as never,
@@ -563,6 +566,7 @@ function createHarness(input: {
     sendText,
     sendFollowLag,
     sendInitialPrivateReply,
+    recordOpeningMessage: input.recordOpeningMessage,
     richCapabilities,
     // Conditionally, so "no dependency at all" stays the default and stays covered.
     ...(input.openingCard === undefined ? {} : { loadOpeningCard }),
@@ -647,21 +651,27 @@ beforeEach(() => {
 });
 
 describe("strict live authorization matrix", () => {
-  it.each([
-    { decision: { kind: "block" as const, auditId: "audit-1" }, want: "guide_audience_blocked" },
-    {
-      decision: { kind: "defer" as const, auditId: "audit-2", reason: "provider_timeout" },
-      want: "guide_audience_deferred",
-    },
-  ])("halts a guide action on audience $want without a follow check or send", async ({ decision, want }) => {
-    const test = createHarness({ audienceDecision: decision });
+  it("halts a guide action on an audience block without a follow check or send", async () => {
+    const test = createHarness({
+      audienceDecision: { kind: "block" as const, auditId: "audit-1" },
+    });
 
-    await expect(request(test)).resolves.toBe(want);
+    await expect(request(test)).resolves.toBe("guide_audience_blocked");
 
     expect(test.resolveFresh).not.toHaveBeenCalled();
     expect(test.startGuideDelivery).not.toHaveBeenCalled();
     expect(test.sendFollowerGate).not.toHaveBeenCalled();
     expect(test.sendText).not.toHaveBeenCalled();
+  });
+
+  // Fail open. Withholding on an unavailable boundary silenced 46 of 60 people
+  // during the NVIDIA incident, 21 of them confirmed US audience.
+  it("proceeds to the follow check when the audience boundary is unavailable", async () => {
+    const test = createHarness({ audienceThrows: true });
+
+    await expect(request(test)).resolves.not.toBe("guide_audience_blocked");
+
+    expect(test.resolveFresh).toHaveBeenCalled();
   });
 
   it("uses the actual postback source for a blocked action", async () => {
@@ -2348,6 +2358,7 @@ describe("opening with no provider message id", () => {
 
     expect(result.outcome).toBe("access_attempt_needs_review");
     expect(result.openingSendFailure).toBeDefined();
+    expect(result.openingReceipt).toBeUndefined();
     expect(result.openingSendFailure?.retryText).toBe(
       guideAccessOpeningText,
     );
@@ -2362,6 +2373,36 @@ describe("opening with no provider message id", () => {
 
     expect(result.outcome).toBe("guide_opening_sent");
     expect(result.openingSendFailure).toBeUndefined();
+    expect(result.openingReceipt).toEqual({instagramMessageId: "mid-real", dmMessageId: null, acceptedAt: NOW});
+  });
+
+  it("records the provider-correlated opening before exposing its recovery receipt", async () => {
+    const recordOpeningMessage = vi.fn().mockResolvedValue({messageId: "local-dm-id"});
+    const test = createHarness({recordOpeningMessage, sendInitialPrivateReply: async () => ({messageId: "mid-tracked"})});
+    const result = await commentOnce(test);
+    expect(recordOpeningMessage).toHaveBeenCalledWith(expect.objectContaining({
+      igUserId: SENDER_ID, instagramMessageId: "mid-tracked", instagramTimestamp: NOW,
+      messageType: "text", text: guideAccessOpeningText,
+    }));
+    expect(result.openingReceipt).toEqual({instagramMessageId: "mid-tracked", dmMessageId: "local-dm-id", acceptedAt: NOW});
+  });
+
+  it("keeps a confirmed opening delivered when local history recording fails", async () => {
+    const recordOpeningMessage = vi.fn().mockRejectedValue(new Error("history unavailable"));
+    const test = createHarness({recordOpeningMessage, sendInitialPrivateReply: async () => ({messageId: "mid-real"})});
+    const result = await commentOnce(test);
+    expect(result.outcome).toBe("guide_opening_sent");
+    expect(result.openingSendFailure).toBeUndefined();
+    expect(result.openingReceipt?.instagramMessageId).toBe("mid-real");
+    expect(test.sendInitialPrivateReply).toHaveBeenCalledOnce();
+  });
+
+  it("does not record or expose a receipt without a provider message id", async () => {
+    const recordOpeningMessage = vi.fn();
+    const test = createHarness({recordOpeningMessage, sendInitialPrivateReply: async () => ({messageId: null})});
+    const result = await commentOnce(test);
+    expect(recordOpeningMessage).not.toHaveBeenCalled();
+    expect(result.openingReceipt).toBeUndefined();
   });
 
   /**

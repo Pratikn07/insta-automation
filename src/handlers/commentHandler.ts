@@ -43,6 +43,7 @@ import {
 } from "../services/settingsBlockedVerificationService.js";
 import { bindUpcomingAutomationFromComment } from "../services/upcomingAutomationCommentBinding.js";
 import { guideFollowGateV2Selector } from "../services/guideFollowGateV2Rollout.js";
+import { flags } from "../services/flagService.js";
 import { startCommentGuideRequest } from "../services/guideAccessActionService.js";
 import { recordGuideAccessMetric } from "../services/guideAccessMetrics.js";
 import { guideAudienceAuthorization } from "../services/guideAudienceAuthorization.js";
@@ -287,9 +288,14 @@ export async function handleComment(comment: CommentValue): Promise<void> {
     return;
   }
 
-  // A blocked/deferred guide decision must stop BEFORE the public acknowledgement:
-  // the user explicitly does not want a comment, private gate, recovery, or guide.
-  // The authorization service already writes the safe internal audit record.
+  // A blocked guide decision must stop BEFORE the public acknowledgement: the
+  // user explicitly does not want a comment, private gate, recovery, or guide.
+  // The authorization service writes the safe internal audit record.
+  //
+  // Failure sends. A gate that cannot reach a verdict silenced 46 of 60 people
+  // wrongly during the NVIDIA incident, 21 of them confirmed US audience, so a
+  // broken boundary now costs an occasional out-of-market reply instead of
+  // dropping in-market ones. The service itself audits this as allow_unverified.
   try {
     const audienceDecision = await guideAudienceAuthorization.authorizeNewGuideAction({
       igUserId: senderId,
@@ -297,11 +303,12 @@ export async function handleComment(comment: CommentValue): Promise<void> {
       commentId: comment.id,
       resourceId: keyword.resourceId,
     });
-    if (audienceDecision.kind !== "allow") return;
+    if (audienceDecision.kind === "block") return;
   } catch {
-    // A broken safety boundary must not fall through to a Meta send.
-    log.error({ errorCode: "guide_audience_authorization_failed", igUserId: senderId }, "Guide audience authorization failed");
-    return;
+    log.error(
+      { errorCode: "guide_audience_authorization_failed", igUserId: senderId },
+      "Guide audience authorization failed — sending anyway",
+    );
   }
 
   // Attach this comment to the person's canonical journey for this keyword. Two
@@ -429,6 +436,28 @@ export async function handleComment(comment: CommentValue): Promise<void> {
         // available — the same basis `enqueueGate` uses for `commentAt`.
         observedAt: new Date(),
       });
+      if (flags.bool("DM_RECOVERY_TWO_HOUR_ALL_ENABLED") && result.openingReceipt) {
+        const receipt = result.openingReceipt;
+        try {
+          await scheduleAcceptedGateRecovery({
+            conversationId: convo.id,
+            igUserId: senderId,
+            keywordId: keyword.id,
+            keywordSnapshot: keyword.keyword,
+            commentId: comment.id,
+            mediaId: comment.media?.id ?? null,
+            gateDmMessageId: receipt.dmMessageId,
+            instagramGateMessageId: receipt.instagramMessageId,
+            acceptedAt: receipt.acceptedAt,
+          });
+        } catch {
+          await logEvent("dm_recovery_schedule_failed", {
+            conversationId: convo.id,
+            commentId: comment.id,
+            triggerKind: "no_confirmed_read",
+          });
+        }
+      }
       const measured = OPENING_METRIC_OUTCOME.get(result.outcome);
       if (measured) {
         await recordGuideAccessMetric("opening", measured);

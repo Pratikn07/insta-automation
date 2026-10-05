@@ -6,6 +6,11 @@ const migrationUrl = new URL(
   import.meta.url,
 );
 
+const m1Url = new URL(
+  "../../prisma/migrations/20260927010000_guide_audience_decision_origin/migration.sql",
+  import.meta.url,
+);
+
 describe("guide audience authorization migration contract", () => {
   it("creates the isolated audience provenance vocabulary and tables", async () => {
     const sql = await readFile(migrationUrl, "utf8");
@@ -57,5 +62,25 @@ describe("guide audience authorization migration contract", () => {
     expect(sql).toContain(`REVOKE ALL ON TABLE "guide_audience_classification" FROM anon`);
     expect(sql).toContain(`REVOKE ALL ON TABLE "guide_audience_decision" FROM authenticated`);
     expect(sql).not.toMatch(/CREATE\s+POLICY/i);
+  });
+});
+
+describe("guide audience decision origin migration contract", () => {
+  it("records the verdict on the decision row and adds the fail-open kind", async () => {
+    const sql = await readFile(m1Url, "utf8");
+    expect(sql).toContain(
+      `ALTER TYPE "guide_audience_decision_kind" ADD VALUE IF NOT EXISTS 'allow_unverified'`,
+    );
+    expect(sql).toContain(
+      `ADD COLUMN IF NOT EXISTS "origin" "guide_audience_origin"`,
+    );
+    expect(sql).toContain(
+      `ADD COLUMN IF NOT EXISTS "confidence" "guide_audience_confidence"`,
+    );
+  });
+
+  it("does not insert a row using the enum value it adds", async () => {
+    const sql = await readFile(m1Url, "utf8");
+    expect(sql).not.toMatch(/INSERT INTO "guide_audience_decision"/i);
   });
 });

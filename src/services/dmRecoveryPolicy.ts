@@ -6,7 +6,7 @@ import type {
 } from "@prisma/client";
 import type { Origin } from "./originInference.js";
 import { normalizeRecoveryHandle, normalizeRecoveryKeyword } from "./recoveryCopyCore.js";
-import { DM_RECOVERY_TIMING_EXPERIMENT_VERSION } from "./dmRecoveryTimingExperiment.js";
+import { DM_RECOVERY_TIMING_EXPERIMENT_VERSION, DM_RECOVERY_TWO_HOUR_ALL_VERSION } from "./dmRecoveryTimingExperiment.js";
 
 // v2 = the public reply opens with the recipient's @handle. Bumped so the rows
 // posted before and after the change stay separable in reporting; nothing
@@ -58,6 +58,7 @@ export function renderRecoveryCopy(
   trigger: "no_confirmed_read" | "settings_blocked",
   keywordSnapshot: string,
   handle?: string | null,
+  openingOnly = false,
 ): string {
   let keyword: string;
   try {
@@ -71,7 +72,7 @@ export function renderRecoveryCopy(
 
   return trigger === "settings_blocked"
     ? `${mention}I couldn’t send your DM 💛 Your message-request settings blocked it. DM @tinysoho “${keyword}”.`
-    : `${mention}I sent your guide 💛 Instagram may have tucked it into your Message Requests, so check there. Still nothing? DM @tinysoho “${keyword}” and I’ll resend.`;
+    : `${mention}${openingOnly ? "I sent you a DM" : "I sent your guide"} 💛 Instagram may have tucked it into your Message Requests, so check there. Still nothing? DM @tinysoho “${keyword}” and I’ll resend.`;
 }
 
 export function assignRecoveryCohort(
@@ -261,6 +262,13 @@ export function decideRecovery(input: RecoveryPolicyInput): RecoveryDecision {
     if (!validV2Treatment) {
       return { kind: "suppress", reason: "experiment_assignment_invalid" };
     }
+  }
+
+  if (
+    input.experimentVersionSnapshot === DM_RECOVERY_TWO_HOUR_ALL_VERSION &&
+    (input.cohort !== "treatment" || input.timingArm !== "two_hour")
+  ) {
+    return { kind: "suppress", reason: "experiment_assignment_invalid" };
   }
 
   // 9. Holdout

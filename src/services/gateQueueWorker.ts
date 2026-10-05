@@ -256,10 +256,8 @@ export async function runGateQueueTick(): Promise<void> {
           if (retryOwner === "v2") {
             // The strict opening was re-sent, so this counts on V2's own metric.
             await recordGuideAccessMetric("opening", "accepted");
-            // `scheduleAcceptedGateRecovery` renders V1 public-comment nudge copy,
-            // which must never follow a strict opening. The strict attempt already
-            // carries its own review state.
-          } else {
+          }
+          if (retryOwner !== "v2" || flags.bool("DM_RECOVERY_TWO_HOUR_ALL_ENABLED")) {
             // Schedule recovery in separate block (failures do not un-send or revert queue)
             try {
               await scheduleAcceptedGateRecovery({

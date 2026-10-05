@@ -8,7 +8,7 @@ import { logEvent } from "./eventLogger.js";
 import { recordRecoveryDatabaseFailure } from "./dmRecoveryHealth.js";
 import { isRetryableConflict } from "../lib/serializationConflict.js";
 import { inferOrigin, type Origin } from "./originInference.js";
-import { ORIGIN_PROMPT_VERSION } from "./originClassifier.js";
+import { readStoredOrigin, type StoredOriginRow } from "./originVerdictStore.js";
 import {
   decideRecovery,
   type RecoveryDecision,
@@ -20,7 +20,7 @@ import {
   startPublicRecoveryDispatch,
 } from "./publicRecoveryDispatchRepository.js";
 import { resolveCanonicalConversation } from "./canonicalConversation.js";
-import { DM_RECOVERY_TIMING_EXPERIMENT_VERSION } from "./dmRecoveryTimingExperiment.js";
+import { DM_RECOVERY_TIMING_EXPERIMENT_VERSION, DM_RECOVERY_TWO_HOUR_ALL_VERSION } from "./dmRecoveryTimingExperiment.js";
 
 export type ClaimedRecovery = DmRecoveryReminder & { claimToken: string };
 
@@ -230,44 +230,24 @@ function earliest(a: Date | null, b: Date | null): Date | null {
 }
 
 /** Row shape the origin resolver needs. Exported for the test's fixtures. */
-export type OriginSource = {
-  username: string | null;
-  name: string | null;
-  inferredOrigin: string | null;
-  originConfidence: string | null;
-  originMethod: string | null;
-} | null;
+export type OriginSource = StoredOriginRow | null;
 
 /**
  * Prefer a stored LLM verdict; otherwise classify the name live.
  *
- * Only a verdict written by the CURRENT prompt version is trusted. The same
- * columns are also written by the one-time backfill script (origin_method
- * "name"), whose values are just the token screen already available here — and
- * by any future prompt. Pinning the version means a prompt change re-earns
- * trust through the worker rather than inheriting it.
+ * The stored read lives in originVerdictStore so the guide audience gate reads
+ * the identical column, method pin, and confidence rule. Only the fallback is
+ * local: recovery accepts the hardcoded token screen on a miss, the guide gate
+ * deliberately does not.
  */
 export function resolveAudienceOrigin(person: OriginSource): {
   origin: Origin;
   confidence: "high" | "low";
 } {
-  const stored = person?.inferredOrigin;
-  if (person && person.originMethod === ORIGIN_PROMPT_VERSION && isOrigin(stored)) {
-    return {
-      origin: stored,
-      // Anything not exactly "high" reads as low: "high" is the value that
-      // withholds a public reminder, so a malformed column must not grant it.
-      confidence: person.originConfidence === "high" ? "high" : "low",
-    };
-  }
+  const stored = readStoredOrigin(person);
+  if (stored) return stored;
   const inferred = inferOrigin(person?.username ?? null, person?.name ?? null);
   return { origin: inferred.origin, confidence: inferred.confidence };
-}
-
-const ORIGINS = new Set(["us_western", "south_asian", "other", "unknown"]);
-
-function isOrigin(value: string | null | undefined): value is Origin {
-  return typeof value === "string" && ORIGINS.has(value);
 }
 
 function toPolicyInput(
@@ -351,6 +331,11 @@ const DUE_SELECTION_HEADROOM = 3;
 const SENDABLE_ASSIGNMENT_WHERE: Prisma.DmRecoveryReminderWhereInput = {
   OR: [
     { experimentVersionSnapshot: null },
+    {
+      experimentVersionSnapshot: DM_RECOVERY_TWO_HOUR_ALL_VERSION,
+      cohort: "treatment",
+      timingArm: "two_hour",
+    },
     {
       experimentVersionSnapshot: DM_RECOVERY_TIMING_EXPERIMENT_VERSION,
       cohort: "treatment",

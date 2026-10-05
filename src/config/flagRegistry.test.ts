@@ -22,6 +22,7 @@ function envFlagKeys(): string[] {
 
 describe("flag registry coverage", () => {
   it.each([
+    "DM_RECOVERY_TWO_HOUR_ALL_ENABLED",
     "GUIDE_DM_INTENT_GUARD_ENABLED",
     "GUIDE_FOLLOW_GATE_V2_ENABLED",
     "GUIDE_RICH_GATE_ENABLED",

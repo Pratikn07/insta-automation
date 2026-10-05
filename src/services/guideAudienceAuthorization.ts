@@ -1,24 +1,39 @@
 import { createHash } from "node:crypto";
 import type {
   GuideAudienceActionSource,
+  GuideAudienceConfidence,
   GuideAudienceDeferReason,
+  GuideAudienceOrigin,
 } from "@prisma/client";
+import { isAxiosError } from "axios";
 import { env } from "../config/env.js";
+import { geminiEnabled } from "../meta/geminiClient.js";
 import { flags } from "./flagService.js";
 import {
   guideAudienceAuthorizationRepository,
-  type CurrentGuideAudienceClassification,
   type GuideAudienceAuthorizationRepository,
+  type GuideAudienceSubject,
 } from "./guideAudienceAuthorizationRepository.js";
 import {
-  NVIDIA_AUDIENCE_FIELD_LIMIT,
-  NVIDIA_AUDIENCE_PROVIDER,
-  NvidiaAudienceClassifierError,
-  nvidiaAudienceClassifier,
-  type AudienceClassificationProvider,
-} from "./nvidiaAudienceClassifier.js";
+  classifyIdentityPresence,
+  CURRENT_ORIGIN_METHOD,
+} from "./historicalAudienceSegment.js";
+import { classifyOrigins } from "./originClassifier.js";
+import {
+  compareAndSetOrigin,
+  originVerdictWriteData,
+  readStoredOrigin,
+} from "./originVerdictStore.js";
 
 export type { GuideAudienceAuthorizationRepository } from "./guideAudienceAuthorizationRepository.js";
+
+export const GUIDE_AUDIENCE_PROVIDER = "gemini" as const;
+
+/**
+ * Same 80-char cap the classifier's roster applies, so the hashed snapshot and
+ * the classified snapshot are the same string.
+ */
+const IDENTITY_FIELD_LIMIT = 80;
 
 export type AuthorizeNewGuideActionInput = {
   igUserId: string;
@@ -30,51 +45,47 @@ export type AuthorizeNewGuideActionInput = {
 };
 
 export type GuideAudienceAuthorization =
-  | { kind: "allow"; enforced: false }
-  | {
-      kind: "allow";
-      enforced: true;
-      classification: CurrentGuideAudienceClassification;
-    }
-  | {
-      kind: "block";
-      auditId: string;
-      classification: CurrentGuideAudienceClassification;
-    }
-  | { kind: "defer"; auditId: string | null; reason: GuideAudienceDeferReason };
+  | { kind: "allow" }
+  | { kind: "block"; auditId: string | null };
 
 export type GuideAudienceAuthorizationServiceDependencies = {
   repository: GuideAudienceAuthorizationRepository;
-  provider: AudienceClassificationProvider;
+  classify: typeof classifyOrigins;
+  persistVerdict: typeof compareAndSetOrigin;
   isEnabled(): boolean;
-  configuredModelId: string;
+  classifierEnabled: boolean;
+  timeoutMs: number;
   now?: () => Date;
 };
 
+const ALLOW: GuideAudienceAuthorization = { kind: "allow" };
+
 function safeIdentityField(value: string | null): string {
   if (!value) return "";
-  return value.replace(/[\u0000-\u001F\u007F]+/g, " ").trim().slice(0, NVIDIA_AUDIENCE_FIELD_LIMIT);
+  return value.replace(/[\u0000-\u001F\u007F]+/g, " ").trim().slice(0, IDENTITY_FIELD_LIMIT);
 }
 
-function identitySnapshot(name: string | null, username: string | null): {
+/**
+ * guide_audience_decision.identity_hash is CHAR(64) NOT NULL: the audit row
+ * anchors to an identity without storing the name or username.
+ */
+function identitySnapshot(subject: GuideAudienceSubject): {
   name: string;
   username: string;
   hash: string;
 } {
-  const normalizedName = safeIdentityField(name);
-  const normalizedUsername = safeIdentityField(username);
-  const canonical = JSON.stringify({ name: normalizedName, username: normalizedUsername });
+  const name = safeIdentityField(subject.name);
+  const username = safeIdentityField(subject.username);
   return {
-    name: normalizedName,
-    username: normalizedUsername,
-    hash: createHash("sha256").update(canonical).digest("hex"),
+    name,
+    username,
+    hash: createHash("sha256").update(JSON.stringify({ name, username })).digest("hex"),
   };
 }
 
-function providerErrorReason(error: unknown): GuideAudienceDeferReason {
-  if (error instanceof NvidiaAudienceClassifierError) {
-    if (error.category === "provider_timeout") return "provider_timeout";
-    if (error.category === "invalid_provider_response") return "invalid_provider_response";
+function unverifiedReason(error: unknown): GuideAudienceDeferReason {
+  if (isAxiosError(error) && (error.code === "ECONNABORTED" || error.code === "ETIMEDOUT")) {
+    return "provider_timeout";
   }
   return "provider_unavailable";
 }
@@ -84,186 +95,138 @@ export function createGuideAudienceAuthorizationService(
 ) {
   const now = dependencies.now ?? (() => new Date());
 
-  async function recordDefer(
+  async function block(
     input: AuthorizeNewGuideActionInput,
     identityHash: string,
-    reason: GuideAudienceDeferReason,
-    modelId: string,
-  ): Promise<Extract<GuideAudienceAuthorization, { kind: "defer" }>> {
+    origin: GuideAudienceOrigin,
+    confidence: GuideAudienceConfidence,
+  ): Promise<GuideAudienceAuthorization> {
     try {
       const audit = await dependencies.repository.createDecision({
         ...input,
         identityHash,
-        kind: "defer",
-        deferReason: reason,
-        provider: NVIDIA_AUDIENCE_PROVIDER,
-        modelId,
-        method: "nvidia_guide_audience_v1",
+        kind: "block",
+        origin,
+        confidence,
+        provider: GUIDE_AUDIENCE_PROVIDER,
+        modelId: env.GEMINI_MODEL,
+        method: CURRENT_ORIGIN_METHOD,
       });
-      return { kind: "defer", auditId: audit.id, reason };
+      return { kind: "block", auditId: audit.id };
     } catch {
-      // A database outage cannot be durably audited. It still must never become
-      // a send; callers treat this exactly as every other defer.
-      return { kind: "defer", auditId: null, reason: "persistence_failed" };
+      // An unauditable block is still a block. The verdict was explicit; only
+      // the record of it was lost.
+      return { kind: "block", auditId: null };
     }
   }
 
-  async function decideCurrentClassification(
+  /**
+   * No verdict, and the send goes out. Recorded so the operator can tell a
+   * policy decision from a broken classifier: more than a few percent of these
+   * means raise GUIDE_AUDIENCE_TIMEOUT_MS, not change the policy.
+   */
+  async function allowUnverified(
     input: AuthorizeNewGuideActionInput,
-    classification: CurrentGuideAudienceClassification,
+    identityHash: string,
+    reason: GuideAudienceDeferReason,
   ): Promise<GuideAudienceAuthorization> {
-    if (classification.origin !== "south_asian") {
-      return { kind: "allow", enforced: true, classification };
-    }
-
     try {
-      const audit = await dependencies.repository.createDecision({
+      await dependencies.repository.createDecision({
         ...input,
-        identityHash: classification.identityHash,
-        kind: "block",
-        classificationId: classification.id,
-        provider: classification.provider,
-        modelId: classification.modelId,
-        method: classification.method,
+        identityHash,
+        kind: "allow_unverified",
+        deferReason: reason,
+        provider: GUIDE_AUDIENCE_PROVIDER,
+        modelId: env.GEMINI_MODEL,
+        method: CURRENT_ORIGIN_METHOD,
       });
-      return { kind: "block", auditId: audit.id, classification };
     } catch {
-      return recordDefer(
-        input,
-        classification.identityHash,
-        "persistence_failed",
-        classification.modelId,
-      );
+      // Audit-only. Losing the row must not change the send.
     }
+    return ALLOW;
   }
 
   return {
     async authorizeNewGuideAction(
       input: AuthorizeNewGuideActionInput,
     ): Promise<GuideAudienceAuthorization> {
-      // Read the operator-controlled flag for every candidate action. Disabled
-      // means exactly unchanged historical behavior and no provider traffic.
       try {
-        if (!dependencies.isEnabled()) return { kind: "allow", enforced: false };
+        if (!dependencies.isEnabled()) return ALLOW;
       } catch {
-        return { kind: "defer", auditId: null, reason: "persistence_failed" };
+        return ALLOW;
       }
 
-      let initialIdentity;
+      let subject: GuideAudienceSubject | null;
       try {
-        initialIdentity = await dependencies.repository.findCurrentIdentity(input.igUserId);
+        subject = await dependencies.repository.findAudienceSubject(input.igUserId);
       } catch {
-        return recordDefer(
-          input,
-          identitySnapshot(null, null).hash,
-          "persistence_failed",
-          dependencies.configuredModelId,
-        );
+        return ALLOW;
       }
-      const snapshot = identitySnapshot(initialIdentity?.name ?? null, initialIdentity?.username ?? null);
-      if (!initialIdentity || (!snapshot.name && !snapshot.username)) {
-        return recordDefer(
-          input,
-          snapshot.hash,
-          "identity_unavailable",
-          dependencies.configuredModelId,
-        );
+      // An absent row is a miss with nothing to classify, not an error.
+      if (!subject) return ALLOW;
+
+      const snapshot = identitySnapshot(subject);
+
+      const stored = readStoredOrigin(subject);
+      if (stored) {
+        return stored.origin === "south_asian"
+          ? block(input, snapshot.hash, "south_asian", stored.confidence)
+          : ALLOW;
       }
 
+      // Nothing to screen. Gemini's own answer for an empty roster entry is
+      // `unknown`, which sends anyway, so skip the call and the cost. This is
+      // the worker's own predicate, so "-" and "---" count as absent here too
+      // rather than being billed as a name.
+      const absent = classifyIdentityPresence({
+        username: subject.username,
+        name: subject.name,
+      });
+      if (absent) return ALLOW;
+      if (!dependencies.classifierEnabled) return ALLOW;
+
+      let result;
       try {
-        const cached = await dependencies.repository.findCurrentClassification({
-          igUserId: input.igUserId,
-          identityHash: snapshot.hash,
-          method: "nvidia_guide_audience_v1",
-        });
-        if (cached) return decideCurrentClassification(input, cached);
-      } catch {
-        return recordDefer(
-          input,
-          snapshot.hash,
-          "persistence_failed",
-          dependencies.configuredModelId,
+        result = await dependencies.classify(
+          [{ id: subject.id, username: subject.username, name: subject.name }],
+          { timeoutMs: dependencies.timeoutMs },
         );
+      } catch (error) {
+        return allowUnverified(input, snapshot.hash, unverifiedReason(error));
       }
 
-      let providerResult;
+      const verdict = result.verdicts.find((candidate) => candidate.id === subject.id);
+      if (!verdict) {
+        return allowUnverified(input, snapshot.hash, "invalid_provider_response");
+      }
+
+      // Write back through the identity-guarded path so the next interaction —
+      // and the DM-recovery gate — read the same verdict from the same column.
+      // A rename between the read and here makes this a no-op rather than
+      // stamping the new identity with the old one's answer.
       try {
-        providerResult = await dependencies.provider.classify([
+        await dependencies.persistVerdict([
           {
-            id: input.igUserId,
-            name: snapshot.name,
-            username: snapshot.username,
+            candidate: { id: subject.id, username: subject.username, name: subject.name },
+            data: originVerdictWriteData(verdict, now()),
           },
         ]);
-      } catch (error) {
-        return recordDefer(
-          input,
-          snapshot.hash,
-          providerErrorReason(error),
-          dependencies.configuredModelId,
-        );
-      }
-
-      const verdict = providerResult.verdicts.length === 1 ? providerResult.verdicts[0] : null;
-      if (!verdict || verdict.id !== input.igUserId) {
-        return recordDefer(
-          input,
-          snapshot.hash,
-          "invalid_provider_response",
-          providerResult.modelId,
-        );
-      }
-
-      // The provider works on a snapshot, not a person. Re-read immediately
-      // before persistence so a profile rename cannot authorize a later identity.
-      try {
-        const currentIdentity = await dependencies.repository.findCurrentIdentity(input.igUserId);
-        const currentSnapshot = identitySnapshot(
-          currentIdentity?.name ?? null,
-          currentIdentity?.username ?? null,
-        );
-        if (!currentIdentity || currentSnapshot.hash !== snapshot.hash) {
-          return recordDefer(input, snapshot.hash, "identity_changed", providerResult.modelId);
-        }
       } catch {
-        return recordDefer(
-          input,
-          snapshot.hash,
-          "persistence_failed",
-          providerResult.modelId,
-        );
+        // Cache-only. The verdict in hand still decides this action.
       }
 
-      let classification: CurrentGuideAudienceClassification;
-      try {
-        classification = await dependencies.repository.createClassification({
-          igUserId: input.igUserId,
-          identityHash: snapshot.hash,
-          origin: verdict.origin,
-          confidence: verdict.confidence,
-          evidence: verdict.evidence,
-          provider: NVIDIA_AUDIENCE_PROVIDER,
-          modelId: providerResult.modelId,
-          method: providerResult.method,
-          classifiedAt: now(),
-        });
-      } catch {
-        return recordDefer(
-          input,
-          snapshot.hash,
-          "persistence_failed",
-          providerResult.modelId,
-        );
-      }
-
-      return decideCurrentClassification(input, classification);
+      return verdict.origin === "south_asian"
+        ? block(input, snapshot.hash, "south_asian", verdict.confidence)
+        : ALLOW;
     },
   };
 }
 
 export const guideAudienceAuthorization = createGuideAudienceAuthorizationService({
   repository: guideAudienceAuthorizationRepository,
-  provider: nvidiaAudienceClassifier,
+  classify: classifyOrigins,
+  persistVerdict: compareAndSetOrigin,
   isEnabled: () => flags.bool("GUIDE_AUDIENCE_BLOCK_ENABLED"),
-  configuredModelId: env.NVIDIA_AUDIENCE_MODEL,
+  classifierEnabled: geminiEnabled,
+  timeoutMs: env.GUIDE_AUDIENCE_TIMEOUT_MS,
 });

@@ -123,23 +123,15 @@ export const envSchema = z.object({
   // fall back to low-confidence) but the app still boots and serves everything else.
   GEMINI_API_KEY: z.string().optional(),
   GEMINI_MODEL: z.string().default("gemini-2.5-flash"),
-  // Server-only NVIDIA NIM credential used by the guide-specific audience
-  // classifier. The app must keep serving its existing guide paths when absent.
-  NVIDIA_API_KEY: z.string().min(1).optional(),
-  NVIDIA_AUDIENCE_MODEL: z.string().default("nvidia/nemotron-3.5-lightning-30b-a3b"),
-  NVIDIA_AUDIENCE_TIMEOUT_MS: z.coerce.number().int().min(500).max(30_000).default(8_000),
-  // Offline recovery is a deliberate, bounded operator action rather than a
-  // webhook request. It gets the full provider timeout so a slow-but-healthy
-  // response does not recreate the incident's 8-second deferrals.
-  NVIDIA_AUDIENCE_RECOVERY_TIMEOUT_MS: z.coerce
-    .number()
-    .int()
-    .min(500)
-    .max(30_000)
-    .default(30_000),
   // This is intentionally an outbound operator flag. A deployment starts with
   // enforcement off and the console may stop, but never enable, it.
   GUIDE_AUDIENCE_BLOCK_ENABLED: booleanFlag(false),
+  // Ceiling on the inline Gemini call the guide audience gate makes on a cache
+  // miss. 3,000ms is 2.3x the slowest measured single-candidate call (1,327ms,
+  // p50 811ms). Every premature cutoff sends to a South Asian user, so a tight
+  // budget costs more than a slightly later DM — and server.ts:69 acks Meta
+  // before dispatch, so this can never trip a webhook timeout.
+  GUIDE_AUDIENCE_TIMEOUT_MS: z.coerce.number().int().min(500).max(30_000).default(3_000),
   // Max Gemini spend per UTC day (USD). The queue worker stops for the day once
   // summed cost crosses this — a hard guard against runaway analysis cost.
   GEMINI_DAILY_BUDGET_USD: z.coerce.number().min(0).default(5),
@@ -241,6 +233,8 @@ export const envSchema = z.object({
 
   // --- DM Recovery Reminders ---
   DM_RECOVERY_ENABLED: booleanFlag(false),
+  // One-time two-hour rollout, separate from the frozen randomized experiment.
+  DM_RECOVERY_TWO_HOUR_ALL_ENABLED: booleanFlag(false),
   /**
    * Historical recovery (Feature 4) sending. Separate from DM_RECOVERY_ENABLED so
    * the prospective feature can run without the historical campaigns, which contact
@@ -406,7 +400,11 @@ export const envSchema = z.object({
     });
   }
 
-  if (value.DM_RECOVERY_ENABLED && (!hasStart || !hasEnd)) {
+  if (
+    value.DM_RECOVERY_ENABLED &&
+    !value.DM_RECOVERY_TWO_HOUR_ALL_ENABLED &&
+    (!hasStart || !hasEnd)
+  ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["DM_RECOVERY_ENABLED"],

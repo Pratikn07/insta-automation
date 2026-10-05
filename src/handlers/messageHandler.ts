@@ -135,13 +135,15 @@ async function mayStartGuideAction(input: {
 }): Promise<boolean> {
   try {
     const decision = await guideAudienceAuthorization.authorizeNewGuideAction(input);
-    return decision.kind === "allow";
+    return decision.kind !== "block";
   } catch {
+    // Fail open. An unreachable policy boundary must not drop an in-market
+    // person; only an explicit south_asian verdict withholds.
     logger.error(
       { errorCode: "guide_audience_authorization_failed", igUserId: input.igUserId },
-      "Guide audience authorization failed",
+      "Guide audience authorization failed — sending anyway",
     );
-    return false;
+    return true;
   }
 }
 

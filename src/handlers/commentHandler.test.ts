@@ -28,6 +28,8 @@ const scheduleSettingsBlockedRecovery = vi.fn();
 const scheduleTrackingUnavailableRecovery = vi.fn();
 const resolveActiveSettingsBlockedVerification = vi.fn();
 const gateOwner = vi.fn();
+const recoveryFlags = { allTwoHour: false };
+vi.mock("../services/flagService.js", () => ({ flags: { bool: () => recoveryFlags.allTwoHour } }));
 const startCommentGuideRequest = vi.fn();
 const recordGuideAccessMetric = vi.fn();
 const authorizeNewGuideAction = vi.fn();
@@ -146,6 +148,7 @@ function graphFailure(code = 100, subcode = 2534025): AxiosError {
 }
 
 beforeEach(() => {
+  recoveryFlags.allTwoHour = false;
   for (const fn of [
     extractCandidates,
     scannableCommentMatchCandidates,
@@ -180,7 +183,7 @@ beforeEach(() => {
   gateOwner.mockReturnValue("v1");
   startCommentGuideRequest.mockResolvedValue({ outcome: "guide_opening_sent" });
   recordGuideAccessMetric.mockResolvedValue("recorded");
-  authorizeNewGuideAction.mockResolvedValue({ kind: "allow", enforced: false });
+  authorizeNewGuideAction.mockResolvedValue({ kind: "allow" });
 
   // The database enforces this in production; here a set stands in for it.
   const claimed = new Set<string>();
@@ -772,14 +775,8 @@ describe("guide audience policy — comment path", () => {
     media: { id: "reel-1", media_product_type: "REELS" },
   };
 
-  it.each([
-    { result: { kind: "block", auditId: "audit-1" }, label: "blocked" },
-    {
-      result: { kind: "defer", auditId: "audit-2", reason: "provider_timeout" },
-      label: "deferred",
-    },
-  ])("sends nothing when a matched comment is $label", async ({ result }) => {
-    authorizeNewGuideAction.mockResolvedValue(result);
+  it("sends nothing when a matched comment is blocked", async () => {
+    authorizeNewGuideAction.mockResolvedValue({ kind: "block", auditId: "audit-1" });
 
     await handleComment(COMMENT);
 
@@ -794,6 +791,23 @@ describe("guide audience policy — comment path", () => {
     expect(sendTrackedPrivateReply).not.toHaveBeenCalled();
     expect(startCommentGuideRequest).not.toHaveBeenCalled();
     expect(enqueueGate).not.toHaveBeenCalled();
+  });
+
+  // Fail open. A gate that cannot reach a verdict silenced 46 of 60 people
+  // during the NVIDIA incident, 21 of them confirmed US audience.
+  it("still replies when the audience gate throws", async () => {
+    authorizeNewGuideAction.mockRejectedValue(new Error("boom"));
+    // The send now runs to completion, so the gate DM has to return a receipt.
+    sendTrackedPrivateReply.mockResolvedValue({
+      instagramMessageId: "mid-1",
+      dmMessageId: "dm-1",
+      acceptedAt: new Date("2026-09-27T12:00:00.000Z"),
+    });
+
+    await handleComment(COMMENT);
+
+    expect(replyToComment).toHaveBeenCalledTimes(1);
+    expect(sendTrackedPrivateReply).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -847,6 +861,28 @@ describe("strict follower gate v2 — comment path", () => {
     expect(enqueueGate).not.toHaveBeenCalled();
     expect(markGated).not.toHaveBeenCalled();
     expect(scheduleAcceptedGateRecovery).not.toHaveBeenCalled();
+  });
+
+  it("schedules a strict opening from its confirmed receipt when two-hour rollout is active", async () => {
+    recoveryFlags.allTwoHour = true;
+    gateOwner.mockReturnValue("v2");
+    const receipt = {instagramMessageId: "strict-mid", dmMessageId: "strict-dm", acceptedAt: new Date("2026-10-05T08:00:00Z")};
+    startCommentGuideRequest.mockResolvedValue({outcome: "guide_opening_sent", openingReceipt: receipt});
+    await handleComment(COMMENT);
+    expect(scheduleAcceptedGateRecovery).toHaveBeenCalledWith(expect.objectContaining({
+      commentId: COMMENT.id, instagramGateMessageId: receipt.instagramMessageId,
+      gateDmMessageId: receipt.dmMessageId, acceptedAt: receipt.acceptedAt,
+    }));
+  });
+
+  it("does not retry a delivered strict opening when reminder persistence fails", async () => {
+    recoveryFlags.allTwoHour = true;
+    gateOwner.mockReturnValue("v2");
+    startCommentGuideRequest.mockResolvedValue({outcome: "guide_opening_sent", openingReceipt: {instagramMessageId: "strict-mid", dmMessageId: null, acceptedAt: new Date()}});
+    scheduleAcceptedGateRecovery.mockRejectedValue(new Error("database unavailable"));
+    await handleComment(COMMENT);
+    expect(enqueueGate).not.toHaveBeenCalled();
+    expect(logEvent).toHaveBeenCalledWith("dm_recovery_schedule_failed", expect.anything());
   });
 
   it("decides ownership once, from the sender and the guide only", async () => {

@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 export const DM_RECOVERY_TIMING_EXPERIMENT_VERSION =
   "read-recovery-timing-v2" as const;
 
+export const DM_RECOVERY_TWO_HOUR_ALL_VERSION = "read-recovery-two-hour-all-v1" as const;
+
 export const RECOVERY_TIMING_ARMS = [
   "two_hour",
   "six_hour",

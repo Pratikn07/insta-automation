@@ -17,28 +17,28 @@ const baseEnv = {
 };
 
 describe("env configuration schema for DM recovery", () => {
-  it("keeps NVIDIA guide-audience enforcement disabled unless explicitly configured", () => {
-    expect(envSchema.parse(baseEnv)).not.toHaveProperty("NVIDIA_API_KEY");
-    expect(envSchema.parse(baseEnv)).toMatchObject({
-      NVIDIA_AUDIENCE_MODEL: "nvidia/nemotron-3.5-lightning-30b-a3b",
-      NVIDIA_AUDIENCE_TIMEOUT_MS: 8_000,
-      NVIDIA_AUDIENCE_RECOVERY_TIMEOUT_MS: 30_000,
-      GUIDE_AUDIENCE_BLOCK_ENABLED: false,
-    });
+  it("keeps guide-audience enforcement disabled unless explicitly configured", () => {
+    expect(envSchema.parse(baseEnv).GUIDE_AUDIENCE_BLOCK_ENABLED).toBe(false);
     expect(
-      envSchema.parse({
-        ...baseEnv,
-        NVIDIA_API_KEY: "test-key",
-        NVIDIA_AUDIENCE_TIMEOUT_MS: "9000",
-        NVIDIA_AUDIENCE_RECOVERY_TIMEOUT_MS: "12000",
-        GUIDE_AUDIENCE_BLOCK_ENABLED: "true",
-      }),
-    ).toMatchObject({
-      NVIDIA_API_KEY: "test-key",
-      NVIDIA_AUDIENCE_TIMEOUT_MS: 9_000,
-      NVIDIA_AUDIENCE_RECOVERY_TIMEOUT_MS: 12_000,
-      GUIDE_AUDIENCE_BLOCK_ENABLED: true,
-    });
+      envSchema.parse({ ...baseEnv, GUIDE_AUDIENCE_BLOCK_ENABLED: "true" })
+        .GUIDE_AUDIENCE_BLOCK_ENABLED,
+    ).toBe(true);
+  });
+
+  // The gate reuses GEMINI_API_KEY. A second provider credential surviving here
+  // would mean a second classifier survived with it.
+  it("does not carry a provider credential for the audience classifier", () => {
+    expect(envSchema.parse(baseEnv)).not.toHaveProperty("NVIDIA_API_KEY");
+  });
+
+  it("defaults the guide audience deadline to three seconds", () => {
+    expect(envSchema.parse(baseEnv).GUIDE_AUDIENCE_TIMEOUT_MS).toBe(3_000);
+  });
+
+  it("accepts an operator override for the guide audience deadline", () => {
+    expect(
+      envSchema.parse({ ...baseEnv, GUIDE_AUDIENCE_TIMEOUT_MS: "5000" }).GUIDE_AUDIENCE_TIMEOUT_MS,
+    ).toBe(5_000);
   });
 
   it("defaults the DM intent guard off with an empty controlled-recipient allowlist", () => {
@@ -330,6 +330,11 @@ describe("env configuration schema for DM recovery", () => {
         DM_RECOVERY_EXPERIMENT_END_AT: "2026-08-20T08:00:00Z",
       }).success,
     ).toBe(true);
+  });
+
+  it("allows the explicit all-user rollout without experiment dates", () => {
+    const result = envSchema.safeParse({...baseEnv, DM_RECOVERY_ENABLED: "true", DM_RECOVERY_TWO_HOUR_ALL_ENABLED: "true"});
+    expect(result.success).toBe(true);
   });
 
   it("normalizes empty string experiment dates to undefined", () => {

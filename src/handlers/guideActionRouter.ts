@@ -164,7 +164,7 @@ export function createGuideActionRouter(dependencies: GuideActionRouterDependenc
           );
 
     const presentation =
-      outcome === "guide_audience_blocked" || outcome === "guide_audience_deferred"
+      outcome === "guide_audience_blocked"
         ? "none_audience_policy"
         : await dependencies.presentOutcome({
             eventId: input.eventId,

@@ -1,154 +1,290 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createGuideAudienceAuthorizationService,
-  type GuideAudienceAuthorizationRepository,
+  type GuideAudienceAuthorizationServiceDependencies,
 } from "./guideAudienceAuthorization.js";
-import type { AudienceClassificationProvider } from "./nvidiaAudienceClassifier.js";
 
-const USER_ID = "17841400000000001";
-const MODEL = "nvidia/nemotron-3.5-lightning-30b-a3b";
+const SUBJECT = {
+  id: "ig-1",
+  username: "priya_mommy",
+  name: "Priya S",
+  inferredOrigin: null as string | null,
+  originConfidence: null as string | null,
+  originMethod: null as string | null,
+};
 
-function makeRepository(
-  identity: { id: string; name: string | null; username: string | null } | null = {
-    id: USER_ID,
-    name: "Kanimozhi",
-    username: "kanimozhi_home",
-  },
-) {
-  const repository: GuideAudienceAuthorizationRepository = {
-    findCurrentIdentity: vi.fn().mockResolvedValue(identity),
-    findCurrentClassification: vi.fn().mockResolvedValue(null),
-    createClassification: vi.fn().mockImplementation(async (input) => ({
-      ...input,
-      id: "10000000-0000-4000-8000-000000000001",
-    })),
-    createDecision: vi.fn().mockResolvedValue({ id: "20000000-0000-4000-8000-000000000001" }),
+function harness(over: Partial<GuideAudienceAuthorizationServiceDependencies> = {}) {
+  const dependencies: GuideAudienceAuthorizationServiceDependencies = {
+    repository: {
+      findAudienceSubject: vi.fn().mockResolvedValue({ ...SUBJECT }),
+      createDecision: vi.fn().mockResolvedValue({ id: "audit-1" }),
+    },
+    classify: vi.fn(),
+    persistVerdict: vi.fn().mockResolvedValue(1),
+    isEnabled: () => true,
+    classifierEnabled: true,
+    timeoutMs: 3_000,
+    now: () => new Date("2026-09-27T12:00:00.000Z"),
+    ...over,
   };
-  return repository;
-}
-
-function makeProvider(
-  verdict: {
-    origin: "south_asian" | "us_western" | "other" | "unknown";
-    confidence: "high" | "low";
-    evidence: string;
-  },
-): AudienceClassificationProvider {
   return {
-    classify: vi.fn().mockResolvedValue({
-      modelId: MODEL,
-      method: "nvidia_guide_audience_v1",
-      verdicts: [{ id: USER_ID, ...verdict }],
-    }),
+    service: createGuideAudienceAuthorizationService(dependencies),
+    // Read back off the built dependencies, not off the defaults: a mock passed
+    // in `over` is the one the service actually calls, so it has to be the one
+    // the assertions inspect.
+    createDecision: dependencies.repository.createDecision,
+    findAudienceSubject: dependencies.repository.findAudienceSubject,
+    classify: dependencies.classify,
+    persistVerdict: dependencies.persistVerdict,
   };
 }
 
-function makeService(options: {
-  repository?: GuideAudienceAuthorizationRepository;
-  provider?: AudienceClassificationProvider;
-  enabled?: boolean;
-} = {}) {
-  const repository = options.repository ?? makeRepository();
-  const provider =
-    options.provider ??
-    makeProvider({
-      origin: "south_asian",
-      confidence: "high",
-      evidence: "Tamil given name",
-    });
-  return {
-    repository,
-    provider,
-    service: createGuideAudienceAuthorizationService({
-      repository,
-      provider,
-      isEnabled: () => options.enabled ?? true,
-      configuredModelId: MODEL,
-    }),
-  };
-}
+const ACTION = { igUserId: "ig-1", source: "comment" as const, commentId: "c-1" };
 
 describe("guide audience authorization", () => {
-  it.each(["high", "low"] as const)(
-    "blocks a current south_asian result at %s confidence before any caller can send",
-    async (confidence) => {
-      const test = makeService({
-        provider: makeProvider({
-          origin: "south_asian",
-          confidence,
-          evidence: "distinctive synthetic cue",
+  it.each([
+    ["south_asian", "high", "block"],
+    ["south_asian", "low", "block"],
+    ["us_western", "high", "allow"],
+    ["us_western", "low", "allow"],
+    ["other", "high", "allow"],
+    ["other", "low", "allow"],
+    ["unknown", "high", "allow"],
+    ["unknown", "low", "allow"],
+  ])("decides %s/%s as %s from the stored verdict", async (origin, confidence, kind) => {
+    const { service, classify } = harness({
+      repository: {
+        findAudienceSubject: vi.fn().mockResolvedValue({
+          ...SUBJECT,
+          inferredOrigin: origin,
+          originConfidence: confidence,
+          originMethod: "llm_v3",
         }),
-      });
+        createDecision: vi.fn().mockResolvedValue({ id: "audit-1" }),
+      },
+    });
+    expect((await service.authorizeNewGuideAction(ACTION)).kind).toBe(kind);
+    expect(classify).not.toHaveBeenCalled();
+  });
 
-      await expect(
-        test.service.authorizeNewGuideAction({ igUserId: USER_ID, source: "comment" }),
-      ).resolves.toMatchObject({ kind: "block" });
+  it("writes exactly one block row carrying the verdict", async () => {
+    const createDecision = vi.fn().mockResolvedValue({ id: "audit-1" });
+    const { service } = harness({
+      repository: {
+        findAudienceSubject: vi.fn().mockResolvedValue({
+          ...SUBJECT,
+          inferredOrigin: "south_asian",
+          originConfidence: "high",
+          originMethod: "llm_v3",
+        }),
+        createDecision,
+      },
+    });
+    await service.authorizeNewGuideAction(ACTION);
+    expect(createDecision).toHaveBeenCalledTimes(1);
+    expect(createDecision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "block",
+        origin: "south_asian",
+        confidence: "high",
+        source: "comment",
+        commentId: "c-1",
+        provider: "gemini",
+        method: "llm_v3",
+      }),
+    );
+  });
 
-      expect(test.repository.createClassification).toHaveBeenCalledOnce();
-      expect(test.repository.createDecision).toHaveBeenCalledWith(
-        expect.objectContaining({ kind: "block", source: "comment" }),
-      );
-    },
-  );
-
-  it("allows a schema-valid unknown without creating an audit decision", async () => {
-    const test = makeService({
-      provider: makeProvider({
-        origin: "unknown",
-        confidence: "low",
-        evidence: "generic handle, no cue",
+  it("ignores a verdict written by an older prompt version", async () => {
+    const { service, classify } = harness({
+      repository: {
+        findAudienceSubject: vi.fn().mockResolvedValue({
+          ...SUBJECT,
+          inferredOrigin: "south_asian",
+          originConfidence: "high",
+          originMethod: "name",
+        }),
+        createDecision: vi.fn().mockResolvedValue({ id: "audit-1" }),
+      },
+      classify: vi.fn().mockResolvedValue({
+        verdicts: [],
+        costUsd: 0,
+        modelId: "gemini-2.5-flash",
+        promptVersion: "llm_v3",
+        finishReason: "STOP",
       }),
     });
-
-    await expect(
-      test.service.authorizeNewGuideAction({ igUserId: USER_ID, source: "dm" }),
-    ).resolves.toMatchObject({ kind: "allow", enforced: true });
-
-    expect(test.repository.createDecision).not.toHaveBeenCalled();
+    await service.authorizeNewGuideAction(ACTION);
+    expect(classify).toHaveBeenCalledTimes(1);
   });
 
-  it("defers and audits when the provider is unavailable instead of allowing unknown", async () => {
-    const repository = makeRepository();
-    const test = makeService({
-      repository,
-      provider: { classify: vi.fn().mockRejectedValue(new Error("private provider body")) },
+  it("classifies on a miss, blocks, and writes the verdict back", async () => {
+    const { service, classify, persistVerdict, createDecision } = harness({
+      classify: vi.fn().mockResolvedValue({
+        verdicts: [
+          {
+            id: "ig-1",
+            origin: "south_asian",
+            confidence: "high",
+            cueKind: "distinctive_cultural",
+            audienceSegment: "south_asian",
+            evidence: "south asian given name",
+          },
+        ],
+        costUsd: 0.00015,
+        modelId: "gemini-2.5-flash",
+        promptVersion: "llm_v3",
+        finishReason: "STOP",
+      }),
     });
+    expect((await service.authorizeNewGuideAction(ACTION)).kind).toBe("block");
+    expect(classify).toHaveBeenCalledWith(
+      [{ id: "ig-1", username: "priya_mommy", name: "Priya S" }],
+      { timeoutMs: 3_000 },
+    );
+    expect(persistVerdict).toHaveBeenCalledTimes(1);
+    expect(createDecision).toHaveBeenCalledWith(expect.objectContaining({ kind: "block" }));
+  });
 
-    await expect(
-      test.service.authorizeNewGuideAction({ igUserId: USER_ID, source: "redelivery" }),
-    ).resolves.toMatchObject({ kind: "defer", reason: "provider_unavailable" });
+  it("allows and writes back when the live call returns us_western", async () => {
+    const { service, createDecision, persistVerdict } = harness({
+      classify: vi.fn().mockResolvedValue({
+        verdicts: [
+          {
+            id: "ig-1",
+            origin: "us_western",
+            confidence: "high",
+            cueKind: "distinctive_cultural",
+            audienceSegment: "western",
+            evidence: "anglophone given name",
+          },
+        ],
+        costUsd: 0.00015,
+        modelId: "gemini-2.5-flash",
+        promptVersion: "llm_v3",
+        finishReason: "STOP",
+      }),
+    });
+    expect((await service.authorizeNewGuideAction(ACTION)).kind).toBe("allow");
+    expect(persistVerdict).toHaveBeenCalledTimes(1);
+    expect(createDecision).not.toHaveBeenCalled();
+  });
 
-    expect(repository.createDecision).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "defer", source: "redelivery" }),
+  it.each([
+    [
+      "a timeout",
+      Object.assign(new Error("timeout of 3000ms exceeded"), {
+        isAxiosError: true,
+        code: "ECONNABORTED",
+      }),
+      "provider_timeout",
+    ],
+    ["any other throw", new Error("boom"), "provider_unavailable"],
+  ])("allows on %s and audits it", async (_label, error, deferReason) => {
+    const createDecision = vi.fn().mockResolvedValue({ id: "audit-1" });
+    const { service } = harness({
+      classify: vi.fn().mockRejectedValue(error),
+      repository: {
+        findAudienceSubject: vi.fn().mockResolvedValue({ ...SUBJECT }),
+        createDecision,
+      },
+    });
+    expect((await service.authorizeNewGuideAction(ACTION)).kind).toBe("allow");
+    expect(createDecision).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "allow_unverified", deferReason }),
     );
   });
 
-  it("leaves the existing guide path unchanged while enforcement is disabled", async () => {
-    const test = makeService({ enabled: false });
-
-    await expect(
-      test.service.authorizeNewGuideAction({ igUserId: USER_ID, source: "dm" }),
-    ).resolves.toEqual({ kind: "allow", enforced: false });
-
-    expect(test.provider.classify).not.toHaveBeenCalled();
-    expect(test.repository.findCurrentIdentity).not.toHaveBeenCalled();
-    expect(test.repository.createDecision).not.toHaveBeenCalled();
+  it("allows on an unreadable response and audits it", async () => {
+    const createDecision = vi.fn().mockResolvedValue({ id: "audit-1" });
+    const { service } = harness({
+      classify: vi.fn().mockResolvedValue({
+        verdicts: [],
+        costUsd: 0.00015,
+        modelId: "gemini-2.5-flash",
+        promptVersion: "llm_v3",
+        finishReason: "MAX_TOKENS",
+      }),
+      repository: {
+        findAudienceSubject: vi.fn().mockResolvedValue({ ...SUBJECT }),
+        createDecision,
+      },
+    });
+    expect((await service.authorizeNewGuideAction(ACTION)).kind).toBe("allow");
+    expect(createDecision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "allow_unverified",
+        deferReason: "invalid_provider_response",
+      }),
+    );
   });
 
-  it("defers when the identity changes during classification", async () => {
-    const repository = makeRepository();
-    vi.mocked(repository.findCurrentIdentity)
-      .mockResolvedValueOnce({ id: USER_ID, name: "Kanimozhi", username: "old_handle" })
-      .mockResolvedValueOnce({ id: USER_ID, name: "Kanimozhi", username: "new_handle" });
-    const test = makeService({ repository });
+  it("blocks with a null auditId when the audit write fails", async () => {
+    const { service } = harness({
+      repository: {
+        findAudienceSubject: vi.fn().mockResolvedValue({
+          ...SUBJECT,
+          inferredOrigin: "south_asian",
+          originConfidence: "low",
+          originMethod: "llm_v3",
+        }),
+        createDecision: vi.fn().mockRejectedValue(new Error("db down")),
+      },
+    });
+    expect(await service.authorizeNewGuideAction(ACTION)).toEqual({
+      kind: "block",
+      auditId: null,
+    });
+  });
 
-    await expect(
-      test.service.authorizeNewGuideAction({ igUserId: USER_ID, source: "quick_reply" }),
-    ).resolves.toMatchObject({ kind: "defer", reason: "identity_changed" });
+  it("allows with no call and no row when the flag is off", async () => {
+    const { service, classify, createDecision } = harness({ isEnabled: () => false });
+    expect(await service.authorizeNewGuideAction(ACTION)).toEqual({ kind: "allow" });
+    expect(classify).not.toHaveBeenCalled();
+    expect(createDecision).not.toHaveBeenCalled();
+  });
 
-    expect(repository.createClassification).not.toHaveBeenCalled();
-    expect(repository.createDecision).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "defer", source: "quick_reply" }),
-    );
+  it("allows with no call when Gemini is disabled and nothing is stored", async () => {
+    const { service, classify } = harness({ classifierEnabled: false });
+    expect((await service.authorizeNewGuideAction(ACTION)).kind).toBe("allow");
+    expect(classify).not.toHaveBeenCalled();
+  });
+
+  // Dash-only placeholders are absent fields, exactly as
+  // classifyIdentityPresence already treats them for the enrichment worker.
+  it.each([
+    ["blank", null, "   "],
+    ["dash-only", "-", "---"],
+  ])("allows with no call when the identity is %s", async (_label, username, name) => {
+    const { service, classify, createDecision } = harness({
+      repository: {
+        findAudienceSubject: vi.fn().mockResolvedValue({ ...SUBJECT, username, name }),
+        createDecision: vi.fn().mockResolvedValue({ id: "audit-1" }),
+      },
+    });
+    expect((await service.authorizeNewGuideAction(ACTION)).kind).toBe("allow");
+    expect(classify).not.toHaveBeenCalled();
+    expect(createDecision).not.toHaveBeenCalled();
+  });
+
+  it("allows with no call when the person has no row at all", async () => {
+    const { service, classify } = harness({
+      repository: {
+        findAudienceSubject: vi.fn().mockResolvedValue(null),
+        createDecision: vi.fn().mockResolvedValue({ id: "audit-1" }),
+      },
+    });
+    expect((await service.authorizeNewGuideAction(ACTION)).kind).toBe("allow");
+    expect(classify).not.toHaveBeenCalled();
+  });
+
+  it("allows when the stored read itself throws", async () => {
+    const { service } = harness({
+      repository: {
+        findAudienceSubject: vi.fn().mockRejectedValue(new Error("db down")),
+        createDecision: vi.fn().mockResolvedValue({ id: "audit-1" }),
+      },
+    });
+    expect((await service.authorizeNewGuideAction(ACTION)).kind).toBe("allow");
   });
 });
