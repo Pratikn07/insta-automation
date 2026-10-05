@@ -28,6 +28,8 @@ const scheduleSettingsBlockedRecovery = vi.fn();
 const scheduleTrackingUnavailableRecovery = vi.fn();
 const resolveActiveSettingsBlockedVerification = vi.fn();
 const gateOwner = vi.fn();
+const recoveryFlags = { allTwoHour: false };
+vi.mock("../services/flagService.js", () => ({ flags: { bool: () => recoveryFlags.allTwoHour } }));
 const startCommentGuideRequest = vi.fn();
 const recordGuideAccessMetric = vi.fn();
 const authorizeNewGuideAction = vi.fn();
@@ -146,6 +148,7 @@ function graphFailure(code = 100, subcode = 2534025): AxiosError {
 }
 
 beforeEach(() => {
+  recoveryFlags.allTwoHour = false;
   for (const fn of [
     extractCandidates,
     scannableCommentMatchCandidates,
@@ -858,6 +861,28 @@ describe("strict follower gate v2 — comment path", () => {
     expect(enqueueGate).not.toHaveBeenCalled();
     expect(markGated).not.toHaveBeenCalled();
     expect(scheduleAcceptedGateRecovery).not.toHaveBeenCalled();
+  });
+
+  it("schedules a strict opening from its confirmed receipt when two-hour rollout is active", async () => {
+    recoveryFlags.allTwoHour = true;
+    gateOwner.mockReturnValue("v2");
+    const receipt = {instagramMessageId: "strict-mid", dmMessageId: "strict-dm", acceptedAt: new Date("2026-10-05T08:00:00Z")};
+    startCommentGuideRequest.mockResolvedValue({outcome: "guide_opening_sent", openingReceipt: receipt});
+    await handleComment(COMMENT);
+    expect(scheduleAcceptedGateRecovery).toHaveBeenCalledWith(expect.objectContaining({
+      commentId: COMMENT.id, instagramGateMessageId: receipt.instagramMessageId,
+      gateDmMessageId: receipt.dmMessageId, acceptedAt: receipt.acceptedAt,
+    }));
+  });
+
+  it("does not retry a delivered strict opening when reminder persistence fails", async () => {
+    recoveryFlags.allTwoHour = true;
+    gateOwner.mockReturnValue("v2");
+    startCommentGuideRequest.mockResolvedValue({outcome: "guide_opening_sent", openingReceipt: {instagramMessageId: "strict-mid", dmMessageId: null, acceptedAt: new Date()}});
+    scheduleAcceptedGateRecovery.mockRejectedValue(new Error("database unavailable"));
+    await handleComment(COMMENT);
+    expect(enqueueGate).not.toHaveBeenCalled();
+    expect(logEvent).toHaveBeenCalledWith("dm_recovery_schedule_failed", expect.anything());
   });
 
   it("decides ownership once, from the sender and the guide only", async () => {

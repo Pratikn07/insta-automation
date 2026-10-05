@@ -165,6 +165,7 @@ describe("listDueRecoveryIds", () => {
           {
             OR: [
               { experimentVersionSnapshot: null },
+              { experimentVersionSnapshot: "read-recovery-two-hour-all-v1", cohort: "treatment", timingArm: "two_hour" },
               {
                 experimentVersionSnapshot: "read-recovery-timing-v2",
                 cohort: "treatment",
@@ -212,6 +213,7 @@ describe("claimRecovery", () => {
           {
             OR: [
               { experimentVersionSnapshot: null },
+              { experimentVersionSnapshot: "read-recovery-two-hour-all-v1", cohort: "treatment", timingArm: "two_hour" },
               {
                 experimentVersionSnapshot: "read-recovery-timing-v2",
                 cohort: "treatment",
@@ -255,6 +257,7 @@ describe("claimRecovery", () => {
             {
               OR: [
                 { experimentVersionSnapshot: null },
+              { experimentVersionSnapshot: "read-recovery-two-hour-all-v1", cohort: "treatment", timingArm: "two_hour" },
                 {
                   experimentVersionSnapshot: "read-recovery-timing-v2",
                   cohort: "treatment",
@@ -708,6 +711,7 @@ describe("finalizers", () => {
             {
               OR: [
                 { experimentVersionSnapshot: null },
+              { experimentVersionSnapshot: "read-recovery-two-hour-all-v1", cohort: "treatment", timingArm: "two_hour" },
                 {
                   experimentVersionSnapshot: "read-recovery-timing-v2",
                   cohort: "treatment",
@@ -755,6 +759,7 @@ describe("finalizers", () => {
             {
               OR: [
                 { experimentVersionSnapshot: null },
+              { experimentVersionSnapshot: "read-recovery-two-hour-all-v1", cohort: "treatment", timingArm: "two_hour" },
                 {
                   experimentVersionSnapshot: "read-recovery-timing-v2",
                   cohort: "treatment",

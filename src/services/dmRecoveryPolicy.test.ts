@@ -325,6 +325,14 @@ describe("DM recovery policy", () => {
       });
     });
 
+    it("accepts only two-hour treatment rows for the all-user policy", () => {
+      const rollout = {...baseInput, experimentVersionSnapshot: "read-recovery-two-hour-all-v1", timingArm: "two_hour" as const};
+      expect(decideRecovery(rollout)).toEqual({kind: "send_no_confirmed_read_reminder"});
+      expect(decideRecovery({...rollout, timingArm: "six_hour"})).toEqual({kind: "suppress", reason: "experiment_assignment_invalid"});
+      expect(decideRecovery({...rollout, seenAt: now})).toEqual({kind: "suppress", reason: "seen"});
+      expect(decideRecovery({...rollout, engagedAt: now})).toEqual({kind: "suppress", reason: "inbound_reply"});
+    });
+
     describe("read-recovery-timing-v2 assignment safety", () => {
       const v2Input: RecoveryPolicyInput = {
         ...baseInput,

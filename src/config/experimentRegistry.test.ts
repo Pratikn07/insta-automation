@@ -133,6 +133,8 @@ describe("experiment registry", () => {
     const owned = new Set(EXPERIMENT_REGISTRY.flatMap((e) => e.ownedFlagKeys));
     const standalone = FLAG_REGISTRY.filter((f) => !owned.has(f.key)).map((f) => f.key);
     expect(standalone).toEqual([
+      // A chosen rollout policy, separate from the completed randomized comparison.
+      "DM_RECOVERY_TWO_HOUR_ALL_ENABLED",
       // A production safety correction with no approved permissive comparison arm.
       "GUIDE_DM_INTENT_GUARD_ENABLED",
       // A fail-closed authorization boundary. Comparing an enforced audience

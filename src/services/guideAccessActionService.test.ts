@@ -6,7 +6,7 @@ import {
   guideAccessOpening,
   guideAccessOpeningText,
 } from "./guideAccessCopy.js";
-import { createGuideAccessActionService } from "./guideAccessActionService.js";
+import { createGuideAccessActionService, type GuideAccessActionDependencies } from "./guideAccessActionService.js";
 import type { GuideActionCapabilities } from "../meta/sendGuideAction.js";
 
 const TEXT_ONLY: GuideActionCapabilities = {
@@ -155,6 +155,7 @@ function createHarness(input: {
     | { kind: "attempt_not_found" }
     | { kind: "state_conflict"; actualState: GuideAccessAttempt["state"] }
   >;
+  recordOpeningMessage?: GuideAccessActionDependencies["recordOpeningMessage"];
   sendInitialPrivateReply?: (input: {
     commentId: string;
     guideName: string;
@@ -565,6 +566,7 @@ function createHarness(input: {
     sendText,
     sendFollowLag,
     sendInitialPrivateReply,
+    recordOpeningMessage: input.recordOpeningMessage,
     richCapabilities,
     // Conditionally, so "no dependency at all" stays the default and stays covered.
     ...(input.openingCard === undefined ? {} : { loadOpeningCard }),
@@ -2356,6 +2358,7 @@ describe("opening with no provider message id", () => {
 
     expect(result.outcome).toBe("access_attempt_needs_review");
     expect(result.openingSendFailure).toBeDefined();
+    expect(result.openingReceipt).toBeUndefined();
     expect(result.openingSendFailure?.retryText).toBe(
       guideAccessOpeningText,
     );
@@ -2370,6 +2373,36 @@ describe("opening with no provider message id", () => {
 
     expect(result.outcome).toBe("guide_opening_sent");
     expect(result.openingSendFailure).toBeUndefined();
+    expect(result.openingReceipt).toEqual({instagramMessageId: "mid-real", dmMessageId: null, acceptedAt: NOW});
+  });
+
+  it("records the provider-correlated opening before exposing its recovery receipt", async () => {
+    const recordOpeningMessage = vi.fn().mockResolvedValue({messageId: "local-dm-id"});
+    const test = createHarness({recordOpeningMessage, sendInitialPrivateReply: async () => ({messageId: "mid-tracked"})});
+    const result = await commentOnce(test);
+    expect(recordOpeningMessage).toHaveBeenCalledWith(expect.objectContaining({
+      igUserId: SENDER_ID, instagramMessageId: "mid-tracked", instagramTimestamp: NOW,
+      messageType: "text", text: guideAccessOpeningText,
+    }));
+    expect(result.openingReceipt).toEqual({instagramMessageId: "mid-tracked", dmMessageId: "local-dm-id", acceptedAt: NOW});
+  });
+
+  it("keeps a confirmed opening delivered when local history recording fails", async () => {
+    const recordOpeningMessage = vi.fn().mockRejectedValue(new Error("history unavailable"));
+    const test = createHarness({recordOpeningMessage, sendInitialPrivateReply: async () => ({messageId: "mid-real"})});
+    const result = await commentOnce(test);
+    expect(result.outcome).toBe("guide_opening_sent");
+    expect(result.openingSendFailure).toBeUndefined();
+    expect(result.openingReceipt?.instagramMessageId).toBe("mid-real");
+    expect(test.sendInitialPrivateReply).toHaveBeenCalledOnce();
+  });
+
+  it("does not record or expose a receipt without a provider message id", async () => {
+    const recordOpeningMessage = vi.fn();
+    const test = createHarness({recordOpeningMessage, sendInitialPrivateReply: async () => ({messageId: null})});
+    const result = await commentOnce(test);
+    expect(recordOpeningMessage).not.toHaveBeenCalled();
+    expect(result.openingReceipt).toBeUndefined();
   });
 
   /**

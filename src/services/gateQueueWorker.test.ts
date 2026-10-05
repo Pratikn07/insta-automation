@@ -11,7 +11,8 @@ const sendTrackedPrivateReply = vi.fn();
 const sendTrackedText = vi.fn();
 const logEvent = vi.fn();
 const logger = { error: vi.fn(), info: vi.fn(), warn: vi.fn(), debug: vi.fn() };
-const flags = { experiment: false };
+const flags = { experiment: false, allTwoHour: false };
+vi.mock("./flagService.js", () => ({ flags: { bool: (key: string) => key === "DM_RECOVERY_TWO_HOUR_ALL_ENABLED" ? flags.allTwoHour : key === "GATE_DM_EXPERIMENT" ? flags.experiment : false } }));
 const gateOwner = vi.fn();
 const recordGuideAccessMetric = vi.fn();
 
@@ -131,6 +132,7 @@ const convoObj = {
 
 beforeEach(() => {
   flags.experiment = false;
+  flags.allTwoHour = false;
   for (const fn of [
     ...Object.values(gateQueue),
     ...Object.values(conversation),
@@ -569,6 +571,15 @@ describe("strict-gate ownership of a queued retry", () => {
 
     expect(sendTrackedPrivateReply).toHaveBeenCalledTimes(1);
     expect(scheduleAcceptedGateRecovery).not.toHaveBeenCalled();
+  });
+
+  it("schedules a confirmed strict retry under the all-user two-hour policy", async () => {
+    flags.allTwoHour = true;
+    gateOwner.mockReturnValue("v2");
+    const acceptedAt = new Date("2026-10-05T08:00:00Z");
+    sendTrackedPrivateReply.mockResolvedValue({dmMessageId: "dm-1", instagramMessageId: "mid-1", acceptedAt});
+    await runGateQueueTick();
+    expect(scheduleAcceptedGateRecovery).toHaveBeenCalledWith(expect.objectContaining({instagramGateMessageId: "mid-1", acceptedAt}));
   });
 
   it("still sends the V1 reminder for a V1-owned retry", async () => {

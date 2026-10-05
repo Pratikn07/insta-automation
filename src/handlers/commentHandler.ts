@@ -43,6 +43,7 @@ import {
 } from "../services/settingsBlockedVerificationService.js";
 import { bindUpcomingAutomationFromComment } from "../services/upcomingAutomationCommentBinding.js";
 import { guideFollowGateV2Selector } from "../services/guideFollowGateV2Rollout.js";
+import { flags } from "../services/flagService.js";
 import { startCommentGuideRequest } from "../services/guideAccessActionService.js";
 import { recordGuideAccessMetric } from "../services/guideAccessMetrics.js";
 import { guideAudienceAuthorization } from "../services/guideAudienceAuthorization.js";
@@ -435,6 +436,28 @@ export async function handleComment(comment: CommentValue): Promise<void> {
         // available — the same basis `enqueueGate` uses for `commentAt`.
         observedAt: new Date(),
       });
+      if (flags.bool("DM_RECOVERY_TWO_HOUR_ALL_ENABLED") && result.openingReceipt) {
+        const receipt = result.openingReceipt;
+        try {
+          await scheduleAcceptedGateRecovery({
+            conversationId: convo.id,
+            igUserId: senderId,
+            keywordId: keyword.id,
+            keywordSnapshot: keyword.keyword,
+            commentId: comment.id,
+            mediaId: comment.media?.id ?? null,
+            gateDmMessageId: receipt.dmMessageId,
+            instagramGateMessageId: receipt.instagramMessageId,
+            acceptedAt: receipt.acceptedAt,
+          });
+        } catch {
+          await logEvent("dm_recovery_schedule_failed", {
+            conversationId: convo.id,
+            commentId: comment.id,
+            triggerKind: "no_confirmed_read",
+          });
+        }
+      }
       const measured = OPENING_METRIC_OUTCOME.get(result.outcome);
       if (measured) {
         await recordGuideAccessMetric("opening", measured);
