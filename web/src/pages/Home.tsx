@@ -1,25 +1,9 @@
-import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { apiRead } from "@/lib/api";
-import { feedFollowAttributionPath } from "@/lib/feedFollowAttribution";
-import type {
-  FeedFollowAttributionResponse,
-  FollowerFlowResponse,
-  GuideFollowResult,
-  Stats,
-} from "@/lib/types";
-import { compareSettledUsWeeks, summarizeFollowerFlow } from "@/lib/followerFlow";
-import { composeTodaysRead } from "@/lib/todaysRead";
-import {
-  deriveHomeAttentionState,
-  type HomeAttentionState,
-  type HomeSource,
-  type SourceState,
-} from "@/lib/homeAttention";
-import { FollowerFlowPanel } from "@/components/home/FollowerFlowPanel";
-import { FeedFollowAttributionDrawer } from "@/components/home/FeedFollowAttributionDrawer";
-import { FollowerKpiRow } from "@/components/home/FollowerKpiRow";
+import type { GuideFollowResult, Stats } from "@/lib/types";
+import { deriveHomeAttentionState, type HomeAttentionState, type HomeSource, type SourceState } from "@/lib/homeAttention";
+import { AutomationKpiRow } from "@/components/home/AutomationKpiRow";
 import { cn } from "@/lib/utils";
 
 const nf = new Intl.NumberFormat("en-US");
@@ -47,32 +31,7 @@ function attentionHeader(state: HomeAttentionState): string {
   }
 }
 
-function comparisonUnavailableCopy(
-  comparison: ReturnType<typeof compareSettledUsWeeks>,
-): string {
-  if (comparison.status === "ready") return "";
-  switch (comparison.reason) {
-    case "not_enough_history":
-      return "Waiting for two complete settled weeks of follower measurements.";
-    case "missing_day":
-      return "A daily follower measurement is missing, so no week-to-week claim is available.";
-    case "provisional_day":
-      return "Newest measurements are still settling, so the comparison is withheld.";
-    case "multi_day_span":
-      return "A catch-up span prevents a week-to-week comparison.";
-    case "duplicate_day":
-      return "Duplicate daily measurements prevent a trustworthy comparison.";
-  }
-}
-
 export function Home() {
-  const [attributionDay, setAttributionDay] = useState<string | null>(null);
-  const [evidenceOpen, setEvidenceOpen] = useState(false);
-
-  const flowQ = useQuery<FollowerFlowResponse>({
-    queryKey: ["insights", "follower-daily-adds"],
-    queryFn: ({ signal }) => apiRead<FollowerFlowResponse>("/insights/follower-daily-adds", { signal }),
-  });
   const statsQ = useQuery<Stats>({
     queryKey: ["stats"],
     queryFn: ({ signal }) => apiRead<Stats>("/stats", { signal }),
@@ -83,22 +42,7 @@ export function Home() {
     queryKey: ["funnels", "guide-follow", "default"],
     queryFn: ({ signal }) => apiRead<GuideFollowResult>("/funnels/guide-follow", { signal }),
   });
-  const attributionQ = useQuery<FeedFollowAttributionResponse>({
-    queryKey: ["insights", "feed-follow-attribution", attributionDay],
-    queryFn: ({ signal }) =>
-      apiRead<FeedFollowAttributionResponse>(feedFollowAttributionPath(attributionDay!), {
-        signal,
-      }),
-    enabled: attributionDay !== null,
-  });
-
-  const flowPoints = flowQ.data?.points ?? [];
-  const flowStock = flowQ.data?.stock ?? null;
-  const flowSummary = summarizeFollowerFlow(flowPoints);
-  const weekComparison = compareSettledUsWeeks(flowPoints);
-  const read = composeTodaysRead(weekComparison, funnelQ.data);
   const attentionState = deriveHomeAttentionState({
-    flow: queryState(flowQ),
     stats: queryState(statsQ),
     funnel: queryState(funnelQ),
   });
@@ -109,11 +53,6 @@ export function Home() {
     HomeSource,
     { label: string; retryLabel: string; retry: () => void }
   > = {
-    flow: {
-      label: "Follower flow",
-      retryLabel: "Retry follower flow",
-      retry: () => void flowQ.refetch(),
-    },
     stats: {
       label: "System stats",
       retryLabel: "Retry system stats",
@@ -126,22 +65,6 @@ export function Home() {
     },
   };
 
-  // Three states, not two. A failed request previously rendered "Awaiting first
-  // snapshot" — the same words the product uses for a genuinely empty account —
-  // so an outage read as a quiet, expected condition. It cost real debugging
-  // time against a database holding 48 unbroken days of geography.
-  const updatedLabel = flowQ.isError
-    ? "Could not reach the API"
-    : flowStock
-      ? `Updated ${new Date(flowStock.capturedAt).toLocaleDateString(undefined, {
-          month: "short",
-          day: "numeric",
-          timeZone: flowQ.data?.analyticsTimeZone ?? "America/Los_Angeles",
-        })}`
-      : flowQ.isLoading
-        ? "Loading"
-        : "Awaiting first snapshot";
-
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
@@ -151,64 +74,15 @@ export function Home() {
             {attentionHeader(attentionState)}
           </p>
         </div>
-        <span className="label-caps">{updatedLabel}</span>
       </div>
 
-      {/* The read and the single best move, as one bordered band. Two panels
-          divided by a rule rather than two floating cards. */}
       <section className="grid border border-line lg:grid-cols-[1.55fr_1fr]">
-        {/* Neutral ground, deliberately. This panel held the moss tint until the
-            review pointed out that "growth is 40% slower" would then be
-            delivered on a success colour. A finding may be bad news, so the
-            surface it sits on must not editorialise. */}
-        <div className="bg-muted p-5 sm:p-6">
-          <span className="label-caps">Today&rsquo;s read</span>
-          {read ? (
-            <>
-              <h2 className="mt-2 text-lg font-medium leading-snug tracking-tight sm:text-xl">
-                {read.headline}
-              </h2>
-              <p className="label-caps mt-1.5">{read.headlineWindow}</p>
-              {read.because && (
-                <>
-                  <p className="mt-3 max-w-[58ch] text-[13px] leading-relaxed">{read.because}</p>
-                  {read.becauseWindow && (
-                    <p className="label-caps mt-1.5">{read.becauseWindow}</p>
-                  )}
-                </>
-              )}
-              <p className="label-caps mt-3.5">{read.qualification}</p>
-              <button
-                type="button"
-                onClick={() => setEvidenceOpen((o) => !o)}
-                aria-expanded={evidenceOpen}
-                className="label-caps mt-3 border-b border-current pb-0.5 text-signal transition-opacity hover:opacity-70 [@media(pointer:coarse)]:min-h-11"
-              >
-                {evidenceOpen ? "Hide the evidence" : "Show the evidence"}
-              </button>
-            </>
-          ) : flowQ.isError ? (
-            <p className="mt-2 max-w-[54ch] text-[13px] leading-relaxed">
-              No follower read is available — the API did not answer. This is a connection
-              problem, not an empty account.{" "}
-              <button
-                type="button"
-                onClick={() => void flowQ.refetch()}
-                className="underline underline-offset-2 [@media(pointer:coarse)]:min-h-11"
-              >
-                Try again
-              </button>
-            </p>
-          ) : flowQ.isPending ? (
-            <p className="mt-2 max-w-[54ch] text-[13px] leading-relaxed">
-              Waiting for follower measurements.
-            </p>
-          ) : (
-            <p className="mt-2 max-w-[54ch] text-[13px] leading-relaxed">
-              {comparisonUnavailableCopy(weekComparison)}
-            </p>
-          )}
-        </div>
+        <AutomationKpiRow
+          funnel={funnelQ.data}
+          isLoading={funnelQ.isPending}
+          isError={funnelQ.isError}
+          onRetry={() => void funnelQ.refetch()}
+        />
 
         <div className="flex flex-col border-line p-5 sm:p-6 lg:border-l">
           <span className="label-caps">Best next move</span>
@@ -237,50 +111,6 @@ export function Home() {
           )}
         </div>
       </section>
-
-      {evidenceOpen && (
-        <section className="border-t border-foreground pt-3">
-          <span className="label-caps">Evidence</span>
-          <div className="mt-2 max-w-[74ch] space-y-3 text-[13px] leading-relaxed text-muted-foreground">
-            <p>
-              <span className="font-medium text-foreground">What this rests on.</span>{" "}
-              Conversations are counted by the day they entered, not the day an event fired, so
-              someone who replies a week later still counts in the week they arrived. The
-              comparison uses complete days only.
-            </p>
-            <p>
-              <span className="font-medium text-foreground">Why losses are quoted as counts.</span>{" "}
-              A rate below the funnel&rsquo;s minimum sample is withheld everywhere in this
-              product, including in the sentence above. Fifteen per cent over thirty-two people
-              and over three thousand are different claims, and only one of them is a number.
-            </p>
-          </div>
-        </section>
-      )}
-
-      <FollowerKpiRow
-        weekComparison={weekComparison}
-        stock={flowStock}
-        avgPerDay7={flowSummary?.avgPerDay7 ?? null}
-        stats={statsQ.data}
-        funnel={funnelQ.data}
-        points={flowPoints}
-        isFlowLoading={flowQ.isLoading}
-        isStatsLoading={statsQ.isLoading}
-        isFunnelLoading={funnelQ.isLoading}
-      />
-
-      <FollowerFlowPanel
-        points={flowPoints}
-        stock={flowStock}
-        summary={flowSummary}
-        isLoading={flowQ.isLoading}
-        isError={flowQ.isError}
-        onRetry={() => void flowQ.refetch()}
-        selectedDay={attributionDay}
-        onDaySelect={setAttributionDay}
-        now={new Date().toISOString()}
-      />
 
       <div className="grid gap-8 lg:grid-cols-[1.55fr_1fr]">
         <section>
@@ -394,14 +224,6 @@ export function Home() {
         </section>
       </div>
 
-      <FeedFollowAttributionDrawer
-        day={attributionDay}
-        data={attributionQ.data}
-        isLoading={attributionQ.isLoading}
-        isError={attributionQ.isError}
-        onRetry={() => void attributionQ.refetch()}
-        onClose={() => setAttributionDay(null)}
-      />
     </div>
   );
 }

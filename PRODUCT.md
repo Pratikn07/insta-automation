@@ -106,11 +106,17 @@ allowed to masquerade as the largest loss on Home.
 - `incomplete`: at least one required source failed, while verified items from
   the sources that answered remain visible.
 
-The required all-clear sources are follower flow, system stats, and the guide
-funnel. “Nothing is waiting,” “nothing is failing,” and equivalent reassurance
-may appear only in `ready_clear`. Feed-follow attribution is optional detail: its
-failure must not erase a valid follower read or turn the whole Home check into an
-outage. Every required-source failure names itself and retries its own query.
+The required all-clear sources are system stats and the guide funnel. “Nothing
+is waiting,” “nothing is failing,” and equivalent reassurance may appear only
+in `ready_clear`. Every required-source failure names itself and retries its own
+query. Follower flow and feed-follow attribution are no longer Home dependencies.
+
+**Dashboard reporting scope, Oct 4, 2026.** General audience growth, geography and
+content-performance reporting is monitored elsewhere and removed from Home and
+Insights. Home keeps reply-rate evidence, operational attention and system pulse.
+Insights keeps AI content analysis, per-reel automation conversion counts,
+commenter-origin evidence and content-experiment results. Collectors and stored
+history remain intact; removing reporting does not retire those data sources.
 
 ### Success metric
 
@@ -121,13 +127,15 @@ is a supporting detail that explains movement in this number.
 Two qualifiers, both confirmed and both binding:
 
 1. **It is one measure, not the organizing principle.** It belongs as a single
-   distinct tile. The console must not be restructured so that every surface
+   measure, monitored outside this dashboard. The console must not be restructured
+   so that every surface
    becomes a view onto US follower growth. The two first-class jobs above still
    hold; the score does not outrank them.
 2. **Reporting stays all-country.** The *goal* is US-focused; the *reporting* is
    not. Visibility across every country Meta reports must be preserved — it
-   exists today in the Home country picker and must not be narrowed to US-only
-   in service of the metric. Note the hard ceiling: Meta reports exactly 45
+   remains in collected history and must not be narrowed to US-only
+   in service of the metric. The Home country picker was retired Oct 4, 2026.
+   Note the hard ceiling: Meta reports exactly 45
    countries (see Capabilities and Constraints), so "all countries" means all
    reported countries, and `followers_count` remains the true total.
 
@@ -237,7 +245,7 @@ titles both read.
 
 | Route | Group | What it is for |
 | --- | --- | --- |
-| `/` Home | — | Follower growth by day and region, in real counts. Feed-follow attribution, spike candidates. |
+| `/` Home | — | Reply-rate evidence, operational attention, best next move and system pulse. |
 | `/insights` | Measure | Reel-scoped: leaderboard, recipe (top-vs-bottom US-fit contrast), experiments. |
 | `/funnels` | Measure | Conversation-lifecycle-scoped cohort funnels with drop-off drill-down. Deliberately separate from Insights. |
 | `/content` | Publish | Pick a post, attach a keyword. Reels and carousels. |
@@ -376,9 +384,8 @@ Home sits above the groups.
 
 - **Insights and Funnels stay separate.** They answer different questions —
   *which content worked* versus *where the journey loses people* — and operate on
-  different units, reels versus conversation cohorts. Home is where their
-  evidence is already combined into one interpretation; that is the right place
-  for the join, not a merged page.
+  different units, reels versus conversation cohorts. Home presents operational
+  evidence and attention; general audience reporting is monitored elsewhere.
 - **People becomes a view inside Conversations.** *Built — the People lens;
   `/users` redirects.* It is an index over the same data: `users.routes.ts`
   sources its directory from `Conversation.igUserId`, the page was ~109 lines of
