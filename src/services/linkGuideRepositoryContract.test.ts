@@ -125,4 +125,39 @@ describeWithDatabase("link guide repository", () => {
     });
     await expect(repository.markLatestFailedSendSent(ids.conversation, "mid-x", new Date())).resolves.toBe(false);
   });
+
+  it("lets only one of two concurrent retries claim the same failed send", async () => {
+    const send = await newSend(`e${suffix}AB`);
+    await repository.markSendFailed(send.id);
+    const providerIds = ["mid-a", "mid-b"];
+
+    // Hold both retries after their lookup, so they race on the write instead of the lookup.
+    let lookups = 0;
+    let openWrites!: () => void;
+    const bothLookedUp = new Promise<void>((resolve) => (openWrites = resolve));
+    const racing = createLinkGuideRepository({
+      guideLinkSend: {
+        findFirst: async (args: Parameters<typeof db.guideLinkSend.findFirst>[0]) => {
+          const row = await db.guideLinkSend.findFirst(args);
+          lookups += 1;
+          if (lookups === providerIds.length) openWrites();
+          await bothLookedUp;
+          return row;
+        },
+        update: (args: Parameters<typeof db.guideLinkSend.update>[0]) => db.guideLinkSend.update(args),
+        updateMany: (args: Parameters<typeof db.guideLinkSend.updateMany>[0]) => db.guideLinkSend.updateMany(args),
+      },
+    } as unknown as PrismaClient);
+
+    const results = await Promise.all(
+      providerIds.map((providerId) => racing.markLatestFailedSendSent(ids.conversation, providerId, new Date())),
+    );
+
+    expect(results.filter(Boolean)).toHaveLength(1);
+    await expect(db.guideLinkSend.findUniqueOrThrow({ where: { id: send.id } })).resolves.toMatchObject({
+      status: "sent",
+      shape: "text",
+      providerMessageId: providerIds[results.indexOf(true)],
+    });
+  });
 });

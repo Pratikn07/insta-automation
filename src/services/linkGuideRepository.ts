@@ -14,7 +14,7 @@ export type RedirectSend = {
 /**
  * Reads and writes for link-guide sends and clicks. Takes the client as an argument so
  * the contract test can point it at the disposable database. The production instance
- * lives in linkGuideFlow.ts, the only file that imports the app's prisma singleton.
+ * will live in linkGuideFlow.ts (Task 8), the only file that imports the app's prisma singleton.
  */
 export function createLinkGuideRepository(db: LinkGuideDatabase) {
   return {
@@ -41,7 +41,8 @@ export function createLinkGuideRepository(db: LinkGuideDatabase) {
 
     /**
      * A failed link DM is retried by the gate queue as text carrying the SAME token, so
-     * the retry completes the send it retried rather than creating a second one.
+     * the retry completes the send it retried rather than creating a second one. The write
+     * is guarded on status "failed", so of two concurrent retries only one claims the row.
      */
     async markLatestFailedSendSent(
       conversationId: string,
@@ -50,15 +51,15 @@ export function createLinkGuideRepository(db: LinkGuideDatabase) {
     ): Promise<boolean> {
       const latest = await db.guideLinkSend.findFirst({
         where: { conversationId, status: "failed" },
-        orderBy: { createdAt: "desc" },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         select: { id: true },
       });
       if (!latest) return false;
-      await db.guideLinkSend.update({
-        where: { id: latest.id },
+      const result = await db.guideLinkSend.updateMany({
+        where: { id: latest.id, status: "failed" },
         data: { status: "sent", shape: "text", providerMessageId, sentAt },
       });
-      return true;
+      return result.count === 1;
     },
 
     async findForRedirect(token: string): Promise<RedirectSend | null> {
@@ -82,6 +83,16 @@ export function createLinkGuideRepository(db: LinkGuideDatabase) {
       };
     },
 
+    /**
+     * Records one hit on /r/<token>. Bots are stored but never count as a tap.
+     *
+     * The 20-row cap is a soft bound against scrapers: the count and the insert are not
+     * one atomic step, so a burst of simultaneous hits can overshoot it slightly.
+     *
+     * `firstHumanClick` can be true for more than one simultaneous human tap. Callers must
+     * treat it as idempotent: the conversation completion it triggers is repeat-safe. The
+     * funnel counts a parent's tap once regardless of how many rows they produced.
+     */
     async recordClick(input: {
       sendId: string;
       destinationUrl: string;
