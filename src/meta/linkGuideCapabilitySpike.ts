@@ -86,27 +86,30 @@ export async function runLinkGuideSpikeCase(
   input: { case: LinkGuideSpikeCase; confirmedControlledSend: boolean; payload: MetaMessagePayload },
 ): Promise<LinkGuideSpikeResult> {
   if (!input.confirmedControlledSend) throw new Error("controlled_send_not_confirmed");
+  let response: { status: number; data: { message_id?: string } };
   try {
-    const response = await deps.send(input.payload);
-    return {
-      case: input.case,
-      accepted: true,
-      httpStatus: response.status,
-      graphCode: null,
-      graphSubcode: null,
-      providerMessageIdPresent: typeof response.data.message_id === "string",
-      checkedAt: deps.now().toISOString(),
-    };
+    response = await deps.send(input.payload);
   } catch (error) {
-    const response = (error as GraphFailure).response;
+    // No Graph response means the outcome is unknown, not a rejection: a timeout can land
+    // after Meta accepted the send. httpStatus stays null so the operator does not retry.
+    const failure = (error as GraphFailure | null | undefined)?.response;
     return {
       case: input.case,
       accepted: false,
-      httpStatus: response?.status ?? null,
-      graphCode: response?.data?.error?.code ?? null,
-      graphSubcode: response?.data?.error?.error_subcode ?? null,
+      httpStatus: failure?.status ?? null,
+      graphCode: failure?.data?.error?.code ?? null,
+      graphSubcode: failure?.data?.error?.error_subcode ?? null,
       providerMessageIdPresent: false,
       checkedAt: deps.now().toISOString(),
     };
   }
+  return {
+    case: input.case,
+    accepted: true,
+    httpStatus: response.status,
+    graphCode: null,
+    graphSubcode: null,
+    providerMessageIdPresent: typeof response.data?.message_id === "string",
+    checkedAt: deps.now().toISOString(),
+  };
 }

@@ -31,12 +31,19 @@ export async function runLinkGuideCapabilityCli(
     { case: parsed.case, confirmedControlledSend: parsed.confirmedControlledSend, payload },
   );
   console.log(JSON.stringify(result));
+  if (!result.accepted && result.httpStatus === null) {
+    console.error("outcome_unknown_do_not_retry");
+  }
 }
 
 const entryPoint = process.argv[1];
 if (entryPoint && import.meta.url === pathToFileURL(entryPoint).href) {
-  runLinkGuideCapabilityCli().catch(() => {
-    console.error("link_guide_capability_failed");
+  runLinkGuideCapabilityCli().catch((error: unknown) => {
+    // Only our own fixed identifiers (case, args, missing variable, controlled-send guard)
+    // reach here, because Graph errors are caught inside runLinkGuideSpikeCase. Anything
+    // else gets the generic line, so an arbitrary message never reaches stderr.
+    const message = error instanceof Error ? error.message : "";
+    console.error(/^[a-z0-9_]+$/.test(message) ? message : "link_guide_capability_failed");
     process.exitCode = 1;
   });
 }

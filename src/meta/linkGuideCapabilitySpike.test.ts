@@ -98,4 +98,36 @@ describe("runLinkGuideSpikeCase", () => {
     });
     expect(JSON.stringify(result)).not.toContain("PROVIDER-MESSAGE");
   });
+
+  it("reports a 2xx send as accepted even when the response has no body", async () => {
+    const result = await runLinkGuideSpikeCase(
+      { send: async () => ({ status: 200 } as { status: number; data: { message_id?: string } }), now },
+      { case: "private_link_text", confirmedControlledSend: true, payload },
+    );
+    expect(result).toEqual({
+      case: "private_link_text",
+      accepted: true,
+      httpStatus: 200,
+      graphCode: null,
+      graphSubcode: null,
+      providerMessageIdPresent: false,
+      checkedAt: "2026-10-13T15:00:00.000Z",
+    });
+  });
+
+  it("reports a transport error with no Graph response as unknown, not as a code", async () => {
+    const result = await runLinkGuideSpikeCase(
+      { send: async () => { throw new Error("timeout of 15000ms exceeded"); }, now },
+      { case: "private_link_text", confirmedControlledSend: true, payload },
+    );
+    expect(result).toEqual({
+      case: "private_link_text",
+      accepted: false,
+      httpStatus: null,
+      graphCode: null,
+      graphSubcode: null,
+      providerMessageIdPresent: false,
+      checkedAt: "2026-10-13T15:00:00.000Z",
+    });
+  });
 });
