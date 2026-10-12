@@ -1,13 +1,20 @@
 import type { DayRange } from "./dateRange";
 
 export type MessageType = "text" | "image" | "pdf";
-export type ConversationState = "awaiting_done" | "completed" | "expired";
+export type ConversationState = "awaiting_done" | "completed" | "expired" | "link_sent";
+export type DeliveryMode = "gated" | "link";
 
 export interface Resource {
   id: string;
   name: string;
   description: string | null;
   createdAt: string;
+  // Optional so fixtures written before link guides still type-check. Absent means gated.
+  deliveryMode?: DeliveryMode;
+  linkUrl?: string | null;
+  linkButtonLabel?: string | null;
+  linkCardTitle?: string | null;
+  linkCardSubtitle?: string | null;
   _count?: { messages: number; keywords: number };
   invalidMessageCount?: number;
 }
@@ -42,7 +49,7 @@ export interface Keyword {
   active: boolean;
   createdAt: string;
   updatedAt: string;
-  resource?: { id: string; name: string; _count: { messages: number } };
+  resource?: { id: string; name: string; deliveryMode?: DeliveryMode; _count: { messages: number } };
   _count?: { conversations: number };
 }
 
@@ -238,6 +245,7 @@ export interface ConversationCounts {
   awaiting_done: number;
   completed: number;
   expired: number;
+  link_sent: number;
   retrying: number;
   waitingOnReply: number;
 }

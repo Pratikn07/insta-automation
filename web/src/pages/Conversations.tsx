@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Clock,
+  Link2,
   MessageCircle,
   RotateCw,
   Tag,
@@ -74,6 +75,7 @@ const FILTERS: { value: StateFilter; label: string; countKey?: keyof Conversatio
 const stateMeta: Record<ConversationState, { label: string; tone: string; Icon: typeof Clock }> = {
   awaiting_done: { label: "Waiting for reply", tone: "text-caution bg-caution-soft", Icon: Clock },
   completed: { label: "Delivered", tone: "text-signal bg-signal-soft", Icon: CheckCircle2 },
+  link_sent: { label: "Link sent", tone: "text-signal bg-signal-soft", Icon: Link2 },
   expired: {
     label: "No confirmed reply",
     tone: "text-muted-foreground bg-muted/40",
@@ -582,6 +584,9 @@ function summaryLine(data: ConversationDetailResponse): { text: string; tone: St
       text: `No reply was confirmed from ${who}, so the ${freebie} wasn’t sent.`,
       tone: "pending",
     };
+  }
+  if (conversation.state === "link_sent") {
+    return { text: "Link sent — waiting for a tap", tone: "pending" };
   }
   // awaiting_done
   if (gate && (gate.status === "pending" || gate.status === "exhausted")) {
