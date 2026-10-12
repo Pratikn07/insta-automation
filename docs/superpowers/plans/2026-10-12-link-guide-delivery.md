@@ -5,6 +5,31 @@
 **Spec:** `docs/superpowers/specs/2026-10-12-link-guide-delivery-design.md`
 **Branch:** `claude/gated-flow-redesign-9d3c92` (this worktree)
 
+## Execution status (handoff, 2026-10-12)
+
+**Done and reviewed (spec and quality):** Tasks 1–6. Commits `a6785af`..`4f4d909`. **Resume at Task 7.** Nothing from Task 7 onward has been started.
+
+**Launch test (Task 3 Step 8):** run by the owner on 2026-10-12.
+- `private_link_card`: Meta accepted it (HTTP 200, with a message id).
+- `private_link_text`: Meta accepted it (HTTP 200, with a message id).
+- A second private reply on the same comment returned HTTP 500 with `graphCode: 1`.
+- **The phone tap check is still pending.** Neither case is `supported` until the owner confirms the link opens from Message Requests. The results file (`docs/meta-verification/2026-10-13-link-guide-capability-results.json`) has not been written yet.
+- Code for Tasks 7–17 is the same whichever shape passes. Stop only if neither shape is tappable.
+
+**Owner rulings and in-task changes that later tasks must respect:**
+- **Task 3:** the CLI prints `outcome_unknown_do_not_retry` when `httpStatus` is null, and prints only safe error codes otherwise. The runbook says to treat that outcome as unknown.
+- **Task 4:** `src/api/conversations.routes.ts` `/counts` is typed `Record<ConversationState, number>`, and the response now includes a `link_sent` count. In Task 14, also check `web/src/lib/types.ts` (~line 238); its counts type lacks `link_sent`.
+- **Task 6, owner ruling:**
+  - `markLatestFailedSendSent` only claims a row that is still `failed`.
+  - `recordClick`'s 20-row cap is a soft bound, and `firstHumanClick` can be true for more than one simultaneous tap. **Completion must be idempotent.**
+  - Task 11 must add a contract test showing that completing a `link_sent` conversation twice, as two concurrent first human taps would, is harmless.
+
+**Environment notes:**
+- Run `npx prisma generate` after checkout; a stale generated client breaks `tsc`.
+- Contract suites need a disposable local Postgres. Locally that was `postgresql://postgres:disposable@127.0.0.1:5433/contract`, with the env vars in Global Constraints. Without one, the suites `describe.skip`. Say so, and never point them at a shared database.
+- Don't run `graphify update` until Task 17.
+- Deferred minor findings from the task reviews live in the PR description, for the final whole-branch review.
+
 **Goal:** Let the creator pick, per post, between today's follow-gated guide and a new link guide that sends one DM with a button to a page on mycuratedhaven.com, with every tap tracked.
 
 **Architecture:** A guide (`resources` row) gains `delivery_mode` (`gated` | `link`) and link fields. A new owner answer, `"link"`, is chosen before the existing V1/V2 selector at the three places that choose today: comment handler, message handler, gate retry worker. The link path sends one Meta message (card or text), records a `guide_link_send` row whose token powers a public `GET /r/:token` redirect. The redirect records `guide_link_click` rows and completes the conversation on the first human tap. A new conversation state, `link_sent`, keeps link conversations out of every gated "open request" path.
