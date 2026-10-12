@@ -192,3 +192,35 @@ Copy `docs/meta-verification/guide-gate-capability-results.template.json` to a d
 - [Meta Instagram Private Replies](https://www.postman.com/meta/instagram/request/23987686-189d7215-22b3-403f-b2f5-a46c7e66a514)
 - [Meta Instagram Quick Replies](https://www.postman.com/meta/instagram/request/23987686-df99e677-3390-449c-a016-8e94dd09ec77)
 - [Meta Instagram Generic Template](https://www.postman.com/meta/instagram/documentation/6yqw8pt/instagram-api?entity=request-23987686-26e7999c-fc7e-44c8-8f71-ab2de8d35c32)
+
+## Link guide cases (added 2026-10-12)
+
+These are two more one-shot private-reply cases, for link guides. The authorization, controlled accounts and one-comment-per-case rules above all apply. Each case spends one fresh comment from the controlled recipient on a TinySoho test post.
+
+| Case | Command | Pass condition |
+|---|---|---|
+| `private_link_card` | `npm run verify:link-guide -- --case private_link_card --confirm-controlled-send` | Output shows `accepted: true`. The card lands in the recipient's Message Requests. Tapping **Open the recipes** on a phone opens the page without accepting the request first |
+| `private_link_text` | `npm run verify:link-guide -- --case private_link_text --confirm-controlled-send` | Output shows `accepted: true`. The link in the text can be tapped from Message Requests on a phone |
+
+Environment for both cases:
+- `META_SPIKE_COMMENT_ID`: a fresh comment.
+- `META_SPIKE_LINK_URL`: `https://mycuratedhaven.com/halloween?utm_source=spike`.
+
+Card case only:
+- `META_SPIKE_COVER_URL`: a public square image.
+- `META_SPIKE_PROFILE_URL`: `https://www.instagram.com/tinysoho/`.
+
+Record the results in `docs/meta-verification/2026-10-13-link-guide-capability-results.json`:
+
+```json
+{
+  "schemaVersion": 1,
+  "run": { "graphVersion": "v21.0", "reviewedBy": "<owner>", "reviewedAt": "<ISO time>" },
+  "cases": [
+    { "case": "private_link_card", "decision": "supported | unsupported | not_verified", "sanitizedResult": {}, "mobileTapFromRequests": "pass | fail | not_verified", "notes": [] },
+    { "case": "private_link_text", "decision": "supported | unsupported | not_verified", "sanitizedResult": {}, "mobileTapFromRequests": "pass | fail | not_verified", "notes": [] }
+  ]
+}
+```
+
+`sanitizedResult` is the JSON the command printed. A case is `supported` only when Meta accepted it AND the phone tap from Message Requests passed.
