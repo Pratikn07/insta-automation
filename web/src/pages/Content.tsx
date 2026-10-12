@@ -9,6 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Drawer } from "@/components/ui/drawer";
 import { EmptyState } from "@/components/EmptyState";
 import { KeywordForm } from "@/components/KeywordForm";
+import { DeliveryBadge } from "@/components/DeliveryBadge";
 import { UpcomingAutomations } from "@/components/UpcomingAutomations";
 import { cn } from "@/lib/utils";
 
@@ -402,6 +403,7 @@ function MediaDrawer({
                         Paused
                       </span>
                     )}
+                    <DeliveryBadge mode={k.resource?.deliveryMode} />
                   </div>
                   <p className="mt-0.5 truncate text-xs text-muted-foreground">
                     → {k.resource?.name ?? "Unknown guide"}
