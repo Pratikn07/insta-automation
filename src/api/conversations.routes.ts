@@ -1,4 +1,4 @@
-import type { Prisma } from "@prisma/client";
+import type { ConversationState, Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { getIgUsers } from "../services/igUserService.js";
@@ -69,7 +69,7 @@ function summariseRecovery(recovery: RecoverySummaryRow | null): Record<string, 
 export const conversationsRouter = asyncRouter();
 
 const listQuerySchema = z.object({
-  state: z.enum(["awaiting_done", "completed", "expired"]).optional(),
+  state: z.enum(["awaiting_done", "completed", "expired", "link_sent"]).optional(),
   mode: z.enum(["canonical", "raw"]).default("canonical"),
   limit: z.coerce.number().int().min(1).max(200).default(50),
   cursor: z.string().uuid().optional(),
@@ -225,7 +225,12 @@ conversationsRouter.get("/counts", async (req, res) => {
     }),
   ]);
 
-  const byState = { awaiting_done: 0, completed: 0, expired: 0 };
+  const byState: Record<ConversationState, number> = {
+    awaiting_done: 0,
+    completed: 0,
+    expired: 0,
+    link_sent: 0,
+  };
   for (const g of grouped) byState[g.state] = g._count._all;
 
   // Only count pending gates whose conversation is still awaiting (a pending gate
@@ -242,6 +247,7 @@ conversationsRouter.get("/counts", async (req, res) => {
     awaiting_done: byState.awaiting_done,
     completed: byState.completed,
     expired: byState.expired,
+    link_sent: byState.link_sent,
     // Subsets of awaiting_done: waitingOnReply + retrying === awaiting_done.
     retrying: retryingCount,
     waitingOnReply: Math.max(byState.awaiting_done - retryingCount, 0),
@@ -272,6 +278,8 @@ conversationsRouter.get("/:id/events", async (req, res) => {
             select: {
               id: true,
               name: true,
+              deliveryMode: true,
+              linkButtonLabel: true,
               messages: { orderBy: { order: "asc" } },
             },
           },

@@ -53,6 +53,19 @@ export async function markGated(conversationId: string) {
   });
 }
 
+/**
+ * A link guide's conversation leaves awaiting_done as soon as its link is on the way, so
+ * a reply to the link DM can never be read as the answer to an open guide request (the
+ * follow gate). Moves only a conversation that is still awaiting_done: a completed one
+ * stays completed, which keeps a repeat DM from undoing a recorded tap.
+ */
+export async function markLinkSent(conversationId: string): Promise<void> {
+  await prisma.conversation.updateMany({
+    where: { id: conversationId, state: "awaiting_done" },
+    data: { state: "link_sent", gatedAt: new Date() },
+  });
+}
+
 export async function findActiveAwaitingDone(igUserId: string) {
   const cutoff = new Date(Date.now() - GATE_WINDOW_HOURS * 60 * 60 * 1000);
   return prisma.conversation.findFirst({

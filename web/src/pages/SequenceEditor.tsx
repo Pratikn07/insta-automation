@@ -31,7 +31,7 @@ import { Link, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { apiRead, apiMutation, apiErrorCode, ApiError } from "@/lib/api";
 import { useOperationId } from "@/lib/useOperationId";
-import type { MessageType, Resource, ResourceMessage } from "@/lib/types";
+import type { DeliveryMode, MessageType, Resource, ResourceMessage } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -41,6 +41,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { LoadFailed } from "@/components/EmptyState";
 import { GuideCoverPanel } from "@/features/guide-covers/GuideCoverPanel";
+import { GuideTypeSwitch, LinkGuidePanel } from "@/features/link-guides/LinkGuidePanel";
 import { MediaUpload } from "@/components/MediaUpload";
 import { PhoneMockup } from "@/components/PhoneMockup";
 import { SaveStatus } from "@/components/SaveStatus";
@@ -151,6 +152,25 @@ function SequenceEditorForm({
   // All editing mutations share this key so <SaveStatus> can reflect their
   // combined state as one "Saving… / All changes saved" indicator.
   const saveKey = ["sequence-save", id];
+
+  // Local until the link is saved: choosing Link shows the panel, and the panel's save
+  // is what switches the guide on the server, so a half-filled link never goes live.
+  const [mode, setMode] = useState<DeliveryMode>(resource.deliveryMode ?? "gated");
+
+  const toGated = useMutation({
+    mutationKey: saveKey,
+    mutationFn: () =>
+      apiMutation<Resource>(`/resources/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ deliveryMode: "gated" }),
+      }),
+    onSuccess: () => {
+      setMode("gated");
+      qc.invalidateQueries({ queryKey: ["resource", id] });
+      qc.invalidateQueries({ queryKey: ["resources"] });
+    },
+    onError: (err) => toast.error(err instanceof ApiError ? err.message : "Save failed"),
+  });
 
   const renameMutation = useMutation({
     mutationKey: saveKey,
@@ -280,67 +300,80 @@ function SequenceEditorForm({
 
       <GuideCoverPanel resourceId={id} resourceName={name} />
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="label-caps">Steps</h3>
-            <div className="flex gap-1">
-              {STEP_TYPES.map(({ value, label, icon: Icon }) => (
-                <Button
-                  key={value}
-                  size="sm"
-                  variant="outline"
-                  onClick={() => addMutation.mutate(value)}
-                  disabled={addMutation.isPending}
-                >
-                  <Icon className="size-3.5" />
-                  {label}
-                </Button>
-              ))}
+      <GuideTypeSwitch
+        value={mode}
+        disabled={toGated.isPending}
+        onChange={(next) => {
+          if (next === "gated" && resource.deliveryMode === "link") toGated.mutate();
+          else setMode(next);
+        }}
+      />
+
+      {mode === "link" ? (
+        <LinkGuidePanel resource={resource} />
+      ) : (
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="label-caps">Steps</h3>
+              <div className="flex gap-1">
+                {STEP_TYPES.map(({ value, label, icon: Icon }) => (
+                  <Button
+                    key={value}
+                    size="sm"
+                    variant="outline"
+                    onClick={() => addMutation.mutate(value)}
+                    disabled={addMutation.isPending}
+                  >
+                    <Icon className="size-3.5" />
+                    {label}
+                  </Button>
+                ))}
+              </div>
             </div>
+
+            {items.length === 0 ? (
+              <div className="border-t py-10 text-center">
+                <Plus className="mx-auto size-5 text-muted-foreground" aria-hidden />
+                <p className="mt-3 text-[13px] font-medium">No steps yet</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Add a Text, Image, or PDF step to start building this sequence.
+                </p>
+              </div>
+            ) : (
+              <DndContext
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragEnd={onDragEnd}
+              >
+                <SortableContext items={items.map((m) => m.id)} strategy={verticalListSortingStrategy}>
+                  <ul className="space-y-2">
+                    {items.map((m, i) => (
+                      <SortableStep
+                        key={m.id}
+                        step={m}
+                        index={i}
+                        onChange={(next) => {
+                          setItems((prev) => prev.map((p) => (p.id === next.id ? next : p)));
+                        }}
+                        onDelete={() => setConfirmDelete(m)}
+                      />
+                    ))}
+                  </ul>
+                </SortableContext>
+              </DndContext>
+            )}
           </div>
 
-          {items.length === 0 ? (
-            <div className="border-t py-10 text-center">
-              <Plus className="mx-auto size-5 text-muted-foreground" aria-hidden />
-              <p className="mt-3 text-[13px] font-medium">No steps yet</p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Add a Text, Image, or PDF step to start building this sequence.
-              </p>
+          <aside className="lg:sticky lg:top-4 self-start">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="label-caps">Preview</h3>
+              <span className="label-caps">After DONE reply</span>
             </div>
-          ) : (
-            <DndContext
-              sensors={sensors}
-              collisionDetection={closestCenter}
-              onDragEnd={onDragEnd}
-            >
-              <SortableContext items={items.map((m) => m.id)} strategy={verticalListSortingStrategy}>
-                <ul className="space-y-2">
-                  {items.map((m, i) => (
-                    <SortableStep
-                      key={m.id}
-                      step={m}
-                      index={i}
-                      onChange={(next) => {
-                        setItems((prev) => prev.map((p) => (p.id === next.id ? next : p)));
-                      }}
-                      onDelete={() => setConfirmDelete(m)}
-                    />
-                  ))}
-                </ul>
-              </SortableContext>
-            </DndContext>
-          )}
+            <PhoneMockup steps={items} />
+          </aside>
         </div>
-
-        <aside className="lg:sticky lg:top-4 self-start">
-          <div className="mb-3 flex items-center justify-between">
-            <h3 className="label-caps">Preview</h3>
-            <span className="label-caps">After DONE reply</span>
-          </div>
-          <PhoneMockup steps={items} />
-        </aside>
-      </div>
+      )}
 
       <ConfirmDialog
         open={confirmDelete !== null}

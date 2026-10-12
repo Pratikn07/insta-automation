@@ -19,6 +19,7 @@
     "audit:guide-message-lengths": "tsx scripts/audit-guide-message-lengths.ts",
     "audit:guide-access-recovery": "tsx scripts/guide-access-recovery.ts",
     "verify:meta-guide-gate": "tsx scripts/meta-guide-gate-capability-spike.ts",
+    "verify:link-guide": "tsx scripts/link-guide-capability-spike.ts",
     "render:guide-cover-snapshots": "tsx scripts/render-approved-guide-cover-snapshots.ts",
     "check:guide-delivery-bypasses": "node scripts/check-guide-delivery-bypasses.mjs",
     "funnel": "tsx scripts/funnel-report.ts",

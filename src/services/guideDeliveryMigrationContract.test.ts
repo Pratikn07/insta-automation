@@ -271,6 +271,10 @@ describeWithDatabase("guide delivery ledger migration", () => {
     expect(values).toEqual([
       { enum_name: "guide_delivery_failure_disposition", enum_value: "transient" },
       { enum_name: "guide_delivery_failure_disposition", enum_value: "permanent" },
+      // Not a ledger enum: the link-guide migration's resources.delivery_mode, caught by the
+      // prefix. Pinned here so a renumbering of it fails somewhere too.
+      { enum_name: "guide_delivery_mode", enum_value: "gated" },
+      { enum_name: "guide_delivery_mode", enum_value: "link" },
       { enum_name: "guide_delivery_status", enum_value: "planned" },
       { enum_name: "guide_delivery_status", enum_value: "sending" },
       { enum_name: "guide_delivery_status", enum_value: "failed" },

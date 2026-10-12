@@ -263,6 +263,25 @@ describe("GET /counts", () => {
     });
   });
 
+  it("returns a link_sent count and keeps it out of the awaiting buckets", async () => {
+    conversationGroupBy.mockResolvedValue([
+      { state: "awaiting_done", _count: { _all: 2 } },
+      { state: "link_sent", _count: { _all: 5 } },
+    ]);
+
+    const res = await request(makeApp()).get("/api/conversations/counts");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      awaiting_done: 2,
+      completed: 0,
+      expired: 0,
+      link_sent: 5,
+      retrying: 0,
+      waitingOnReply: 2,
+    });
+  });
+
   it("uses raw scope for both totals and retrying rows", async () => {
     gateQueueFindMany.mockResolvedValue([{ conversationId: "convo-1" }]);
     conversationCount.mockResolvedValue(1);

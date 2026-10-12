@@ -6,6 +6,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MediaContext } from "./KeywordForm";
+import type { Resource } from "@/lib/types";
 
 const api = vi.fn();
 const apiMutation = vi.fn();
@@ -31,14 +32,14 @@ const MEDIA: MediaContext = {
   postedAt: "2026-08-16T09:00:00+0000",
 };
 
-function renderForm() {
+function renderForm(resources: Resource[] = []) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   return render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <KeywordForm initial={null} resources={[]} onClose={vi.fn()} mediaContext={MEDIA} />
+        <KeywordForm initial={null} resources={resources} onClose={vi.fn()} mediaContext={MEDIA} />
       </QueryClientProvider>
     </MemoryRouter>,
   );
@@ -193,5 +194,98 @@ describe("KeywordForm create identity", () => {
     });
 
     expect(screen.getByRole("button", { name: SUBMIT })).toBeDisabled();
+  });
+});
+
+describe("KeywordForm link guides", () => {
+  const URL_PLACEHOLDER = "https://mycuratedhaven.com/halloween";
+
+  async function chooseLink() {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: /Link to a page/ }));
+    return user;
+  }
+
+  it("creates a link guide and its keyword, with no gate message field", async () => {
+    apiMutation.mockImplementation((path: string) =>
+      Promise.resolve(
+        String(path) === "/resources" ? { id: "res-link" } : { id: "kw-1", resourceId: "res-link" },
+      ),
+    );
+    renderForm();
+    const user = await chooseLink();
+
+    expect(screen.queryByPlaceholderText("Reply DONE and I'll send your guide!")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText("RECIPE"), { target: { value: "GHOST" } });
+    fireEvent.change(screen.getByPlaceholderText("Halloween collection"), {
+      target: { value: "Halloween collection" },
+    });
+    fireEvent.change(screen.getByPlaceholderText(URL_PLACEHOLDER), {
+      target: { value: "https://mycuratedhaven.com/halloween" },
+    });
+    await user.click(screen.getByRole("button", { name: "Create keyword" }));
+
+    await waitFor(() => expect(callsTo("/keywords").length).toBe(1));
+    expect(bodyOf(callsTo("/resources")[0]!)).toMatchObject({
+      name: "Halloween collection",
+      deliveryMode: "link",
+      linkUrl: "https://mycuratedhaven.com/halloween",
+      linkButtonLabel: "Open the recipes",
+    });
+    expect(bodyOf(callsTo("/keywords")[0]!)).toMatchObject({
+      keyword: "GHOST",
+      resourceId: "res-link",
+      publicReply: "Sent you the recipes 💛 Check your DMs (and Requests)!",
+    });
+  });
+
+  it("blocks a link that is not https", async () => {
+    renderForm();
+    await chooseLink();
+    fireEvent.change(screen.getByPlaceholderText("RECIPE"), { target: { value: "GHOST" } });
+    fireEvent.change(screen.getByPlaceholderText("Halloween collection"), {
+      target: { value: "Halloween collection" },
+    });
+    fireEvent.change(screen.getByPlaceholderText(URL_PLACEHOLDER), {
+      target: { value: "http://mycuratedhaven.com/halloween" },
+    });
+
+    expect(screen.getByRole("button", { name: "Create keyword" })).toBeDisabled();
+  });
+
+  it("only offers link guides once Link is chosen", async () => {
+    const createdAt = "2026-10-01T00:00:00.000Z";
+    renderForm([
+      { id: "g1", name: "Sleep guide", description: null, createdAt, deliveryMode: "gated" },
+      { id: "l1", name: "Halloween collection", description: null, createdAt, deliveryMode: "link" },
+    ]);
+    const user = await chooseLink();
+    await user.click(screen.getByRole("button", { name: /Use existing/ }));
+
+    const options = screen.getAllByRole("option").map((option) => option.textContent);
+    expect(options.some((text) => text?.includes("Halloween collection"))).toBe(true);
+    expect(options.some((text) => text?.includes("Sleep guide"))).toBe(false);
+  });
+
+  it("shows the chosen link guide's address and button, with a way to edit it", async () => {
+    const createdAt = "2026-10-01T00:00:00.000Z";
+    renderForm([
+      {
+        id: "l1",
+        name: "Halloween collection",
+        description: null,
+        createdAt,
+        deliveryMode: "link",
+        linkUrl: "https://mycuratedhaven.com/halloween",
+        linkButtonLabel: "Open the recipes",
+      },
+    ]);
+    const user = await chooseLink();
+    await user.click(screen.getByRole("button", { name: /Use existing/ }));
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "l1" } });
+
+    expect(screen.getByText("https://mycuratedhaven.com/halloween")).toBeInTheDocument();
+    expect(screen.getByText(/Open the recipes/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Edit guide" })).toHaveAttribute("href", "/guides/l1");
   });
 });

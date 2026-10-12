@@ -64,7 +64,7 @@ keywordsRouter.get("/", async (_req, res) => {
   const rows = await prisma.keyword.findMany({
     orderBy: { createdAt: "desc" },
     include: {
-      resource: { select: { id: true, name: true, _count: { select: { messages: true } } } },
+      resource: { select: { id: true, name: true, deliveryMode: true, _count: { select: { messages: true } } } },
       _count: { select: { conversations: true } },
     },
   });

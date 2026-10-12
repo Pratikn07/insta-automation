@@ -59,6 +59,7 @@ export function renderRecoveryCopy(
   keywordSnapshot: string,
   handle?: string | null,
   openingOnly = false,
+  opening: "guide" | "link" = "guide",
 ): string {
   let keyword: string;
   try {
@@ -69,10 +70,12 @@ export function renderRecoveryCopy(
 
   const mentioned = normalizeRecoveryHandle(handle);
   const mention = mentioned ? `@${mentioned} ` : "";
+  // A link guide's only DM is the link itself, so "your guide" would be untrue.
+  const sent = opening === "link" ? "I sent you the link" : openingOnly ? "I sent you a DM" : "I sent your guide";
 
   return trigger === "settings_blocked"
     ? `${mention}I couldn’t send your DM 💛 Your message-request settings blocked it. DM @tinysoho “${keyword}”.`
-    : `${mention}${openingOnly ? "I sent you a DM" : "I sent your guide"} 💛 Instagram may have tucked it into your Message Requests, so check there. Still nothing? DM @tinysoho “${keyword}” and I’ll resend.`;
+    : `${mention}${sent} 💛 Instagram may have tucked it into your Message Requests, so check there. Still nothing? DM @tinysoho “${keyword}” and I’ll resend.`;
 }
 
 export function assignRecoveryCohort(

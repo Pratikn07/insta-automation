@@ -1,5 +1,6 @@
 import { prisma } from "../lib/prisma.js";
 import { resolveCommentMatch, resolveDmKeywordCandidates } from "./keywordMatchCore.js";
+import { LINK_GUIDE_RESOURCE_SELECT } from "./linkGuidePolicy.js";
 
 export function normalizeKeyword(text: string): string {
   return text.trim().replace(/\s+/g, " ").toUpperCase();
@@ -130,9 +131,12 @@ export async function findKeywordForComment(text: string, mediaId?: string | nul
   // comment, because that is exactly when the global fallback must be withheld.
   const [postKeywords, globalKeywords] = await Promise.all([
     mediaId
-      ? prisma.keyword.findMany({ where: { mediaId, active: true } })
+      ? prisma.keyword.findMany({ where: { mediaId, active: true }, include: WITH_LINK_FIELDS })
       : Promise.resolve([]),
-    prisma.keyword.findMany({ where: { keyword: { in: scan }, mediaId: null, active: true } }),
+    prisma.keyword.findMany({
+      where: { keyword: { in: scan }, mediaId: null, active: true },
+      include: WITH_LINK_FIELDS,
+    }),
   ]);
 
   return resolveCommentMatch(scan, postKeywords, globalKeywords);
@@ -141,6 +145,10 @@ export async function findKeywordForComment(text: string, mediaId?: string | nul
 // Carry the sequence so the DM path can deliver instantly (follower /
 // already-completed) without a second lookup — mirrors findActiveAwaitingDone.
 const WITH_SEQUENCE = { resource: { include: { messages: true } } } as const;
+
+// The comment path decides gated vs link before it replies, so the guide's mode and
+// link fields arrive with the keyword. One query, no second read that could fail alone.
+const WITH_LINK_FIELDS = { resource: { select: LINK_GUIDE_RESOURCE_SELECT } } as const;
 
 /**
  * Resolve a keyword from an inbound DM.

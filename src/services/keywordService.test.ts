@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { LINK_GUIDE_RESOURCE_SELECT } from "./linkGuidePolicy.js";
 
 const findMany = vi.fn();
 
@@ -103,6 +104,7 @@ describe("comment keyword phrases", () => {
         mediaId: null,
         active: true,
       },
+      include: { resource: { select: LINK_GUIDE_RESOURCE_SELECT } },
     });
     expect(match?.keyword.id).toBe("day1");
     expect(match?.matchedToken).toBe("DAY1");

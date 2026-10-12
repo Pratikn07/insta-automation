@@ -34,6 +34,7 @@ model Keyword {
   recoveryCandidates  RecoveryCandidate[]
   selectionExclusions RecoverySelectionExclusion[]
   upcomingAutomations UpcomingAutomation[]
+  guideLinkSends      GuideLinkSend[]
 
   @@unique([keyword, mediaId])
   // The cold-DM fallback ranks post-scoped candidates for one word by post date.
@@ -69,6 +70,14 @@ model Resource {
   ageMinMonths Int?     @map("age_min_months")
   ageMaxMonths Int?     @map("age_max_months")
   createdAt    DateTime @default(now()) @map("created_at")
+  // How a comment on this guide's posts is answered. `gated` is the follow-gated guide
+  // (every guide before link guides existed); `link` sends one DM with a button to
+  // linkUrl and never checks follow. See docs/superpowers/specs/2026-10-12-link-guide-delivery-design.md.
+  deliveryMode     GuideDeliveryMode @default(gated) @map("delivery_mode")
+  linkUrl          String?           @map("link_url")
+  linkButtonLabel  String?           @map("link_button_label") @db.VarChar(20)
+  linkCardTitle    String?           @map("link_card_title") @db.VarChar(80)
+  linkCardSubtitle String?           @map("link_card_subtitle") @db.VarChar(80)
 
   messages            ResourceMessage[]
   keywords            Keyword[]
@@ -79,6 +88,7 @@ model Resource {
   coverVersions       ResourceCoverVersion[]
   coverOrphans        GuideCoverOrphan[]
   guideAccessAttempts GuideAccessAttempt[]
+  guideLinkSends      GuideLinkSend[]
 
   @@index([theme, ageMinMonths, ageMaxMonths])
   @@map("resources")
@@ -333,10 +343,15 @@ model ResourceMessage {
   @@map("resource_messages")
 }
 
+// `link_sent` (last value): a link guide's DM is on its way or sent. Never an open guide
+// request, so a reply can never reach the follow gate. A first human tap on the link moves
+// it to completed. The comment sits above the enum, not between `expired` and `link_sent`,
+// so the schema test's "last value" pattern (expired + link_sent + @@map) stays contiguous.
 enum ConversationState {
   awaiting_done
   completed
   expired
+  link_sent
 
   @@map("conversation_state")
 }
@@ -376,6 +391,7 @@ model Conversation {
   recoveryCandidates  RecoveryCandidate[]
   guideDeliveries     GuideDelivery[]
   guideAccessAttempts GuideAccessAttempt[]
+  guideLinkSends      GuideLinkSend[]
 
   @@index([igUserId, state])
   @@index([state, createdAt])
@@ -1962,4 +1978,76 @@ model FlagOverride {
   updatedAt    DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
 
   @@map("flag_override")
+}
+
+enum GuideDeliveryMode {
+  gated
+  link
+
+  @@map("guide_delivery_mode")
+}
+
+enum GuideLinkChannel {
+  private_reply
+  dm
+
+  @@map("guide_link_channel")
+}
+
+enum GuideLinkShape {
+  card
+  text
+
+  @@map("guide_link_shape")
+}
+
+enum GuideLinkSendStatus {
+  pending
+  sent
+  failed
+
+  @@map("guide_link_send_status")
+}
+
+/// One link-guide DM attempt. Its token is the only thing in the /r/<token> URL.
+model GuideLinkSend {
+  id                String              @id @default(uuid()) @db.Uuid
+  token             String              @unique @db.VarChar(16)
+  conversationId    String              @map("conversation_id") @db.Uuid
+  resourceId        String              @map("resource_id") @db.Uuid
+  keywordId         String              @map("keyword_id") @db.Uuid
+  mediaId           String?             @map("media_id")
+  igUserId          String              @map("ig_user_id")
+  channel           GuideLinkChannel
+  shape             GuideLinkShape
+  status            GuideLinkSendStatus @default(pending)
+  providerMessageId String?             @map("provider_message_id")
+  createdAt         DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  sentAt            DateTime?           @map("sent_at") @db.Timestamptz(3)
+
+  conversation Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  resource     Resource         @relation(fields: [resourceId], references: [id], onDelete: Restrict)
+  keyword      Keyword          @relation(fields: [keywordId], references: [id], onDelete: Cascade)
+  clicks       GuideLinkClick[]
+
+  @@index([conversationId])
+  @@index([resourceId])
+  @@index([keywordId])
+  @@index([mediaId, createdAt])
+  @@map("guide_link_send")
+}
+
+/// One hit on /r/<token>. Capped per send; bots are recorded but never count as a tap.
+model GuideLinkClick {
+  id             String   @id @default(uuid()) @db.Uuid
+  sendId         String   @map("send_id") @db.Uuid
+  clickedAt      DateTime @default(now()) @map("clicked_at") @db.Timestamptz(3)
+  destinationUrl String   @map("destination_url")
+  isBot          Boolean  @map("is_bot")
+  uaFamily       String   @map("ua_family") @db.VarChar(32)
+
+  send GuideLinkSend @relation(fields: [sendId], references: [id], onDelete: Cascade)
+
+  @@index([sendId, isBot])
+  @@map("guide_link_click")
 }
