@@ -443,6 +443,33 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
     pageMayEnable: false,
     pageMayStop: false,
   },
+  {
+    key: "LINK_GUIDE_ENABLED",
+    name: "Link guides",
+    group: "outbound",
+    kind: "boolean",
+    doesWhat:
+      "Lets a guide set to Link answer a comment with one message holding a button to a page on our site, instead of asking the person to follow first.",
+    affectsWho:
+      "People who comment or message a keyword whose guide is set to Link. Guides set to Gated are not affected.",
+    ifOff:
+      "Posts that use a link guide get no public reply and no message, so nobody is promised a message that never comes. Gated guides keep working as before.",
+    pageMayEnable: false,
+    pageMayStop: true,
+  },
+  {
+    key: "LINK_GUIDE_CARD_ENABLED",
+    name: "Link guide as a card",
+    group: "outbound",
+    kind: "boolean",
+    doesWhat:
+      "Sends a link guide as a card with the guide's cover image and an open button, instead of a plain message with the link in it.",
+    affectsWho: "People who get a link guide whose guide has a published square cover.",
+    ifOff:
+      "Link guides are sent as a plain message with the link. The link and the click tracking work the same way.",
+    pageMayEnable: false,
+    pageMayStop: true,
+  },
 ] as const;
 
 const BY_KEY = new Map(FLAG_REGISTRY.map((definition) => [definition.key, definition]));

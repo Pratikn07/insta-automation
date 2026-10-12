@@ -467,3 +467,42 @@ describe("env configuration schema for DM recovery", () => {
     }
   });
 });
+
+describe("env configuration schema for link guides", () => {
+  it("keeps link guides off and points them at our own site by default", () => {
+    const parsed = envSchema.parse(baseEnv);
+    expect(parsed.LINK_GUIDE_ENABLED).toBe(false);
+    expect(parsed.LINK_GUIDE_CARD_ENABLED).toBe(false);
+    expect(parsed.LINK_GUIDE_ALLOWED_HOSTS).toBe("mycuratedhaven.com,www.mycuratedhaven.com");
+    expect(parsed.LINK_GUIDE_REDIRECT_BASE_URL).toBeUndefined();
+  });
+
+  it('parses LINK_GUIDE_ENABLED="false" as off', () => {
+    expect(envSchema.parse({ ...baseEnv, LINK_GUIDE_ENABLED: "false" }).LINK_GUIDE_ENABLED).toBe(false);
+  });
+
+  it("refuses to turn link guides on without a redirect origin", () => {
+    expect(envSchema.safeParse({ ...baseEnv, LINK_GUIDE_ENABLED: "true" }).success).toBe(false);
+  });
+
+  it("requires the redirect origin to be https", () => {
+    expect(
+      envSchema.safeParse({
+        ...baseEnv,
+        LINK_GUIDE_ENABLED: "true",
+        LINK_GUIDE_REDIRECT_BASE_URL: "http://api.example.com",
+      }).success,
+    ).toBe(false);
+    expect(
+      envSchema.safeParse({
+        ...baseEnv,
+        LINK_GUIDE_ENABLED: "true",
+        LINK_GUIDE_REDIRECT_BASE_URL: "https://api.example.com",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("treats an empty redirect origin as unset", () => {
+    expect(envSchema.parse({ ...baseEnv, LINK_GUIDE_REDIRECT_BASE_URL: "" }).LINK_GUIDE_REDIRECT_BASE_URL).toBeUndefined();
+  });
+});
