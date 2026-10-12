@@ -1,6 +1,7 @@
 // src/meta/linkGuideCapabilitySpike.test.ts
 import { describe, expect, it, vi } from "vitest";
 import {
+  linkGuideSpikeOutcome,
   buildLinkGuideSpikePayload,
   parseLinkGuideSpikeCli,
   runLinkGuideSpikeCase,
@@ -129,5 +130,31 @@ describe("runLinkGuideSpikeCase", () => {
       providerMessageIdPresent: false,
       checkedAt: "2026-10-13T15:00:00.000Z",
     });
+  });
+});
+
+describe("linkGuideSpikeOutcome", () => {
+  const base = {
+    case: "private_link_card" as const,
+    graphCode: null,
+    graphSubcode: null,
+    providerMessageIdPresent: false,
+    checkedAt: "2026-10-12T00:00:00.000Z",
+  };
+
+  it("reads a 200 with a message id as accepted", () => {
+    expect(linkGuideSpikeOutcome({ ...base, accepted: true, httpStatus: 200, providerMessageIdPresent: true })).toBe(
+      "accepted",
+    );
+  });
+
+  it("reads a 4xx as rejected", () => {
+    expect(linkGuideSpikeOutcome({ ...base, accepted: false, httpStatus: 400 })).toBe("rejected");
+  });
+
+  // Any of these can arrive after Meta already delivered the message, so a retry could
+  // send a second private reply to the same comment.
+  it.each([null, 429, 500, 503])("reads HTTP %s as unknown", (httpStatus) => {
+    expect(linkGuideSpikeOutcome({ ...base, accepted: false, httpStatus })).toBe("unknown");
   });
 });

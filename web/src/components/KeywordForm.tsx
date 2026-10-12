@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Film, Images } from "lucide-react";
 import { useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { apiRead, apiMutation, ApiError } from "@/lib/api";
 import { DEFAULT_LINK_PUBLIC_REPLY, DEFAULT_PUBLIC_REPLY } from "@/lib/automationCopy";
@@ -122,6 +122,11 @@ export function KeywordForm({
     () => resources.filter((r) => (r.deliveryMode ?? "gated") === form.deliveryMode),
     [resources, form.deliveryMode],
   );
+  // The chosen link guide, so the form can show where its button goes.
+  const selectedLinkGuide =
+    isLink && (initial || form.sequenceMode === "existing")
+      ? modeResources.find((r) => r.id === form.resourceId)
+      : undefined;
   // Link guides never send this, but the column is required.
   const gateMessageToSave = isLink ? (initial?.gateMessage ?? LINK_GATE_MESSAGE_PLACEHOLDER) : form.gateMessage;
 
@@ -380,6 +385,17 @@ export function KeywordForm({
                     : "Reuse an existing guide — useful for spelling variations of the same trigger."}
               </p>
             </>
+          )}
+          {selectedLinkGuide && (
+            <div className="rounded-md border bg-card/40 p-3 text-xs">
+              <p className="truncate font-mono">{selectedLinkGuide.linkUrl ?? "No page address yet"}</p>
+              <p className="mt-0.5 text-muted-foreground">
+                Button: {selectedLinkGuide.linkButtonLabel ?? "not set"} ·{" "}
+                <Link to={`/guides/${selectedLinkGuide.id}`} className="underline">
+                  Edit guide
+                </Link>
+              </p>
+            </div>
           )}
         </div>
 

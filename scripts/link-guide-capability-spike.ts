@@ -7,6 +7,7 @@ import { env } from "../src/config/env.js";
 import { graph } from "../src/meta/graphClient.js";
 import {
   buildLinkGuideSpikePayload,
+  linkGuideSpikeOutcome,
   parseLinkGuideSpikeCli,
   runLinkGuideSpikeCase,
 } from "../src/meta/linkGuideCapabilitySpike.js";
@@ -31,9 +32,10 @@ export async function runLinkGuideCapabilityCli(
     { case: parsed.case, confirmedControlledSend: parsed.confirmedControlledSend, payload },
   );
   console.log(JSON.stringify(result));
-  if (!result.accepted && result.httpStatus === null) {
-    console.error("outcome_unknown_do_not_retry");
-  }
+  const outcome = linkGuideSpikeOutcome(result);
+  if (outcome === "unknown") console.error("outcome_unknown_do_not_retry");
+  // Anything but an accepted send is a non-zero exit, so a wrapper can't read it as a pass.
+  if (outcome !== "accepted") process.exitCode = outcome === "unknown" ? 2 : 1;
 }
 
 const entryPoint = process.argv[1];

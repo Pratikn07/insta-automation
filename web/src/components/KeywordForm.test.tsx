@@ -266,4 +266,26 @@ describe("KeywordForm link guides", () => {
     expect(options.some((text) => text?.includes("Halloween collection"))).toBe(true);
     expect(options.some((text) => text?.includes("Sleep guide"))).toBe(false);
   });
+
+  it("shows the chosen link guide's address and button, with a way to edit it", async () => {
+    const createdAt = "2026-10-01T00:00:00.000Z";
+    renderForm([
+      {
+        id: "l1",
+        name: "Halloween collection",
+        description: null,
+        createdAt,
+        deliveryMode: "link",
+        linkUrl: "https://mycuratedhaven.com/halloween",
+        linkButtonLabel: "Open the recipes",
+      },
+    ]);
+    const user = await chooseLink();
+    await user.click(screen.getByRole("button", { name: /Use existing/ }));
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "l1" } });
+
+    expect(screen.getByText("https://mycuratedhaven.com/halloween")).toBeInTheDocument();
+    expect(screen.getByText(/Open the recipes/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Edit guide" })).toHaveAttribute("href", "/guides/l1");
+  });
 });

@@ -25,6 +25,17 @@ const SPIKE_TITLE = "Your Halloween recipes 👻";
 const SPIKE_SUBTITLE = "8 toddler-friendly recipes, ready to cook";
 const SPIKE_BUTTON = "Open the recipes";
 
+/**
+ * Accepted, rejected, or unknown. No response, a 5xx or a 429 is unknown: each can arrive
+ * after Meta already delivered the message, so the operator must check the phone rather
+ * than retry and risk a second private reply to the same comment.
+ */
+export function linkGuideSpikeOutcome(result: LinkGuideSpikeResult): "accepted" | "rejected" | "unknown" {
+  if (result.accepted) return "accepted";
+  if (result.httpStatus === null || result.httpStatus === 429 || result.httpStatus >= 500) return "unknown";
+  return "rejected";
+}
+
 export function parseLinkGuideSpikeCli(args: string[]): {
   case: LinkGuideSpikeCase;
   confirmedControlledSend: boolean;

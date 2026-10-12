@@ -278,6 +278,8 @@ conversationsRouter.get("/:id/events", async (req, res) => {
             select: {
               id: true,
               name: true,
+              deliveryMode: true,
+              linkButtonLabel: true,
               messages: { orderBy: { order: "asc" } },
             },
           },

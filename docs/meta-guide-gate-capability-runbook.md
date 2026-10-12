@@ -223,4 +223,4 @@ Record the results in `docs/meta-verification/2026-10-13-link-guide-capability-r
 }
 ```
 
-`sanitizedResult` is the JSON the command printed. A case is `supported` only when Meta accepted it AND the phone tap from Message Requests passed. A result with `accepted: false` and `httpStatus: null` (or the `outcome_unknown_do_not_retry` line on stderr) means the outcome is unknown: mark that case `not_verified`, never re-run it on the same comment, and use a fresh comment only after review.
+`sanitizedResult` is the JSON the command printed. A case is `supported` only when Meta accepted it AND the phone tap from Message Requests passed. A result with `accepted: false` and an `httpStatus` of `null`, `429` or any `5xx` (the command prints `outcome_unknown_do_not_retry` on stderr and exits 2) means the outcome is unknown: mark that case `not_verified`, never re-run it on the same comment, and use a fresh comment only after review.
