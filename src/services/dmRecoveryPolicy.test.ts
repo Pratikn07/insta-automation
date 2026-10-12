@@ -76,6 +76,18 @@ describe("DM recovery policy", () => {
         renderRecoveryCopy("no_confirmed_read", "PROTEIN", handle).startsWith(`@${handle} `),
       ).toBe(true);
     });
+
+    it("tells a link-guide parent we sent the link, not a guide", () => {
+      expect(renderRecoveryCopy("no_confirmed_read", "GHOST", null, true, "link")).toBe(
+        "I sent you the link 💛 Instagram may have tucked it into your Message Requests, so check there. Still nothing? DM @tinysoho “GHOST” and I’ll resend.",
+      );
+    });
+
+    it("keeps the settings-blocked copy for link guides", () => {
+      expect(renderRecoveryCopy("settings_blocked", "GHOST", null, true, "link")).toBe(
+        renderRecoveryCopy("settings_blocked", "GHOST"),
+      );
+    });
   });
 
   describe("assignRecoveryCohort", () => {

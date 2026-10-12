@@ -160,4 +160,24 @@ describeWithDatabase("link guide repository", () => {
       providerMessageId: providerIds[results.indexOf(true)],
     });
   });
+
+  it("moves an awaiting_done conversation to link_sent and leaves a completed one alone", async () => {
+    const { markLinkSent } = await import("./conversationService.js");
+    const awaiting = await db.conversation.create({
+      data: { igUserId: `ig-${suffix}-w`, keywordId: ids.keyword, state: "awaiting_done" },
+    });
+    const done = await db.conversation.create({
+      data: { igUserId: `ig-${suffix}-d`, keywordId: ids.keyword, state: "completed" },
+    });
+
+    await markLinkSent(awaiting.id);
+    await markLinkSent(done.id);
+
+    await expect(db.conversation.findUniqueOrThrow({ where: { id: awaiting.id } })).resolves.toMatchObject({
+      state: "link_sent",
+    });
+    await expect(db.conversation.findUniqueOrThrow({ where: { id: done.id } })).resolves.toMatchObject({
+      state: "completed",
+    });
+  });
 });
