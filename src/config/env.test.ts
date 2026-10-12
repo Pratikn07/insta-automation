@@ -505,4 +505,10 @@ describe("env configuration schema for link guides", () => {
   it("treats an empty redirect origin as unset", () => {
     expect(envSchema.parse({ ...baseEnv, LINK_GUIDE_REDIRECT_BASE_URL: "" }).LINK_GUIDE_REDIRECT_BASE_URL).toBeUndefined();
   });
+
+  it("refuses to turn link guides on with an empty redirect origin", () => {
+    expect(
+      envSchema.safeParse({ ...baseEnv, LINK_GUIDE_ENABLED: "true", LINK_GUIDE_REDIRECT_BASE_URL: "" }).success,
+    ).toBe(false);
+  });
 });
