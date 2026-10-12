@@ -64,7 +64,9 @@ describeWithDatabase("guide cover repository PostgreSQL behavior", () => {
         resourceId,
         categoryId: POTTY_CATEGORY_ID,
       }),
-    ).resolves.toEqual({ ok: false, error: "cover_create_conflict" });
+      // Since the collection-move change, another collection's row is returned rather than
+      // refused: whether the guide may move is decided later, under the presentation lock.
+    ).resolves.toMatchObject({ ok: true, replayed: false, value: { categoryId: BEDTIME_CATEGORY_ID } });
 
     await prisma.resourcePresentation.update({
       where: { resourceId },
