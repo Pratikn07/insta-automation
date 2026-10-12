@@ -5,7 +5,7 @@ import { env } from "./config/env.js";
 import { logger } from "./lib/logger.js";
 import { captureRawBody, handleVerification, verifyMetaSignature } from "./meta/verifyWebhook.js";
 import { dispatchWebhook } from "./handlers/webhookRouter.js";
-import { expireOldConversations } from "./services/conversationService.js";
+import { expireOldConversations, markCompleted } from "./services/conversationService.js";
 import { runGateQueueTick } from "./services/gateQueueWorker.js";
 import { runSnapshotTick } from "./services/snapshotWorker.js";
 import { runFeedFollowSnapshotTick } from "./services/feedFollowSnapshotWorker.js";
@@ -31,6 +31,9 @@ import { buildDeploymentHealth } from "./services/deploymentHealth.js";
 import { startUpcomingAutomationScheduler } from "./services/upcomingAutomationScheduler.js";
 import { flags } from "./services/flagService.js";
 import { startGuideCoverOrphanCleanupScheduler } from "./services/guideCoverOrphanCleanupScheduler.js";
+import { createLinkRedirectRouter } from "./api/linkRedirect.routes.js";
+import { linkGuideRepository } from "./services/linkGuideFlow.js";
+import { parseAllowedHosts } from "./services/linkGuidePolicy.js";
 
 const app = express();
 let stopGuideDeliveryScheduler: (() => void) | undefined;
@@ -74,6 +77,20 @@ app.post("/webhook", verifyMetaSignature, async (req, res) => {
     logger.error({ errorCode: "webhook_dispatch_failed" }, "dispatchWebhook failed after ack");
   }
 });
+
+// Link-guide button. Public and unauthenticated like /health and /webhook: parents tap
+// it from Instagram. Outside the /api router, so it inherits neither admin auth nor CORS.
+app.use(
+  "/r",
+  createLinkRedirectRouter({
+    repository: linkGuideRepository,
+    allowedHosts: () => parseAllowedHosts(env.LINK_GUIDE_ALLOWED_HOSTS),
+    completeConversation: markCompleted,
+    now: () => new Date(),
+    onBackgroundError: () =>
+      logger.error({ errorCode: "link_redirect_failed" }, "Link redirect lookup or click record failed"),
+  }),
+);
 
 app.use("/api", apiRouter);
 
