@@ -7,7 +7,7 @@
 
 ## Execution status (handoff, 2026-10-12)
 
-**Done and reviewed (spec and quality):** Tasks 1–6. Commits `a6785af`..`4f4d909`. **Resume at Task 7.** Nothing from Task 7 onward has been started.
+**Done and reviewed (spec and quality):** Tasks 1–17. Tasks 1–6: commits `a6785af`..`4f4d909`. Tasks 7–17: `7538a61`..the Task 17 docs commit, on `claude/clever-tesla-67lsn9`, which fast-forwards this branch. **Nothing left to build.** What remains is the owner's launch checklist (Task 17, Step 7), starting with the phone tap check below.
 
 **Launch test (Task 3 Step 8):** run by the owner on 2026-10-12.
 - `private_link_card`: Meta accepted it (HTTP 200, with a message id).

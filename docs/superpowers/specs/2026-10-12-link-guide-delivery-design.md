@@ -1,7 +1,7 @@
 # Link guides: send a button to the site instead of a follow-gated guide
 
 **Date:** 2026-10-12
-**Status:** Design approved in conversation, awaiting written-spec review
+**Status:** Implemented on `claude/clever-tesla-67lsn9`, which fast-forwards draft PR #76's `claude/gated-flow-redesign-9d3c92`; awaiting real-phone check and launch
 **Pilot:** Halloween collection, `https://mycuratedhaven.com/halloween`, live by 2026-10-19
 
 ## Summary
