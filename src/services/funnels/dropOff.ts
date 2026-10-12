@@ -38,6 +38,7 @@ WITH cohort AS (
          MIN(e.created_at) AS entered_at
   FROM event_log e
   WHERE e.kind = 'keyword_matched'
+    AND COALESCE(e.payload->>'deliveryMode', 'gated') <> 'link'
     AND e.created_at >= $1::timestamptz
     AND e.created_at <  $2::timestamptz
     AND e.payload->>'conversationId' IS NOT NULL

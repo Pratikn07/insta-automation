@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  COHORT_SQL,
   GUIDE_FOLLOW_MIN_SAMPLE,
   summarizeGuideFollow,
   type GuideFollowRow,
@@ -195,5 +196,11 @@ describe("summarizeGuideFollow", () => {
   it("clamps a numerator that exceeds its denominator instead of reporting >100%", () => {
     const s = summarize([]);
     expect(s.retention.numerator).toBeLessThanOrEqual(s.retention.denominator);
+  });
+});
+
+describe("guide-follow cohort", () => {
+  it("leaves link guides out of the gated funnel", () => {
+    expect(COHORT_SQL).toContain("COALESCE(e.payload->>'deliveryMode', 'gated') <> 'link'");
   });
 });

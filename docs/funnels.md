@@ -167,7 +167,7 @@ nothing else:
 CREATE ROLE funnel_readonly LOGIN PASSWORD '<generate-a-strong-one>';
 GRANT CONNECT ON DATABASE postgres TO funnel_readonly;
 GRANT USAGE ON SCHEMA public TO funnel_readonly;
-GRANT SELECT ON event_log, conversations, ig_users, keywords TO funnel_readonly;
+GRANT SELECT ON event_log, conversations, ig_users, keywords, guide_link_send, guide_link_click TO funnel_readonly;
 ```
 
 Verified behaviour of exactly these grants:
@@ -205,3 +205,16 @@ structure so an `arm` field can be added without a second renderer.
 - `EVENT_LOOKBACK_MARGIN` (90 days) bounds how far back a reused conversation's
   earlier events are visible. A journey older than that will look like it never
   received a gate.
+
+## Comment → link click (`link-click`)
+
+The link-guide funnel. Its cohort is `keyword_matched` events carrying `deliveryMode: "link"`. Those same events are excluded from `guide-follow` and its drop-off lists, so the gated baseline is never diluted.
+
+| Stage | Source |
+|---|---|
+| `entered` | First `keyword_matched` per conversation in the window |
+| `linkSent` | A `guide_link_send` row with `status = 'sent'` (first try or retry) |
+| `clicked` | A `guide_link_click` row with `is_bot = false` |
+| `followingMeasured` | Clicked, rechecked by `followRecheckWorker` (~3 days after the tap completed the conversation), and following. Coverage only |
+
+The headline is the click rate (`clicked / linkSent`). `followedAnyway` is following among rechecked clickers, the number that prices moving more recipes to links. Both writers are real code: `guide_link_send` is written by the link sender, and `guide_link_click` by `GET /r/:token`. `linkClickFunnelContract.test.ts` runs the SQL against rows from both.

@@ -30,6 +30,7 @@ import { FUNNEL_KEYS, getFunnelDef } from "../src/services/funnels/registry.js";
 import {
   COHORT_SQL,
   EVENT_LOOKBACK_MARGIN,
+  guideFollowDef,
   type GuideFollowResult,
 } from "../src/services/funnels/guideFollowFunnel.js";
 
@@ -150,6 +151,14 @@ async function main() {
   const def = getFunnelDef(args.key);
   if (!def) {
     console.error(`Unknown funnel "${args.key}". Available: ${FUNNEL_KEYS.join(", ")}`);
+    process.exitCode = 1;
+    return;
+  }
+  // This report prints the guide-follow cohort only. Any other registered funnel has its
+  // own SQL and summarizer, so running it here would print guide-follow numbers under
+  // that funnel's name.
+  if (def.key !== guideFollowDef.key) {
+    console.error(`The CLI reports guide-follow only. Read "${def.key}" from GET /api/funnels/${def.key}.`);
     process.exitCode = 1;
     return;
   }

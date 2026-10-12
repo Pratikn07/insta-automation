@@ -35,6 +35,13 @@ import {
   type DropOffRow,
   type DropOffSummary,
 } from "./dropOff.js";
+import {
+  LINK_CLICK_COHORT_SQL,
+  LINK_CLICK_MIN_SAMPLE,
+  summarizeLinkClick,
+  type LinkClickResult,
+  type LinkClickRow,
+} from "./linkClickFunnel.js";
 
 /** The minimum a caller must provide. Satisfied by PrismaClient. */
 export interface FunnelDb {
@@ -94,6 +101,24 @@ export async function runGuideFollowFunnel(
     { from: window.from.toISOString(), to: window.to.toISOString() },
     minSample,
   );
+}
+
+export async function fetchLinkClickRows(db: FunnelDb, window: FunnelWindow): Promise<LinkClickRow[]> {
+  // $queryRawUnsafe because the statement is a module constant; the values are bound.
+  return db.$queryRawUnsafe<LinkClickRow[]>(
+    LINK_CLICK_COHORT_SQL,
+    window.from.toISOString(),
+    window.to.toISOString(),
+  );
+}
+
+export async function runLinkClickFunnel(
+  db: FunnelDb,
+  window: FunnelWindow = defaultWindow(),
+  minSample: number = LINK_CLICK_MIN_SAMPLE,
+): Promise<LinkClickResult> {
+  const rows = await fetchLinkClickRows(db, window);
+  return summarizeLinkClick(rows, { from: window.from.toISOString(), to: window.to.toISOString() }, minSample);
 }
 
 /** Default page size for a drop-off list. Enough to act on, small enough to render. */
