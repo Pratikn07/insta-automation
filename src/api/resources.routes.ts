@@ -7,6 +7,8 @@ import {
   isPrimaryKeyViolation,
 } from "./createReplay.js";
 import { asyncRouter } from "./asyncRouter.js";
+import { env } from "../config/env.js";
+import { parseAllowedHosts, validateLinkGuideFields } from "../services/linkGuidePolicy.js";
 
 export const resourcesRouter = asyncRouter();
 
@@ -31,12 +33,54 @@ function isForeignKeyViolation(error: unknown): boolean {
  * lost can then be repeated safely: the same UUID either creates the row or
  * proves the row is already there.
  */
+/**
+ * Link-guide fields. Zod only bounds the size; the real rules (https, allowed host,
+ * code-point limits) live in validateLinkGuideFields, shared with the sender.
+ */
+const linkFields = {
+  deliveryMode: z.enum(["gated", "link"]).optional(),
+  linkUrl: z.string().trim().max(2048).nullish(),
+  linkButtonLabel: z.string().trim().max(64).nullish(),
+  linkCardTitle: z.string().trim().max(256).nullish(),
+  linkCardSubtitle: z.string().trim().max(256).nullish(),
+};
+
 const createSchema = z.object({
   id: z.string().uuid(),
   name: z.string().min(1).max(120),
   description: z.string().max(500).nullish(),
+  ...linkFields,
 });
 const updateSchema = createSchema.omit({ id: true }).partial();
+
+const STORED_LINK_FIELDS = {
+  deliveryMode: true,
+  linkUrl: true,
+  linkButtonLabel: true,
+  linkCardTitle: true,
+  linkCardSubtitle: true,
+} as const;
+
+const NEW_GUIDE_LINK_FIELDS = {
+  deliveryMode: "gated" as const,
+  linkUrl: null,
+  linkButtonLabel: null,
+  linkCardTitle: null,
+  linkCardSubtitle: null,
+};
+
+/** Only the link fields the request actually sent; an empty string clears a field. */
+function sentLinkFields(data: z.infer<typeof updateSchema>) {
+  return {
+    ...(data.deliveryMode !== undefined && { deliveryMode: data.deliveryMode }),
+    ...(data.linkUrl !== undefined && { linkUrl: data.linkUrl || null }),
+    ...(data.linkButtonLabel !== undefined && { linkButtonLabel: data.linkButtonLabel || null }),
+    ...(data.linkCardTitle !== undefined && { linkCardTitle: data.linkCardTitle || null }),
+    ...(data.linkCardSubtitle !== undefined && { linkCardSubtitle: data.linkCardSubtitle || null }),
+  };
+}
+
+const allowedHosts = () => parseAllowedHosts(env.LINK_GUIDE_ALLOWED_HOSTS);
 
 /** The fields this request owns, and therefore the fields a replay must match. */
 const RESOURCE_REPLAY_KEYS = ["name", "description"] as const;
@@ -79,7 +123,16 @@ resourcesRouter.get("/:id", async (req, res) => {
 resourcesRouter.post("/", async (req, res) => {
   const parsed = createSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-  const data = { ...parsed.data, description: parsed.data.description ?? null };
+  const link = sentLinkFields(parsed.data);
+  const linkError = validateLinkGuideFields({ ...NEW_GUIDE_LINK_FIELDS, ...link }, allowedHosts());
+  if (linkError) return res.status(400).json({ error: linkError });
+  // Link keys are added only when sent, so a plain gated create is unchanged.
+  const data = {
+    id: parsed.data.id,
+    name: parsed.data.name,
+    description: parsed.data.description ?? null,
+    ...link,
+  };
 
   if (idempotencyKeyMismatch(req.headers["idempotency-key"], data.id)) {
     return res.status(400).json({ error: "idempotency_key_mismatch" });
@@ -102,9 +155,26 @@ resourcesRouter.post("/", async (req, res) => {
 resourcesRouter.patch("/:id", async (req, res) => {
   const parsed = updateSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const link = sentLinkFields(parsed.data);
+  // Validate the guide as it WOULD be after this write, so turning on Link without a
+  // URL fails here rather than at the parent's comment.
+  if (Object.keys(link).length > 0) {
+    const stored = await prisma.resource.findUnique({
+      where: { id: req.params.id },
+      select: STORED_LINK_FIELDS,
+    });
+    if (!stored) return res.status(404).json({ error: "not_found" });
+    const linkError = validateLinkGuideFields({ ...stored, ...link }, allowedHosts());
+    if (linkError) return res.status(400).json({ error: linkError });
+  }
+  const { name, description } = parsed.data;
   const updated = await prisma.resource.update({
     where: { id: req.params.id },
-    data: parsed.data,
+    data: {
+      ...(name !== undefined && { name }),
+      ...(description !== undefined && { description }),
+      ...link,
+    },
   });
   res.json(updated);
 });
@@ -135,6 +205,16 @@ resourcesRouter.delete("/:id", async (req, res, next) => {
   });
   if (accessHistoryCount > 0) {
     return res.status(409).json({ error: "resource_has_guide_access_history" });
+  }
+
+  /**
+   * A link send is history for the same reason: it records that a real parent was sent
+   * this guide's link and whether they tapped it. Without this guard, deleting the
+   * guide's keywords would cascade the click history away and then let the delete through.
+   */
+  const linkHistoryCount = await prisma.guideLinkSend.count({ where: { resourceId: id } });
+  if (linkHistoryCount > 0) {
+    return res.status(409).json({ error: "resource_has_link_history" });
   }
 
   /**

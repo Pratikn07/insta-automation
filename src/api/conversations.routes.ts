@@ -69,7 +69,7 @@ function summariseRecovery(recovery: RecoverySummaryRow | null): Record<string, 
 export const conversationsRouter = asyncRouter();
 
 const listQuerySchema = z.object({
-  state: z.enum(["awaiting_done", "completed", "expired"]).optional(),
+  state: z.enum(["awaiting_done", "completed", "expired", "link_sent"]).optional(),
   mode: z.enum(["canonical", "raw"]).default("canonical"),
   limit: z.coerce.number().int().min(1).max(200).default(50),
   cursor: z.string().uuid().optional(),

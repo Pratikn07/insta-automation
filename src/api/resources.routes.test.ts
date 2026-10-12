@@ -27,6 +27,8 @@ const deleteCoverVersions = vi.fn();
 const deleteCoverSuggestions = vi.fn();
 const deletePresentation = vi.fn();
 const transaction = vi.fn();
+const updateResource = vi.fn();
+const countLinkSends = vi.fn();
 
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
@@ -35,7 +37,8 @@ vi.mock("../lib/prisma.js", () => ({
     upcomingAutomation: { findMany: findUpcoming },
     keyword: { findMany: findKeywords, deleteMany: deleteKeywords },
     conversation: { deleteMany: deleteConversations },
-    resource: { findMany, findUnique, create, delete: deleteResource },
+    resource: { findMany, findUnique, create, update: updateResource, delete: deleteResource },
+    guideLinkSend: { count: countLinkSends },
     resourceCoverVersion: {
       count: countCoverVersions,
       deleteMany: deleteCoverVersions,
@@ -46,6 +49,8 @@ vi.mock("../lib/prisma.js", () => ({
     $transaction: transaction,
   },
 }));
+
+vi.mock("../config/env.js", () => ({ env: { LINK_GUIDE_ALLOWED_HOSTS: "mycuratedhaven.com" } }));
 
 const { resourcesRouter } = await import("./resources.routes.js");
 
@@ -103,6 +108,8 @@ beforeEach(() => {
   });
   countDeliveries.mockReset().mockResolvedValue(0);
   countAccessAttempts.mockReset().mockResolvedValue(0);
+  updateResource.mockReset();
+  countLinkSends.mockReset().mockResolvedValue(0);
   findUpcoming.mockReset().mockResolvedValue([]);
   findKeywords.mockReset().mockResolvedValue([]);
   deleteConversations.mockReset().mockReturnValue({ operation: "delete-conversations" });
@@ -384,5 +391,81 @@ describe("resource message-length summaries", () => {
       invalidMessageCount: 1,
     });
     expect(response.body.messages[1].body).toContain(PRIVATE_SENTINEL);
+  });
+});
+
+describe("link guide fields", () => {
+  const LINK_BODY = {
+    id: RESOURCE_ID,
+    name: "Halloween collection",
+    description: null,
+    deliveryMode: "link",
+    linkUrl: "https://mycuratedhaven.com/halloween",
+    linkButtonLabel: "Open the recipes",
+  };
+  const STORED_GATED = {
+    deliveryMode: "gated",
+    linkUrl: null,
+    linkButtonLabel: null,
+    linkCardTitle: null,
+    linkCardSubtitle: null,
+  };
+
+  it("creates a link guide when the link is complete", async () => {
+    await request(makeApp()).post("/api/resources").send(LINK_BODY).expect(201);
+    expect(create).toHaveBeenCalledWith({ data: LINK_BODY });
+  });
+
+  it("keeps a plain gated create byte-identical to before", async () => {
+    await request(makeApp())
+      .post("/api/resources")
+      .send({ id: RESOURCE_ID, name: "Guide name", description: null })
+      .expect(201);
+    expect(create).toHaveBeenCalledWith({ data: { id: RESOURCE_ID, name: "Guide name", description: null } });
+  });
+
+  it("refuses a link to another site", async () => {
+    const response = await request(makeApp())
+      .post("/api/resources")
+      .send({ ...LINK_BODY, linkUrl: "https://evil.example/x" })
+      .expect(400);
+    expect(response.body).toEqual({ error: "link_url_host_not_allowed" });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("validates a PATCH against what is stored", async () => {
+    findUnique.mockResolvedValue(STORED_GATED);
+    const response = await request(makeApp())
+      .patch(`/api/resources/${RESOURCE_ID}`)
+      .send({ deliveryMode: "link" })
+      .expect(400);
+    expect(response.body).toEqual({ error: "link_url_required" });
+    expect(updateResource).not.toHaveBeenCalled();
+  });
+
+  it("saves a complete switch to link", async () => {
+    findUnique.mockResolvedValue(STORED_GATED);
+    updateResource.mockResolvedValue({ id: RESOURCE_ID });
+    await request(makeApp())
+      .patch(`/api/resources/${RESOURCE_ID}`)
+      .send({ deliveryMode: "link", linkUrl: "https://mycuratedhaven.com/halloween", linkButtonLabel: "Open the recipes" })
+      .expect(200);
+    expect(updateResource).toHaveBeenCalledWith({
+      where: { id: RESOURCE_ID },
+      data: { deliveryMode: "link", linkUrl: "https://mycuratedhaven.com/halloween", linkButtonLabel: "Open the recipes" },
+    });
+  });
+
+  it("renames without reading the stored link fields", async () => {
+    updateResource.mockResolvedValue({ id: RESOURCE_ID });
+    await request(makeApp()).patch(`/api/resources/${RESOURCE_ID}`).send({ name: "New name" }).expect(200);
+    expect(findUnique).not.toHaveBeenCalled();
+    expect(updateResource).toHaveBeenCalledWith({ where: { id: RESOURCE_ID }, data: { name: "New name" } });
+  });
+
+  it("refuses to delete a guide that has sent links", async () => {
+    countLinkSends.mockResolvedValue(1);
+    const response = await request(makeApp()).delete(`/api/resources/${RESOURCE_ID}`).expect(409);
+    expect(response.body).toEqual({ error: "resource_has_link_history" });
   });
 });
