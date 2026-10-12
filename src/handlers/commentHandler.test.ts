@@ -33,6 +33,8 @@ vi.mock("../services/flagService.js", () => ({ flags: { bool: () => recoveryFlag
 const startCommentGuideRequest = vi.fn();
 const recordGuideAccessMetric = vi.fn();
 const authorizeNewGuideAction = vi.fn();
+const linkReadiness = vi.fn();
+const runCommentLinkGuide = vi.fn();
 
 const RESOURCE_ID = "30000000-0000-4000-8000-000000000003";
 
@@ -108,6 +110,10 @@ vi.mock("../services/guideAccessMetrics.js", () => ({
 vi.mock("../services/guideAudienceAuthorization.js", () => ({
   guideAudienceAuthorization: { authorizeNewGuideAction },
 }));
+vi.mock("../services/linkGuideFlow.js", () => ({
+  linkGuideFlow: { readiness: linkReadiness, runCommentLinkGuide, runDmLinkGuide: vi.fn() },
+  linkGuideRepository: {},
+}));
 
 const { handleComment } = await import("./commentHandler.js");
 
@@ -173,10 +179,19 @@ beforeEach(() => {
     startCommentGuideRequest,
     recordGuideAccessMetric,
     authorizeNewGuideAction,
+    linkReadiness,
+    runCommentLinkGuide,
     ...Object.values(childLogger),
   ]) {
     fn.mockReset();
   }
+  linkReadiness.mockReturnValue("ready");
+  runCommentLinkGuide.mockResolvedValue({
+    outcome: "sent",
+    sendId: "send-1",
+    shape: "card",
+    receipt: { instagramMessageId: "mid-1", dmMessageId: "dm-1", acceptedAt: new Date() },
+  });
 
   // Default-off is the production default: every existing expectation below is
   // the V1 path, and only a test that opts in reaches V2.
@@ -1086,5 +1101,115 @@ describe("strict opening failure recovery", () => {
     expect(enqueueGate).not.toHaveBeenCalled();
     expect(scheduleSettingsBlockedRecovery).not.toHaveBeenCalled();
     expect(scheduleTrackingUnavailableRecovery).not.toHaveBeenCalled();
+  });
+});
+
+describe("link guides — comment path", () => {
+  const LINK_RESOURCE = {
+    id: RESOURCE_ID,
+    name: "Halloween collection",
+    description: null,
+    deliveryMode: "link",
+    linkUrl: "https://mycuratedhaven.com/halloween",
+    linkButtonLabel: "Open the recipes",
+    linkCardTitle: "Your Halloween recipes 👻",
+    linkCardSubtitle: null,
+  };
+  const COMMENT = {
+    id: "comment-link-1",
+    text: "GHOST",
+    from: { id: "ig-parent", username: "parent" },
+    media: { id: "reel-9", media_product_type: "REELS" },
+  };
+
+  beforeEach(() => {
+    extractCandidates.mockReturnValue(["GHOST"]);
+    scannableCommentMatchCandidates.mockReturnValue(["GHOST"]);
+    findKeywordForComment.mockResolvedValue({
+      mode: "post_strict",
+      matchedToken: "GHOST",
+      keyword: {
+        id: "keyword-ghost",
+        keyword: "GHOST",
+        mediaId: "reel-9",
+        resourceId: RESOURCE_ID,
+        publicReply: "Sent you the recipes",
+        gateMessage: "unused",
+        resource: LINK_RESOURCE,
+      },
+    });
+  });
+
+  it("replies publicly, sends the link, and never starts the follow gate", async () => {
+    gateOwner.mockReturnValue("v2");
+
+    await handleComment(COMMENT);
+
+    expect(replyToComment).toHaveBeenCalledWith("comment-link-1", "Sent you the recipes");
+    expect(runCommentLinkGuide).toHaveBeenCalledWith({
+      conversationId: "conversation-1",
+      keywordId: "keyword-ghost",
+      keywordSnapshot: "GHOST",
+      commentId: "comment-link-1",
+      mediaId: "reel-9",
+      igUserId: "ig-parent",
+      resource: LINK_RESOURCE,
+    });
+    expect(gateOwner).not.toHaveBeenCalled();
+    expect(startCommentGuideRequest).not.toHaveBeenCalled();
+    expect(sendTrackedPrivateReply).not.toHaveBeenCalled();
+    expect(logEvent).toHaveBeenCalledWith(
+      "keyword_matched",
+      expect.objectContaining({ deliveryMode: "link" }),
+    );
+  });
+
+  it("stays silent before the public reply when link guides are switched off", async () => {
+    linkReadiness.mockReturnValue("disabled");
+
+    await handleComment(COMMENT);
+
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect(resolveJourneyIntent).not.toHaveBeenCalled();
+    expect(runCommentLinkGuide).not.toHaveBeenCalled();
+    expect(logEvent).toHaveBeenCalledWith("link_guide_disabled", {
+      commentId: "comment-link-1",
+      keywordId: "keyword-ghost",
+      resourceId: RESOURCE_ID,
+    });
+  });
+
+  it("queues the text-with-link retry when the link DM fails", async () => {
+    runCommentLinkGuide.mockResolvedValue({
+      outcome: "failed",
+      sendId: "send-1",
+      shape: "card",
+      error: new Error("socket hang up"),
+      retryText: "Your Halloween recipes 👻\nhttps://api.example.com/r/tok_ABCDEFG",
+    });
+
+    await handleComment(COMMENT);
+
+    expect(enqueueGate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: "conversation-1",
+        commentId: "comment-link-1",
+        gateMessage: "Your Halloween recipes 👻\nhttps://api.example.com/r/tok_ABCDEFG",
+      }),
+    );
+  });
+
+  it("sends nothing more for a repeat comment inside the same journey", async () => {
+    resolveJourneyIntent.mockResolvedValue({
+      disposition: "reused_active",
+      intentId: "intent-1",
+      conversationId: "conversation-1",
+      maySendGate: false,
+    });
+
+    await handleComment(COMMENT);
+
+    expect(replyToComment).toHaveBeenCalledTimes(1);
+    expect(runCommentLinkGuide).not.toHaveBeenCalled();
   });
 });
