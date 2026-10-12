@@ -8,6 +8,7 @@ import type {
   GuideAccessMetricsResult,
   GuideCoverRates,
   GuideFollowResult,
+  LinkClickResult,
 } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -17,6 +18,7 @@ import { GuardedNumber } from "@/components/funnels/GuardedNumber";
 import { FunnelStages } from "@/components/funnels/FunnelStages";
 import { EvidenceBar } from "@/components/funnels/EvidenceBar";
 import { DropOffTable } from "@/components/funnels/DropOffTable";
+import { LinkClickPanel } from "@/components/funnels/LinkClickPanel";
 
 // Where the guide funnel loses people.
 //
@@ -72,6 +74,13 @@ export function Funnels() {
     queryKey: ["funnels", "guide-access-metrics", range.from, range.to],
     queryFn: ({ signal }) =>
       apiRead<GuideAccessMetricsResult>(`/funnels/guide-access-metrics${query}`, { signal }),
+  });
+
+  // Its own query, like the cover panel: the link funnel must not be able to take the
+  // gated funnel down.
+  const linkQ = useQuery<LinkClickResult>({
+    queryKey: ["funnels", "link-click", range.from, range.to],
+    queryFn: ({ signal }) => apiRead<LinkClickResult>(`/funnels/link-click${query}`, { signal }),
   });
 
   return (
@@ -150,6 +159,8 @@ export function Funnels() {
         isError={coverQ.isError}
         isAbsent={coverQ.data !== undefined && coverQ.data.coverRates === undefined}
       />
+
+      <LinkClickPanel data={linkQ.data} isLoading={linkQ.isLoading} isError={linkQ.isError} />
     </div>
   );
 }

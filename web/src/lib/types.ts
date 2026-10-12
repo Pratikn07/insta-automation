@@ -1333,6 +1333,27 @@ export interface GuideFollowResult {
   homeTileCohort: { deliveredToNonFollower: number; ofWhichRedelivery: number };
 }
 
+export interface LinkClickReelBreakdown {
+  mediaId: string | null;
+  entered: number;
+  linkSent: number;
+  clicked: number;
+  clickRate: GuardedRate;
+}
+
+/** GET /api/funnels/link-click. Mirrors src/services/funnels/linkClickFunnel.ts. */
+export interface LinkClickResult {
+  key: string;
+  name: string;
+  question: string;
+  window: { from: string; to: string };
+  cohortSize: number;
+  stages: FunnelStageCount[];
+  headline: FunnelHeadline & { rate: GuardedRate };
+  followedAnyway: GuardedRate;
+  byReel: LinkClickReelBreakdown[];
+}
+
 export type DropOffBucket = "no-reply" | "stuck-at-wall";
 
 export interface DropOffRow {
