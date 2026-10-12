@@ -25,14 +25,15 @@ function text(value: string, max: number): string {
 }
 
 function https(value: string): string {
+  const trimmed = value.trim();
   let url: URL;
   try {
-    url = new URL(value);
+    url = new URL(trimmed);
   } catch {
     invalid();
   }
   if (url.protocol !== "https:") invalid();
-  return value;
+  return trimmed;
 }
 
 /** Private replies address a comment and carry no messaging_type, like sendPrivateReply. */

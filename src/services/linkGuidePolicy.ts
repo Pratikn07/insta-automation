@@ -117,11 +117,11 @@ export function validateLinkGuideFields(
   if (codePoints(label) > LINK_BUTTON_LABEL_MAX) return "link_button_label_too_long";
   if (isLink && label.length === 0) return "link_button_label_required";
 
-  if (fields.linkCardTitle !== null && codePoints(fields.linkCardTitle.trim()) > LINK_CARD_TEXT_MAX) {
+  if (fields.linkCardTitle != null && codePoints(fields.linkCardTitle.trim()) > LINK_CARD_TEXT_MAX) {
     return "link_card_title_too_long";
   }
   if (
-    fields.linkCardSubtitle !== null &&
+    fields.linkCardSubtitle != null &&
     codePoints(fields.linkCardSubtitle.trim()) > LINK_CARD_TEXT_MAX
   ) {
     return "link_card_subtitle_too_long";
@@ -132,7 +132,7 @@ export function validateLinkGuideFields(
 export function campaignSlug(name: string): string {
   const slug = name
     .normalize("NFKD")
-    .replace(/[̀-ͯ]/gu, "")
+    .replace(/[\u0300-\u036f]/gu, "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/gu, "-")
     .replace(/^-|-$/gu, "")
@@ -155,8 +155,12 @@ export function buildDestinationUrl(input: {
   return url.toString();
 }
 
-const META_PREVIEW_AGENTS = /facebookexternalhit|meta-externalagent|facebookcatalog/i;
-const GENERIC_BOTS = /bot|crawler|spider|preview|slurp|curl|wget|python-requests|headless/i;
+const META_PREVIEW_AGENTS = /facebookexternalhit|meta-externalagent|meta-externalfetcher|facebookcatalog|facebot/i;
+// "bot" only as a crawler name ("Googlebot/2.1", "Slackbot-…", "bot;"), never inside a word:
+// Cubot is a phone brand, and its model names ("CUBOT X30") come from parents. A "+http"
+// contact URL is a crawler convention no browser follows.
+const GENERIC_BOTS =
+  /bot[/;-]|\bbot\b|\+https?:|crawler|spider|preview|slurp|curl|wget|python-requests|headless/i;
 const INSTAGRAM_APP = /Instagram/;
 
 /** A tap counts only from a real browser. An empty user agent is treated as a bot. */

@@ -61,6 +61,32 @@ describe("buildLinkGuideCardPayload", () => {
   });
 });
 
+describe("buildLinkGuideCardPayload limits", () => {
+  const card = (patch: Partial<typeof CARD>) =>
+    buildLinkGuideCardPayload({ ...CARD, ...patch, recipient: { comment_id: "comment-1" } });
+
+  it("counts an emoji as one character at the 20-character button limit", () => {
+    expect(() => card({ buttonLabel: `${"a".repeat(19)}👻` })).not.toThrow();
+    expect(() => card({ buttonLabel: `${"a".repeat(20)}👻` })).toThrow("invalid_link_guide_payload");
+  });
+
+  it("allows an 80-character title and refuses 81", () => {
+    expect(() => card({ title: `${"a".repeat(79)}👻` })).not.toThrow();
+    expect(() => card({ title: "a".repeat(81) })).toThrow("invalid_link_guide_payload");
+  });
+
+  it("keeps the follow button inside Meta's button limit", () => {
+    expect([...LINK_GUIDE_FOLLOW_BUTTON_LABEL].length).toBeLessThanOrEqual(20);
+  });
+
+  it("sends a link without the whitespace it was saved with", () => {
+    const payload = card({ trackedUrl: `  ${CARD.trackedUrl} ` }) as {
+      message: { attachment: { payload: { elements: Array<{ buttons: Array<{ url: string }> }> } } };
+    };
+    expect(payload.message.attachment.payload.elements[0]!.buttons[0]!.url).toBe(CARD.trackedUrl);
+  });
+});
+
 describe("buildLinkGuideTextPayload", () => {
   it("sends plain text in the private-reply slot", () => {
     const text = "Your Halloween recipes 👻\nhttps://api.example.com/r/tok_ABCDEFG";

@@ -87,6 +87,17 @@ describe("validateLinkGuideFields", () => {
   });
 });
 
+describe("validateLinkGuideFields with absent card fields", () => {
+  it("treats a missing card title or subtitle as empty rather than throwing", () => {
+    const fields = {
+      deliveryMode: "link" as const,
+      linkUrl: "https://mycuratedhaven.com/halloween",
+      linkButtonLabel: "Open the recipes",
+    } as unknown as Parameters<typeof validateLinkGuideFields>[0];
+    expect(validateLinkGuideFields(fields, new Set(["mycuratedhaven.com"]))).toBeNull();
+  });
+});
+
 describe("isAllowedLinkUrl", () => {
   it("allows only https on an allowed host", () => {
     expect(isAllowedLinkUrl("https://mycuratedhaven.com/halloween", HOSTS)).toBe(true);
@@ -162,6 +173,29 @@ describe("classifyClick", () => {
           "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
       },
       { isBot: false, uaFamily: "browser" },
+    ],
+    // Meta's other fetchers are previews too, never a parent's tap.
+    [{ method: "GET", userAgent: "Facebot" }, { isBot: true, uaFamily: "meta_preview" }],
+    [{ method: "GET", userAgent: "meta-externalfetcher/1.1" }, { isBot: true, uaFamily: "meta_preview" }],
+    [{ method: "GET", userAgent: "Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)" }, { isBot: true, uaFamily: "bot" }],
+    [{ method: "GET", userAgent: "Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)" }, { isBot: true, uaFamily: "bot" }],
+    [{ method: "GET", userAgent: "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)" }, { isBot: true, uaFamily: "bot" }],
+    // Cubot is a phone brand. Its model names contain "bot", and its owners are parents.
+    [
+      {
+        method: "GET",
+        userAgent:
+          "Mozilla/5.0 (Linux; Android 10; CUBOT X30 Build/QP1A.190711.020) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+      },
+      { isBot: false, uaFamily: "browser" },
+    ],
+    [
+      {
+        method: "GET",
+        userAgent:
+          "Mozilla/5.0 (Linux; Android 11; CUBOT_X50 Build/RP1A.200720.011) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 Instagram 312.0.0.0.0 Android",
+      },
+      { isBot: false, uaFamily: "instagram_app" },
     ],
   ])("%o", (input, expected) => {
     expect(classifyClick(input)).toEqual(expected);

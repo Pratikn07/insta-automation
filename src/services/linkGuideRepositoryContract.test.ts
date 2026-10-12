@@ -113,6 +113,61 @@ describeWithDatabase("link guide repository", () => {
     );
   });
 
+  it("still records a parent's first tap after bots have filled the cap", async () => {
+    const send = await newSend(`p${suffix}AB`);
+    const base = { sendId: send.id, destinationUrl: "https://mycuratedhaven.com/halloween", clickedAt: new Date() };
+    for (let i = 0; i < MAX_RECORDED_CLICKS_PER_SEND; i++) {
+      await repository.recordClick({ ...base, isBot: true, uaFamily: "meta_preview" });
+    }
+
+    await expect(repository.recordClick({ ...base, isBot: false, uaFamily: "instagram_app" })).resolves.toEqual({
+      recorded: true,
+      firstHumanClick: true,
+    });
+    // Only the first human tap passes the cap; later ones stop as before.
+    await expect(repository.recordClick({ ...base, isBot: false, uaFamily: "instagram_app" })).resolves.toEqual({
+      recorded: false,
+      firstHumanClick: false,
+    });
+    await expect(db.guideLinkClick.count({ where: { sendId: send.id } })).resolves.toBe(
+      MAX_RECORDED_CLICKS_PER_SEND + 1,
+    );
+  });
+
+  it("moves a send to sent or failed only while it is still pending", async () => {
+    // Its own conversation: a failed send left on the shared one would be the "latest
+    // failed send" another test expects to claim.
+    const conversation = await db.conversation.create({
+      data: { igUserId: `ig-${suffix}-status`, keywordId: ids.keyword, state: "link_sent" },
+    });
+    const sendOn = (token: string) =>
+      repository.createSend({
+        token,
+        conversationId: conversation.id,
+        resourceId: ids.resource,
+        keywordId: ids.keyword,
+        mediaId: `reel-${suffix}`,
+        igUserId: `ig-${suffix}-status`,
+        channel: "private_reply",
+        shape: "card",
+      });
+    const sent = await sendOn(`s${suffix}AB`);
+    await repository.markSendSent(sent.id, "mid-1", new Date());
+    await repository.markSendFailed(sent.id);
+    await expect(db.guideLinkSend.findUniqueOrThrow({ where: { id: sent.id } })).resolves.toMatchObject({
+      status: "sent",
+      providerMessageId: "mid-1",
+    });
+
+    const failed = await sendOn(`f${suffix}AB`);
+    await repository.markSendFailed(failed.id);
+    await repository.markSendSent(failed.id, "mid-2", new Date());
+    await expect(db.guideLinkSend.findUniqueOrThrow({ where: { id: failed.id } })).resolves.toMatchObject({
+      status: "failed",
+      providerMessageId: null,
+    });
+  });
+
   it("marks the latest failed send as sent when its text retry lands", async () => {
     const send = await newSend(`d${suffix}AB`);
     await repository.markSendFailed(send.id);

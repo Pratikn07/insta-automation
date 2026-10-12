@@ -31,12 +31,16 @@ export function createLinkGuideRepository(db: LinkGuideDatabase) {
       return db.guideLinkSend.create({ data: input, select: { id: true } });
     },
 
+    /** Only a pending send moves: a send's outcome, once written, is never overwritten. */
     async markSendSent(id: string, providerMessageId: string | null, sentAt: Date): Promise<void> {
-      await db.guideLinkSend.update({ where: { id }, data: { status: "sent", providerMessageId, sentAt } });
+      await db.guideLinkSend.updateMany({
+        where: { id, status: "pending" },
+        data: { status: "sent", providerMessageId, sentAt },
+      });
     },
 
     async markSendFailed(id: string): Promise<void> {
-      await db.guideLinkSend.update({ where: { id }, data: { status: "failed" } });
+      await db.guideLinkSend.updateMany({ where: { id, status: "pending" }, data: { status: "failed" } });
     },
 
     /**
@@ -87,7 +91,9 @@ export function createLinkGuideRepository(db: LinkGuideDatabase) {
      * Records one hit on /r/<token>. Bots are stored but never count as a tap.
      *
      * The 20-row cap is a soft bound against scrapers: the count and the insert are not
-     * one atomic step, so a burst of simultaneous hits can overshoot it slightly.
+     * one atomic step, so a burst of simultaneous hits can overshoot it slightly. A send's
+     * first human tap is recorded even past the cap, so bots that filled it first can never
+     * keep a parent's tap from completing the conversation.
      *
      * `firstHumanClick` can be true for more than one simultaneous human tap. Callers must
      * treat it as idempotent: the conversation completion it triggers is repeat-safe. The
@@ -100,13 +106,19 @@ export function createLinkGuideRepository(db: LinkGuideDatabase) {
       uaFamily: string;
       clickedAt: Date;
     }): Promise<{ recorded: boolean; firstHumanClick: boolean }> {
-      const existing = await db.guideLinkClick.count({ where: { sendId: input.sendId } });
-      if (existing >= MAX_RECORDED_CLICKS_PER_SEND) return { recorded: false, firstHumanClick: false };
-      const priorHumanClicks = input.isBot
-        ? 0
-        : await db.guideLinkClick.count({ where: { sendId: input.sendId, isBot: false } });
+      const counts = await db.guideLinkClick.groupBy({
+        by: ["isBot"],
+        where: { sendId: input.sendId },
+        _count: { _all: true },
+      });
+      const existing = counts.reduce((total, row) => total + row._count._all, 0);
+      const priorHumanClicks = counts.find((row) => !row.isBot)?._count._all ?? 0;
+      const firstHumanClick = !input.isBot && priorHumanClicks === 0;
+      if (existing >= MAX_RECORDED_CLICKS_PER_SEND && !firstHumanClick) {
+        return { recorded: false, firstHumanClick: false };
+      }
       await db.guideLinkClick.create({ data: input });
-      return { recorded: true, firstHumanClick: !input.isBot && priorHumanClicks === 0 };
+      return { recorded: true, firstHumanClick };
     },
   };
 }
