@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { z } from "zod";
 import { DM_RECOVERY_TIMING_EXPERIMENT_VERSION } from "../services/dmRecoveryTimingExperiment.js";
+import { DEFAULT_LINK_GUIDE_ALLOWED_HOSTS } from "../services/linkGuidePolicy.js";
 import { booleanFlag } from "./booleanFlag.js";
 import { RECOVERY_TIMING_V2_CUTOVER_AT } from "./recoveryTimingSchedule.js";
 
@@ -204,6 +205,19 @@ export const envSchema = z.object({
   GUIDE_COVER_DELIVERY_ENABLED: booleanFlag(false),
   GUIDE_COVER_DELIVERY_RESOURCE_IDS: z.string().default(""),
   GUIDE_COVER_DELIVERY_ROLLOUT_PERCENT: z.coerce.number().int().min(0).max(100).default(0),
+  // Link guides: one DM with a button to a page on our site, no follow gate. Both
+  // switches default off. The card shape stays off until the launch test marks the
+  // private-reply card `supported`; with it off, link guides send text with the link.
+  LINK_GUIDE_ENABLED: booleanFlag(false),
+  LINK_GUIDE_CARD_ENABLED: booleanFlag(false),
+  LINK_GUIDE_ALLOWED_HOSTS: z.string().default(DEFAULT_LINK_GUIDE_ALLOWED_HOSTS),
+  // Public https origin the tracked /r/<token> links point at: the Railway API domain,
+  // or go.mycuratedhaven.com once that DNS record exists. Empty counts as unset, so the
+  // blank line in .env.example parses.
+  LINK_GUIDE_REDIRECT_BASE_URL: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().url().optional(),
+  ),
   GUIDE_COVER_ORPHAN_BATCH: z.coerce.number().int().min(1).max(50).default(10),
   GUIDE_COVER_ORPHAN_INTERVAL_MS: z.coerce
     .number()
@@ -424,6 +438,20 @@ export const envSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ["GUIDE_DELIVERY_ENABLED"],
       message: "GUIDE_DELIVERY_ENABLED requires a cohort or rollout percentage",
+    });
+  }
+  if (value.LINK_GUIDE_REDIRECT_BASE_URL && !value.LINK_GUIDE_REDIRECT_BASE_URL.startsWith("https://")) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["LINK_GUIDE_REDIRECT_BASE_URL"],
+      message: "LINK_GUIDE_REDIRECT_BASE_URL must be an https origin",
+    });
+  }
+  if (value.LINK_GUIDE_ENABLED && !value.LINK_GUIDE_REDIRECT_BASE_URL) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["LINK_GUIDE_ENABLED"],
+      message: "LINK_GUIDE_ENABLED requires LINK_GUIDE_REDIRECT_BASE_URL",
     });
   }
 });

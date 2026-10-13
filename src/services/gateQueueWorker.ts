@@ -5,6 +5,8 @@ import { env } from "../config/env.js";
 import { sendTrackedPrivateReply, sendTrackedText } from "./dmDeliveryService.js";
 import { guideFollowGateV2Selector } from "./guideFollowGateV2Rollout.js";
 import { recordGuideAccessMetric } from "./guideAccessMetrics.js";
+import { guideOwnerFor, type GuideOwner } from "./guideOwner.js";
+import { linkGuideRepository } from "./linkGuideFlow.js";
 import { logEvent, describeGraphError } from "../services/eventLogger.js";
 import { PRIVATE_REPLY_WINDOW_MS } from "./gateQueueService.js";
 import {
@@ -160,7 +162,7 @@ export async function runGateQueueTick(): Promise<void> {
         // a reconciled ALIAS has its own state, and that state can say awaiting_done
         // while the person already received the guide through a sibling journey (QA-05).
         include: {
-          keyword: true,
+          keyword: { include: { resource: { select: { deliveryMode: true } } } },
           canonicalIntent: {
             select: { completedAt: true, canonicalConversationId: true },
           },
@@ -215,25 +217,19 @@ export async function runGateQueueTick(): Promise<void> {
             source: "keyword_automation",
           });
 
-          // Immediately finalize delivery state
-          await prisma.gateQueue.update({
-            where: { id: row.id },
-            data: { status: "sent", attempts: row.attempts + 1, lastError: null },
-          });
-          await prisma.conversation.update({
-            where: { id: row.conversationId },
-            data: { state: "awaiting_done", gatedAt: new Date() },
-          });
-          // A queued row can now belong to the strict gate, because a failed strict
-          // opening is queued here. Ownership is computed the same way every other
-          // call site computes it, rather than snapshotted, so an allowlist change
-          // cannot leave a stale row on the wrong path. Fails closed to V1.
-          let retryOwner: "v1" | "v2" = "v1";
+          // Ownership first. A link guide's retry IS the link, so its conversation must
+          // land in link_sent, never back in awaiting_done where a reply would open the
+          // gate. Computed the same way every other call site does, and fails closed to V1.
+          let retryOwner: GuideOwner = "v1";
           try {
-            retryOwner = guideFollowGateV2Selector.owner({
-              igUserId: row.igUserId,
-              resourceId: convo.keyword.resourceId,
-            });
+            retryOwner = guideOwnerFor(
+              {
+                deliveryMode: convo.keyword.resource?.deliveryMode,
+                igUserId: row.igUserId,
+                resourceId: convo.keyword.resourceId,
+              },
+              (input) => guideFollowGateV2Selector.owner(input),
+            );
           } catch {
             logger.warn(
               { errorCode: "strict_gate_owner_unavailable", gateQueueId: row.id },
@@ -241,23 +237,48 @@ export async function runGateQueueTick(): Promise<void> {
             );
           }
 
+          // Immediately finalize delivery state
+          await prisma.gateQueue.update({
+            where: { id: row.id },
+            data: { status: "sent", attempts: row.attempts + 1, lastError: null },
+          });
+          await prisma.conversation.update({
+            where: { id: row.conversationId },
+            data:
+              retryOwner === "link"
+                ? { state: "link_sent", gatedAt: new Date() }
+                : { state: "awaiting_done", gatedAt: new Date() },
+          });
+          if (retryOwner === "link") {
+            // The retry re-sent the failed send's own token, so complete that send. Awaited
+            // inside its own try: the DM is already out, and nothing here may reach the
+            // send-failure handler below, which would queue the link a second time.
+            try {
+              await linkGuideRepository.markLatestFailedSendSent(
+                row.conversationId,
+                receipt.instagramMessageId,
+                new Date(),
+              );
+            } catch {
+              // Bookkeeping only; the redirect still resolves the token either way.
+            }
+          }
+
           await logEvent("dm_sent", {
             conversationId: row.conversationId,
-            kind: "gate",
+            kind: retryOwner === "link" ? "link" : "gate",
             source: "retry",
-            // Tagged so V2 retry volume never silently inflates the V1 baseline.
+            // Tagged so V2 and link retry volume never silently inflates the V1 baseline.
             gateOwner: retryOwner,
           });
 
-          // if/else rather than `continue`: the shared tail below owns the tick
-          // counter and the inter-send pacing, and a strict retry must not skip
-          // either. Skipping the pacing would fire private replies back to back in a
-          // worker that aborts its whole tick on a rate limit.
+          // if/else rather than `continue`: the shared tail below owns the tick counter
+          // and the inter-send pacing, and no retry may skip either.
           if (retryOwner === "v2") {
             // The strict opening was re-sent, so this counts on V2's own metric.
             await recordGuideAccessMetric("opening", "accepted");
           }
-          if (retryOwner !== "v2" || flags.bool("DM_RECOVERY_TWO_HOUR_ALL_ENABLED")) {
+          if (retryOwner === "v1" || flags.bool("DM_RECOVERY_TWO_HOUR_ALL_ENABLED")) {
             // Schedule recovery in separate block (failures do not un-send or revert queue)
             try {
               await scheduleAcceptedGateRecovery({
@@ -270,6 +291,7 @@ export async function runGateQueueTick(): Promise<void> {
                 gateDmMessageId: receipt.dmMessageId,
                 instagramGateMessageId: receipt.instagramMessageId,
                 acceptedAt: receipt.acceptedAt,
+                ...(retryOwner === "link" ? { openingKind: "link" as const } : {}),
               });
             } catch {
               await logEvent("dm_recovery_schedule_failed", {

@@ -16,6 +16,7 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { EmptyState, LoadFailed } from "@/components/EmptyState";
+import { DeliveryBadge } from "@/components/DeliveryBadge";
 
 /**
  * Why a delete was refused, in words that name the way out.
@@ -39,6 +40,9 @@ function deleteRefusal(error: unknown): string {
   }
   if (code === "resource_has_guide_access_history") {
     return "Someone has already asked for this guide through the follow check, so it is kept as a record. Remove its keywords instead.";
+  }
+  if (code === "resource_has_link_history") {
+    return "This link guide has already been sent to someone, so it is kept as a record. Remove its keywords instead.";
   }
   if (code === "resource_still_referenced") {
     return "Something still points at this guide, so it can't be deleted yet.";
@@ -194,6 +198,7 @@ function SequenceCard({ r, onDelete }: { r: Resource; onDelete: () => void }) {
           </Button>
         </div>
         <div className="mt-auto flex items-center gap-4 text-xs text-muted-foreground">
+          <DeliveryBadge mode={r.deliveryMode} />
           <span className="inline-flex items-center gap-1">
             <MessageSquare className="size-3.5" />
             {stepCount} {stepCount === 1 ? "step" : "steps"}

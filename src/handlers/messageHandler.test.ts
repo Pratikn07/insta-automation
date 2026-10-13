@@ -35,6 +35,7 @@ const gateOwner = vi.fn();
 const startDirectDmGuideRequest = vi.fn();
 const recordGuideAccessMetric = vi.fn();
 const authorizeNewGuideAction = vi.fn();
+const runDmLinkGuide = vi.fn();
 const logEvent = vi.fn();
 const SAFE_UNKNOWN = {
   category: "unknown_error",
@@ -101,6 +102,10 @@ vi.mock("../services/guideAccessMetrics.js", () => ({
 }));
 vi.mock("../services/guideAudienceAuthorization.js", () => ({
   guideAudienceAuthorization: { authorizeNewGuideAction },
+}));
+vi.mock("../services/linkGuideFlow.js", () => ({
+  linkGuideFlow: { readiness: vi.fn(() => "ready"), runCommentLinkGuide: vi.fn(), runDmLinkGuide },
+  linkGuideRepository: {},
 }));
 vi.mock("../services/eventLogger.js", () => ({
   logEvent,
@@ -203,11 +208,13 @@ beforeEach(() => {
     startDirectDmGuideRequest,
     recordGuideAccessMetric,
     authorizeNewGuideAction,
+    runDmLinkGuide,
     logEvent,
     describeGraphError,
   ]) {
     fn.mockReset();
   }
+  runDmLinkGuide.mockResolvedValue({ outcome: "sent", sendId: "send-1", shape: "card", receipt: null });
   for (const fn of Object.values(logger)) fn.mockReset();
   describeGraphError.mockReturnValue(SAFE_UNKNOWN);
   recordInboundMessage.mockResolvedValue({
@@ -2043,5 +2050,87 @@ describe("DM intent guard — production routing regressions", () => {
     await expect(handleMessage(inbound("WAFFLE"))).resolves.toBeUndefined();
 
     expect(startDirectDmGuideRequest).toHaveBeenCalledOnce();
+  });
+});
+
+describe("link guides — direct DM", () => {
+  const LINK_KEYWORD = {
+    ...keywordFixture,
+    resource: {
+      ...keywordFixture.resource,
+      deliveryMode: "link",
+      linkUrl: "https://mycuratedhaven.com/halloween",
+      linkButtonLabel: "Open the recipes",
+      linkCardTitle: null,
+      linkCardSubtitle: null,
+    },
+  };
+
+  beforeEach(() => {
+    findKeywordInMessage.mockResolvedValue(LINK_KEYWORD);
+  });
+
+  it("sends the link card into the thread instead of any gate or guide", async () => {
+    gateOwner.mockReturnValue("v2");
+    resolveUsername.mockResolvedValue({ isFollower: false, username: "p", name: "P" });
+
+    await handleMessage(inbound("SLEEP"));
+
+    expect(runDmLinkGuide).toHaveBeenCalledTimes(1);
+    expect(runDmLinkGuide.mock.calls[0]![0]).toMatchObject({
+      conversationId: "convo-1",
+      igUserId: "ig-user-1",
+      threadId: "thread-1",
+      inboundMessageId: "message-1",
+      resource: { deliveryMode: "link" },
+    });
+    expect(gateOwner).not.toHaveBeenCalled();
+    expect(startDirectDmGuideRequest).not.toHaveBeenCalled();
+    expect(sendSequence).not.toHaveBeenCalled();
+    expect(deliverGuideForTrigger).not.toHaveBeenCalled();
+    expect(sendTrackedText).not.toHaveBeenCalled();
+  });
+});
+
+describe("link guides — reply to a conversation still awaiting_done", () => {
+  const OPEN_LINK_CONVO = {
+    id: "convo-open-link",
+    keywordId: "keyword-1",
+    keyword: {
+      keyword: "GHOST",
+      mediaId: "reel-9",
+      resource: {
+        id: "resource-9",
+        name: "Halloween collection",
+        description: null,
+        deliveryMode: "link",
+        linkUrl: "https://mycuratedhaven.com/halloween",
+        linkButtonLabel: "Open the recipes",
+        linkCardTitle: null,
+        linkCardSubtitle: null,
+        messages: [],
+      },
+    },
+  };
+
+  beforeEach(() => {
+    findKeywordInMessage.mockResolvedValue(null);
+    findActiveAwaitingDone.mockResolvedValue(OPEN_LINK_CONVO);
+  });
+
+  it("answers a plain yes with the link and never the follow gate", async () => {
+    gateOwner.mockReturnValue("v2");
+
+    await handleMessage(inbound("yes"));
+
+    expect(runDmLinkGuide).toHaveBeenCalledTimes(1);
+    expect(runDmLinkGuide.mock.calls[0]![0]).toMatchObject({
+      conversationId: "convo-open-link",
+      keywordId: "keyword-1",
+      mediaId: "reel-9",
+    });
+    expect(startDirectDmGuideRequest).not.toHaveBeenCalled();
+    expect(deliverGuideForTrigger).not.toHaveBeenCalled();
+    expect(sendSequence).not.toHaveBeenCalled();
   });
 });

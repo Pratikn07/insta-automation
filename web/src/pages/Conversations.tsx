@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Clock,
+  Link2,
   MessageCircle,
   RotateCw,
   Tag,
@@ -20,6 +21,7 @@ import type {
   Conversation,
   ConversationCounts,
   ConversationState,
+  DeliveryMode,
   DmThreadRow,
   AiCapabilities,
   Paginated,
@@ -74,6 +76,7 @@ const FILTERS: { value: StateFilter; label: string; countKey?: keyof Conversatio
 const stateMeta: Record<ConversationState, { label: string; tone: string; Icon: typeof Clock }> = {
   awaiting_done: { label: "Waiting for reply", tone: "text-caution bg-caution-soft", Icon: Clock },
   completed: { label: "Delivered", tone: "text-signal bg-signal-soft", Icon: CheckCircle2 },
+  link_sent: { label: "Link sent", tone: "text-signal bg-signal-soft", Icon: Link2 },
   expired: {
     label: "No confirmed reply",
     tone: "text-muted-foreground bg-muted/40",
@@ -462,7 +465,14 @@ interface ConversationDetailResponse {
       keyword: string;
       publicReply: string;
       gateMessage: string;
-      resource: { id: string; name: string; messages: ResourceMessage[] };
+      resource: {
+        id: string;
+        name: string;
+        // Absent from older API responses, which means gated.
+        deliveryMode?: DeliveryMode;
+        linkButtonLabel?: string | null;
+        messages: ResourceMessage[];
+      };
     };
   };
   events: EventLogItem[];
@@ -536,6 +546,25 @@ function buildJourney(data: ConversationDetailResponse): JourneyStep[] {
     });
   }
 
+  // A link guide has no gate and no DONE: one DM with a button, then the tap.
+  if (kw.resource.deliveryMode === "link") {
+    steps.push({
+      n: n++,
+      label: "We DM’d them the link",
+      status: dmSent ? "done" : dmFailed ? "failed" : "pending",
+      at: (dmSent ?? dmFailed)?.createdAt,
+      bubble: kw.resource.linkButtonLabel ? { side: "bot", text: `🔗 ${kw.resource.linkButtonLabel}` } : null,
+      note: dmFailed && !dmSent ? "couldn’t send — see above" : undefined,
+    });
+    steps.push({
+      n,
+      label: `They opened the ${freebie} page`,
+      status: conversation.state === "completed" ? "done" : "pending",
+      at: conversation.state === "completed" ? (conversation.completedAt ?? undefined) : undefined,
+    });
+    return steps;
+  }
+
   // 3. The gate DM with the freebie instructions.
   steps.push({
     n: n++,
@@ -575,13 +604,18 @@ function summaryLine(data: ConversationDetailResponse): { text: string; tone: St
   const freebie = conversation.keyword.resource.name;
 
   if (conversation.state === "completed") {
-    return { text: `${who} replied DONE and got the ${freebie}. 🎉`, tone: "done" };
+    return conversation.keyword.resource.deliveryMode === "link"
+      ? { text: `${who} opened the ${freebie} page. 🎉`, tone: "done" }
+      : { text: `${who} replied DONE and got the ${freebie}. 🎉`, tone: "done" };
   }
   if (conversation.state === "expired") {
     return {
       text: `No reply was confirmed from ${who}, so the ${freebie} wasn’t sent.`,
       tone: "pending",
     };
+  }
+  if (conversation.state === "link_sent") {
+    return { text: "Link sent — waiting for a tap", tone: "pending" };
   }
   // awaiting_done
   if (gate && (gate.status === "pending" || gate.status === "exhausted")) {

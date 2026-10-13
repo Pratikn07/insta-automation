@@ -37,6 +37,8 @@ export type AcceptedGateRecoveryInput = {
   gateDmMessageId: string | null;
   instagramGateMessageId: string | null;
   acceptedAt: Date;
+  /** What the opening DM was. Only changes the reminder wording. Absent means a guide. */
+  openingKind?: "guide" | "link";
 };
 
 export type SettingsBlockedRecoveryInput = {
@@ -242,6 +244,7 @@ export async function scheduleAcceptedGateRecovery(
     input.keywordSnapshot,
     audience.handle,
     twoHourAll,
+    input.openingKind ?? "guide",
   );
 
   let status: DmRecoveryStatus;

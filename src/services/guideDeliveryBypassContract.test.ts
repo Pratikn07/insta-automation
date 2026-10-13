@@ -760,5 +760,6 @@ describe("guide-delivery bypass detector", () => {
 
     expect(result.status).toBe(0);
     expect(output).toContain("guide_delivery_bypass_check_passed");
-  });
+    // The detector type-checks the whole repository, which takes 5–6s on a 4-core machine.
+  }, 30_000);
 });

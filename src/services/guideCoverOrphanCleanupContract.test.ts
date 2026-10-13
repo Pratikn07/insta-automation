@@ -48,6 +48,9 @@ function orphanData(id: string, coverVersionId: string, hash: string) {
     contentHash: hash,
     rendition: "dm_cover",
     storagePath: `guide-cover/${resourceId}/${coverVersionId}/${hash}/dm.png`,
+    // Due relative to the pinned clock, not the column default (the real time of the run),
+    // which put the orphan in the future once the wall clock passed NOW.
+    nextAttemptAt: new Date(NOW.getTime() - 60_000),
   };
 }
 

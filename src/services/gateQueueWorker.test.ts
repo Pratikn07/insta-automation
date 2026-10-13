@@ -15,6 +15,7 @@ const flags = { experiment: false, allTwoHour: false };
 vi.mock("./flagService.js", () => ({ flags: { bool: (key: string) => key === "DM_RECOVERY_TWO_HOUR_ALL_ENABLED" ? flags.allTwoHour : key === "GATE_DM_EXPERIMENT" ? flags.experiment : false } }));
 const gateOwner = vi.fn();
 const recordGuideAccessMetric = vi.fn();
+const markLatestFailedSendSent = vi.fn();
 
 const scheduleAcceptedGateRecovery = vi.fn();
 const scheduleSettingsBlockedRecovery = vi.fn();
@@ -71,6 +72,11 @@ vi.mock("./settingsBlockedVerificationService.js", () => ({
   resolveActiveSettingsBlockedVerification,
   settingsBlockedVerificationRejectionReason: (error: { reason?: string }) =>
     error?.reason ?? "verification_missing",
+}));
+
+vi.mock("./linkGuideFlow.js", () => ({
+  linkGuideFlow: {},
+  linkGuideRepository: { markLatestFailedSendSent },
 }));
 
 const { runGateQueueTick } = await import("./gateQueueWorker.js");
@@ -145,6 +151,7 @@ beforeEach(() => {
     resolveActiveSettingsBlockedVerification,
     gateOwner,
     recordGuideAccessMetric,
+    markLatestFailedSendSent,
     ...Object.values(logger),
   ]) {
     fn.mockReset();
@@ -665,6 +672,58 @@ describe("strict retries keep the shared send tail", () => {
     expect(logger.info).toHaveBeenCalledWith(
       { sent: 1 },
       "Gate retry worker delivered queued gates",
+    );
+  });
+});
+
+describe("runGateQueueTick — link guides", () => {
+  it("retries a link guide as the link itself and never reopens the gate", async () => {
+    const linkConvo = { ...convoObj, keyword: { ...convoObj.keyword, resource: { deliveryMode: "link" } } };
+    conversation.findMany.mockResolvedValue([linkConvo]);
+    conversation.findUnique.mockResolvedValue(linkConvo);
+    sendTrackedPrivateReply.mockResolvedValue({
+      instagramMessageId: "mid-retry",
+      dmMessageId: "dm-retry",
+      acceptedAt: new Date(),
+    });
+    markLatestFailedSendSent.mockResolvedValue(true);
+
+    await runGateQueueTick();
+
+    expect(conversation.update).toHaveBeenCalledWith({
+      where: { id: "conversation-1" },
+      data: { state: "link_sent", gatedAt: expect.any(Date) },
+    });
+    expect(conversation.update).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ state: "awaiting_done" }) }),
+    );
+    expect(markLatestFailedSendSent).toHaveBeenCalledWith("conversation-1", "mid-retry", expect.any(Date));
+    expect(logEvent).toHaveBeenCalledWith("dm_sent", {
+      conversationId: "conversation-1",
+      kind: "link",
+      source: "retry",
+      gateOwner: "link",
+    });
+    expect(gateOwner).not.toHaveBeenCalled();
+    expect(recordGuideAccessMetric).not.toHaveBeenCalled();
+    expect(scheduleAcceptedGateRecovery).not.toHaveBeenCalled();
+  });
+
+  it("schedules the link reminder when the 2-hour switch is on", async () => {
+    flags.allTwoHour = true;
+    const linkConvo = { ...convoObj, keyword: { ...convoObj.keyword, resource: { deliveryMode: "link" } } };
+    conversation.findMany.mockResolvedValue([linkConvo]);
+    conversation.findUnique.mockResolvedValue(linkConvo);
+    sendTrackedPrivateReply.mockResolvedValue({
+      instagramMessageId: "mid-retry",
+      dmMessageId: "dm-retry",
+      acceptedAt: new Date(),
+    });
+
+    await runGateQueueTick();
+
+    expect(scheduleAcceptedGateRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: "conversation-1", openingKind: "link" }),
     );
   });
 });

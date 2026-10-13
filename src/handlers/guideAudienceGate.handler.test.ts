@@ -120,6 +120,10 @@ vi.mock("../lib/prisma.js", () => ({
     flagOverride: { findMany: vi.fn().mockResolvedValue([]) },
   },
 }));
+vi.mock("../services/linkGuideFlow.js", () => ({
+  linkGuideFlow: { readiness: vi.fn(() => "ready"), runCommentLinkGuide: vi.fn(), runDmLinkGuide: vi.fn() },
+  linkGuideRepository: {},
+}));
 
 const { handleComment } = await import("./commentHandler.js");
 const { guideAudienceAuthorization } = await import(

@@ -13,9 +13,11 @@
 
 import type { FunnelDef } from "./types.js";
 import { guideFollowDef } from "./guideFollowFunnel.js";
+import { linkClickDef } from "./linkClickFunnel.js";
 
 export const FUNNELS: Record<string, FunnelDef> = {
   [guideFollowDef.key]: guideFollowDef,
+  [linkClickDef.key]: linkClickDef,
 };
 
 export const FUNNEL_KEYS = Object.keys(FUNNELS);

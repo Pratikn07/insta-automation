@@ -85,6 +85,8 @@ function respond(overrides: { cover?: unknown } = {}) {
         overrides.cover ?? { key: "guide-access-v2", window: FUNNEL.window, coverRates: COVER_RATES },
       );
     }
+    // The link funnel has its own panel; these tests leave it loading.
+    if (path.startsWith("/funnels/link-click")) return new Promise(() => {});
     if (path.includes("/drop-off/")) return Promise.resolve(DROP_OFF);
     return Promise.resolve(FUNNEL);
   });
@@ -158,6 +160,7 @@ describe("Funnels cover panel", () => {
       if (path.startsWith("/funnels/guide-access-metrics")) {
         return Promise.reject(new Error("metrics query timed out"));
       }
+      if (path.startsWith("/funnels/link-click")) return new Promise(() => {});
       if (path.includes("/drop-off/")) return Promise.resolve(DROP_OFF);
       return Promise.resolve(FUNNEL);
     });

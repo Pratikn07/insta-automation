@@ -47,6 +47,8 @@ import { flags } from "../services/flagService.js";
 import { startCommentGuideRequest } from "../services/guideAccessActionService.js";
 import { recordGuideAccessMetric } from "../services/guideAccessMetrics.js";
 import { guideAudienceAuthorization } from "../services/guideAudienceAuthorization.js";
+import { guideOwnerFor, type GuideOwner } from "../services/guideOwner.js";
+import { linkGuideFlow } from "../services/linkGuideFlow.js";
 
 /**
  * Human-readable scope for a media-attached keyword, from the webhook's
@@ -311,6 +313,22 @@ export async function handleComment(comment: CommentValue): Promise<void> {
     );
   }
 
+  // A link guide that cannot send must stay silent BEFORE the public reply: replying
+  // "check your DMs" and then sending nothing is the one outcome worse than silence.
+  // `?.` because rows matched before the include existed may lack it in tests.
+  const deliveryMode = keyword.resource?.deliveryMode ?? "gated";
+  if (deliveryMode === "link") {
+    const readiness = linkGuideFlow.readiness(keyword.resource);
+    if (readiness !== "ready") {
+      await logEvent(readiness === "disabled" ? "link_guide_disabled" : "link_guide_misconfigured", {
+        commentId: comment.id,
+        keywordId: keyword.id,
+        resourceId: keyword.resourceId,
+      });
+      return;
+    }
+  }
+
   // Attach this comment to the person's canonical journey for this keyword. Two
   // comments for the same guide are two different Meta comment ids, so the claim
   // above cannot merge them — that guard only stops the SAME comment being
@@ -357,6 +375,9 @@ export async function handleComment(comment: CommentValue): Promise<void> {
     // adoption move from fallback to strict without guessing.
     matchMode: match.mode,
     mediaId: comment.media?.id ?? null,
+    // Funnels read this: the guide-follow cohort skips link guides, the link funnel
+    // selects them. Absent means gated, so every gated payload stays byte-identical.
+    ...(deliveryMode === "link" && { deliveryMode }),
   });
 
   try {
@@ -415,17 +436,51 @@ export async function handleComment(comment: CommentValue): Promise<void> {
   // fails closed to V1 so a flag-read problem can never strand a parent. Placed
   // after the claim, the journey merge, and the one-gate-per-journey guard, so
   // the strict path inherits all three rather than reimplementing them.
-  let strictGateOwner: "v1" | "v2" = "v1";
+  let owner: GuideOwner = "v1";
   try {
-    strictGateOwner = guideFollowGateV2Selector.owner({
-      igUserId: senderId,
-      resourceId: keyword.resourceId,
-    });
+    owner = guideOwnerFor(
+      { deliveryMode, igUserId: senderId, resourceId: keyword.resourceId },
+      (input) => guideFollowGateV2Selector.owner(input),
+    );
   } catch {
     log.warn({ igUserId: senderId }, "Strict gate ownership unavailable — using V1");
   }
 
-  if (strictGateOwner === "v2") {
+  // ---- Link guide -------------------------------------------------------------
+  // One private reply holding the link. No follow check, no access attempt. A failed
+  // send runs the same recovery ladder as the gate, with the text-with-link as the retry.
+  if (owner === "link") {
+    try {
+      const result = await linkGuideFlow.runCommentLinkGuide({
+        conversationId: convo.id,
+        keywordId: keyword.id,
+        keywordSnapshot: keyword.keyword,
+        commentId: comment.id,
+        mediaId: comment.media?.id ?? null,
+        igUserId: senderId,
+        resource: keyword.resource,
+      });
+      if (result.outcome === "failed") {
+        await recoverFailedPrivateReply({
+          error: result.error,
+          conversationId: convo.id,
+          senderId,
+          keywordId: keyword.id,
+          keywordSnapshot: keyword.keyword,
+          commentId: comment.id,
+          parentId: comment.parent_id ?? null,
+          mediaId: comment.media?.id ?? null,
+          gateMessage: result.retryText,
+        });
+      }
+    } catch (error) {
+      // Must not fail the webhook, and must not fall through to a gate for a link guide.
+      log.error(describeGraphError(error), "Link guide send failed");
+    }
+    return;
+  }
+
+  if (owner === "v2") {
     try {
       const result = await startCommentGuideRequest({
         conversationId: convo.id,

@@ -3,6 +3,7 @@ import { prisma } from "../lib/prisma.js";
 import { FUNNELS, getFunnelDef } from "../services/funnels/registry.js";
 import {
   runGuideFollowFunnel,
+  runLinkClickFunnel,
   runDropOff,
   defaultWindow,
   DROP_OFF_DEFAULT_LIMIT,
@@ -10,6 +11,8 @@ import {
   type FunnelWindow,
 } from "../services/funnels/runFunnel.js";
 import { DROP_OFF_BUCKETS, type DropOffBucket } from "../services/funnels/dropOff.js";
+import { guideFollowDef } from "../services/funnels/guideFollowFunnel.js";
+import { linkClickDef, type LinkClickResult } from "../services/funnels/linkClickFunnel.js";
 import { createReadThroughCache } from "../lib/readThroughCache.js";
 import { runGuideAccessMetrics } from "../services/guideAccessMetrics.js";
 import { asyncRouter } from "./asyncRouter.js";
@@ -92,6 +95,12 @@ export const funnelCache = createReadThroughCache<
   Awaited<ReturnType<typeof runGuideFollowFunnel>>
 >({ ttlMs: FUNNEL_CACHE_TTL_MS, maxEntries: 32 });
 
+/** Separate cache: the two funnels return different shapes. */
+export const linkClickCache = createReadThroughCache<LinkClickResult>({
+  ttlMs: FUNNEL_CACHE_TTL_MS,
+  maxEntries: 32,
+});
+
 /**
  * Quantised to the TTL, because `defaultWindow()` is `now`-relative to the
  * millisecond: keying on the raw bounds would miss on every single request, and
@@ -160,7 +169,14 @@ funnelsRouter.get("/:key", async (req, res) => {
     return;
   }
 
-  // Only one funnel so far; the registry grows into a switch here.
+  if (def.key === linkClickDef.key) {
+    res.json(
+      await linkClickCache.get(funnelCacheKey(def.key, window, def.minSample), () =>
+        runLinkClickFunnel(prisma, window, def.minSample),
+      ),
+    );
+    return;
+  }
   res.json(
     await funnelCache.get(funnelCacheKey(def.key, window, def.minSample), () =>
       runGuideFollowFunnel(prisma, window, def.minSample),
@@ -174,6 +190,11 @@ funnelsRouter.get("/:key/drop-off/:bucket", async (req, res) => {
   const def = getFunnelDef(req.params.key);
   if (!def) {
     res.status(404).json({ error: "unknown_funnel", available: Object.keys(FUNNELS) });
+    return;
+  }
+  // Drop-off lists are built on the guide-follow cohort only.
+  if (def.key !== guideFollowDef.key) {
+    res.status(404).json({ error: "no_drop_off_for_funnel" });
     return;
   }
 

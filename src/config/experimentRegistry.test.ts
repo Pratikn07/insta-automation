@@ -165,6 +165,8 @@ describe("experiment registry", () => {
       "AI_ADVISOR_ENABLED",
       "GUIDE_COVER_AUTHORING_ENABLED",
       "WORKERS_ENABLED",
+      "LINK_GUIDE_ENABLED",
+      "LINK_GUIDE_CARD_ENABLED",
     ]);
   });
 });

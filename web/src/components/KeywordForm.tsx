@@ -1,12 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Film, Images } from "lucide-react";
 import { useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { apiRead, apiMutation, ApiError } from "@/lib/api";
-import { DEFAULT_PUBLIC_REPLY } from "@/lib/automationCopy";
+import { DEFAULT_LINK_PUBLIC_REPLY, DEFAULT_PUBLIC_REPLY } from "@/lib/automationCopy";
 import { useOperationId } from "@/lib/useOperationId";
-import type { Keyword, MediaKind, MediaPage, Resource } from "@/lib/types";
+import type { DeliveryMode, Keyword, MediaKind, MediaPage, Resource } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -43,18 +43,33 @@ const KEYWORD_PHRASE = /^[A-Za-z0-9]+(?:\s+[A-Za-z0-9]+)?$/;
 
 interface KeywordFormState {
   keyword: string;
+  deliveryMode: DeliveryMode;
   sequenceMode: SequenceMode;
   newSequenceName: string;
+  newLinkUrl: string;
+  newLinkButtonLabel: string;
   resourceId: string;
   publicReply: string;
   gateMessage: string;
   active: boolean;
 }
 
+/** Stored on a link keyword because the column is required. Link guides never send it. */
+const LINK_GATE_MESSAGE_PLACEHOLDER = "Link guide: this keyword sends a link, not a gate message.";
+const DEFAULT_LINK_BUTTON_LABEL = "Open the recipes";
+const LINK_BUTTON_LABEL_MAX = 20;
+
+function defaultPublicReply(mode: DeliveryMode): string {
+  return mode === "link" ? DEFAULT_LINK_PUBLIC_REPLY : DEFAULT_PUBLIC_REPLY;
+}
+
 const emptyForm: KeywordFormState = {
   keyword: "",
+  deliveryMode: "gated",
   sequenceMode: "new",
   newSequenceName: "",
+  newLinkUrl: "",
+  newLinkButtonLabel: DEFAULT_LINK_BUTTON_LABEL,
   resourceId: "",
   publicReply: DEFAULT_PUBLIC_REPLY,
   gateMessage: "Reply DONE to receive your guide.",
@@ -83,8 +98,11 @@ export function KeywordForm({
     initial
       ? {
           keyword: initial.keyword,
+          deliveryMode: resources.find((r) => r.id === initial.resourceId)?.deliveryMode ?? "gated",
           sequenceMode: "existing",
           newSequenceName: "",
+          newLinkUrl: "",
+          newLinkButtonLabel: DEFAULT_LINK_BUTTON_LABEL,
           resourceId: initial.resourceId,
           publicReply: initial.publicReply,
           gateMessage: initial.gateMessage,
@@ -99,6 +117,19 @@ export function KeywordForm({
   const { operationId: newSequenceId, renew: renewNewSequenceId } = useOperationId();
   const { operationId: newKeywordId, renew: renewNewKeywordId } = useOperationId();
 
+  const isLink = form.deliveryMode === "link";
+  const modeResources = useMemo(
+    () => resources.filter((r) => (r.deliveryMode ?? "gated") === form.deliveryMode),
+    [resources, form.deliveryMode],
+  );
+  // The chosen link guide, so the form can show where its button goes.
+  const selectedLinkGuide =
+    isLink && (initial || form.sequenceMode === "existing")
+      ? modeResources.find((r) => r.id === form.resourceId)
+      : undefined;
+  // Link guides never send this, but the column is required.
+  const gateMessageToSave = isLink ? (initial?.gateMessage ?? LINK_GATE_MESSAGE_PLACEHOLDER) : form.gateMessage;
+
   const saveMutation = useMutation({
     mutationFn: async (): Promise<{ keyword: Keyword; createdSequence: boolean }> => {
       if (initial) {
@@ -108,7 +139,7 @@ export function KeywordForm({
             keyword: form.keyword,
             resourceId: form.resourceId,
             publicReply: form.publicReply,
-            gateMessage: form.gateMessage,
+            gateMessage: gateMessageToSave,
             active: form.active,
           }),
         });
@@ -125,6 +156,11 @@ export function KeywordForm({
             id: newSequenceId,
             name: form.newSequenceName.trim(),
             description: null,
+            ...(isLink && {
+              deliveryMode: "link",
+              linkUrl: form.newLinkUrl.trim(),
+              linkButtonLabel: form.newLinkButtonLabel.trim(),
+            }),
           }),
         });
         resourceId = seq.id;
@@ -139,7 +175,7 @@ export function KeywordForm({
           keyword: form.keyword,
           resourceId,
           publicReply: form.publicReply,
-          gateMessage: form.gateMessage,
+          gateMessage: gateMessageToSave,
           active: form.active,
           // Always present on create: the API requires mediaId, so a keyword
           // cannot be created without the post it belongs to.
@@ -161,7 +197,7 @@ export function KeywordForm({
       qc.invalidateQueries({ queryKey: ["resources"] });
       qc.invalidateQueries({ queryKey: ["stats"] });
       onClose();
-      if (createdSequence) {
+      if (createdSequence && !isLink) {
         navigate(`/guides/${keyword.resourceId}`);
       }
     },
@@ -178,10 +214,16 @@ export function KeywordForm({
     },
   });
 
+  const linkLabelLength = [...form.newLinkButtonLabel.trim()].length;
+  const newLinkValid =
+    /^https:\/\/\S+$/.test(form.newLinkUrl.trim()) &&
+    linkLabelLength >= 1 &&
+    linkLabelLength <= LINK_BUTTON_LABEL_MAX;
+
   const sequenceValid = initial
     ? form.resourceId.length > 0
     : form.sequenceMode === "new"
-      ? form.newSequenceName.trim().length > 0
+      ? form.newSequenceName.trim().length > 0 && (!isLink || newLinkValid)
       : form.resourceId.length > 0;
 
   const keywordValid = KEYWORD_PHRASE.test(form.keyword.trim());
@@ -190,7 +232,7 @@ export function KeywordForm({
     keywordValid &&
     sequenceValid &&
     form.publicReply.trim().length > 0 &&
-    form.gateMessage.trim().length > 0 &&
+    (isLink || form.gateMessage.trim().length > 0) &&
     !saveMutation.isPending;
 
   // A new keyword must belong to a post before anything else is worth filling in,
@@ -232,8 +274,22 @@ export function KeywordForm({
           />
         </Field>
 
+        <DeliveryModeSwitch
+          value={form.deliveryMode}
+          onChange={(mode) =>
+            setForm((f) => ({
+              ...f,
+              deliveryMode: mode,
+              resourceId: "",
+              // Swap the default reply only if it's still the other mode's default.
+              publicReply:
+                f.publicReply === defaultPublicReply(f.deliveryMode) ? defaultPublicReply(mode) : f.publicReply,
+            }))
+          }
+        />
+
         <div className="space-y-2">
-          <Label>Guide</Label>
+          <Label>{isLink ? "Link guide" : "Guide"}</Label>
           {initial ? (
             <Select
               value={form.resourceId}
@@ -243,7 +299,7 @@ export function KeywordForm({
               <option value="" disabled>
                 Pick a guide
               </option>
-              {resources.map((r) => (
+              {modeResources.map((r) => (
                 <option key={r.id} value={r.id}>
                   {r.name}
                   {r._count ? ` — ${r._count.messages} step${r._count.messages === 1 ? "" : "s"}` : ""}
@@ -263,18 +319,43 @@ export function KeywordForm({
                   active={form.sequenceMode === "existing"}
                   onClick={() => setForm((f) => ({ ...f, sequenceMode: "existing" }))}
                   title="Use existing"
-                  subtitle={resources.length > 0 ? `${resources.length} available` : "None yet"}
-                  disabled={resources.length === 0}
+                  subtitle={modeResources.length > 0 ? `${modeResources.length} available` : "None yet"}
+                  disabled={modeResources.length === 0}
                 />
               </div>
               {form.sequenceMode === "new" ? (
-                <Input
-                  value={form.newSequenceName}
-                  onChange={(e) => setForm((f) => ({ ...f, newSequenceName: e.target.value }))}
-                  placeholder="Toddler Activity Guide"
-                  required
-                  maxLength={120}
-                />
+                isLink ? (
+                  <div className="space-y-2">
+                    <Input
+                      value={form.newSequenceName}
+                      onChange={(e) => setForm((f) => ({ ...f, newSequenceName: e.target.value }))}
+                      placeholder="Halloween collection"
+                      required
+                      maxLength={120}
+                    />
+                    <Input
+                      type="url"
+                      value={form.newLinkUrl}
+                      onChange={(e) => setForm((f) => ({ ...f, newLinkUrl: e.target.value }))}
+                      placeholder="https://mycuratedhaven.com/halloween"
+                      required
+                    />
+                    <Input
+                      value={form.newLinkButtonLabel}
+                      onChange={(e) => setForm((f) => ({ ...f, newLinkButtonLabel: e.target.value }))}
+                      placeholder="Open the recipes"
+                      required
+                    />
+                  </div>
+                ) : (
+                  <Input
+                    value={form.newSequenceName}
+                    onChange={(e) => setForm((f) => ({ ...f, newSequenceName: e.target.value }))}
+                    placeholder="Toddler Activity Guide"
+                    required
+                    maxLength={120}
+                  />
+                )
               ) : (
                 <Select
                   value={form.resourceId}
@@ -284,7 +365,7 @@ export function KeywordForm({
                   <option value="" disabled>
                     Pick a guide
                   </option>
-                  {resources.map((r) => (
+                  {modeResources.map((r) => (
                     <option key={r.id} value={r.id}>
                       {r.name}
                       {r._count
@@ -295,11 +376,26 @@ export function KeywordForm({
                 </Select>
               )}
               <p className="text-xs text-muted-foreground">
-                {form.sequenceMode === "new"
-                  ? "We'll create the guide and drop you into the editor to add steps."
-                  : "Reuse an existing guide — useful for spelling variations of the same trigger."}
+                {isLink
+                  ? form.sequenceMode === "new"
+                    ? `Name, page address and button text (up to ${LINK_BUTTON_LABEL_MAX} characters). Only approved site addresses are accepted.`
+                    : "Reuse a link guide. Changing its address updates every post that uses it."
+                  : form.sequenceMode === "new"
+                    ? "We'll create the guide and drop you into the editor to add steps."
+                    : "Reuse an existing guide — useful for spelling variations of the same trigger."}
               </p>
             </>
+          )}
+          {selectedLinkGuide && (
+            <div className="rounded-md border bg-card/40 p-3 text-xs">
+              <p className="truncate font-mono">{selectedLinkGuide.linkUrl ?? "No page address yet"}</p>
+              <p className="mt-0.5 text-muted-foreground">
+                Button: {selectedLinkGuide.linkButtonLabel ?? "not set"} ·{" "}
+                <Link to={`/guides/${selectedLinkGuide.id}`} className="underline">
+                  Edit guide
+                </Link>
+              </p>
+            </div>
           )}
         </div>
 
@@ -316,19 +412,21 @@ export function KeywordForm({
           />
         </Field>
 
-        <Field
-          label="Gate DM"
-          hint="The first private DM. Asks them to reply DONE so we can send the rest (and unlocks 24h window)."
-        >
-          <Textarea
-            value={form.gateMessage}
-            onChange={(e) => setForm((f) => ({ ...f, gateMessage: e.target.value }))}
-            placeholder="Reply DONE and I'll send your guide!"
-            required
-            maxLength={1000}
-            rows={3}
-          />
-        </Field>
+        {!isLink && (
+          <Field
+            label="Gate DM"
+            hint="The first private DM. Asks them to reply DONE so we can send the rest (and unlocks 24h window)."
+          >
+            <Textarea
+              value={form.gateMessage}
+              onChange={(e) => setForm((f) => ({ ...f, gateMessage: e.target.value }))}
+              placeholder="Reply DONE and I'll send your guide!"
+              required
+              maxLength={1000}
+              rows={3}
+            />
+          </Field>
+        )}
 
         <div className="flex items-center justify-between rounded-md border bg-card/40 p-3">
           <div>
@@ -353,7 +451,7 @@ export function KeywordForm({
             ? "Saving…"
             : initial
               ? "Save changes"
-              : form.sequenceMode === "new"
+              : form.sequenceMode === "new" && !isLink
                 ? "Create & add steps"
                 : "Create keyword"}
         </Button>
@@ -543,6 +641,7 @@ function ModeButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
+      aria-pressed={active}
       className={cn(
         "rounded-md border bg-card/40 p-3 text-left transition-colors",
         active && "border-foreground/40 bg-accent/40",
@@ -553,6 +652,34 @@ function ModeButton({
       <div className="text-sm font-medium">{title}</div>
       <div className="mt-0.5 text-xs text-muted-foreground">{subtitle}</div>
     </button>
+  );
+}
+
+function DeliveryModeSwitch({
+  value,
+  onChange,
+}: {
+  value: DeliveryMode;
+  onChange: (mode: DeliveryMode) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <Label>After they comment</Label>
+      <div className="grid grid-cols-2 gap-2">
+        <ModeButton
+          active={value === "gated"}
+          onClick={() => onChange("gated")}
+          title="Gated guide"
+          subtitle="Follow first, then the guide"
+        />
+        <ModeButton
+          active={value === "link"}
+          onClick={() => onChange("link")}
+          title="Link to a page"
+          subtitle="A button to our site, no follow"
+        />
+      </div>
+    </div>
   );
 }
 

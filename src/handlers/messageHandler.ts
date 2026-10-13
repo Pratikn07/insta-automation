@@ -50,6 +50,9 @@ import { guideFollowGateV2Selector } from "../services/guideFollowGateV2Rollout.
 import { startDirectDmGuideRequest } from "../services/guideAccessActionService.js";
 import { recordGuideAccessMetric } from "../services/guideAccessMetrics.js";
 import { guideAudienceAuthorization } from "../services/guideAudienceAuthorization.js";
+import { guideOwnerFor, type GuideOwner } from "../services/guideOwner.js";
+import { linkGuideFlow } from "../services/linkGuideFlow.js";
+import type { DeliveryMode } from "../services/linkGuidePolicy.js";
 
 /**
  * The only outcomes this branch still measures itself.
@@ -69,12 +72,19 @@ async function recordDirectStrictOutcome(outcome: string): Promise<void> {
 }
 
 /**
- * One ownership decision per call site, failing closed to V1 so a flag-read
- * problem can never strand a parent between the two paths.
+ * One ownership decision per call site. A link guide is decided by the guide alone;
+ * everything else fails closed to V1 so a flag-read problem can never strand a parent
+ * between the two gated paths.
  */
-function strictGateOwnerFor(igUserId: string, resourceId: string): "v1" | "v2" {
+function guideOwnerForResource(
+  igUserId: string,
+  resource: { id: string; deliveryMode?: DeliveryMode },
+): GuideOwner {
   try {
-    return guideFollowGateV2Selector.owner({ igUserId, resourceId });
+    return guideOwnerFor(
+      { deliveryMode: resource.deliveryMode, igUserId, resourceId: resource.id },
+      (input) => guideFollowGateV2Selector.owner(input),
+    );
   } catch {
     logger.warn(
       { errorCode: "strict_gate_owner_unavailable", igUserId },
@@ -719,6 +729,7 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
       // global answered — no inference was needed.
       inferredFromPost: keyword.inferredFromPost,
       mediaId: keyword.mediaId,
+      ...(keyword.resource.deliveryMode === "link" && { deliveryMode: "link" }),
     });
 
     // Their inbound DM already opened the 24h messaging window (Meta-verified),
@@ -734,7 +745,21 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     // Both of the V1 conditions below are disqualified evidence: `isFollower` is
     // a cached Graph value, and `alreadyCompleted` authorizes a redelivery on the
     // strength of a past send. The strict path replaces both with a live check.
-    if (strictGateOwnerFor(senderId, keyword.resource.id) === "v2") {
+    const keywordOwner = guideOwnerForResource(senderId, keyword.resource);
+    // A link guide answers a DM'd keyword with the link itself, follower or not.
+    if (keywordOwner === "link") {
+      await linkGuideFlow.runDmLinkGuide({
+        conversationId: keywordConversation.id,
+        keywordId: keyword.id,
+        mediaId: keyword.mediaId ?? null,
+        igUserId: senderId,
+        resource: keyword.resource,
+        threadId: inbound.threadId,
+        inboundMessageId: inbound.messageId,
+      });
+      return;
+    }
+    if (keywordOwner === "v2") {
       await runStrictGuideRequest({
         conversationId: keywordConversation.id,
         senderId,
@@ -847,7 +872,23 @@ export async function handleMessage(entry: MessagingEntry): Promise<void> {
     // that, so without this fence V1 would authorize the reply on cached follow
     // state — including its documented rule that an unreadable null falls through
     // to delivery. The strict gate forbids exactly that.
-    if (strictGateOwnerFor(senderId, convo.keyword.resource.id) === "v2") {
+    const replyOwner = guideOwnerForResource(senderId, convo.keyword.resource);
+    // A conversation still awaiting_done whose guide is a link guide: its link DM is being
+    // retried, or the guide was switched to Link mid-journey. The reply opened the thread,
+    // so answer with the link. Never the follow gate.
+    if (replyOwner === "link") {
+      await linkGuideFlow.runDmLinkGuide({
+        conversationId: convo.id,
+        keywordId: convo.keywordId,
+        mediaId: convo.keyword.mediaId ?? null,
+        igUserId: senderId,
+        resource: convo.keyword.resource,
+        threadId: inbound.threadId,
+        inboundMessageId: inbound.messageId,
+      });
+      return;
+    }
+    if (replyOwner === "v2") {
       await runStrictGuideRequest({
         conversationId: convo.id,
         senderId,
