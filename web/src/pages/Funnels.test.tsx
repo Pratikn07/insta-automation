@@ -135,6 +135,33 @@ describe("Funnels cover panel", () => {
     expect(screen.queryByText("0%")).not.toBeInTheDocument();
   });
 
+  it("reads as switched off when every cover decision in the window came back not selected", async () => {
+    // Production on 2026-10-12: 492 delivery decisions, all `omitted_not_selected`, because
+    // the rollout fence selects nobody. The panel printed "0% — 0 of 492", which reads as a
+    // cover that fails to send rather than a rollout that has not started.
+    respond({
+      cover: {
+        key: "guide-access-v2",
+        window: FUNNEL.window,
+        coverRates: {
+          ...EMPTY_COVER_RATES,
+          delivery: {
+            included: rate(0, 492, 0),
+            duplicateSuppressed: rate(0, 492, 0),
+            mispaired: rate(0, 492, 0),
+          },
+        },
+      },
+    });
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByText(/the cover rollout is not selecting anyone/i)).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/all 492 deliveries/i)).toBeInTheDocument();
+    expect(screen.queryByText("0%")).not.toBeInTheDocument();
+  });
+
   it("calls out a mispaired cover instead of leaving it as one share among six", async () => {
     respond({
       cover: {
@@ -210,6 +237,23 @@ describe("Funnels cover panel", () => {
     expect(coverCalls[0]).toMatch(/^\/funnels\/guide-access-metrics\?from=[\d-]+&to=[\d-]+$/);
   });
 
+  it("asks for a window that includes today", async () => {
+    // `to` is exclusive midnight UTC on the API, so sending today's date dropped every
+    // conversation since 00:00 UTC — including the only link guide asked for that day.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-13T02:30:00.000Z"));
+    try {
+      respond();
+      renderPage();
+
+      await waitFor(() => expect(api).toHaveBeenCalled());
+      const paths = api.mock.calls.map(([path]) => String(path));
+      expect(paths).toContain("/funnels/guide-follow?from=2026-09-14&to=2026-10-14");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("shows a creator warning when live guide requests need review", async () => {
     respond({
       cover: {
@@ -230,10 +274,62 @@ describe("Funnels cover panel", () => {
     await waitFor(() =>
       expect(screen.getByText(/6 guide requests need owner review/i)).toBeInTheDocument(),
     );
-    expect(screen.getByText(/3 active actions have already expired/i)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /review conversations/i })).toHaveAttribute(
       "href",
       "/conversations",
     );
+  });
+
+  it("does not raise the warning for expired actions nobody can act on", async () => {
+    // Tokens expire lazily and nothing sweeps their status, so this count is every
+    // unanswered opening ever sent (12,133 on 2026-10-12). As a warning it never cleared.
+    respond({
+      cover: {
+        key: "guide-access-v2",
+        window: FUNNEL.window,
+        coverRates: COVER_RATES,
+        health: {
+          awaitingRequest: 2,
+          awaitingFollow: 4,
+          needsReview: 0,
+          logicallyExpiredActiveTokens: 12133,
+          oldestNeedsReviewAt: null,
+        },
+      },
+    });
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText(/guide cover/i)).toBeInTheDocument());
+    expect(screen.queryByText(/need attention/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/12,133/)).not.toBeInTheDocument();
+  });
+});
+
+describe("Funnels 21-day reading", () => {
+  function stage(key: string, count: number, ofPrevPct: number | null) {
+    return { key, label: key, definition: key, count, ofEntryPct: null, ofPrevPct, coverageOnly: true };
+  }
+
+  it("measures the worker against the converts owed a reading, not everyone following", async () => {
+    // The page read "re-measured 0 of 3,942 eligible": 3,942 was everyone following after
+    // delivery. Most were already following before they asked and never get the reading.
+    api.mockImplementation((path: string) => {
+      if (path.startsWith("/funnels/guide-access-metrics")) return new Promise(() => {});
+      if (path.startsWith("/funnels/link-click")) return new Promise(() => {});
+      if (path.includes("/drop-off/")) return Promise.resolve(DROP_OFF);
+      return Promise.resolve({
+        ...FUNNEL,
+        stages: [stage("followingMeasured", 3942, 93.9), stage("followingD21", 0, 0)],
+        retention: rate(0, 0, null),
+        followThroughDue: 454,
+      });
+    });
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByText(/only people who had to follow/i)).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/read 0 of the 454/i)).toBeInTheDocument();
+    expect(screen.queryByText(/3,942 eligible/i)).not.toBeInTheDocument();
   });
 });

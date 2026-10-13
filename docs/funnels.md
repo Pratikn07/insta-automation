@@ -205,6 +205,18 @@ structure so an `arm` field can be added without a second renderer.
 - `EVENT_LOOKBACK_MARGIN` (90 days) bounds how far back a reused conversation's
   earlier events are visible. A journey older than that will look like it never
   received a gate.
+- **Two gate eras, one cohort.** The V1 text gate wrote `dm_sent` (kind `gate`),
+  `done_received` and `follow_required`. The V2 card gate (every guide since
+  2026-08-24) writes none of them; its journey lives in `guide_access_attempt` and
+  `guide_action_token`. `JOURNEY_SIGNALS` in `guideFollowFunnel.ts` reads both, and
+  the drop-off lists share it. Reading only V1 showed "Got the unlock DM: 1" against
+  11,590 entries for seven weeks.
+- A V2 comment-path attempt counts as the unlock DM. The attempt is created in the
+  same step that sends the opening card, so the 10 openings in 11,566 that failed
+  (2026-09-13..10-13) are counted as sent.
+- The 21-day reading covers **converts only**: people who had to follow to get the
+  guide. Someone already following is never re-read, so the bar is drawn against
+  "following" but measured against `followThroughDue`.
 
 ## Comment → link click (`link-click`)
 

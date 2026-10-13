@@ -1330,6 +1330,11 @@ export interface GuideFollowResult {
   expressLane: number;
   byEntryPath: FunnelEntryPathBreakdown[];
   retention: GuardedRate;
+  /**
+   * Conversations owed a 21-day reading: had to follow first, 21+ days past delivery.
+   * Optional because the console can deploy ahead of the API.
+   */
+  followThroughDue?: number;
   homeTileCohort: { deliveredToNonFollower: number; ofWhichRedelivery: number };
 }
 

@@ -31,6 +31,50 @@ export const MIN_RETENTION_SAMPLE = 5;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * The users owed a follow-through reading. Parameters: $1 completed-before cutoff,
+ * $2 batch size. A string, not a query call, so a contract test runs the exact SQL
+ * the worker runs without importing prisma or env.
+ *
+ * A CONVERT is someone who had to follow to get the guide. Three records say so, one
+ * per era of the gate, and each is still needed for conversations inside the window:
+ *   - delivered while not following (followerAtDelivery=false): before any follow gate;
+ *   - follow_required: the V1 text gate in messageHandler;
+ *   - a check_follow token: the V2 card gate, issued each time the wall is shown.
+ * Only the first was read here, and nothing has written it since the gates landed,
+ * because a gate delivers only after the follow is confirmed. The worker took one
+ * reading in the 30 days to 2026-10-12 while ~1,170 V2 converts waited.
+ *
+ * UNION branches instead of an EXISTS per conversation: event_log has no index on
+ * payload->>'conversationId', so a correlated probe would scan it once per row.
+ */
+export const FOLLOW_THROUGH_DUE_SQL = `
+SELECT DISTINCT c.ig_user_id
+FROM conversations c
+JOIN ig_users u ON u.id = c.ig_user_id
+WHERE c.follow_rechecked_at IS NOT NULL
+  AND c.follow_through_at IS NULL
+  AND c.completed_at <= $1
+  AND u.is_follower IS TRUE
+  AND c.id IN (
+    SELECT (e.payload->>'conversationId')::uuid
+    FROM event_log e
+    WHERE e.kind = 'sequence_completed'
+      AND (e.payload->>'followerAtDelivery')::boolean IS FALSE
+    UNION
+    SELECT (e.payload->>'conversationId')::uuid
+    FROM event_log e
+    WHERE e.kind = 'follow_required'
+    UNION
+    SELECT a.conversation_id
+    FROM guide_access_attempt a
+    JOIN guide_action_token t ON t.attempt_id = a.id
+    WHERE t.action = 'check_follow'
+  )
+ORDER BY c.ig_user_id
+LIMIT $2
+`.trim();
+
 export interface RetentionSummary {
   /** Share of measured converts still following, null below MIN_RETENTION_SAMPLE. */
   retentionPct: number | null;
