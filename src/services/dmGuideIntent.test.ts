@@ -149,6 +149,35 @@ describe("classifyDmKeywordIntent", () => {
       .toMatchObject({ keywordHitCount: 2, distinctGuideCount: 1 });
   });
 
+  // Brand pitches (43-84 distinct words) started guide flows because they mentioned a
+  // keyword next to "get" or "send". Every real ask but one was 20 words or fewer.
+  function longAsk(words: number): string[] {
+    const head = ["CAN", "YOU", "SEND", "ME", "THE", "WAFFLE"];
+    return [...head, ...Array.from({ length: words - head.length }, (_, i) => `W${i}`)];
+  }
+
+  it("sends a keyword DM over 30 distinct words to owner review", () => {
+    const tokens = longAsk(31);
+    expect(classifyDmKeywordIntent(tokens, [resolved("WAFFLE", 5)])).toEqual({
+      kind: "rejected_long",
+      meaningfulTokenCount: 31,
+      keywordHitCount: 1,
+      distinctGuideCount: 1,
+    });
+  });
+
+  it("keeps today's answer for a keyword DM of exactly 30 distinct words", () => {
+    const waffle = resolved("WAFFLE", 5);
+    expect(classifyDmKeywordIntent(longAsk(30), [waffle])).toMatchObject({
+      kind: "accepted_explicit",
+      selected: waffle,
+    });
+  });
+
+  it("still reports no_keyword for a long DM with no keyword", () => {
+    expect(classifyDmKeywordIntent(longAsk(40), [])).toMatchObject({ kind: "no_keyword" });
+  });
+
   it("returns no_keyword without a resolved hit", () => {
     expect(classifyDmKeywordIntent(["HELLO", "THERE"], [])).toEqual({
       kind: "no_keyword",
@@ -176,6 +205,56 @@ describe("classifyOpenRequestReply", () => {
     "READY",
   ])("accepts the complete confirmation phrase %s", (text) => {
     expect(classifyOpenRequestReply(text, "text")).toEqual({ kind: "accepted_confirmation" });
+  });
+
+  // Real replies from production (30 days to 2026-10-13) that went to owner review and
+  // got nothing, although each one is a plain yes.
+  it.each([
+    "yes send it",
+    "Yes, send it",
+    "yes send it here",
+    "yes send it here please",
+    "yes pls",
+    "yes plz",
+    "yes please send",
+    "yes please thank you",
+    "yes thanks",
+    "yep",
+    "yeah please",
+    "sure",
+    "ok",
+    "okay thanks",
+    "following",
+    "i follow",
+    "doen",
+    "fone",
+    "Done ✅",
+  ])("accepts the typed yes %s", (text) => {
+    expect(classifyOpenRequestReply(text, "text")).toEqual({ kind: "accepted_confirmation" });
+  });
+
+  // Owner's decision: these are not a yes, and must keep going to owner review.
+  it.each([
+    "thank you",
+    "Thank you!",
+    "thanks",
+    "please",
+    "plz",
+    "yes but is it dairy free?",
+    "where is the recipe?",
+    "yes please send it to my email",
+    "following up on my order",
+    "can i use almond flour",
+    "someone@example.com",
+    "Hey, thanks for your DM! We'll get back to you as soon as we can!",
+    "yes no rush",
+    "nope",
+    "ok?",
+  ])("sends %s to owner review", (text) => {
+    expect(classifyOpenRequestReply(text, "text")).toMatchObject({
+      kind: "rejected_reply",
+      reason: "unrecognized_text",
+    });
   });
 
   it("normalizes surrounding punctuation and emoji", () => {
