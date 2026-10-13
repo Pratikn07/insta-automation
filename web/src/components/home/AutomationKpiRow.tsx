@@ -1,12 +1,12 @@
 import { MessageSquareReply } from "lucide-react";
-import type { GuideFollowResult } from "@/lib/types";
+import type { FunnelReport } from "@/lib/types";
 import { KpiTile } from "./KpiTile";
 import { KpiMeter } from "./KpiMeter";
 
 const nf = new Intl.NumberFormat("en-US");
 
 export interface AutomationKpiRowProps {
-  funnel: GuideFollowResult | undefined;
+  funnel: FunnelReport | undefined;
   isLoading: boolean;
   isError: boolean;
   onRetry: () => void;

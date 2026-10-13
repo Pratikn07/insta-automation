@@ -14,6 +14,8 @@ const {
   linkClickCache,
   dropOffCache,
   guideAccessMetricsCache,
+  journeyCache,
+  journeyLeakCache,
   FUNNEL_CACHE_TTL_MS,
 } = await import("./funnels.routes.js");
 
@@ -31,6 +33,8 @@ beforeEach(() => {
   linkClickCache.invalidate();
   dropOffCache.invalidate();
   guideAccessMetricsCache.invalidate();
+  journeyCache.invalidate();
+  journeyLeakCache.invalidate();
 });
 
 describe("GET /api/funnels", () => {
@@ -94,6 +98,34 @@ describe("GET /api/funnels/:key", () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("window_too_wide");
     expect(queryRawUnsafe).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /api/funnels/guide-journey", () => {
+  it("returns the per-person trunk that Home reads", async () => {
+    const res = await request(makeApp()).get("/api/funnels/guide-journey");
+    expect(res.status).toBe(200);
+    expect(res.body.key).toBe("guide-journey");
+    expect(res.body.stages.map((s: { key: string }) => s.key)).toEqual(["asked", "reached", "saidYes"]);
+    expect(res.body.headline.label).toBe("Reply rate");
+    expect(res.body.lanes.notFollowing.people).toBe(0);
+    expect(queryRawUnsafe).toHaveBeenCalledOnce();
+  });
+
+  it("serves a leak list and refuses an unknown leak", async () => {
+    const ok = await request(makeApp()).get("/api/funnels/guide-journey/drop-off/stuck-at-wall");
+    expect(ok.status).toBe(200);
+    expect(ok.body).toEqual({ leak: "stuck-at-wall", rows: [] });
+
+    const bad = await request(makeApp()).get("/api/funnels/guide-journey/drop-off/no-reply");
+    expect(bad.status).toBe(404);
+    expect(bad.body.available).toEqual(["never-said-yes", "stuck-at-wall"]);
+  });
+
+  it("serves a repeat read of the same leak list from cache", async () => {
+    await request(makeApp()).get("/api/funnels/guide-journey/drop-off/never-said-yes");
+    await request(makeApp()).get("/api/funnels/guide-journey/drop-off/never-said-yes");
+    expect(queryRawUnsafe).toHaveBeenCalledOnce();
   });
 });
 

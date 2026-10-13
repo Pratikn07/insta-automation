@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.fn();
@@ -44,51 +44,95 @@ const EMPTY_COVER_RATES = {
   },
 };
 
-const FUNNEL = {
-  key: "guide-follow",
-  label: "Guide → follow",
-  window: { from: "2026-07-24", to: "2026-08-23" },
-  cohortSize: 270,
+function stage(key: string, label: string, count: number, ofPrevPct: number | null) {
+  return { key, label, definition: label, count, ofEntryPct: null, ofPrevPct };
+}
+
+// Numbers shaped like production for Sep 14 – Oct 13, internally consistent: every leak is
+// the exact gap it explains.
+const JOURNEY = {
+  key: "guide-journey",
+  name: "Guide journey",
+  question: "Of the people who ask for a guide, how many get it?",
+  window: { from: "2026-09-14T00:00:00.000Z", to: "2026-10-14T00:00:00.000Z" },
+  cohortSize: 9439,
+  stages: [
+    stage("asked", "Asked for a guide", 9439, null),
+    stage("reached", "Got the card", 9438, 100),
+    stage("saidYes", "Said yes", 4834, 51.2),
+  ],
   headline: {
-    label: "Answered the unlock DM",
-    rate: rate(202, 270, 74.8),
-    rationale: "The gate is not the bottleneck.",
+    fromStage: "reached",
+    toStage: "saidYes",
+    label: "Reply rate",
+    rationale: "More people stop at the unlock card than anywhere else.",
+    rate: rate(4834, 9438, 51.2),
   },
-  followGateConversion: rate(30, 60, 50),
-  stuckAtWall: 30,
-  expressLane: 40,
-  byEntryPath: [],
-  stages: [],
-  retention: rate(11, 12, null),
+  newFollowers: rate(1140, 2665, 42.8),
+  gotGuide: rate(3292, 9439, 34.9),
+  lanes: {
+    alreadyFollowing: { people: 2169, gotGuide: rate(2109, 2169, 97.2) },
+    notFollowing: { people: 2665 },
+  },
+  leaks: {
+    neverSaidYes: {
+      total: 4604,
+      buckets: {
+        still_has_time: 191,
+        wrote_not_yes: 150,
+        opened_ignored: 62,
+        no_sign_opened: 754,
+        cannot_tell: 3447,
+      },
+    },
+    stuckAtWall: {
+      total: 1525,
+      buckets: { still_has_time: 42, said_followed: 63, never_came_back: 1420 },
+    },
+  },
+  retention: { due: 449, rate: rate(67, 69, 97.1) },
 };
 
-const DROP_OFF = {
-  bucket: "no-reply",
-  label: "No reply",
-  definition: "Never replied to the unlock DM.",
-  total: 0,
-  byState: { expired: 0, stillOpen: 0 },
-  readEvidence: {
-    confirmedSeen: 0,
-    trackedNeverConfirmed: 0,
-    noReadData: 0,
-    confirmedSeenOfTracked: rate(0, 0, null),
-  },
-  recovery: { reminderSent: 0, reminderSuppressed: 0, inControlArm: 0, noReminder: 0 },
-  rows: [],
+const NEVER_SAID_YES = {
+  leak: "never-said-yes",
+  rows: [
+    {
+      igUserId: "1",
+      username: "quiet_parent",
+      lastKeyword: "WAFFLE",
+      cards: 2,
+      lastAskedAt: "2026-10-12T15:00:00.000Z",
+      bucket: "no_sign_opened",
+    },
+  ],
+};
+
+const STUCK_AT_WALL = {
+  leak: "stuck-at-wall",
+  rows: [
+    {
+      igUserId: "2",
+      username: "wall_parent",
+      lastKeyword: "TREAT",
+      cards: 1,
+      lastAskedAt: "2026-10-11T09:00:00.000Z",
+      bucket: "said_followed",
+    },
+  ],
 };
 
 function respond(overrides: { cover?: unknown } = {}) {
   api.mockImplementation((path: string) => {
     if (path.startsWith("/funnels/guide-access-metrics")) {
       return Promise.resolve(
-        overrides.cover ?? { key: "guide-access-v2", window: FUNNEL.window, coverRates: COVER_RATES },
+        overrides.cover ?? { key: "guide-access-v2", window: JOURNEY.window, coverRates: COVER_RATES },
       );
     }
     // The link funnel has its own panel; these tests leave it loading.
     if (path.startsWith("/funnels/link-click")) return new Promise(() => {});
-    if (path.includes("/drop-off/")) return Promise.resolve(DROP_OFF);
-    return Promise.resolve(FUNNEL);
+    if (path.includes("/drop-off/never-said-yes")) return Promise.resolve(NEVER_SAID_YES);
+    if (path.includes("/drop-off/stuck-at-wall")) return Promise.resolve(STUCK_AT_WALL);
+    return Promise.resolve(JOURNEY);
   });
 }
 
@@ -121,7 +165,7 @@ describe("Funnels cover panel", () => {
     respond({
       cover: {
         key: "guide-access-v2",
-        window: FUNNEL.window,
+        window: JOURNEY.window,
         coverRates: EMPTY_COVER_RATES,
       },
     });
@@ -142,7 +186,7 @@ describe("Funnels cover panel", () => {
     respond({
       cover: {
         key: "guide-access-v2",
-        window: FUNNEL.window,
+        window: JOURNEY.window,
         coverRates: {
           ...EMPTY_COVER_RATES,
           delivery: {
@@ -166,7 +210,7 @@ describe("Funnels cover panel", () => {
     respond({
       cover: {
         key: "guide-access-v2",
-        window: FUNNEL.window,
+        window: JOURNEY.window,
         coverRates: {
           ...COVER_RATES,
           delivery: { ...COVER_RATES.delivery, mispaired: rate(3, 100, 3) },
@@ -188,13 +232,15 @@ describe("Funnels cover panel", () => {
         return Promise.reject(new Error("metrics query timed out"));
       }
       if (path.startsWith("/funnels/link-click")) return new Promise(() => {});
-      if (path.includes("/drop-off/")) return Promise.resolve(DROP_OFF);
-      return Promise.resolve(FUNNEL);
+      if (path.includes("/drop-off/never-said-yes")) return Promise.resolve(NEVER_SAID_YES);
+      if (path.includes("/drop-off/stuck-at-wall")) return Promise.resolve(STUCK_AT_WALL);
+      return Promise.resolve(JOURNEY);
     });
     renderPage();
 
     // The cover panel is secondary. Its failure must not take the page's main funnel down.
-    await waitFor(() => expect(screen.getByText("74.8%")).toBeInTheDocument());
+    const headline = await screen.findByRole("region", { name: /headline/i });
+    expect(within(headline).getByText("1,140")).toBeInTheDocument();
     expect(screen.getByText(/cover numbers could not be loaded/i)).toBeInTheDocument();
   });
 
@@ -214,7 +260,7 @@ describe("Funnels cover panel", () => {
     // The web bundle deploys before the API here, so a 200 without `coverRates` is the
     // normal ordering. react-query will not retry a success, so a skeleton would sit
     // forever and claim to still be loading.
-    respond({ cover: { key: "guide-access-v2", window: FUNNEL.window } });
+    respond({ cover: { key: "guide-access-v2", window: JOURNEY.window } });
     renderPage();
 
     await waitFor(() =>
@@ -248,7 +294,7 @@ describe("Funnels cover panel", () => {
 
       await waitFor(() => expect(api).toHaveBeenCalled());
       const paths = api.mock.calls.map(([path]) => String(path));
-      expect(paths).toContain("/funnels/guide-follow?from=2026-09-14&to=2026-10-14");
+      expect(paths).toContain("/funnels/guide-journey?from=2026-09-14&to=2026-10-14");
     } finally {
       vi.useRealTimers();
     }
@@ -258,7 +304,7 @@ describe("Funnels cover panel", () => {
     respond({
       cover: {
         key: "guide-access-v2",
-        window: FUNNEL.window,
+        window: JOURNEY.window,
         coverRates: COVER_RATES,
         health: {
           awaitingRequest: 2,
@@ -286,7 +332,7 @@ describe("Funnels cover panel", () => {
     respond({
       cover: {
         key: "guide-access-v2",
-        window: FUNNEL.window,
+        window: JOURNEY.window,
         coverRates: COVER_RATES,
         health: {
           awaitingRequest: 2,
@@ -305,31 +351,97 @@ describe("Funnels cover panel", () => {
   });
 });
 
-describe("Funnels 21-day reading", () => {
-  function stage(key: string, count: number, ofPrevPct: number | null) {
-    return { key, label: key, definition: key, count, ofEntryPct: null, ofPrevPct, coverageOnly: true };
-  }
-
-  it("measures the worker against the converts owed a reading, not everyone following", async () => {
-    // The page read "re-measured 0 of 3,942 eligible": 3,942 was everyone following after
-    // delivery. Most were already following before they asked and never get the reading.
-    api.mockImplementation((path: string) => {
-      if (path.startsWith("/funnels/guide-access-metrics")) return new Promise(() => {});
-      if (path.startsWith("/funnels/link-click")) return new Promise(() => {});
-      if (path.includes("/drop-off/")) return Promise.resolve(DROP_OFF);
-      return Promise.resolve({
-        ...FUNNEL,
-        stages: [stage("followingMeasured", 3942, 93.9), stage("followingD21", 0, 0)],
-        retention: rate(0, 0, null),
-        followThroughDue: 454,
-      });
-    });
+describe("Funnels guide journey", () => {
+  it("leads with new followers and guides delivered, not with a reply rate", async () => {
+    respond();
     renderPage();
 
-    await waitFor(() =>
-      expect(screen.getByText(/only people who had to follow/i)).toBeInTheDocument(),
-    );
-    expect(screen.getByText(/read 0 of the 454/i)).toBeInTheDocument();
-    expect(screen.queryByText(/3,942 eligible/i)).not.toBeInTheDocument();
+    const headline = await screen.findByRole("region", { name: /headline/i });
+    expect(within(headline).getByText("1,140")).toBeInTheDocument();
+    expect(within(headline).getByText("new followers")).toBeInTheDocument();
+    expect(
+      within(headline).getByText(/42.8% of the 2,665 who weren't following when they said yes/),
+    ).toBeInTheDocument();
+    expect(within(headline).getByText("3,292")).toBeInTheDocument();
+    expect(within(headline).getByText(/34.9% of the 9,439 who asked/)).toBeInTheDocument();
+    // The old hero was the reply rate; it now lives in the trunk, not above it.
+    expect(within(headline).queryByText(/reply rate/i)).not.toBeInTheDocument();
+  });
+
+  it("draws the trunk per person", async () => {
+    respond();
+    renderPage();
+
+    const trunk = await screen.findByRole("region", { name: /the trunk/i });
+    expect(within(trunk).getByText("Asked for a guide")).toBeInTheDocument();
+    expect(within(trunk).getByText("9,439")).toBeInTheDocument();
+    expect(within(trunk).getByText("Got the card")).toBeInTheDocument();
+    expect(within(trunk).getByText("Said yes")).toBeInTheDocument();
+    expect(within(trunk).getByText("4,834")).toBeInTheDocument();
+  });
+
+  it("explains every person who never said yes", async () => {
+    respond();
+    renderPage();
+
+    const leak = await screen.findByRole("region", { name: /never said yes/i });
+    expect(within(leak).getByText(/4,604 never said yes/)).toBeInTheDocument();
+    for (const [label, count] of [
+      [/still has time/i, "191"],
+      [/wrote to us, but not as a yes/i, "150"],
+      [/opened the card and ignored it/i, "62"],
+      [/no sign they opened it/i, "754"],
+      [/can't tell/i, "3,447"],
+    ] as const) {
+      const row = within(leak).getByText(label).closest("li")!;
+      expect(within(row).getByText(count)).toBeInTheDocument();
+    }
+  });
+
+  it("splits everyone who said yes into two lanes", async () => {
+    respond();
+    renderPage();
+
+    const already = await screen.findByRole("region", { name: /already following/i });
+    expect(within(already).getByText("2,169")).toBeInTheDocument();
+    expect(within(already).getByText("2,109")).toBeInTheDocument();
+
+    const growth = screen.getByRole("region", { name: /not following yet/i });
+    expect(within(growth).getByText("2,665")).toBeInTheDocument();
+    expect(within(growth).getByText("Followed and got the guide")).toBeInTheDocument();
+  });
+
+  it("explains every person stuck at the wall", async () => {
+    respond();
+    renderPage();
+
+    const leak = await screen.findByRole("region", { name: /stuck at the wall/i });
+    expect(within(leak).getByText(/1,525 stuck at the wall/)).toBeInTheDocument();
+    for (const [label, count] of [
+      [/still has time/i, "42"],
+      [/said they followed, instagram says no/i, "63"],
+      [/never came back/i, "1,420"],
+    ] as const) {
+      const row = within(leak).getByText(label).closest("li")!;
+      expect(within(row).getByText(count)).toBeInTheDocument();
+    }
+  });
+
+  it("reads 21-day retention over new followers who were read, with how many are due", async () => {
+    respond();
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText(/67 of 69 read/)).toBeInTheDocument());
+    expect(screen.getByText(/69 of the 449 people due a 21-day reading/)).toBeInTheDocument();
+  });
+
+  it("names the people behind a leak when asked", async () => {
+    respond();
+    renderPage();
+
+    const leak = await screen.findByRole("region", { name: /never said yes/i });
+    fireEvent.click(within(leak).getByRole("button", { name: /see who/i }));
+    expect(await within(leak).findByText("quiet_parent")).toBeInTheDocument();
+    expect(within(leak).getByText("WAFFLE")).toBeInTheDocument();
   });
 });

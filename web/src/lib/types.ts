@@ -1338,6 +1338,64 @@ export interface GuideFollowResult {
   homeTileCohort: { deliveredToNonFollower: number; ofWhichRedelivery: number };
 }
 
+/** What Home reads from a funnel report: its window, its trunk and its headline. */
+export type FunnelReport = Pick<GuideFollowResult, "window" | "stages" | "headline">;
+
+/** Why someone with a card never said yes. Mirrors QUIET_BUCKETS on the server. */
+export type QuietBucket =
+  | "still_has_time"
+  | "wrote_not_yes"
+  | "opened_ignored"
+  | "no_sign_opened"
+  | "cannot_tell";
+
+/** Why someone shown the follow wall never got the guide. Mirrors WALL_BUCKETS. */
+export type WallBucket = "still_has_time" | "said_followed" | "never_came_back";
+
+export type GuideJourneyLeak = "never-said-yes" | "stuck-at-wall";
+
+/**
+ * GET /api/funnels/guide-journey. Mirrors src/services/funnels/guideJourneyFunnel.ts.
+ * Counted per person; every split adds up to the gap it explains.
+ */
+export interface GuideJourneyResult {
+  key: string;
+  name: string;
+  question: string;
+  window: { from: string; to: string };
+  /** People who asked. */
+  cohortSize: number;
+  /** The trunk: asked, reached (got the card), saidYes. */
+  stages: FunnelStageCount[];
+  headline: FunnelHeadline;
+  newFollowers: GuardedRate;
+  gotGuide: GuardedRate;
+  lanes: {
+    alreadyFollowing: { people: number; gotGuide: GuardedRate };
+    notFollowing: { people: number };
+  };
+  leaks: {
+    neverSaidYes: { total: number; buckets: Record<QuietBucket, number> };
+    stuckAtWall: { total: number; buckets: Record<WallBucket, number> };
+  };
+  retention: { due: number; rate: GuardedRate };
+}
+
+export interface GuideJourneyLeakRow {
+  igUserId: string;
+  username: string | null;
+  lastKeyword: string | null;
+  cards: number;
+  lastAskedAt: string;
+  bucket: QuietBucket | WallBucket;
+}
+
+/** GET /api/funnels/guide-journey/drop-off/:leak */
+export interface GuideJourneyLeakList {
+  leak: GuideJourneyLeak;
+  rows: GuideJourneyLeakRow[];
+}
+
 export interface LinkClickReelBreakdown {
   mediaId: string | null;
   entered: number;
@@ -1359,44 +1417,3 @@ export interface LinkClickResult {
   byReel: LinkClickReelBreakdown[];
 }
 
-export type DropOffBucket = "no-reply" | "stuck-at-wall";
-
-export interface DropOffRow {
-  conversationId: string;
-  igUserId: string;
-  username: string | null;
-  enteredAt: string;
-  state: string;
-  keyword: string;
-  wallAsks: number;
-  recoveryStatus: string | null;
-  recoveryArm: string | null;
-  seenAt: string | null;
-  suppressionReason: string | null;
-}
-
-export interface DropOffSummary {
-  bucket: DropOffBucket;
-  label: string;
-  definition: string;
-  total: number;
-  byState: { expired: number; stillOpen: number };
-  /**
-   * Three-way on purpose. Folding noReadData into "unseen" would turn an
-   * unknown into an accusation and point the fix at DM copy when the evidence
-   * points at deliverability.
-   */
-  readEvidence: {
-    confirmedSeen: number;
-    trackedNeverConfirmed: number;
-    noReadData: number;
-    confirmedSeenOfTracked: GuardedRate;
-  };
-  recovery: {
-    reminderSent: number;
-    reminderSuppressed: number;
-    inControlArm: number;
-    noReminder: number;
-  };
-  rows: DropOffRow[];
-}

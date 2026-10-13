@@ -90,7 +90,7 @@ function renderHome(input?: {
 }) {
   responses.set("/insights/follower-daily-adds", pending());
   responses.set("/stats", input?.stats ?? pending());
-  responses.set("/funnels/guide-follow", input?.funnel ?? pending());
+  responses.set("/funnels/guide-journey", input?.funnel ?? pending());
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: Infinity } },
   });
@@ -146,12 +146,12 @@ describe("Home evidence readiness", () => {
     expect(screen.getAllByText("3 gate deliveries gave up")).toHaveLength(2);
     const retry = screen.getByRole("button", { name: /Retry funnel evidence/ });
     const funnelCallsBeforeRetry = api.mock.calls.filter(
-      ([path]) => path === "/funnels/guide-follow",
+      ([path]) => path === "/funnels/guide-journey",
     ).length;
     await user.click(retry);
     await waitFor(() =>
       expect(
-        api.mock.calls.filter(([path]) => path === "/funnels/guide-follow").length,
+        api.mock.calls.filter(([path]) => path === "/funnels/guide-journey").length,
       ).toBe(funnelCallsBeforeRetry + 1),
     );
     expect(
@@ -162,7 +162,7 @@ describe("Home evidence readiness", () => {
   it("needs no follower data and never requests attribution", async () => {
     renderHome({ stats: Promise.resolve(clearStats()), funnel: Promise.resolve(clearFunnel()) });
     expect(await screen.findByText(/Nothing is waiting on you today/)).toBeInTheDocument();
-    expect(api.mock.calls.map(([path]) => path).sort()).toEqual(["/funnels/guide-follow", "/stats"]);
+    expect(api.mock.calls.map(([path]) => path).sort()).toEqual(["/funnels/guide-journey", "/stats"]);
     expect(screen.queryByText("Total followers")).not.toBeInTheDocument();
     expect(screen.queryByText("US followers this week")).not.toBeInTheDocument();
     expect(screen.queryByText(/Where are your followers coming from/)).not.toBeInTheDocument();
@@ -181,7 +181,7 @@ describe("Home evidence readiness", () => {
     expect(screen.getAllByText(/40 of 100 conversations stop here/)).toHaveLength(2);
     await user.click(screen.getByRole("button", { name: "Retry system stats" }));
     await waitFor(() => expect(api.mock.calls.filter(([path]) => path === "/stats")).toHaveLength(2));
-    expect(api.mock.calls.filter(([path]) => path === "/funnels/guide-follow")).toHaveLength(1);
+    expect(api.mock.calls.filter(([path]) => path === "/funnels/guide-journey")).toHaveLength(1);
     expect(screen.queryByText("Healthy")).not.toBeInTheDocument();
   });
 });

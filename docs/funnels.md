@@ -218,6 +218,43 @@ structure so an `arm` field can be added without a second renderer.
   guide. Someone already following is never re-read, so the bar is drawn against
   "following" but measured against `followThroughDue`.
 
+## Guide journey (`guide-journey`) — what the Funnels page draws
+
+The per-person view of the gated guide funnel. `guide-follow` above stays as it was, per
+conversation, for `npm run funnel` and the read-only MCP role; the page and Home read this.
+Spec: `docs/superpowers/specs/2026-10-13-guide-journey-funnel-design.md`.
+
+**Unit: people.** `GUIDE_JOURNEY_SQL` folds every card (one per reel comment) into one row
+per person whose first non-link `keyword_matched` falls in the window. Someone who comments
+on seven reels is one person, placed by the furthest point any of their cards reached.
+
+**Trunk**, each stage a subset of the one above: asked → got the card (or asked by DM) →
+said yes (tap, typed yes, DONE, follow wall, or a DM ask).
+
+**Fork** at the follow check. Everyone who said yes is in exactly one lane:
+
+- *Already following*: never hit the follow wall on any card.
+- *Not following yet*: hit the wall on any card (V1 `follow_required` or a V2
+  `check_follow` token). *Followed* means a guide was delivered after their first wall.
+
+**Leaks**, each an exact gap with buckets judged first-match-wins:
+
+| Leak | Buckets |
+|---|---|
+| Never said yes (got the card − said yes) | still has time · wrote to us, not as a yes · opened it and ignored it · no sign they opened it · can't tell |
+| Stuck at the wall (wall − followed) | still has time · said they followed, Instagram says no · never came back |
+
+"Can't tell" is every card with no read evidence: cards were saved to DM history only from
+2026-10-05, and V1 cards never were. It is an absence of data, not a finding.
+
+**21 days**: still following over new followers who were read, with the number due a
+reading (new followers rechecked and completed 21+ days ago) beside it. Never drawn against
+everyone.
+
+**Endpoints**: `GET /api/funnels/guide-journey`, and
+`GET /api/funnels/guide-journey/drop-off/{never-said-yes|stuck-at-wall}` for the people
+behind each leak, newest first.
+
 ## Comment → link click (`link-click`)
 
 The link-guide funnel. Its cohort is `keyword_matched` events carrying `deliveryMode: "link"`. Those same events are excluded from `guide-follow` and its drop-off lists, so the gated baseline is never diluted.

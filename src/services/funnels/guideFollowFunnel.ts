@@ -172,6 +172,8 @@ export interface GuideFollowRow {
  * - `replied`: a tap or a typed reply, both of which consume the request_guide token.
  *   follow_check_count also counts, because an owner reset cancels tokens.
  * - `follow_asks`: one check_follow token is issued per gate or re-ask.
+ * - The timing and evidence columns after it feed the per-person journey
+ *   (guideJourneyFunnel.ts); the per-card readers ignore them.
  */
 const ACCESS_JOURNEY_CTE = `
 access_journey AS (
@@ -179,7 +181,13 @@ access_journey AS (
     a.conversation_id,
     COALESCE(bool_or(a.follow_check_count > 0
       OR (t.action = 'request_guide' AND t.status = 'consumed')), false) AS replied,
-    (COUNT(DISTINCT t.id) FILTER (WHERE t.action = 'check_follow'))::int AS follow_asks
+    (COUNT(DISTINCT t.id) FILTER (WHERE t.action = 'check_follow'))::int AS follow_asks,
+    MIN(a.created_at) AS opened_at,
+    MIN(t.created_at) FILTER (WHERE t.action = 'check_follow') AS first_wall_at,
+    MAX(a.messaging_window_expires_at) AS window_end,
+    MAX(a.messaging_window_expires_at) FILTER (WHERE t.action = 'check_follow') AS wall_window_end,
+    COALESCE(bool_or(a.follow_response_count > 0 OR a.follow_check_count >= 2)
+      FILTER (WHERE t.action = 'check_follow'), false) AS rechecked_at_wall
   FROM guide_access_attempt a
   LEFT JOIN guide_action_token t ON t.attempt_id = a.id
   WHERE a.created_at >= $1::timestamptz - $3::interval

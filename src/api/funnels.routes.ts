@@ -3,6 +3,8 @@ import { prisma } from "../lib/prisma.js";
 import { FUNNELS, getFunnelDef } from "../services/funnels/registry.js";
 import {
   runGuideFollowFunnel,
+  runGuideJourneyFunnel,
+  runGuideJourneyLeak,
   runLinkClickFunnel,
   runDropOff,
   defaultWindow,
@@ -12,6 +14,13 @@ import {
 } from "../services/funnels/runFunnel.js";
 import { DROP_OFF_BUCKETS, type DropOffBucket } from "../services/funnels/dropOff.js";
 import { guideFollowDef } from "../services/funnels/guideFollowFunnel.js";
+import {
+  GUIDE_JOURNEY_LEAKS,
+  guideJourneyDef,
+  type GuideJourneyLeak,
+  type GuideJourneyLeakList,
+  type GuideJourneyResult,
+} from "../services/funnels/guideJourneyFunnel.js";
 import { linkClickDef, type LinkClickResult } from "../services/funnels/linkClickFunnel.js";
 import { createReadThroughCache } from "../lib/readThroughCache.js";
 import { runGuideAccessMetrics } from "../services/guideAccessMetrics.js";
@@ -107,6 +116,8 @@ export const dropOffCache =
   createReadThroughCache<Awaited<ReturnType<typeof runDropOff>>>(reportCacheOptions);
 export const guideAccessMetricsCache =
   createReadThroughCache<Awaited<ReturnType<typeof runGuideAccessMetrics>>>(reportCacheOptions);
+export const journeyCache = createReadThroughCache<GuideJourneyResult>(reportCacheOptions);
+export const journeyLeakCache = createReadThroughCache<GuideJourneyLeakList>(reportCacheOptions);
 
 /**
  * Keyed on the request, not the resolved bounds. `defaultWindow()` is
@@ -191,6 +202,14 @@ funnelsRouter.get("/:key", async (req, res) => {
     );
     return;
   }
+  if (def.key === guideJourneyDef.key) {
+    res.json(
+      await journeyCache.get(funnelCacheKey(def.key, parsed.data, def.minSample), () =>
+        runGuideJourneyFunnel(prisma, window, def.minSample),
+      ),
+    );
+    return;
+  }
   res.json(
     await funnelCache.get(funnelCacheKey(def.key, parsed.data, def.minSample), () =>
       runGuideFollowFunnel(prisma, window, def.minSample),
@@ -206,15 +225,18 @@ funnelsRouter.get("/:key/drop-off/:bucket", async (req, res) => {
     res.status(404).json({ error: "unknown_funnel", available: Object.keys(FUNNELS) });
     return;
   }
-  // Drop-off lists are built on the guide-follow cohort only.
-  if (def.key !== guideFollowDef.key) {
+  // Drop-off lists exist for the two guide funnels only, each with its own buckets: the
+  // per-card guide-follow lists, and the per-person journey's two leaks.
+  const journey = def.key === guideJourneyDef.key;
+  if (!journey && def.key !== guideFollowDef.key) {
     res.status(404).json({ error: "no_drop_off_for_funnel" });
     return;
   }
 
-  const bucket = req.params.bucket as DropOffBucket;
-  if (!Object.prototype.hasOwnProperty.call(DROP_OFF_BUCKETS, bucket)) {
-    res.status(404).json({ error: "unknown_bucket", available: Object.keys(DROP_OFF_BUCKETS) });
+  const bucket = req.params.bucket;
+  const available: readonly string[] = journey ? GUIDE_JOURNEY_LEAKS : Object.keys(DROP_OFF_BUCKETS);
+  if (!available.includes(bucket)) {
+    res.status(404).json({ error: "unknown_bucket", available });
     return;
   }
 
@@ -231,10 +253,18 @@ funnelsRouter.get("/:key/drop-off/:bucket", async (req, res) => {
   }
 
   const limit = parsed.data.limit ?? DROP_OFF_DEFAULT_LIMIT;
+  const cacheKey = `${funnelCacheKey(def.key, parsed.data, def.minSample)}|${bucket}|${limit}`;
+  if (journey) {
+    res.json(
+      await journeyLeakCache.get(cacheKey, () =>
+        runGuideJourneyLeak(prisma, bucket as GuideJourneyLeak, window, limit),
+      ),
+    );
+    return;
+  }
   res.json(
-    await dropOffCache.get(
-      `${funnelCacheKey(def.key, parsed.data, def.minSample)}|${bucket}|${limit}`,
-      () => runDropOff(prisma, bucket, window, limit, def.minSample),
+    await dropOffCache.get(cacheKey, () =>
+      runDropOff(prisma, bucket as DropOffBucket, window, limit, def.minSample),
     ),
   );
 });

@@ -13,10 +13,12 @@
 
 import type { FunnelDef } from "./types.js";
 import { guideFollowDef } from "./guideFollowFunnel.js";
+import { guideJourneyDef } from "./guideJourneyFunnel.js";
 import { linkClickDef } from "./linkClickFunnel.js";
 
 export const FUNNELS: Record<string, FunnelDef> = {
   [guideFollowDef.key]: guideFollowDef,
+  [guideJourneyDef.key]: guideJourneyDef,
   [linkClickDef.key]: linkClickDef,
 };
 

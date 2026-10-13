@@ -3,11 +3,11 @@ import { Filter, RefreshCw } from "lucide-react";
 import { useState } from "react";
 import { apiRead } from "@/lib/api";
 import type {
-  DropOffSummary,
   GuardedRate,
   GuideAccessMetricsResult,
   GuideCoverRates,
-  GuideFollowResult,
+  GuideJourneyLeakList,
+  GuideJourneyResult,
   LinkClickResult,
 } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -15,9 +15,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/EmptyState";
 import { Caveat } from "@/components/funnels/Caveat";
 import { GuardedNumber } from "@/components/funnels/GuardedNumber";
-import { FunnelStages } from "@/components/funnels/FunnelStages";
-import { EvidenceBar } from "@/components/funnels/EvidenceBar";
-import { DropOffTable } from "@/components/funnels/DropOffTable";
+import { JourneyFunnel } from "@/components/funnels/JourneyFunnel";
 import { LinkClickPanel } from "@/components/funnels/LinkClickPanel";
 
 // Where the guide funnel loses people.
@@ -26,13 +24,12 @@ import { LinkClickPanel } from "@/components/funnels/LinkClickPanel";
 // resonate with a US audience"), while a funnel's axis is the conversation
 // lifecycle. Same reason the API mounts /funnels rather than adding a tab.
 //
-// Every percentage here is computed server-side by summarizeGuideFollow, the
-// same function the CLI uses. If this page and `npm run funnel` ever disagree,
-// the bug is in the rendering, not the arithmetic.
+// Every number in the journey is computed server-side by summarizeGuideJourney and
+// counted per person (see docs/superpowers/specs/2026-10-13-guide-journey-funnel-design.md).
+// The page does no arithmetic. `npm run funnel` still reports the older per-card
+// guide-follow funnel, so the CLI and this page count different units on purpose.
 //
-// The cover panel is the exception to the CLI half of that: its shares come from
-// runGuideAccessMetrics, which `npm run funnel` does not report. Still computed
-// server-side, so the page does no arithmetic — but there is no CLI cross-check.
+// The cover panel's shares come from runGuideAccessMetrics, also server-side.
 
 const WINDOW_PRESETS = [
   { label: "30 days", days: 30 },
@@ -65,14 +62,22 @@ export function Funnels() {
   const range = windowFor(days);
   const query = `?from=${range.from}&to=${range.to}`;
 
-  const funnelQ = useQuery<GuideFollowResult>({
-    queryKey: ["funnels", "guide-follow", range.from, range.to],
-    queryFn: ({ signal }) => apiRead<GuideFollowResult>(`/funnels/guide-follow${query}`, { signal }),
+  const journeyQ = useQuery<GuideJourneyResult>({
+    queryKey: ["funnels", "guide-journey", range.from, range.to],
+    queryFn: ({ signal }) => apiRead<GuideJourneyResult>(`/funnels/guide-journey${query}`, { signal }),
   });
 
-  const dropOffQ = useQuery<DropOffSummary>({
-    queryKey: ["funnels", "guide-follow", "no-reply", range.from, range.to],
-    queryFn: ({ signal }) => apiRead<DropOffSummary>(`/funnels/guide-follow/drop-off/no-reply${query}`, { signal }),
+  // The people behind each leak. Their own queries, so a slow list never holds back the
+  // numbers above it.
+  const neverSaidYesQ = useQuery<GuideJourneyLeakList>({
+    queryKey: ["funnels", "guide-journey", "never-said-yes", range.from, range.to],
+    queryFn: ({ signal }) =>
+      apiRead<GuideJourneyLeakList>(`/funnels/guide-journey/drop-off/never-said-yes${query}`, { signal }),
+  });
+  const stuckAtWallQ = useQuery<GuideJourneyLeakList>({
+    queryKey: ["funnels", "guide-journey", "stuck-at-wall", range.from, range.to],
+    queryFn: ({ signal }) =>
+      apiRead<GuideJourneyLeakList>(`/funnels/guide-journey/drop-off/stuck-at-wall${query}`, { signal }),
   });
 
   // Cover shares. A separate query on purpose: this endpoint aggregates the guide-access
@@ -99,23 +104,23 @@ export function Funnels() {
         </h2>
 
         {/* Cohort semantics, stated. Never "last 30 days": these are the SAME
-            conversations tracked forward, not events counted inside a window,
-            and reading it the other way is how the old yield tile misled. */}
+            people tracked forward, not events counted inside a window, and
+            reading it the other way is how the old yield tile misled. */}
         <p className="mt-4 max-w-[62ch] text-sm text-muted-foreground">
-          {funnelQ.data ? (
+          {journeyQ.data ? (
             <>
               <span className="font-medium text-foreground">
-                {funnelQ.data.cohortSize.toLocaleString()} conversations
+                {journeyQ.data.cohortSize.toLocaleString()} people
               </span>{" "}
-              that entered between{" "}
+              who asked for a guide between{" "}
               <span className="font-medium text-foreground">
-                {formatCohortRange(funnelQ.data.window)}
+                {formatCohortRange(journeyQ.data.window)}
               </span>
-              , followed forward however long they took — not events counted inside the
-              window.
+              , each counted once however many reels they commented on, and followed forward
+              however long they took.
             </>
           ) : (
-            "Conversations that entered in the window, followed forward however long they took."
+            "People who asked for a guide in the window, each counted once, followed forward however long they took."
           )}
         </p>
 
@@ -138,24 +143,28 @@ export function Funnels() {
         </div>
       </header>
 
-      {funnelQ.isError ? (
+      {journeyQ.isError ? (
         <EmptyState
           icon={<Filter className="size-5" />}
           title="Couldn't load the funnel"
           description="The cohort query scans the event log over the window; a wide range can time out."
           action={
-            <Button variant="outline" onClick={() => funnelQ.refetch()}>
+            <Button variant="outline" onClick={() => journeyQ.refetch()}>
               <RefreshCw className="size-4" /> Retry
             </Button>
           }
         />
-      ) : funnelQ.isLoading || !funnelQ.data ? (
+      ) : journeyQ.isLoading || !journeyQ.data ? (
         <div className="space-y-4">
           <Skeleton className="h-32 w-full rounded-lg" />
           <Skeleton className="h-72 w-full rounded-lg" />
         </div>
       ) : (
-        <FunnelBody data={funnelQ.data} dropOff={dropOffQ.data} isDropOffLoading={dropOffQ.isLoading} />
+        <JourneyFunnel
+          data={journeyQ.data}
+          neverSaidYes={neverSaidYesQ.data}
+          stuckAtWall={stuckAtWallQ.data}
+        />
       )}
 
       <GuideAccessHealthPanel health={coverQ.data?.health} />
@@ -371,160 +380,6 @@ function CoverKpi({ label, rate }: { label: string; rate: GuardedRate }) {
   );
 }
 
-function FunnelBody({
-  data,
-  dropOff,
-  isDropOffLoading,
-}: {
-  data: GuideFollowResult;
-  dropOff: DropOffSummary | undefined;
-  isDropOffLoading: boolean;
-}) {
-  const d21 = data.stages.find((s) => s.key === "followingD21");
-  const measuredD21 = data.retention.denominator;
-  // Owed a reading: had to follow first and 21+ days past delivery. NOT the following
-  // count above it — people already following never get the reading, so dividing by
-  // them reported a worker "0 of 3,942" behind when 454 were due.
-  const due = data.followThroughDue;
-
-  return (
-    <>
-      {/* Headline + KPIs */}
-      <section className="grid gap-8 border-b pb-9 md:grid-cols-[1.15fr_1fr] md:gap-14">
-        <div>
-          <p className="label-caps">{data.headline.label}</p>
-          <GuardedNumber
-            className="mt-3"
-            rate={data.headline.rate}
-            unit="answered the unlock DM"
-            size="hero"
-          />
-          <p className="mt-3 max-w-[46ch] text-sm text-muted-foreground">
-            {data.headline.rationale}
-          </p>
-        </div>
-
-        <dl className="flex flex-col">
-          <Kpi label="Follow gate conversion" rate={data.followGateConversion} />
-          <KpiCount label="Stuck at the follow wall" value={data.stuckAtWall} sub="asked, never followed" />
-          <KpiCount
-            label="Never saw the wall"
-            value={data.expressLane}
-            sub="already following — served immediately"
-          />
-          {data.byEntryPath.map((p) => (
-            <Kpi key={p.entryPath} label={`${p.entryPath} entry → guide`} rate={p.deliveryRate} />
-          ))}
-        </dl>
-      </section>
-
-      {/* Stages */}
-      <section className="pt-2">
-        <SectionHead
-          eyebrow="The stages"
-          title="Six steps, one branch"
-          blurb="Bars are drawn against the full cohort, so lengths are comparable down the list. Stages marked joinable are reached without passing the step above, so no step conversion is shown — a tapering funnel chart would have implied a sequence that does not exist."
-        />
-        <FunnelStages
-          stages={data.stages}
-          cohortSize={data.cohortSize}
-          renderLoss={(stage, lost) =>
-            stage.key === "replied" ? (
-              <p className="mt-2.5 text-[12.5px] text-muted-foreground">
-                <span className="font-medium text-foreground">
-                  {lost.toLocaleString()} lost here
-                </span>{" "}
-                —{" "}
-                <a
-                  href="#drop-off"
-                  className="border-b border-current text-funnel-mark hover:opacity-80"
-                >
-                  see who they are
-                </a>
-              </p>
-            ) : (
-              <p className="mt-2.5 text-[12.5px] text-muted-foreground">
-                {lost.toLocaleString()} lost here
-              </p>
-            )
-          }
-          notes={{
-            guideDelivered: (
-              <p className="mt-2.5 max-w-[64ch] text-[12.5px] text-muted-foreground">
-                {data.expressLane.toLocaleString()} of these never hit the follow wall — already
-                following, so they were served as soon as they asked. Only{" "}
-                {data.followGateConversion.numerator.toLocaleString()} came from someone who
-                had to follow first.
-              </p>
-            ),
-            // Load-bearing, not decoration: without it a reader sees a hairline
-            // bar reading "5" and concludes retention collapsed. Always shown, because
-            // the bar is drawn against everyone following and only converts are read.
-            followingD21:
-              d21 && due !== undefined ? (
-                <Caveat className="mt-3">
-                  <b className="font-medium">This bar is not retention.</b> Only people who had
-                  to follow to unlock the guide get a 21-day reading.{" "}
-                  {due === 0 ? (
-                    "None of them in this cohort is 21 days past delivery yet."
-                  ) : (
-                    <>
-                      The follow-through worker has read {measuredD21.toLocaleString()} of the{" "}
-                      {due.toLocaleString()} who are, and{" "}
-                      {data.retention.numerator.toLocaleString()} of those are still following.
-                    </>
-                  )}
-                </Caveat>
-              ) : null,
-          }}
-        />
-      </section>
-
-      {/* Drop-off */}
-      <section id="drop-off" className="pt-8">
-        {isDropOffLoading || !dropOff ? (
-          <Skeleton className="h-64 w-full rounded-lg" />
-        ) : (
-          <>
-            <SectionHead
-              eyebrow={`Biggest leak · ${dropOff.label.toLowerCase()}`}
-              title={`${dropOff.total.toLocaleString()} people, and what we know about why`}
-              blurb={`${dropOff.byState.expired.toLocaleString()} of these conversations have expired; ${dropOff.byState.stillOpen.toLocaleString()} are still open. The question is whether they ignored the message or never saw it — opposite problems with opposite fixes.`}
-            />
-
-            <EvidenceBar evidence={dropOff.readEvidence} />
-
-            <Caveat className="mt-5">
-              <b className="font-medium">
-                The grey block is an absence of evidence, not a finding.
-              </b>{" "}
-              Those {dropOff.readEvidence.noReadData.toLocaleString()} conversations were never
-              tracked for read receipts, so nothing can be concluded about them. Among the{" "}
-              {dropOff.readEvidence.confirmedSeenOfTracked.denominator.toLocaleString()} we can
-              judge, {dropOff.readEvidence.trackedNeverConfirmed.toLocaleString()} were never
-              confirmed read. That points at deliverability rather than at the wording of the DM.
-            </Caveat>
-
-            <h3 className="mt-9 text-[15px] font-medium">Who to act on</h3>
-            <p className="mb-4 mt-1 text-sm text-muted-foreground">
-              Newest first, capped at {dropOff.rows.length.toLocaleString()} rows.
-            </p>
-            <DropOffTable rows={dropOff.rows} />
-
-            <p className="mt-3 max-w-[68ch] text-xs text-muted-foreground">
-              Across the whole bucket: {dropOff.recovery.reminderSent.toLocaleString()} reminders
-              sent, {dropOff.recovery.reminderSuppressed.toLocaleString()} suppressed, and{" "}
-              {dropOff.recovery.inControlArm.toLocaleString()} in a control arm — a holdout
-              already running against this problem, which makes the reminder's lift measurable
-              rather than assumed.
-            </p>
-          </>
-        )}
-      </section>
-    </>
-  );
-}
-
 function SectionHead({
   eyebrow,
   title,
@@ -539,31 +394,6 @@ function SectionHead({
       <p className="label-caps">{eyebrow}</p>
       <h3 className="mt-1.5 text-[15px] font-medium tracking-tight">{title}</h3>
       <p className="mt-1.5 max-w-[64ch] text-sm text-muted-foreground">{blurb}</p>
-    </div>
-  );
-}
-
-function Kpi({ label, rate }: { label: string; rate: GuideFollowResult["retention"] }) {
-  return (
-    <div className="flex items-baseline justify-between gap-4 border-b py-3 first:border-t">
-      <dt className="text-[13px] capitalize text-muted-foreground">{label}</dt>
-      <dd className="text-right">
-        <GuardedNumber rate={rate} size="inline" />
-      </dd>
-    </div>
-  );
-}
-
-function KpiCount({ label, value, sub }: { label: string; value: number; sub: string }) {
-  return (
-    <div className="flex items-baseline justify-between gap-4 border-b py-3 first:border-t">
-      <dt className="text-[13px] text-muted-foreground">{label}</dt>
-      <dd className="text-right">
-        <div className="text-base font-medium tabular-nums tracking-[-0.01em]">
-          {value.toLocaleString()}
-        </div>
-        <p className="mt-0.5 text-[11px] text-muted-foreground">{sub}</p>
-      </dd>
     </div>
   );
 }
