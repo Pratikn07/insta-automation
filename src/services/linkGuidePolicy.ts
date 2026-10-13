@@ -1,5 +1,6 @@
 // src/services/linkGuidePolicy.ts
 import { randomBytes } from "node:crypto";
+import { BlockList, isIP } from "node:net";
 
 /**
  * Pure rules for link guides: field validation, the tracked URL, UTM tagging and click
@@ -55,7 +56,7 @@ export type LinkGuideFieldError =
 
 export type ClickClassification = {
   isBot: boolean;
-  uaFamily: "head_request" | "meta_preview" | "bot" | "instagram_app" | "browser" | "unknown";
+  uaFamily: "head_request" | "meta_preview" | "meta_scanner" | "bot" | "instagram_app" | "browser" | "unknown";
 };
 
 /** Instagram counts characters as code points, so "👻" is one, not two. */
@@ -163,12 +164,36 @@ const GENERIC_BOTS =
   /bot[/;-]|\bbot\b|\+https?:|crawler|spider|preview|slurp|curl|wget|python-requests|headless/i;
 const INSTAGRAM_APP = /Instagram/;
 
+// Meta's own networks (AS32934). Seconds after every DM, Meta's link scanner fetches the
+// link from here posing as an ordinary browser, which would otherwise complete the
+// conversation before the parent has tapped. A parent's tap comes from their own phone.
+const META_NETWORKS = new BlockList();
+for (const subnet of [
+  "31.13.24.0/21", "31.13.64.0/18", "45.64.40.0/22", "57.141.0.0/16", "57.144.0.0/14",
+  "66.220.144.0/20", "69.63.176.0/20", "69.171.224.0/19", "74.119.76.0/22", "102.132.96.0/20",
+  "103.4.96.0/22", "129.134.0.0/16", "147.75.208.0/20", "157.240.0.0/16", "163.70.128.0/17",
+  "163.77.128.0/17", "173.252.64.0/18", "179.60.192.0/22", "185.60.216.0/22",
+  "185.89.216.0/22", "204.15.20.0/22",
+]) {
+  const [address, prefix] = subnet.split("/");
+  META_NETWORKS.addSubnet(address!, Number(prefix), "ipv4");
+}
+META_NETWORKS.addSubnet("2a03:2880::", 32, "ipv6");
+META_NETWORKS.addSubnet("2620:0:1c00::", 40, "ipv6");
+
+export function isMetaNetworkIp(ip: string | undefined): boolean {
+  const address = ip?.trim().replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/iu, "") ?? "";
+  const family = isIP(address);
+  return family !== 0 && META_NETWORKS.check(address, family === 4 ? "ipv4" : "ipv6");
+}
+
 /** A tap counts only from a real browser. An empty user agent is treated as a bot. */
-export function classifyClick(input: { userAgent: string; method: string }): ClickClassification {
+export function classifyClick(input: { userAgent: string; method: string; ip?: string }): ClickClassification {
   if (input.method.toUpperCase() === "HEAD") return { isBot: true, uaFamily: "head_request" };
   const userAgent = input.userAgent.trim();
   if (userAgent.length === 0) return { isBot: true, uaFamily: "unknown" };
   if (META_PREVIEW_AGENTS.test(userAgent)) return { isBot: true, uaFamily: "meta_preview" };
+  if (isMetaNetworkIp(input.ip)) return { isBot: true, uaFamily: "meta_scanner" };
   if (GENERIC_BOTS.test(userAgent)) return { isBot: true, uaFamily: "bot" };
   if (INSTAGRAM_APP.test(userAgent)) return { isBot: false, uaFamily: "instagram_app" };
   return { isBot: false, uaFamily: "browser" };
