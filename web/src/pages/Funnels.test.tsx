@@ -351,6 +351,74 @@ describe("Funnels cover panel", () => {
   });
 });
 
+describe("Funnels date range", () => {
+  // 02:30 UTC on Oct 13: the UTC day is Oct 13, so "today" is 2026-10-13 and the API's
+  // exclusive end is 2026-10-14.
+  function journeyPaths(): string[] {
+    return api.mock.calls
+      .map(([path]) => String(path))
+      .filter((path) => path.startsWith("/funnels/guide-journey?"));
+  }
+
+  async function renderAt(iso: string) {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(iso));
+    respond();
+    renderPage();
+    await waitFor(() => expect(journeyPaths().length).toBeGreaterThan(0));
+  }
+
+  afterEach(() => vi.useRealTimers());
+
+  it("starts on the last 30 days, today included", async () => {
+    await renderAt("2026-10-13T02:30:00.000Z");
+    expect(screen.getByLabelText("From")).toHaveValue("2026-09-14");
+    expect(screen.getByLabelText("To")).toHaveValue("2026-10-13");
+  });
+
+  it("reads the funnel from a chosen start date", async () => {
+    await renderAt("2026-10-13T02:30:00.000Z");
+    fireEvent.change(screen.getByLabelText("From"), { target: { value: "2026-10-01" } });
+    await waitFor(() =>
+      expect(journeyPaths()).toContain("/funnels/guide-journey?from=2026-10-01&to=2026-10-14"),
+    );
+  });
+
+  it("treats the end date as the last day included", async () => {
+    await renderAt("2026-10-13T02:30:00.000Z");
+    fireEvent.change(screen.getByLabelText("To"), { target: { value: "2026-10-05" } });
+    await waitFor(() =>
+      expect(journeyPaths()).toContain("/funnels/guide-journey?from=2026-09-14&to=2026-10-06"),
+    );
+  });
+
+  it("keeps the presets, and they reset both dates", async () => {
+    await renderAt("2026-10-13T02:30:00.000Z");
+    fireEvent.click(screen.getByRole("button", { name: "90 days" }));
+    await waitFor(() =>
+      expect(journeyPaths()).toContain("/funnels/guide-journey?from=2026-07-16&to=2026-10-14"),
+    );
+    expect(screen.getByLabelText("From")).toHaveValue("2026-07-16");
+  });
+
+  it("refuses a range over a year instead of asking the API to reject it", async () => {
+    await renderAt("2026-10-13T02:30:00.000Z");
+    fireEvent.change(screen.getByLabelText("From"), { target: { value: "2025-01-01" } });
+    expect(await screen.findByText(/at most 365 days/i)).toBeInTheDocument();
+    expect(journeyPaths().some((path) => path.includes("from=2025-01-01"))).toBe(false);
+    // Nothing below may sit in a skeleton waiting on a query that will never run.
+    expect(document.querySelectorAll('[data-slot="skeleton"]')).toHaveLength(0);
+    expect(screen.queryByText(/guide cover/i)).not.toBeInTheDocument();
+  });
+
+  it("refuses a start date after the end date", async () => {
+    await renderAt("2026-10-13T02:30:00.000Z");
+    fireEvent.change(screen.getByLabelText("From"), { target: { value: "2026-10-20" } });
+    expect(await screen.findByText(/start date must be on or before the end date/i)).toBeInTheDocument();
+    expect(journeyPaths().some((path) => path.includes("from=2026-10-20"))).toBe(false);
+  });
+});
+
 describe("Funnels guide journey", () => {
   it("leads with new followers and guides delivered, not with a reply rate", async () => {
     respond();
