@@ -19,7 +19,8 @@ import {
   guardedRate,
   toStageCounts,
 } from "./types.js";
-import { GUIDE_FOLLOW_MIN_SAMPLE } from "./guideFollowFunnel.js";
+import { FOLLOW_THROUGH_MIN_DAYS } from "../followThroughCore.js";
+import { GUIDE_FOLLOW_MIN_SAMPLE, JOURNEY_SIGNALS } from "./guideFollowFunnel.js";
 
 /** Why someone with a card never said yes. First match wins, in this order. */
 export const QUIET_BUCKETS = [
@@ -186,3 +187,166 @@ export function summarizeGuideJourney(
     },
   };
 }
+
+/**
+ * One row per person whose first non-link keyword_matched falls in the window. Parameters:
+ *   $1 from (timestamptz, inclusive), $2 to (exclusive), $3 event lookback margin.
+ *
+ * Built on the card-level signals in JOURNEY_SIGNALS, so a card means the same thing here
+ * as in the per-card funnel; this only adds timing and evidence, then folds cards into
+ * people. Read-only, safe for a SELECT-only role.
+ *
+ * - reached ⊇ said yes ⊇ hit the wall, by construction, so the leaks are exact gaps.
+ * - followed: hit the wall on any card, and some card's guide was delivered after the
+ *   first wall. Someone stuck on one card who follows and gets another card's guide counts.
+ * - Read evidence exists only for cards saved to DM history (from 2026-10-05) or tracked by
+ *   a reminder; the rest are "cannot_tell", never guessed.
+ */
+export const GUIDE_JOURNEY_SQL = `
+WITH cohort AS (
+  SELECT (e.payload->>'conversationId')::uuid AS conversation_id,
+         MIN(e.created_at) AS entered_at,
+         COALESCE(MIN(e.payload->>'source'), 'comment') AS entry_path
+  FROM event_log e
+  WHERE e.kind = 'keyword_matched'
+    AND COALESCE(e.payload->>'deliveryMode', 'gated') <> 'link'
+    AND e.created_at >= $1::timestamptz
+    AND e.created_at <  $2::timestamptz
+    AND e.payload->>'conversationId' IS NOT NULL
+  GROUP BY 1
+),
+ev AS (
+  SELECT (payload->>'conversationId')::uuid AS conversation_id, kind, payload, created_at
+  FROM event_log
+  WHERE kind IN ('dm_sent', 'follow_required', 'done_received', 'sequence_completed')
+    AND created_at >= $1::timestamptz - $3::interval
+    AND payload->>'conversationId' IS NOT NULL
+),
+${JOURNEY_SIGNALS.ctes},
+card AS (
+  SELECT
+    co.conversation_id, co.entered_at, co.entry_path, c.ig_user_id, c.keyword_id,
+    ${JOURNEY_SIGNALS.gateSent} AS card_sent,
+    ${JOURNEY_SIGNALS.answered} AS answered,
+    ${JOURNEY_SIGNALS.followAsks} AS follow_asks,
+    ${JOURNEY_SIGNALS.delivered} AS delivered,
+    LEAST(MIN(ev.created_at) FILTER (WHERE ev.kind = 'follow_required'), MIN(aj.first_wall_at))
+                                                   AS first_wall_at,
+    MAX(ev.created_at) FILTER (WHERE ev.kind = 'sequence_completed') AS last_delivered_at,
+    MAX(aj.window_end)                             AS window_end,
+    MAX(aj.wall_window_end)                        AS wall_window_end,
+    (COALESCE(bool_or(aj.rechecked_at_wall), false)
+      OR (COUNT(*) FILTER (WHERE ev.kind = 'follow_required')) >= 2) AS said_followed,
+    MIN(aj.opened_at)                              AS opened_at,
+    c.follow_through_is_follower                   AS d21,
+    COALESCE(c.follow_rechecked_at IS NOT NULL
+      AND c.completed_at <= now() - interval '${FOLLOW_THROUGH_MIN_DAYS} days', false) AS d21_eligible
+  FROM cohort co
+  JOIN conversations c ON c.id = co.conversation_id
+  LEFT JOIN ev ON ev.conversation_id = co.conversation_id
+  ${JOURNEY_SIGNALS.join}
+  GROUP BY co.conversation_id, co.entered_at, co.entry_path, c.ig_user_id, c.keyword_id,
+           c.follow_through_is_follower, c.follow_rechecked_at, c.completed_at
+),
+person AS (
+  SELECT
+    ig_user_id,
+    COUNT(*)::int AS cards,
+    MAX(entered_at) AS last_asked_at,
+    (array_agg(keyword_id ORDER BY entered_at DESC))[1] AS last_keyword_id,
+    bool_or(card_sent OR entry_path = 'dm' OR answered OR follow_asks > 0) AS reached,
+    bool_or(answered OR follow_asks > 0 OR entry_path = 'dm') AS said_yes,
+    bool_or(follow_asks > 0) AS hit_wall,
+    MIN(first_wall_at) AS first_wall_at,
+    bool_or(delivered) AS got_guide,
+    MAX(last_delivered_at) AS last_delivered_at,
+    COALESCE(bool_or(window_end > now()), false) AS window_open,
+    COALESCE(bool_or(wall_window_end > now()), false) AS wall_window_open,
+    bool_or(said_followed) AS said_followed,
+    MIN(opened_at) AS first_card_at,
+    bool_or(d21 IS NOT NULL) AS d21_read,
+    bool_or(d21 IS TRUE) AS d21_following,
+    bool_or(d21_eligible) AS d21_eligible
+  FROM card
+  GROUP BY ig_user_id
+),
+quiet AS (
+  -- Read and reply evidence, only for people who got a card, never said yes, and are out
+  -- of time. dm_message.created_at is UTC without a zone, hence the conversions.
+  SELECT p.ig_user_id,
+    EXISTS (SELECT 1 FROM dm_thread th JOIN dm_message m ON m.thread_id = th.id
+            WHERE th.ig_user_id = p.ig_user_id AND m.direction = 'inbound'
+              AND m.created_at > (p.first_card_at AT TIME ZONE 'UTC')) AS wrote,
+    EXISTS (SELECT 1 FROM dm_thread th JOIN dm_message m ON m.thread_id = th.id
+            WHERE th.ig_user_id = p.ig_user_id AND m.direction = 'outbound'
+              AND m.source = 'keyword_automation' AND m.seen_at IS NOT NULL
+              AND m.created_at >= (p.first_card_at AT TIME ZONE 'UTC') - interval '2 minutes')
+      OR EXISTS (SELECT 1 FROM dm_recovery_reminder r JOIN card k ON k.conversation_id = r.conversation_id
+                 WHERE k.ig_user_id = p.ig_user_id AND r.seen_at IS NOT NULL) AS seen,
+    EXISTS (SELECT 1 FROM dm_thread th JOIN dm_message m ON m.thread_id = th.id
+            WHERE th.ig_user_id = p.ig_user_id AND m.direction = 'outbound'
+              AND m.source = 'keyword_automation'
+              AND m.created_at >= (p.first_card_at AT TIME ZONE 'UTC') - interval '2 minutes')
+      OR EXISTS (SELECT 1 FROM dm_recovery_reminder r JOIN card k ON k.conversation_id = r.conversation_id
+                 WHERE k.ig_user_id = p.ig_user_id) AS tracked
+  FROM person p
+  WHERE p.reached AND NOT p.said_yes AND NOT p.window_open
+)
+SELECT
+  p.ig_user_id                                  AS "igUserId",
+  u.username                                    AS "username",
+  k.keyword                                     AS "lastKeyword",
+  p.cards                                       AS "cards",
+  p.last_asked_at                               AS "lastAskedAt",
+  p.reached                                     AS "reached",
+  p.said_yes                                    AS "saidYes",
+  p.hit_wall                                    AS "hitWall",
+  COALESCE(p.hit_wall AND p.last_delivered_at > p.first_wall_at, false) AS "followed",
+  p.got_guide                                   AS "gotGuide",
+  p.d21_read                                    AS "d21Read",
+  p.d21_following                               AS "d21Following",
+  COALESCE(p.hit_wall AND p.last_delivered_at > p.first_wall_at AND p.d21_eligible, false) AS "d21Due",
+  CASE
+    WHEN NOT p.reached OR p.said_yes THEN NULL
+    WHEN p.window_open THEN 'still_has_time'
+    WHEN q.wrote THEN 'wrote_not_yes'
+    WHEN q.seen THEN 'opened_ignored'
+    WHEN q.tracked THEN 'no_sign_opened'
+    ELSE 'cannot_tell'
+  END                                           AS "quietBucket",
+  CASE
+    WHEN NOT p.hit_wall OR COALESCE(p.last_delivered_at > p.first_wall_at, false) THEN NULL
+    WHEN p.wall_window_open THEN 'still_has_time'
+    WHEN p.said_followed THEN 'said_followed'
+    ELSE 'never_came_back'
+  END                                           AS "wallBucket"
+FROM person p
+LEFT JOIN quiet q    ON q.ig_user_id = p.ig_user_id
+LEFT JOIN ig_users u ON u.id = p.ig_user_id
+LEFT JOIN keywords k ON k.id = p.last_keyword_id
+`.trim();
+
+export interface GuideJourneyLeakRow {
+  igUserId: string;
+  username: string | null;
+  lastKeyword: string | null;
+  cards: number;
+  lastAskedAt: Date;
+  bucket: QuietBucket | WallBucket;
+}
+
+export interface GuideJourneyLeakList {
+  leak: GuideJourneyLeak;
+  rows: GuideJourneyLeakRow[];
+}
+
+/** $4 = leak, $5 = limit. Newest first: the freshest are the ones still worth acting on. */
+export const GUIDE_JOURNEY_LEAK_SQL = `
+SELECT "igUserId", "username", "lastKeyword", "cards", "lastAskedAt",
+  CASE WHEN $4::text = 'never-said-yes' THEN "quietBucket" ELSE "wallBucket" END AS "bucket"
+FROM (${GUIDE_JOURNEY_SQL}) person
+WHERE CASE WHEN $4::text = 'never-said-yes' THEN "quietBucket" IS NOT NULL
+           ELSE "wallBucket" IS NOT NULL END
+ORDER BY "lastAskedAt" DESC
+LIMIT $5
+`.trim();

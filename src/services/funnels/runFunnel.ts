@@ -36,6 +36,16 @@ import {
   type DropOffSummary,
 } from "./dropOff.js";
 import {
+  GUIDE_JOURNEY_LEAK_SQL,
+  GUIDE_JOURNEY_SQL,
+  summarizeGuideJourney,
+  type GuideJourneyLeak,
+  type GuideJourneyLeakList,
+  type GuideJourneyLeakRow,
+  type GuideJourneyResult,
+  type GuideJourneyRow,
+} from "./guideJourneyFunnel.js";
+import {
   LINK_CLICK_COHORT_SQL,
   LINK_CLICK_MIN_SAMPLE,
   summarizeLinkClick,
@@ -97,6 +107,32 @@ export async function runGuideFollowFunnel(
 ): Promise<GuideFollowResult> {
   const rows = await fetchGuideFollowRows(db, window);
   return summarizeGuideFollow(
+    rows,
+    { from: window.from.toISOString(), to: window.to.toISOString() },
+    minSample,
+  );
+}
+
+export async function fetchGuideJourneyRows(
+  db: FunnelDb,
+  window: FunnelWindow,
+): Promise<GuideJourneyRow[]> {
+  // $queryRawUnsafe because the statement is a module constant; the values are bound.
+  return db.$queryRawUnsafe<GuideJourneyRow[]>(
+    GUIDE_JOURNEY_SQL,
+    window.from.toISOString(),
+    window.to.toISOString(),
+    EVENT_LOOKBACK_MARGIN,
+  );
+}
+
+export async function runGuideJourneyFunnel(
+  db: FunnelDb,
+  window: FunnelWindow = defaultWindow(),
+  minSample: number = GUIDE_FOLLOW_MIN_SAMPLE,
+): Promise<GuideJourneyResult> {
+  const rows = await fetchGuideJourneyRows(db, window);
+  return summarizeGuideJourney(
     rows,
     { from: window.from.toISOString(), to: window.to.toISOString() },
     minSample,
@@ -166,4 +202,23 @@ export async function runDropOff(
     inControlArm: 0,
   };
   return summarizeDropOff(bucket, counts[0] ?? empty, rows, minSample);
+}
+
+/** The people behind one journey leak, newest first. Bucket counts come from the summary. */
+export async function runGuideJourneyLeak(
+  db: FunnelDb,
+  leak: GuideJourneyLeak,
+  window: FunnelWindow = defaultWindow(),
+  limit: number = DROP_OFF_DEFAULT_LIMIT,
+): Promise<GuideJourneyLeakList> {
+  const capped = Math.min(Math.max(limit, 1), DROP_OFF_MAX_LIMIT);
+  const rows = await db.$queryRawUnsafe<GuideJourneyLeakRow[]>(
+    GUIDE_JOURNEY_LEAK_SQL,
+    window.from.toISOString(),
+    window.to.toISOString(),
+    EVENT_LOOKBACK_MARGIN,
+    leak,
+    capped,
+  );
+  return { leak, rows };
 }
