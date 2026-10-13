@@ -43,20 +43,33 @@ const NEGATIVE_PHRASES = [
   ["I", "DONT", "WANT"],
 ] as const;
 
-const CONFIRMATION_PHRASES = new Set([
-  "YES",
-  "YES PLEASE",
-  "PLEASE SEND",
-  "SEND",
-  "SEND IT",
-  "SEND IT PLEASE",
-  "DONE",
-  "FOLLOWED",
-  "I FOLLOWED",
-  "I AM FOLLOWING",
-  "IM FOLLOWING",
-  "READY",
+/**
+ * Which typed replies to an open card count as "yes, send it".
+ *
+ * A reply must START with a lead phrase and carry nothing after it but polite filler.
+ * The old rule matched whole messages against 12 phrases, so "yes send it", "yes pls",
+ * "sure" and a misspelled "doen" went to owner review and got nothing: about 55 a month
+ * of the 367 rejected replies in the 30 days to 2026-10-13. "Thank you" and "please"
+ * alone stay out on purpose (owner's decision): they are not a yes. See
+ * docs/superpowers/specs/2026-10-13-typed-reply-word-list-design.md.
+ */
+const CONFIRMATION_LEADS: readonly (readonly string[])[] = [
+  // Yes
+  ["YES"], ["YEP"], ["YEAH"], ["SURE"], ["OK"], ["OKAY"],
+  ["SEND", "IT"], ["PLEASE", "SEND"], ["SEND"],
+  // Done / follow, including the misspellings seen in production
+  ["DONE"], ["DOEN"], ["FONE"], ["DOME"],
+  ["FOLLOWED"], ["FOLLOWING"], ["I", "FOLLOW"], ["I", "FOLLOWED"],
+  ["I", "AM", "FOLLOWING"], ["IM", "FOLLOWING"], ["READY"],
+].sort((a, b) => b.length - a.length);
+
+/** The only words allowed after a lead phrase. */
+const CONFIRMATION_FILLER = new Set([
+  "PLEASE", "PLS", "PLZ", "THANKS", "THANK", "YOU", "U", "THX", "TY",
+  "SEND", "IT", "HERE", "NOW", "ME", "SO", "MUCH",
 ]);
+
+const NEGATIONS = new Set(["NO", "NOT", "DONT", "NOPE", "NAH"]);
 
 function containsPhrase(tokens: readonly string[], phrase: readonly string[]): boolean {
   if (phrase.length > tokens.length) return false;
@@ -112,6 +125,17 @@ function normalizeReply(text: string): string {
     .join(" ");
 }
 
+function isConfirmation(rawText: string, tokens: readonly string[]): boolean {
+  // A question is never a yes: "yes but is it dairy free?" needs a person.
+  if (rawText.includes("?")) return false;
+  if (tokens.some((token) => NEGATIONS.has(token))) return false;
+  const lead = CONFIRMATION_LEADS.find((phrase) =>
+    phrase.every((token, index) => tokens[index] === token),
+  );
+  if (!lead) return false;
+  return tokens.slice(lead.length).every((token) => CONFIRMATION_FILLER.has(token));
+}
+
 export function classifyOpenRequestReply(
   text: string,
   messageType: DmMessageType,
@@ -120,6 +144,6 @@ export function classifyOpenRequestReply(
 
   const normalized = normalizeReply(text);
   if (!normalized) return { kind: "rejected_reply", reason: "blank_text" };
-  if (CONFIRMATION_PHRASES.has(normalized)) return { kind: "accepted_confirmation" };
+  if (isConfirmation(text, normalized.split(" "))) return { kind: "accepted_confirmation" };
   return { kind: "rejected_reply", reason: "unrecognized_text" };
 }
