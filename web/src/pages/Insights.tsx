@@ -1,20 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { BarChart3, Film, ExternalLink, Sparkles, RefreshCw, ListChecks, FlaskConical, Target } from "lucide-react";
+import { BarChart3, Film, ExternalLink, Sparkles, RefreshCw, ListChecks, FlaskConical } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { apiRead, apiMutation } from "@/lib/api";
 import { useOperationId } from "@/lib/useOperationId";
 import type {
-  GeoStageSplit,
   LeaderboardRow,
   ReelInsightDetail,
   RecipeData,
   RecipeGroup,
   ReelOriginRow,
   Experiment,
-  UsReachTrendPoint,
-  GeoWindowPoint,
 } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -23,10 +20,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { EmptyState } from "@/components/EmptyState";
-import { RepeatReelsCard } from "@/components/insights/RepeatReelsCard";
 import {
-  rankCaptureLeaders,
-  formatCaptureRate,
   recommendNextTest,
   learnedPatterns,
   type LearnedPattern,
@@ -53,8 +47,6 @@ export function Insights() {
           proxy from video analysis, not measured per-reel geography.
         </p>
       </div>
-
-      <GeoHeader />
 
       <div className="flex flex-wrap items-center gap-2">
         {TABS.map((t) => (
@@ -85,56 +77,6 @@ export function Insights() {
       {tab === "leaderboard" && <Leaderboard />}
       {tab === "recipe" && <Recipe />}
       {tab === "experiments" && <Experiments />}
-    </div>
-  );
-}
-
-// ── Geo header: the "is the audience actually US?" North Star ────────────────
-function GeoHeader() {
-  const geoQ = useQuery<{ stages: GeoStageSplit[] }>({
-    queryKey: ["insights", "geo"],
-    queryFn: ({ signal }) => apiRead<{ stages: GeoStageSplit[] }>("/insights/geo", { signal }),
-  });
-
-  const stages = geoQ.data?.stages ?? [];
-  const hasData = stages.some((s) => s.usPct !== null);
-
-  return (
-    <div className="border-t border-t-foreground pt-4">
-      <div className="mb-3 flex items-center gap-2">
-        <BarChart3 className="size-4 text-muted-foreground" />
-        <h3 className="text-sm font-medium">Audience geography (account-wide)</h3>
-      </div>
-      {!hasData ? (
-        <p className="text-xs text-muted-foreground">
-          No demographic snapshot yet — it populates after the first snapshot run.
-        </p>
-      ) : (
-        <div className="grid grid-cols-3 gap-3">
-          {stages.map((s) => (
-            <div key={s.stage} className="border-t border-t-line pt-2.5">
-              <div className="label-caps">
-                {s.stage === "reached" ? "Reached" : s.stage === "engaged" ? "Engaged" : "Followers"}
-              </div>
-              {s.usPct !== null ? (
-                <>
-                  <div className="mt-1 flex items-baseline gap-1">
-                    <span className="figure-inline">{s.usPct}%</span>
-                    <span className="text-xs text-muted-foreground">US</span>
-                  </div>
-                  <div className="text-xs text-muted-foreground">India {s.inPct ?? 0}%</div>
-                </>
-              ) : (
-                <div className="mt-1 text-xs text-muted-foreground">—</div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-      <p className="mt-3 text-[11px] text-muted-foreground">
-        Reach leads, followers lag. Comment-engagers skew Indian and are not a
-        reliable per-reel geo signal.
-      </p>
     </div>
   );
 }
@@ -183,8 +125,6 @@ function Leaderboard() {
 
   return (
     <>
-      <RepeatReelsCard rows={items} isLoading={q.isLoading} />
-
       <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
         {items.map((row, i) => (
           <motion.button
@@ -299,12 +239,6 @@ function ReelCard({ row }: { row: LeaderboardRow }) {
           {row.caption?.trim() || "No caption"}
         </p>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
-          {row.reach !== null && <span>{row.reach.toLocaleString()} reach</span>}
-          {row.captureRatePct !== null && (
-            <span className="text-funnel-mark" title="Share of reach that entered the DM funnel">
-              {formatCaptureRate(row.captureRatePct)} capture
-            </span>
-          )}
           {row.conversion.completed > 0 && (
             <span className="text-funnel-mark">{row.conversion.completed} delivered</span>
           )}
@@ -413,25 +347,6 @@ function ReelDetailDrawer({ mediaId }: { mediaId: string }) {
         )}
       </Section>
 
-      {/* How it performed (Meta metrics — NOT fused into the score) */}
-      <Section title="How it performed">
-        {!d.latestPerf ? (
-          <p className="text-xs text-muted-foreground">No performance snapshot yet.</p>
-        ) : (
-          <div className="grid grid-cols-3 gap-2 text-xs">
-            <Stat label="Reach" value={fmt(d.latestPerf.reach)} />
-            <Stat label="Views" value={fmt(d.latestPerf.views)} />
-            <Stat
-              label="Skip rate"
-              value={d.latestPerf.skipRate !== null ? `${(d.latestPerf.skipRate * 100).toFixed(0)}%` : "—"}
-            />
-            <Stat label="Likes" value={fmt(d.latestPerf.likes)} />
-            <Stat label="Saves" value={fmt(d.latestPerf.saved)} />
-            <Stat label="Shares" value={fmt(d.latestPerf.shares)} />
-          </div>
-        )}
-      </Section>
-
       {/* What it converted (your DB — the moat) */}
       <Section title="What it converted">
         <div className="flex items-center gap-2 text-xs">
@@ -487,11 +402,6 @@ function Funnel({ n, label, tone }: { n: number; label: string; tone?: string })
   );
 }
 
-function fmt(n: number | null): string {
-  return n === null ? "—" : n.toLocaleString();
-}
-
-// ── Recipe (Tab 2) ───────────────────────────────────────────────────────────
 function Recipe() {
   const q = useQuery<RecipeData>({
     queryKey: ["insights", "recipe"],
@@ -532,9 +442,7 @@ function Recipe() {
       {/* Honesty banner: US-fit is a tone label, not a performance predictor. */}
       <div className="rounded-lg border border-caution bg-caution-soft p-3 text-xs text-caution">
         <span className="font-medium">US-fit describes who a reel is aimed at — not how far it travels.</span>{" "}
-        Across your {data.scoredCount} scored reels, US-fit and reach are essentially uncorrelated
-        {data.usFitReachCorr !== null ? ` (r = ${data.usFitReachCorr})` : ""}. The contrast below is
-        about tone and style, not a reach or growth formula.
+        US-fit is a content-tone proxy, not a reach or growth formula.
       </div>
 
       {/* The style takeaway, up top */}
@@ -684,10 +592,9 @@ function RecipeColumn({ group, tone }: { group: RecipeGroup; tone: "us" | "india
         </span>
       </div>
 
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 gap-2">
         <Stat label="Setting" value={group.avgSettingScore !== null ? `${group.avgSettingScore}` : "—"} />
         <Stat label="Cultural" value={group.avgCulturalScore !== null ? `${group.avgCulturalScore}` : "—"} />
-        <Stat label="Median reach" value={fmt(group.medianReach)} />
       </div>
 
       <div className="space-y-1.5">
@@ -744,65 +651,7 @@ const STATUS_TONE: Record<Experiment["status"], string> = {
   inconclusive: "text-muted-foreground bg-muted",
 };
 
-// Lead recommendation for the growth lab: the reels that convert the most reach
-// into the DM funnel (capture rate = keyword comments ÷ reach). Per-reel and
-// directly attributable, so honest to act on — unlike account-level geo.
-function CaptureLeadersCard({ rows, isLoading }: { rows: LeaderboardRow[]; isLoading: boolean }) {
-  const leaders = rankCaptureLeaders(rows);
-  return (
-    <div className="border-t border-t-foreground pt-4">
-      <h3 className="mb-1 flex items-center gap-1.5 text-sm font-medium">
-        <Target className="size-4 text-muted-foreground" /> What converts best
-      </h3>
-      <p className="mb-3 text-[11px] text-muted-foreground">
-        Share of each reel's reach that entered the DM funnel. The most directly-attributable
-        per-reel signal — repeat the hooks that convert, not just the ones that go viral.
-      </p>
-      {isLoading ? (
-        <Skeleton className="h-24 w-full rounded-md" />
-      ) : leaders.length === 0 ? (
-        <p className="py-3 text-xs text-muted-foreground">
-          Not enough reach yet to rank reels by capture — this fills in as reels accrue reach.
-        </p>
-      ) : (
-        <ol>
-          {leaders.map((l) => (
-            <li
-              key={l.row.mediaId}
-              className="flex items-center gap-3 py-2.5 [&:not(:first-child)]:border-t [&:not(:first-child)]:border-t-line"
-            >
-              {l.row.thumbnailUrl ? (
-                <img
-                  src={l.row.thumbnailUrl}
-                  alt=""
-                  loading="lazy"
-                  className="size-12 shrink-0 rounded-sm object-cover"
-                />
-              ) : (
-                <div className="flex size-12 shrink-0 items-center justify-center rounded-sm bg-accent text-muted-foreground">
-                  <Film className="size-4" />
-                </div>
-              )}
-              <div className="min-w-0 flex-1">
-                <p className="line-clamp-1 text-xs">{l.row.caption?.trim() || "No caption"}</p>
-                <p className="mt-0.5 text-[11px] text-muted-foreground">{l.reason}</p>
-              </div>
-              <div className="shrink-0 text-right">
-                <div className="text-sm font-medium text-funnel-mark">
-                  {formatCaptureRate(l.captureRatePct)}
-                </div>
-                <div className="text-[10px] text-muted-foreground">{l.completed} delivered</div>
-              </div>
-            </li>
-          ))}
-        </ol>
-      )}
-    </div>
-  );
-}
-
-// US-audience recommendation, kept separate from capture rate: which content
-// feature to test next, from completed auto-experiments with usable attribution.
+// Content-test recommendation from completed experiments with usable attribution.
 function NextTestCard({ experiments }: { experiments: Experiment[] }) {
   const rec = recommendNextTest(experiments);
   return (
@@ -815,7 +664,7 @@ function NextTestCard({ experiments }: { experiments: Experiment[] }) {
       </p>
       <p className="mt-2 text-[11px] text-muted-foreground">
         From completed auto-experiments with usable reach-share attribution (high or medium
-        confidence). A US-audience signal — separate from capture rate above.
+        confidence). A US-audience content signal.
       </p>
     </div>
   );
@@ -868,60 +717,21 @@ function LearnedPatterns({ experiments }: { experiments: Experiment[] }) {
 
 function Experiments() {
   const qc = useQueryClient();
-  const trendQ = useQuery<{ points: UsReachTrendPoint[] }>({
-    queryKey: ["insights", "us-reach-trend"],
-    queryFn: ({ signal }) => apiRead<{ points: UsReachTrendPoint[] }>("/insights/us-reach-trend", { signal }),
-  });
-  const windowQ = useQuery<{ points: GeoWindowPoint[] }>({
-    queryKey: ["insights", "geo-window-trend"],
-    queryFn: ({ signal }) => apiRead<{ points: GeoWindowPoint[] }>("/insights/geo-window-trend", { signal }),
-  });
   const expsQ = useQuery<{ items: Experiment[] }>({
     queryKey: ["insights", "experiments"],
     queryFn: ({ signal }) => apiRead<{ items: Experiment[] }>("/insights/experiments", { signal }),
   });
-  // Reuses the Leaderboard tab's cached query (same key) for the capture card.
-  const leaderboardQ = useQuery<{ items: LeaderboardRow[] }>({
-    queryKey: ["insights", "leaderboard"],
-    queryFn: ({ signal }) => apiRead<{ items: LeaderboardRow[] }>("/insights/leaderboard", { signal }),
-  });
-
-  const points = trendQ.data?.points ?? [];
-  const windowPoints = windowQ.data?.points ?? [];
   const experiments = expsQ.data?.items ?? [];
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["insights", "experiments"] });
-    qc.invalidateQueries({ queryKey: ["insights", "us-reach-trend"] });
-    qc.invalidateQueries({ queryKey: ["insights", "geo-window-trend"] });
   };
 
   return (
     <div className="space-y-5">
-      {/* Lead recommendation: which reels turn views into the funnel. */}
-      <CaptureLeadersCard rows={leaderboardQ.data?.items ?? []} isLoading={leaderboardQ.isLoading} />
-
       {/* US-audience recommendation + the evidence behind it. */}
       <NextTestCard experiments={experiments} />
       <LearnedPatterns experiments={experiments} />
-
-      {/* Recent-vs-baseline thermometer: are RECENT reels pulling US or not? */}
-      <RecentAudiencePanel points={windowPoints} />
-
-      {/* Reached-US% trend */}
-      <div className="border-t border-t-foreground pt-4">
-        <h3 className="mb-1 flex items-center gap-1.5 text-sm font-medium">
-          <BarChart3 className="size-4 text-muted-foreground" /> Reached-US% over time
-        </h3>
-        <UsReachChart points={points} />
-        <p className="mt-2 text-[11px] text-muted-foreground">
-          {points.length < 5
-            ? `${points.length} snapshot${points.length === 1 ? "" : "s"} so far — the trend sharpens as data accrues (daily). `
-            : ""}
-          Account-wide reached-US% (90-day window). Correlational, not causal — run one change at a
-          time for a clean read.
-        </p>
-      </div>
 
       <NewExperimentForm onCreated={invalidate} />
 
@@ -942,128 +752,6 @@ function Experiments() {
         </div>
       )}
     </div>
-  );
-}
-
-function RecentAudienceMetric({
-  label,
-  us14,
-  us90,
-  in14,
-}: {
-  label: string;
-  us14: number | null;
-  us90: number | null;
-  in14: number | null;
-}) {
-  const delta = us14 !== null && us90 !== null ? Math.round((us14 - us90) * 10) / 10 : null;
-  // The one place on this page where colour grades a direction, and it is allowed
-  // to: US share is the account's stated success metric, so up is unambiguously
-  // the thing being aimed at. Elsewhere — the geography bar, the recipe columns —
-  // there is no such agreed direction and colour stays out of it.
-  //
-  // A null delta is muted, not zero-coloured: no 90d baseline is an absence of
-  // comparison, not a flat result.
-  const tone =
-    delta === null ? "text-muted-foreground" : delta >= 0 ? "text-signal" : "text-urgent";
-  return (
-    <div className="border-t border-t-line pt-2.5">
-      <div className="label-caps">{label}</div>
-      <div className="mt-1 flex items-baseline gap-2">
-        <span className="figure-small">{us14 ?? "—"}%</span>
-        <span className="text-[11px] text-muted-foreground">US · last 14d</span>
-      </div>
-      <div className="mt-0.5 text-[11px] text-muted-foreground">
-        vs {us90 ?? "—"}% baseline (90d)
-        {delta !== null && (
-          <span className={cn("ml-1 font-medium", tone)}>
-            {delta >= 0 ? "▲" : "▼"} {Math.abs(delta)} pts
-          </span>
-        )}
-      </div>
-      {in14 !== null && (
-        <div className="mt-0.5 text-[11px] text-muted-foreground">India last 14d: {in14}%</div>
-      )}
-    </div>
-  );
-}
-
-// The "recent reels" thermometer. Compares the latest 14-day window (what your
-// RECENT reels pulled) against the 90-day baseline. A 14d BELOW 90d means recent
-// content skewed less US than your historical norm — the signal Pratik wants.
-function RecentAudiencePanel({ points }: { points: GeoWindowPoint[] }) {
-  const latest = points.length ? points[points.length - 1] : null;
-
-  return (
-    <div className="border-t border-t-foreground pt-4">
-      <h3 className="mb-1 flex items-center gap-1.5 text-sm font-medium">
-        <BarChart3 className="size-4 text-muted-foreground" /> Recent reels: who are they pulling?
-      </h3>
-      {!latest ? (
-        <p className="py-3 text-xs text-muted-foreground">
-          No windowed snapshot yet — this fills in on the next daily snapshot tick.
-        </p>
-      ) : (
-        <>
-          <div className="mt-2 grid gap-2 sm:grid-cols-2">
-            <RecentAudienceMetric
-              label="Engaged"
-              us14={latest.engagedUs14}
-              us90={latest.engagedUs90}
-              in14={latest.engagedIn14}
-            />
-            <RecentAudienceMetric
-              label="Reached"
-              us14={latest.reachedUs14}
-              us90={latest.reachedUs90}
-              in14={latest.reachedIn14}
-            />
-          </div>
-          <p className="mt-3 text-[11px] text-muted-foreground">
-            14-day window ≈ your ~last two weeks of reels. When the 14d US% sits{" "}
-            <span className="text-urgent">below</span> the 90d baseline, recent content skewed less
-            US than your norm. Account-level (Meta gives no per-reel geo) — attribute to whichever
-            reel dominated the window's reach.
-          </p>
-        </>
-      )}
-    </div>
-  );
-}
-
-// Tiny dependency-free SVG line chart (recharts couldn't be installed in this
-// environment, and a single slow-moving line doesn't justify a 500KB dep).
-function UsReachChart({ points }: { points: UsReachTrendPoint[] }) {
-  const vals = points.map((p) => p.usPct).filter((v): v is number => v !== null);
-  if (vals.length === 0) {
-    return <div className="py-6 text-center text-xs text-muted-foreground">No snapshots yet.</div>;
-  }
-  if (points.length === 1) {
-    return (
-      <div className="py-4 text-center">
-        <span className="figure-small">{vals[0]}%</span>
-        <span className="ml-1 text-xs text-muted-foreground">US (single reading)</span>
-      </div>
-    );
-  }
-  const W = 600, H = 120, pad = 8;
-  const min = Math.min(...vals), max = Math.max(...vals);
-  const range = max - min || 1;
-  const xs = (i: number) => pad + (i / (points.length - 1)) * (W - 2 * pad);
-  const ys = (v: number) => H - pad - ((v - min) / range) * (H - 2 * pad);
-  const path = points
-    .map((p, i) => (p.usPct === null ? null : `${i === 0 ? "M" : "L"}${xs(i)},${ys(p.usPct)}`))
-    .filter(Boolean)
-    .join(" ");
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="h-28 w-full" preserveAspectRatio="none">
-      <path d={path} fill="none" stroke="currentColor" strokeWidth={2} className="text-funnel-mark" />
-      {points.map((p, i) =>
-        p.usPct === null ? null : (
-          <circle key={i} cx={xs(i)} cy={ys(p.usPct)} r={2.5} className="fill-funnel-mark" />
-        ),
-      )}
-    </svg>
   );
 }
 

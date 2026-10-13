@@ -13,6 +13,7 @@ import { Conversations } from "@/pages/Conversations";
 import { DmRecovery } from "@/pages/DmRecovery";
 import { HistoricalRecovery } from "@/pages/HistoricalRecovery";
 import { Home } from "@/pages/Home";
+import { AppRoutes } from "@/AppRoutes";
 import { Funnels } from "@/pages/Funnels";
 import { Insights } from "@/pages/Insights";
 import { SequenceEditor } from "@/pages/SequenceEditor";
@@ -1332,6 +1333,9 @@ const INSIGHTS_GEO = {
   ],
 };
 
+const dashboardReadPaths: string[] = [];
+Object.assign(window, { __dashboardReadPaths: dashboardReadPaths });
+
 function installFetchStub(): void {
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -1343,6 +1347,9 @@ function installFetchStub(): void {
       /^\/api(?:\/api)*/,
       "",
     );
+
+    const dashboardRemoval = new URLSearchParams(window.location.search).get("scenario") === "dashboard-removal";
+    if (dashboardRemoval && method === "GET" && !path.includes("/auth/v1/")) dashboardReadPaths.push(path);
 
     // Supabase auth: the api helper asks for a session before every call.
     if (path.includes("/auth/v1/")) {
@@ -1534,6 +1541,20 @@ function installFetchStub(): void {
     }
     if (path === "/insights/leaderboard" && method === "GET") {
       return json({ items: INSIGHTS_LEADERBOARD });
+    }
+    if (dashboardRemoval && path.startsWith("/insights/reels/") && method === "GET") {
+      const row = INSIGHTS_LEADERBOARD.find(item => item.mediaId === path.split("/").at(-1));
+      return json({ ...row, manualAudioType: null, manualLangOverride: null, manualNote: null,
+        contentProfile: null,
+        latestPerf: { views: 25200, reach: 24800, likes: 120, shares: 30, saved: 45, skipRate: 0.412 },
+      });
+    }
+    if (dashboardRemoval && path === "/insights/recipe" && method === "GET") {
+      const group = { reels: [INSIGHTS_LEADERBOARD[0]], usRefs: [], indiaRefs: [],
+        avgUsFit: 82, avgSettingScore: 80, avgCulturalScore: 75, medianReach: 24800 };
+      return json({ ready: true, scoredCount: 10,
+        top: { ...group, label: "US-aimed" }, bottom: { ...group, label: "Other tone" },
+        checklist: ["Show everyday breakfast routines"], usFitReachCorr: 0.123 });
     }
     if (path === "/insights/geo" && method === "GET") return json(INSIGHTS_GEO);
     if (path === "/insights/recipe" && method === "GET") {
@@ -2073,6 +2094,7 @@ export function Harness() {
       </div>
     );
   }
+  if (scenario === "dashboard-removal") return <AppRoutes />;
   if (scenario === "home") {
     return (
       <div className="p-4">

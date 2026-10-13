@@ -41,26 +41,22 @@ async function capture(
   name: string,
 ) {
   const folder = project === "mobile" ? "mobile" : "desktop";
-  await page.screenshot({ path: `${ARTIFACTS}/${folder}/${name}.png`, fullPage: true });
+  const artifacts = name.startsWith("home")
+    ? "../docs/qa/artifacts/2026-10-04-dashboard-analytics-removal"
+    : ARTIFACTS;
+  await page.screenshot({ path: `${artifacts}/${folder}/${name}.png`, fullPage: true });
 }
 
 test.describe("visual QA artifacts", () => {
-  test("home and its follower chart", async ({ page }, testInfo) => {
+  test("home shows operational evidence without follower reporting", async ({ page }, testInfo) => {
     await open(page, "home");
     await expect(page.getByRole("heading", { level: 1, name: "Home" })).toBeVisible();
-    // The chart is the surface this release repainted. Today's Read is deliberately
-    // not required here: it withholds itself unless two contiguous settled Pacific
-    // windows exist, which is a measurement rule rather than a rendering one.
-    const chart = page.locator("svg").first();
-    await expect(chart).toBeVisible();
+    await expect(page.getByText("System pulse", { exact: true })).toBeVisible();
+    await expect(page.getByText("What needs attention", { exact: true })).toBeVisible();
+    await expect(page.getByText("Gate DM sent to Replied DONE", { exact: true })).toBeVisible();
+    await expect(page.getByText("Total followers", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("US followers this week", { exact: true })).toHaveCount(0);
     await capture(page, testInfo.project.name, "home");
-
-    const svg = (await chart.innerHTML()) + (await chart.getAttribute("class") ?? "");
-    // What the eye cannot check from a PNG: the two strokes that used to be a
-    // semi-transparent white, invisible on paper.
-    expect(svg).not.toContain("255 255 255");
-    // And that no mark is faded below the contrast its colour was chosen to clear.
-    expect(svg).not.toMatch(/\sopacity="0(\.\d+)?"/);
   });
 
   test("conversations, needs reply", async ({ page }, testInfo) => {

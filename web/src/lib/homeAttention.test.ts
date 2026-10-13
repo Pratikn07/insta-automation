@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { FollowerFlowResponse, FunnelStageCount, GuideFollowResult, Stats } from "./types";
+import type { FunnelStageCount, GuideFollowResult, Stats } from "./types";
 import {
   deriveAttentionItems,
   deriveHomeAttentionState,
@@ -30,14 +30,6 @@ function clearStats(): Stats {
     gateQueueExhausted: 0,
     gateQueueSendUncertain: 0,
     upcomingNeedsAttention: 0,
-  };
-}
-
-function flowResponse(): FollowerFlowResponse {
-  return {
-    analyticsTimeZone: "America/Los_Angeles",
-    points: [],
-    stock: null,
   };
 }
 
@@ -97,8 +89,7 @@ describe("deriveHomeAttentionState", () => {
   it("is checking while any required source is loading and none failed", () => {
     expect(
       deriveHomeAttentionState({
-        flow: loading(),
-        stats: success(clearStats()),
+        stats: loading(),
         funnel: success(clearFunnel()),
       }),
     ).toEqual({ status: "checking" });
@@ -107,7 +98,6 @@ describe("deriveHomeAttentionState", () => {
   it("is incomplete when one source fails and keeps verified attention", () => {
     expect(
       deriveHomeAttentionState({
-        flow: success(flowResponse()),
         stats: success({ ...clearStats(), gateQueueExhausted: 3 }),
         funnel: failed(),
       }),
@@ -118,10 +108,9 @@ describe("deriveHomeAttentionState", () => {
     });
   });
 
-  it("is ready_clear only after all three sources succeed with no items", () => {
+  it("is ready_clear only after both operational sources succeed with no items", () => {
     expect(
       deriveHomeAttentionState({
-        flow: success(flowResponse()),
         stats: success(clearStats()),
         funnel: success(clearFunnel()),
       }),
@@ -131,7 +120,6 @@ describe("deriveHomeAttentionState", () => {
   it("is ready_with_attention when all sources succeed and verified items exist", () => {
     expect(
       deriveHomeAttentionState({
-        flow: success(flowResponse()),
         stats: success({ ...clearStats(), conversationsAwaiting: 2 }),
         funnel: success(clearFunnel()),
       }),
@@ -141,16 +129,15 @@ describe("deriveHomeAttentionState", () => {
     });
   });
 
-  it("lists multiple failed sources in stable flow, stats, funnel order", () => {
+  it("lists multiple failed sources in stable stats, funnel order", () => {
     expect(
       deriveHomeAttentionState({
-        flow: failed(),
-        stats: success(clearStats()),
+        stats: failed(),
         funnel: failed(),
       }),
     ).toEqual({
       status: "incomplete",
-      failedSources: ["flow", "funnel"],
+      failedSources: ["stats", "funnel"],
       items: [],
     });
   });
@@ -158,9 +145,8 @@ describe("deriveHomeAttentionState", () => {
   it("lets a failed source win over a source that is still loading", () => {
     expect(
       deriveHomeAttentionState({
-        flow: loading(),
         stats: failed(),
-        funnel: success(clearFunnel()),
+        funnel: loading(),
       }),
     ).toEqual({ status: "incomplete", failedSources: ["stats"], items: [] });
   });

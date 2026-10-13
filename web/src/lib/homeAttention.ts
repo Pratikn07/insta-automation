@@ -1,5 +1,5 @@
 import { largestMeasuredFunnelLoss } from "./todaysRead";
-import type { FollowerFlowResponse, GuideFollowResult, Stats } from "./types";
+import type { GuideFollowResult, Stats } from "./types";
 
 const nf = new Intl.NumberFormat("en-US");
 
@@ -19,7 +19,7 @@ export interface AttentionItem {
   action: string;
 }
 
-export type HomeSource = "flow" | "stats" | "funnel";
+export type HomeSource = "stats" | "funnel";
 
 export type SourceState<T> =
   | { status: "loading" }
@@ -33,7 +33,6 @@ export type HomeAttentionState =
   | { status: "incomplete"; failedSources: HomeSource[]; items: AttentionItem[] };
 
 export interface HomeSources {
-  flow: SourceState<FollowerFlowResponse>;
   stats: SourceState<Stats>;
   funnel: SourceState<GuideFollowResult>;
 }
@@ -119,7 +118,6 @@ export function deriveAttentionItems(
 
 export function deriveHomeAttentionState(sources: HomeSources): HomeAttentionState {
   const entries = [
-    ["flow", sources.flow],
     ["stats", sources.stats],
     ["funnel", sources.funnel],
   ] as const;
