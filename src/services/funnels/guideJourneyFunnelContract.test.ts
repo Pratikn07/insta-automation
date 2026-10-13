@@ -40,6 +40,8 @@ type CardSeed = {
   logged?: { seen: boolean };
   /** An inbound DM after the card. */
   inboundAt?: Date;
+  /** A two-hour recovery reminder tracking this card, read or not. */
+  reminder?: { seen: boolean };
 };
 
 async function seedPerson(name: string, cards: CardSeed[]) {
@@ -105,6 +107,24 @@ async function seedPerson(name: string, cards: CardSeed[]) {
           kind: "sequence_completed",
           createdAt: card.deliveredAt,
           payload: { conversationId, followerAtDelivery: true },
+        },
+      });
+    }
+    if (card.reminder) {
+      await db.dmRecoveryReminder.create({
+        data: {
+          conversationId,
+          igUserId,
+          keywordId: ids.keyword,
+          keywordSnapshot: `FGJ${suffix}`,
+          templateVersion: "test",
+          publicReplyText: "x",
+          commentId: `comment-${conversationId}`,
+          triggerKind: "no_confirmed_read",
+          status: "waiting",
+          cohort: "treatment",
+          eligibleAt: new Date(card.askedAt.getTime() + 2 * HOUR),
+          seenAt: card.reminder.seen ? new Date(card.askedAt.getTime() + HOUR) : null,
         },
       });
     }
@@ -210,6 +230,9 @@ beforeAll(async () => {
   await seedPerson("opened", [untapped(d(3), { logged: { seen: true } })]);
   await seedPerson("unread", [untapped(d(3), { logged: { seen: false } })]);
   await seedPerson("silent", [untapped(d(3))]);
+  // Read evidence that only a recovery reminder carries (no card in DM history).
+  await seedPerson("reminderSeen", [untapped(d(3), { reminder: { seen: true } })]);
+  await seedPerson("reminderTracked", [untapped(d(3), { reminder: { seen: false } })]);
   // Stuck at the wall, both reasons.
   await seedPerson("saidFollowed", [
     {
@@ -241,6 +264,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (!databaseUrl) return;
+  await db.dmRecoveryReminder.deleteMany({ where: { conversationId: { in: conversationIds } } });
   await db.dmMessage.deleteMany({ where: { threadId: { in: threadIds } } });
   await db.dmThread.deleteMany({ where: { id: { in: threadIds } } });
   await db.guideAccessAttempt.deleteMany({ where: { conversationId: { in: conversationIds } } });
@@ -266,7 +290,7 @@ describeWithDatabase("guide journey SQL, per person", () => {
 
   it("counts a person once across their cards and does not call their untapped cards lost", async () => {
     const people = await byName();
-    expect(people.size).toBe(10);
+    expect(people.size).toBe(12);
     expect(people.get("multi")).toMatchObject({
       cards: 3,
       reached: true,
@@ -298,6 +322,8 @@ describeWithDatabase("guide journey SQL, per person", () => {
     expect(people.get("opened")?.quietBucket).toBe("opened_ignored");
     expect(people.get("unread")?.quietBucket).toBe("no_sign_opened");
     expect(people.get("silent")?.quietBucket).toBe("cannot_tell");
+    expect(people.get("reminderSeen")?.quietBucket).toBe("opened_ignored");
+    expect(people.get("reminderTracked")?.quietBucket).toBe("no_sign_opened");
   });
 
   it("explains every person stuck at the wall", async () => {
@@ -321,6 +347,14 @@ describeWithDatabase("guide journey SQL, per person", () => {
     const quiet = (await runGuideJourneyLeak(db, "never-said-yes", window, 500)).rows
       .filter((row) => row.igUserId.startsWith(`ig-${suffix}-`))
       .map((row) => row.igUserId.slice(`ig-${suffix}-`.length));
-    expect(quiet.sort()).toEqual(["fresh", "opened", "silent", "unread", "wrote"]);
+    expect(quiet.sort()).toEqual([
+      "fresh",
+      "opened",
+      "reminderSeen",
+      "reminderTracked",
+      "silent",
+      "unread",
+      "wrote",
+    ]);
   });
 });

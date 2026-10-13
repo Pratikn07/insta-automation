@@ -37,17 +37,45 @@ const WINDOW_PRESETS = [
 ] as const;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** The widest range the API will run (MAX_WINDOW_DAYS in src/api/funnels.routes.ts). */
+const MAX_RANGE_DAYS = 365;
+
+/** A UTC calendar day as YYYY-MM-DD. The cohort's days are UTC days. */
+function utcDay(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+function addDays(day: string, days: number): string {
+  return utcDay(Date.parse(`${day}T00:00:00.000Z`) + days * DAY_MS);
+}
+
+/** The first and last UTC day on screen, both included. */
+interface DayRange {
+  first: string;
+  last: string;
+}
+
+/** The last `days` UTC days, `today` included. */
+function presetRange(days: number, today: string): DayRange {
+  return { first: addDays(today, -(days - 1)), last: today };
+}
 
 /**
- * Cohort bounds as YYYY-MM-DD, which is what the API expects. The API reads `to` as an
- * EXCLUSIVE midnight UTC, so `to` is tomorrow's UTC date. Sending today's date dropped
- * everything since 00:00 UTC — on a US evening, most of the day.
+ * What the API is asked for. It reads `to` as an EXCLUSIVE midnight UTC, so `to` is the
+ * day after the last day shown. Sending the last day itself dropped everything since
+ * 00:00 UTC — on a US evening, most of the day.
  */
-function windowFor(days: number): { from: string; to: string } {
-  const to = new Date(Date.now() + DAY_MS);
-  const from = new Date(to.getTime() - days * DAY_MS);
-  const day = (d: Date) => d.toISOString().slice(0, 10);
-  return { from: day(from), to: day(to) };
+function apiWindow(range: DayRange): { from: string; to: string } {
+  return { from: range.first, to: addDays(range.last, 1) };
+}
+
+/** Why a picked range cannot be run, or null. Checked here so the API never has to refuse it. */
+function rangeProblem(range: DayRange): string | null {
+  if (!range.first || !range.last) return "Pick both a start and an end date.";
+  if (range.first > range.last) return "The start date must be on or before the end date.";
+  const days = (Date.parse(range.last) - Date.parse(range.first)) / DAY_MS + 1;
+  if (days > MAX_RANGE_DAYS) return `Pick a range of at most ${MAX_RANGE_DAYS} days.`;
+  return null;
 }
 
 /** The UTC days the cohort covers, last day inclusive. */
@@ -58,12 +86,22 @@ function formatCohortRange(window: { from: string; to: string }): string {
 }
 
 export function Funnels() {
-  const [days, setDays] = useState<number>(30);
-  const range = windowFor(days);
+  // Today's UTC day, read once when the page opens so rendering stays pure. A page left
+  // open across midnight UTC keeps its range until a preset or a date is picked again.
+  const [today] = useState(() => utcDay(Date.now()));
+  const [picked, setPicked] = useState<DayRange>(() => presetRange(30, today));
+  const problem = rangeProblem(picked);
+  const enabled = problem === null;
+  const range = apiWindow(picked);
   const query = `?from=${range.from}&to=${range.to}`;
+  const activePreset = WINDOW_PRESETS.find((p) => {
+    const preset = presetRange(p.days, today);
+    return preset.first === picked.first && preset.last === picked.last;
+  })?.days;
 
   const journeyQ = useQuery<GuideJourneyResult>({
     queryKey: ["funnels", "guide-journey", range.from, range.to],
+    enabled,
     queryFn: ({ signal }) => apiRead<GuideJourneyResult>(`/funnels/guide-journey${query}`, { signal }),
   });
 
@@ -71,11 +109,13 @@ export function Funnels() {
   // numbers above it.
   const neverSaidYesQ = useQuery<GuideJourneyLeakList>({
     queryKey: ["funnels", "guide-journey", "never-said-yes", range.from, range.to],
+    enabled,
     queryFn: ({ signal }) =>
       apiRead<GuideJourneyLeakList>(`/funnels/guide-journey/drop-off/never-said-yes${query}`, { signal }),
   });
   const stuckAtWallQ = useQuery<GuideJourneyLeakList>({
     queryKey: ["funnels", "guide-journey", "stuck-at-wall", range.from, range.to],
+    enabled,
     queryFn: ({ signal }) =>
       apiRead<GuideJourneyLeakList>(`/funnels/guide-journey/drop-off/stuck-at-wall${query}`, { signal }),
   });
@@ -84,6 +124,7 @@ export function Funnels() {
   // event log rather than the cohort, and it must not be able to take the main funnel down.
   const coverQ = useQuery<GuideAccessMetricsResult>({
     queryKey: ["funnels", "guide-access-metrics", range.from, range.to],
+    enabled,
     queryFn: ({ signal }) =>
       apiRead<GuideAccessMetricsResult>(`/funnels/guide-access-metrics${query}`, { signal }),
   });
@@ -92,6 +133,7 @@ export function Funnels() {
   // gated funnel down.
   const linkQ = useQuery<LinkClickResult>({
     queryKey: ["funnels", "link-click", range.from, range.to],
+    enabled,
     queryFn: ({ signal }) => apiRead<LinkClickResult>(`/funnels/link-click${query}`, { signal }),
   });
 
@@ -124,26 +166,58 @@ export function Funnels() {
           )}
         </p>
 
-        <div className="mt-5 flex flex-wrap items-center gap-2">
-          {WINDOW_PRESETS.map((p) => (
-            <button
-              key={p.days}
-              type="button"
-              onClick={() => setDays(p.days)}
-              className={
-                "rounded-sm border px-3 py-1.5 text-xs transition-colors [@media(pointer:coarse)]:min-h-11 " +
-                (days === p.days
-                  ? "border-line bg-muted font-medium text-foreground"
-                  : "border-transparent text-muted-foreground hover:bg-muted")
-              }
-            >
-              {p.label}
-            </button>
-          ))}
+        <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-3">
+          <div className="flex items-center gap-2">
+            {WINDOW_PRESETS.map((p) => (
+              <button
+                key={p.days}
+                type="button"
+                onClick={() => setPicked(presetRange(p.days, today))}
+                className={
+                  "rounded-sm border px-3 py-1.5 text-xs transition-colors [@media(pointer:coarse)]:min-h-11 " +
+                  (activePreset === p.days
+                    ? "border-line bg-muted font-medium text-foreground"
+                    : "border-transparent text-muted-foreground hover:bg-muted")
+                }
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+          {/* Any range up to a year. Days are UTC days and both ends are included, which
+              is how the cohort sentence above labels them. */}
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              From
+              <input
+                type="date"
+                value={picked.first}
+                max={picked.last || today}
+                onChange={(event) => setPicked((r) => ({ ...r, first: event.target.value }))}
+                className="rounded-sm border border-line bg-card px-2 py-1 text-xs text-foreground [@media(pointer:coarse)]:min-h-11"
+              />
+            </label>
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              To
+              <input
+                type="date"
+                value={picked.last}
+                min={picked.first || undefined}
+                max={today}
+                onChange={(event) => setPicked((r) => ({ ...r, last: event.target.value }))}
+                className="rounded-sm border border-line bg-card px-2 py-1 text-xs text-foreground [@media(pointer:coarse)]:min-h-11"
+              />
+            </label>
+          </div>
         </div>
+        {problem ? (
+          <p role="alert" className="mt-3 text-[12.5px] text-caution">
+            {problem}
+          </p>
+        ) : null}
       </header>
 
-      {journeyQ.isError ? (
+      {problem ? null : journeyQ.isError ? (
         <EmptyState
           icon={<Filter className="size-5" />}
           title="Couldn't load the funnel"
@@ -167,16 +241,21 @@ export function Funnels() {
         />
       )}
 
-      <GuideAccessHealthPanel health={coverQ.data?.health} />
+      {/* An invalid range runs no query, so these would sit in a skeleton forever. */}
+      {problem ? null : (
+        <>
+          <GuideAccessHealthPanel health={coverQ.data?.health} />
 
-      <CoverPanel
-        rates={coverQ.data?.coverRates}
-        isLoading={coverQ.isLoading}
-        isError={coverQ.isError}
-        isAbsent={coverQ.data !== undefined && coverQ.data.coverRates === undefined}
-      />
+          <CoverPanel
+            rates={coverQ.data?.coverRates}
+            isLoading={coverQ.isLoading}
+            isError={coverQ.isError}
+            isAbsent={coverQ.data !== undefined && coverQ.data.coverRates === undefined}
+          />
 
-      <LinkClickPanel data={linkQ.data} isLoading={linkQ.isLoading} isError={linkQ.isError} />
+          <LinkClickPanel data={linkQ.data} isLoading={linkQ.isLoading} isError={linkQ.isError} />
+        </>
+      )}
     </div>
   );
 }
