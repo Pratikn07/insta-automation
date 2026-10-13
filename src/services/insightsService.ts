@@ -46,34 +46,71 @@ async function conversionByMedia(): Promise<Map<string, ConversionLine>> {
   // attributes every match to the post it actually happened on, whether the
   // keyword was post-scoped or a global fallback. DM-sourced matches carry no
   // mediaId and are naturally excluded here.
-  const [events, convos] = await Promise.all([
-    prisma.eventLog.findMany({ where: { kind: "keyword_matched" }, select: { payload: true } }),
-    prisma.conversation.findMany({ select: { id: true, state: true, gatedAt: true } }),
-  ]);
+  //
+  // Counted in SQL: this used to pull every keyword_matched payload and every
+  // conversation into Node (52k rows) to produce one line per reel.
+  const rows = await prisma.$queryRawUnsafe<(ConversionLine & { mediaId: string })[]>(
+    CONVERSION_BY_MEDIA_SQL,
+  );
+  return new Map(
+    rows.map(({ mediaId, keywordComments, gateDelivered, completed }) => [
+      mediaId,
+      { keywordComments, gateDelivered, completed },
+    ]),
+  );
+}
 
-  const convoById = new Map(convos.map((c) => [c.id, c]));
-  // mediaId → set of conversationIds (dedupes any repeat match on one conversation).
-  const byMedia = new Map<string, Set<string>>();
-  for (const e of events) {
-    const p = e.payload as { mediaId?: string | null; conversationId?: string | null };
-    if (!p.mediaId || !p.conversationId) continue;
-    let set = byMedia.get(p.mediaId);
-    if (!set) byMedia.set(p.mediaId, (set = new Set()));
-    set.add(p.conversationId);
-  }
+/**
+ * One line per reel. DISTINCT dedupes a repeat match on one conversation; a match
+ * whose conversation row no longer exists still counts as a keyword comment. The
+ * join compares text so a malformed conversationId in a payload cannot fail the
+ * whole board on a uuid cast.
+ */
+const CONVERSION_BY_MEDIA_SQL = `
+WITH matched AS (
+  SELECT DISTINCT payload->>'mediaId' AS media_id, payload->>'conversationId' AS conversation_id
+  FROM event_log
+  WHERE kind = 'keyword_matched'
+    AND COALESCE(payload->>'mediaId', '') <> ''
+    AND COALESCE(payload->>'conversationId', '') <> ''
+)
+SELECT
+  m.media_id                                                AS "mediaId",
+  COUNT(*)::int                                             AS "keywordComments",
+  (COUNT(*) FILTER (WHERE c.gated_at IS NOT NULL))::int     AS "gateDelivered",
+  (COUNT(*) FILTER (WHERE c.state = 'completed'))::int      AS "completed"
+FROM matched m
+LEFT JOIN conversations c ON c.id::text = m.conversation_id
+GROUP BY m.media_id
+`;
 
-  const map = new Map<string, ConversionLine>();
-  for (const [mediaId, convoIds] of byMedia) {
-    const line: ConversionLine = { keywordComments: 0, gateDelivered: 0, completed: 0 };
-    for (const id of convoIds) {
-      const c = convoById.get(id);
-      line.keywordComments++;
-      if (c?.gatedAt) line.gateDelivered++;
-      if (c?.state === "completed") line.completed++;
-    }
-    map.set(mediaId, line);
-  }
-  return map;
+interface LatestPerformance {
+  mediaId: string;
+  views: number | null;
+  reach: number | null;
+  skipRate: number | null;
+}
+
+/**
+ * Each reel's newest snapshot, one index probe per reel. Prisma's nested
+ * `take: 1` fetched every snapshot of every reel (56k rows with raw JSON) and
+ * discarded all but one per reel in memory.
+ */
+const LATEST_PERFORMANCE_SQL = `
+SELECT r.media_id AS "mediaId", s.views, s.reach, s.skip_rate AS "skipRate"
+FROM reel_meta r
+JOIN LATERAL (
+  SELECT views, reach, skip_rate
+  FROM reel_performance_snapshot
+  WHERE media_id = r.media_id
+  ORDER BY captured_at DESC
+  LIMIT 1
+) s ON true
+`;
+
+async function latestPerformanceByMedia(): Promise<Map<string, LatestPerformance>> {
+  const rows = await prisma.$queryRawUnsafe<LatestPerformance[]>(LATEST_PERFORMANCE_SQL);
+  return new Map(rows.map((row) => [row.mediaId, row]));
 }
 
 /** keywordComments ÷ reach as a 2-dp %, or null below the reach floor. */
@@ -84,20 +121,18 @@ function captureRate(keywordComments: number, reach: number | null): number | nu
 
 /** The Leaderboard: every known reel, scored reels first. */
 export async function getLeaderboard(): Promise<LeaderboardRow[]> {
-  const [reels, conversion] = await Promise.all([
+  const [reels, performance, conversion] = await Promise.all([
     prisma.reelMeta.findMany({
-      include: {
-        contentProfile: { select: { mediaId: true } },
-        perfSnapshots: { orderBy: { capturedAt: "desc" }, take: 1 },
-      },
+      include: { contentProfile: { select: { mediaId: true } } },
       // Scored reels first (desc), unscored last; then newest.
       orderBy: [{ usFitScore: { sort: "desc", nulls: "last" } }, { postedAt: "desc" }],
     }),
+    latestPerformanceByMedia(),
     conversionByMedia(),
   ]);
 
   return reels.map((r) => {
-    const perf = r.perfSnapshots[0];
+    const perf = performance.get(r.mediaId);
     const conv = conversion.get(r.mediaId) ?? {
       keywordComments: 0,
       gateDelivered: 0,
@@ -293,14 +328,14 @@ function aggregateRefs(profiles: Array<{ culturalReferences?: CulturalRef[] }>) 
  * thin contrast can't mislead.
  */
 export async function getRecipe(): Promise<RecipeData> {
-  const reels = await prisma.reelMeta.findMany({
-    where: { usFitScore: { not: null } },
-    include: {
-      contentProfile: true,
-      perfSnapshots: { orderBy: { capturedAt: "desc" }, take: 1 },
-    },
-    orderBy: { usFitScore: "desc" },
-  });
+  const [reels, performance] = await Promise.all([
+    prisma.reelMeta.findMany({
+      where: { usFitScore: { not: null } },
+      include: { contentProfile: true },
+      orderBy: { usFitScore: "desc" },
+    }),
+    latestPerformanceByMedia(),
+  ]);
 
   const scoredCount = reels.length;
   if (scoredCount < RECIPE_MIN_SCORED) {
@@ -313,7 +348,7 @@ export async function getRecipe(): Promise<RecipeData> {
   const bottomRows = reels.slice(scoredCount - n);
 
   const toRow = (r: (typeof reels)[number]): LeaderboardRow => {
-    const perf = r.perfSnapshots[0];
+    const perf = performance.get(r.mediaId);
     return {
       mediaId: r.mediaId,
       caption: r.caption,
@@ -347,7 +382,7 @@ export async function getRecipe(): Promise<RecipeData> {
       avgUsFit: avg(rows.map((r) => r.usFitScore)),
       avgSettingScore: avg(rows.map((r) => r.contentProfile?.settingScore)),
       avgCulturalScore: avg(rows.map((r) => r.contentProfile?.culturalScore)),
-      medianReach: median(rows.map((r) => r.perfSnapshots[0]?.reach)),
+      medianReach: median(rows.map((r) => performance.get(r.mediaId)?.reach)),
     };
   };
 
@@ -359,7 +394,7 @@ export async function getRecipe(): Promise<RecipeData> {
   // below must describe TONE ("reads as US-aimed"), never promise performance.
   const usFitReachCorr = pearson(
     reels.map((r) => r.usFitScore),
-    reels.map((r) => r.perfSnapshots[0]?.reach),
+    reels.map((r) => performance.get(r.mediaId)?.reach),
   );
 
   // Derive a plain-English checklist of what makes a reel READ as US-aimed. This

@@ -79,42 +79,52 @@ function isWindowError(w: FunnelWindow | WindowError): w is WindowError {
 }
 
 /**
- * The cohort query behind a funnel is the single slowest read in the API (~1.7s
- * mean), and Home runs one on every mount.
+ * Every report on Home and Funnels is an aggregate over event_log that costs
+ * between half a second and several seconds, and the Funnels page fires four of
+ * them at once.
  *
- * The key carries the whole denominator — funnel, both cohort bounds and the
- * minimum sample — because serving one window's numbers under another window's
- * label is precisely the unstated-denominator bug `resolveWindow` refuses to
- * commit. A caller walking date ranges gets a miss per range, capped by
- * maxEntries.
+ * Fresh for a minute; after that the last report is served for up to half an
+ * hour while ONE refresh runs behind it, so a page never waits on a report just
+ * because the TTL passed. Every report echoes the window it was computed over,
+ * so a stale read is labelled by its own bounds, never by the request's.
  *
  * Exported so tests can start from a cold cache.
  */
 export const FUNNEL_CACHE_TTL_MS = 60_000;
-export const funnelCache = createReadThroughCache<
-  Awaited<ReturnType<typeof runGuideFollowFunnel>>
->({ ttlMs: FUNNEL_CACHE_TTL_MS, maxEntries: 32 });
-
-/** Separate cache: the two funnels return different shapes. */
-export const linkClickCache = createReadThroughCache<LinkClickResult>({
+export const FUNNEL_CACHE_STALE_MS = 30 * 60_000;
+const reportCacheOptions = {
   ttlMs: FUNNEL_CACHE_TTL_MS,
+  staleMs: FUNNEL_CACHE_STALE_MS,
   maxEntries: 32,
-});
+};
+
+export const funnelCache =
+  createReadThroughCache<Awaited<ReturnType<typeof runGuideFollowFunnel>>>(reportCacheOptions);
+
+/** Separate caches: each report returns a different shape. */
+export const linkClickCache = createReadThroughCache<LinkClickResult>(reportCacheOptions);
+export const dropOffCache =
+  createReadThroughCache<Awaited<ReturnType<typeof runDropOff>>>(reportCacheOptions);
+export const guideAccessMetricsCache =
+  createReadThroughCache<Awaited<ReturnType<typeof runGuideAccessMetrics>>>(reportCacheOptions);
 
 /**
- * Quantised to the TTL, because `defaultWindow()` is `now`-relative to the
- * millisecond: keying on the raw bounds would miss on every single request, and
- * the default window is exactly the one Home loads. Explicit windows arrive
- * day-aligned from `resolveWindow`, so their buckets are already stable.
+ * Keyed on the request, not the resolved bounds. `defaultWindow()` is
+ * `now`-relative to the millisecond, so keying on the bounds would miss on every
+ * request, and the default window is exactly the one Home loads. Explicit
+ * windows are YYYY-MM-DD strings, so they are already stable.
  *
- * The consequence is deliberate: consecutive loads inside a bucket share one
- * snapshot, so the `window.to` echoed back can trail real time by up to a TTL.
- * That is what a cached read means, and it keeps the numbers and the label they
- * are reported under consistent with each other.
+ * The key still carries the whole denominator — funnel, both bounds as asked
+ * and the minimum sample — because serving one window's numbers under another
+ * window's label is precisely the unstated-denominator bug `resolveWindow`
+ * refuses to commit.
  */
-export function funnelCacheKey(key: string, window: FunnelWindow, minSample: number): string {
-  const bucket = (d: Date) => Math.floor(d.getTime() / FUNNEL_CACHE_TTL_MS);
-  return `${key}|${bucket(window.from)}|${bucket(window.to)}|${minSample}`;
+export function funnelCacheKey(
+  key: string,
+  query: { from?: string; to?: string },
+  minSample: number,
+): string {
+  return `${key}|${query.from ?? "default"}|${query.to ?? "default"}|${minSample}`;
 }
 
 // GET /api/funnels — what funnels exist. Drives the section's nav without the
@@ -146,7 +156,11 @@ funnelsRouter.get("/guide-access-metrics", async (req, res) => {
     return;
   }
 
-  res.json(await runGuideAccessMetrics(prisma, window));
+  res.json(
+    await guideAccessMetricsCache.get(funnelCacheKey("guide-access-metrics", parsed.data, 0), () =>
+      runGuideAccessMetrics(prisma, window),
+    ),
+  );
 });
 
 // GET /api/funnels/:key?from=&to= — one funnel over a cohort window.
@@ -171,14 +185,14 @@ funnelsRouter.get("/:key", async (req, res) => {
 
   if (def.key === linkClickDef.key) {
     res.json(
-      await linkClickCache.get(funnelCacheKey(def.key, window, def.minSample), () =>
+      await linkClickCache.get(funnelCacheKey(def.key, parsed.data, def.minSample), () =>
         runLinkClickFunnel(prisma, window, def.minSample),
       ),
     );
     return;
   }
   res.json(
-    await funnelCache.get(funnelCacheKey(def.key, window, def.minSample), () =>
+    await funnelCache.get(funnelCacheKey(def.key, parsed.data, def.minSample), () =>
       runGuideFollowFunnel(prisma, window, def.minSample),
     ),
   );
@@ -216,13 +230,11 @@ funnelsRouter.get("/:key/drop-off/:bucket", async (req, res) => {
     return;
   }
 
+  const limit = parsed.data.limit ?? DROP_OFF_DEFAULT_LIMIT;
   res.json(
-    await runDropOff(
-      prisma,
-      bucket,
-      window,
-      parsed.data.limit ?? DROP_OFF_DEFAULT_LIMIT,
-      def.minSample,
+    await dropOffCache.get(
+      `${funnelCacheKey(def.key, parsed.data, def.minSample)}|${bucket}|${limit}`,
+      () => runDropOff(prisma, bucket, window, limit, def.minSample),
     ),
   );
 });
