@@ -270,27 +270,45 @@ person AS (
   FROM card
   GROUP BY ig_user_id
 ),
+quiet_people AS (
+  SELECT ig_user_id, first_card_at
+  FROM person
+  WHERE reached AND NOT said_yes AND NOT window_open
+),
+-- Read and reply evidence, only for people who got a card, never said yes, and are out of
+-- time. Set-based on purpose: the first version probed per person, and dm_thread is keyed
+-- (ig_account_id, ig_user_id), so each probe by ig_user_id walked the whole index, while
+-- the reminder probe rescanned every card. 4,423 people took 28 s on production
+-- (2026-10-13) against 0.4 s for everything else. dm_message.created_at is UTC without a
+-- zone, hence the conversions.
+dm_evidence AS (
+  SELECT qp.ig_user_id,
+    bool_or(m.direction = 'inbound'
+      AND m.created_at > (qp.first_card_at AT TIME ZONE 'UTC')) AS wrote,
+    bool_or(m.direction = 'outbound' AND m.source = 'keyword_automation' AND m.seen_at IS NOT NULL
+      AND m.created_at >= (qp.first_card_at AT TIME ZONE 'UTC') - interval '2 minutes') AS card_seen,
+    bool_or(m.direction = 'outbound' AND m.source = 'keyword_automation'
+      AND m.created_at >= (qp.first_card_at AT TIME ZONE 'UTC') - interval '2 minutes') AS card_logged
+  FROM quiet_people qp
+  JOIN dm_thread th  ON th.ig_user_id = qp.ig_user_id
+  JOIN dm_message m  ON m.thread_id = th.id
+  GROUP BY qp.ig_user_id
+),
+reminder_evidence AS (
+  SELECT k.ig_user_id, bool_or(r.seen_at IS NOT NULL) AS reminder_seen
+  FROM card k
+  JOIN dm_recovery_reminder r ON r.conversation_id = k.conversation_id
+  WHERE k.ig_user_id IN (SELECT ig_user_id FROM quiet_people)
+  GROUP BY k.ig_user_id
+),
 quiet AS (
-  -- Read and reply evidence, only for people who got a card, never said yes, and are out
-  -- of time. dm_message.created_at is UTC without a zone, hence the conversions.
-  SELECT p.ig_user_id,
-    EXISTS (SELECT 1 FROM dm_thread th JOIN dm_message m ON m.thread_id = th.id
-            WHERE th.ig_user_id = p.ig_user_id AND m.direction = 'inbound'
-              AND m.created_at > (p.first_card_at AT TIME ZONE 'UTC')) AS wrote,
-    EXISTS (SELECT 1 FROM dm_thread th JOIN dm_message m ON m.thread_id = th.id
-            WHERE th.ig_user_id = p.ig_user_id AND m.direction = 'outbound'
-              AND m.source = 'keyword_automation' AND m.seen_at IS NOT NULL
-              AND m.created_at >= (p.first_card_at AT TIME ZONE 'UTC') - interval '2 minutes')
-      OR EXISTS (SELECT 1 FROM dm_recovery_reminder r JOIN card k ON k.conversation_id = r.conversation_id
-                 WHERE k.ig_user_id = p.ig_user_id AND r.seen_at IS NOT NULL) AS seen,
-    EXISTS (SELECT 1 FROM dm_thread th JOIN dm_message m ON m.thread_id = th.id
-            WHERE th.ig_user_id = p.ig_user_id AND m.direction = 'outbound'
-              AND m.source = 'keyword_automation'
-              AND m.created_at >= (p.first_card_at AT TIME ZONE 'UTC') - interval '2 minutes')
-      OR EXISTS (SELECT 1 FROM dm_recovery_reminder r JOIN card k ON k.conversation_id = r.conversation_id
-                 WHERE k.ig_user_id = p.ig_user_id) AS tracked
-  FROM person p
-  WHERE p.reached AND NOT p.said_yes AND NOT p.window_open
+  SELECT qp.ig_user_id,
+    COALESCE(d.wrote, false) AS wrote,
+    (COALESCE(d.card_seen, false) OR COALESCE(r.reminder_seen, false)) AS seen,
+    (COALESCE(d.card_logged, false) OR r.ig_user_id IS NOT NULL) AS tracked
+  FROM quiet_people qp
+  LEFT JOIN dm_evidence d       ON d.ig_user_id = qp.ig_user_id
+  LEFT JOIN reminder_evidence r ON r.ig_user_id = qp.ig_user_id
 )
 SELECT
   p.ig_user_id                                  AS "igUserId",
