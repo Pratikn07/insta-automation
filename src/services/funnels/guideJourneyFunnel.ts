@@ -116,9 +116,18 @@ export interface GuideJourneyResult {
     alreadyFollowing: { people: number; gotGuide: GuardedRate };
     notFollowing: { people: number };
   };
+  /** Each leak's people by reason, and each reason's share of that leak. */
   leaks: {
-    neverSaidYes: { total: number; buckets: Record<QuietBucket, number> };
-    stuckAtWall: { total: number; buckets: Record<WallBucket, number> };
+    neverSaidYes: {
+      total: number;
+      buckets: Record<QuietBucket, number>;
+      shares: Record<QuietBucket, GuardedRate>;
+    };
+    stuckAtWall: {
+      total: number;
+      buckets: Record<WallBucket, number>;
+      shares: Record<WallBucket, GuardedRate>;
+    };
   };
   /** Still following at 21 days, over new followers who were read. */
   retention: { due: number; rate: GuardedRate };
@@ -131,6 +140,20 @@ function bucketCounts<B extends string>(
   const counts = Object.fromEntries(names.map((name) => [name, 0])) as Record<B, number>;
   for (const value of values) if (value !== null) counts[value] += 1;
   return counts;
+}
+
+/** A leak's counts, total and per-reason shares, all from the same bucket column. */
+function leakSummary<B extends string>(
+  names: readonly B[],
+  values: readonly (B | null)[],
+  rate: (numerator: number, denominator: number) => GuardedRate,
+) {
+  const buckets = bucketCounts(names, values);
+  const total = values.filter((value) => value !== null).length;
+  const shares = Object.fromEntries(
+    names.map((name) => [name, rate(buckets[name], total)]),
+  ) as Record<B, GuardedRate>;
+  return { total, buckets, shares };
 }
 
 /** Pure: no database, no clock. Everything comes from `rows`. */
@@ -169,14 +192,8 @@ export function summarizeGuideJourney(
       notFollowing: { people: notFollowing },
     },
     leaks: {
-      neverSaidYes: {
-        total: quiet.filter((b) => b !== null).length,
-        buckets: bucketCounts(QUIET_BUCKETS, quiet),
-      },
-      stuckAtWall: {
-        total: wall.filter((b) => b !== null).length,
-        buckets: bucketCounts(WALL_BUCKETS, wall),
-      },
+      neverSaidYes: leakSummary(QUIET_BUCKETS, quiet, rate),
+      stuckAtWall: leakSummary(WALL_BUCKETS, wall, rate),
     },
     retention: {
       due: count((r) => r.d21Due),

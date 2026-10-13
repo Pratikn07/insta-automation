@@ -23,9 +23,20 @@ export interface FunnelStagesProps {
   renderLoss?: (stage: FunnelStageCount, lost: number) => React.ReactNode;
   /** Extra content per stage, keyed by stage key (e.g. a caveat). */
   notes?: Record<string, React.ReactNode>;
+  /**
+   * Also print each later stage's share of the first stage ("44.7% of all"). Off by
+   * default: inside a lane the first stage is the lane, and "of all" would mislead.
+   */
+  showShareOfEntry?: boolean;
 }
 
-export function FunnelStages({ stages, cohortSize, renderLoss, notes }: FunnelStagesProps) {
+export function FunnelStages({
+  stages,
+  cohortSize,
+  renderLoss,
+  notes,
+  showShareOfEntry = false,
+}: FunnelStagesProps) {
   return (
     <ol className="flex list-none flex-col gap-0 p-0">
       {stages.map((stage, i) => {
@@ -67,6 +78,11 @@ export function FunnelStages({ stages, cohortSize, renderLoss, notes }: FunnelSt
                 >
                   {stage.ofPrevPct === null ? "no step" : `${stage.ofPrevPct}%`}
                 </span>
+                {showShareOfEntry && i > 0 && stage.ofEntryPct !== null ? (
+                  <span className="text-right text-xs tabular-nums text-muted-foreground">
+                    {`${stage.ofEntryPct}% of all`}
+                  </span>
+                ) : null}
               </span>
             </div>
 

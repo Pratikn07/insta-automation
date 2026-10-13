@@ -1374,9 +1374,21 @@ export interface GuideJourneyResult {
     alreadyFollowing: { people: number; gotGuide: GuardedRate };
     notFollowing: { people: number };
   };
+  /**
+   * `shares` is optional because the console can deploy ahead of the API; without it a
+   * bucket shows its count alone.
+   */
   leaks: {
-    neverSaidYes: { total: number; buckets: Record<QuietBucket, number> };
-    stuckAtWall: { total: number; buckets: Record<WallBucket, number> };
+    neverSaidYes: {
+      total: number;
+      buckets: Record<QuietBucket, number>;
+      shares?: Record<QuietBucket, GuardedRate>;
+    };
+    stuckAtWall: {
+      total: number;
+      buckets: Record<WallBucket, number>;
+      shares?: Record<WallBucket, GuardedRate>;
+    };
   };
   retention: { due: number; rate: GuardedRate };
 }
