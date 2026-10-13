@@ -72,6 +72,26 @@ describe("GET /r/:token", () => {
     expect(deps.completeConversation).not.toHaveBeenCalled();
   });
 
+  it("does not let Meta's scanner, posing as a browser, complete the conversation", async () => {
+    const { app, deps } = makeApp({
+      repository: {
+        findForRedirect: vi.fn(async () => SEND),
+        recordClick: vi.fn(async () => ({ recorded: true, firstHumanClick: false })),
+      },
+    });
+    await request(app)
+      .get(`/r/${TOKEN}`)
+      .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/74.0.3729.131 Safari/537.36")
+      .set("X-Real-IP", "57.141.2.1")
+      .expect(302);
+    await vi.waitFor(() =>
+      expect(deps.repository.recordClick).toHaveBeenCalledWith(
+        expect.objectContaining({ isBot: true, uaFamily: "meta_scanner" }),
+      ),
+    );
+    expect(deps.completeConversation).not.toHaveBeenCalled();
+  });
+
   it("does not complete a conversation that is no longer link_sent", async () => {
     const { app, deps } = makeApp({
       repository: {

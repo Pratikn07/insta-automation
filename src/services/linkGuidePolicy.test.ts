@@ -202,6 +202,36 @@ describe("classifyClick", () => {
   });
 });
 
+describe("classifyClick from Meta's network", () => {
+  // Seen in production: seconds after each DM, Meta's link scanner fetched the link
+  // from 57.141.2.x posing as an ordinary browser, and completed the conversation.
+  it.each([
+    ["57.141.2.1", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.131 Safari/537.36"],
+    ["57.141.2.44", "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.6.1 Mobile/15E148 Safari/604.1"],
+    ["173.252.79.116", INSTAGRAM_UA],
+    ["::ffff:157.240.1.10", INSTAGRAM_UA],
+    ["2a03:2880:f000::1", INSTAGRAM_UA],
+  ])("treats %s as Meta's scanner, whatever it claims to be", (ip, userAgent) => {
+    expect(classifyClick({ method: "GET", userAgent, ip })).toEqual({ isBot: true, uaFamily: "meta_scanner" });
+  });
+
+  it("keeps the preview label for Meta's declared crawler", () => {
+    expect(
+      classifyClick({ method: "GET", userAgent: "facebookexternalhit/1.1", ip: "173.252.79.116" }),
+    ).toEqual({ isBot: true, uaFamily: "meta_preview" });
+  });
+
+  it.each([["67.180.186.42"], [""], ["not an ip"], [undefined]])(
+    "classifies by user agent when the address %s is not Meta's",
+    (ip) => {
+      expect(classifyClick({ method: "GET", userAgent: INSTAGRAM_UA, ip })).toEqual({
+        isBot: false,
+        uaFamily: "instagram_app",
+      });
+    },
+  );
+});
+
 describe("tokens and card text", () => {
   it("mints distinct 11-character URL-safe tokens", () => {
     const a = newLinkToken();

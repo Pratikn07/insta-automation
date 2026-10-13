@@ -60,7 +60,12 @@ export function createLinkRedirectHandler(deps: LinkRedirectDeps) {
     });
     res.redirect(302, destination);
 
-    const click = classifyClick({ userAgent: req.get("user-agent") ?? "", method: req.method });
+    // Railway's edge puts the visitor's address in X-Real-IP.
+    const click = classifyClick({
+      userAgent: req.get("user-agent") ?? "",
+      method: req.method,
+      ip: req.get("x-real-ip") ?? req.socket.remoteAddress,
+    });
     try {
       const recorded = await deps.repository.recordClick({
         sendId: send.id,
