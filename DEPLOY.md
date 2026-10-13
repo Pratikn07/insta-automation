@@ -291,7 +291,7 @@ vercel                          # first deploy: answer prompts
                                 # - Set up and deploy? Y
                                 # - Scope: your account
                                 # - Link to existing? N
-                                # - Project name: tiny-soho-admin
+                                # - Project name: tinysoho-admin
                                 # - Directory: ./
                                 # - Override settings? N (Vite is auto-detected)
 ```
@@ -317,7 +317,7 @@ vercel env add VITE_API_URL production
 vercel --prod
 ```
 
-Save the production URL Vercel prints (e.g. `https://tiny-soho-admin.vercel.app`).
+Save the production URL Vercel prints (e.g. `https://tinysoho-admin.vercel.app`).
 
 > **First-time setup only.** The existing `tinysoho-admin` project has since been
 > connected to GitHub, so day-to-day frontend deploys happen by merging to `main`.
@@ -330,20 +330,20 @@ Save the production URL Vercel prints (e.g. `https://tiny-soho-admin.vercel.app`
 ### Railway: allow Vercel's domain in CORS
 
 ```sh
-railway variables --set WEB_ORIGIN=https://tiny-soho-admin.vercel.app
+railway variables --set WEB_ORIGIN=https://tinysoho-admin.vercel.app
 ```
 
 Railway redeploys on var change. Wait ~30s.
 
 You can pass multiple comma-separated origins if you want preview deploys to work:
 ```
-WEB_ORIGIN=https://tiny-soho-admin.vercel.app,http://localhost:5173
+WEB_ORIGIN=https://tinysoho-admin.vercel.app,http://localhost:5173
 ```
 
 ### Supabase: allow Vercel as a magic-link redirect
 
 Supabase Dashboard → Authentication → URL Configuration → **Redirect URLs**:
-- Add: `https://tiny-soho-admin.vercel.app/**`
+- Add: `https://tinysoho-admin.vercel.app/**`
 - Keep: `http://localhost:5173/**` (for local dev)
 
 Save.
@@ -352,7 +352,7 @@ Save.
 
 ## 5. Smoke test
 
-1. Open `https://tiny-soho-admin.vercel.app` on phone or laptop
+1. Open `https://tinysoho-admin.vercel.app` on phone or laptop
 2. Magic-link login with `ADMIN_EMAIL` → click link in inbox → land on Home
 3. Stat cards load (means JWT verified, Railway is reachable, CORS works)
 4. Click Keywords → list loads
@@ -504,7 +504,7 @@ Both are recoverable only by re-doing work the owner already did.
 | `appServerReady: false` on the runtime | The app-server child died after boot. `railway logs` on `codex-runtime`. |
 | Owner must re-link ChatGPT after each deploy | `CODEX_HOME` is not on the mounted volume. |
 | Advisor answers but cites no data | `TINY_SOHO_API_URL` / `TINY_SOHO_INTERNAL_TOKEN` unset on the runtime, so it reports unavailable rather than speculating. |
-| Magic link goes to localhost | Supabase Redirect URL not set; add `https://tiny-soho-admin.vercel.app/**`. |
+| Magic link goes to localhost | Supabase Redirect URL not set; add `https://tinysoho-admin.vercel.app/**`. |
 | `invalid_token` on every API call | Supabase project URL or anon key on Vercel doesn't match Railway's `SUPABASE_URL` / `SUPABASE_SERVICE_KEY`. They must point to the same project. |
 | Webhook not firing | Meta webhook callback still points to old ngrok URL. Update in Meta App Dashboard. |
 | Prisma migration error on Railway start | `DIRECT_URL` is missing or cannot reach Supabase's direct database endpoint. Runtime `DATABASE_URL` should use transaction port 6543 with `?pgbouncer=true&connection_limit=5`. |
