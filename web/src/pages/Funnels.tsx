@@ -39,18 +39,25 @@ const WINDOW_PRESETS = [
   { label: "90 days", days: 90 },
 ] as const;
 
-/** Cohort bounds as YYYY-MM-DD, which is what the API expects. */
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Cohort bounds as YYYY-MM-DD, which is what the API expects. The API reads `to` as an
+ * EXCLUSIVE midnight UTC, so `to` is tomorrow's UTC date. Sending today's date dropped
+ * everything since 00:00 UTC — on a US evening, most of the day.
+ */
 function windowFor(days: number): { from: string; to: string } {
-  const to = new Date();
-  const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
+  const to = new Date(Date.now() + DAY_MS);
+  const from = new Date(to.getTime() - days * DAY_MS);
   const day = (d: Date) => d.toISOString().slice(0, 10);
   return { from: day(from), to: day(to) };
 }
 
+/** The UTC days the cohort covers, last day inclusive. */
 function formatCohortRange(window: { from: string; to: string }): string {
-  const fmt = (iso: string) =>
-    new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "short" });
-  return `${fmt(window.from)} – ${fmt(window.to)}`;
+  const fmt = (ms: number) =>
+    new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short", timeZone: "UTC" });
+  return `${fmt(new Date(window.from).getTime())} – ${fmt(new Date(window.to).getTime() - 1)} UTC`;
 }
 
 export function Funnels() {
@@ -165,30 +172,26 @@ export function Funnels() {
   );
 }
 
+/**
+ * Only what an owner can act on. `logicallyExpiredActiveTokens` is deliberately not
+ * shown: tokens expire lazily (a late tap is refused at consume time) and nothing
+ * sweeps their status, so the count is every unanswered opening ever sent — 12,133 on
+ * 2026-10-12 and only growing. It kept this warning on permanently and buried the
+ * needs-review count, which is the line that does need a person.
+ */
 function GuideAccessHealthPanel({
   health,
 }: {
   health: GuideAccessMetricsResult["health"];
 }) {
-  if (!health) return null;
-  if (health.needsReview === 0 && health.logicallyExpiredActiveTokens === 0) return null;
+  if (!health || health.needsReview === 0) return null;
 
   return (
     <section aria-label="Guide access health" className="border-t-line border-t pt-8">
       <Caveat>
         <b className="font-medium">Guide requests need attention.</b>{" "}
-        {health.needsReview > 0 ? (
-          <>
-            {health.needsReview.toLocaleString()} guide request
-            {health.needsReview === 1 ? " needs" : "s need"} owner review. {" "}
-          </>
-        ) : null}
-        {health.logicallyExpiredActiveTokens > 0 ? (
-          <>
-            {health.logicallyExpiredActiveTokens.toLocaleString()} active action
-            {health.logicallyExpiredActiveTokens === 1 ? " has" : "s have"} already expired. {" "}
-          </>
-        ) : null}
+        {health.needsReview.toLocaleString()} guide request
+        {health.needsReview === 1 ? " needs" : "s need"} owner review. {" "}
         <a
           className="border-b border-current font-medium hover:opacity-80"
           href="/conversations"
@@ -259,6 +262,14 @@ function CoverPanel({
 
   const attempted = rates.gate.accepted.denominator;
   const considered = rates.delivery.included.denominator;
+  // Decisions were taken, but every one was "not selected": the rollout fence is off or
+  // selects no guide. That is the not-started state too, and "0%" would read as failing.
+  const noneSelected =
+    attempted === 0 &&
+    considered > 0 &&
+    rates.delivery.included.numerator === 0 &&
+    rates.delivery.duplicateSuppressed.numerator === 0 &&
+    rates.delivery.mispaired.numerator === 0;
 
   return (
     <section className="border-t-line border-t pt-8">
@@ -273,6 +284,12 @@ function CoverPanel({
           No cover has been considered yet in this window. The cover rollout ships off and
           selects nobody until a guide is allowlisted or a share is set, so this is what a
           working system looks like before the pilot starts.
+        </p>
+      ) : noneSelected ? (
+        <p className="max-w-[64ch] text-sm text-muted-foreground">
+          The cover rollout is not selecting anyone. All {considered.toLocaleString()}{" "}
+          deliveries that had a cover to consider in this window went out without it, because
+          the rollout is switched off or selects no guide. The guides themselves were delivered.
         </p>
       ) : (
         <>
@@ -365,7 +382,10 @@ function FunnelBody({
 }) {
   const d21 = data.stages.find((s) => s.key === "followingD21");
   const measuredD21 = data.retention.denominator;
-  const eligible = data.stages.find((s) => s.key === "followingMeasured")?.count ?? 0;
+  // Owed a reading: had to follow first and 21+ days past delivery. NOT the following
+  // count above it — people already following never get the reading, so dividing by
+  // them reported a worker "0 of 3,942" behind when 454 were due.
+  const due = data.followThroughDue;
 
   return (
     <>
@@ -431,22 +451,29 @@ function FunnelBody({
           notes={{
             guideDelivered: (
               <p className="mt-2.5 max-w-[64ch] text-[12.5px] text-muted-foreground">
-                {data.expressLane.toLocaleString()} of these never saw the gate — already
-                following, so they were served immediately. Only{" "}
+                {data.expressLane.toLocaleString()} of these never hit the follow wall — already
+                following, so they were served as soon as they asked. Only{" "}
                 {data.followGateConversion.numerator.toLocaleString()} came from someone who
                 had to follow first.
               </p>
             ),
             // Load-bearing, not decoration: without it a reader sees a hairline
-            // bar reading "5" and concludes retention collapsed.
+            // bar reading "5" and concludes retention collapsed. Always shown, because
+            // the bar is drawn against everyone following and only converts are read.
             followingD21:
-              d21 && measuredD21 < eligible ? (
+              d21 && due !== undefined ? (
                 <Caveat className="mt-3">
-                  <b className="font-medium">This is not {d21.ofPrevPct}% retention.</b> The
-                  follow-through worker has re-measured {measuredD21.toLocaleString()} of{" "}
-                  {eligible.toLocaleString()} eligible conversations, and{" "}
-                  {data.retention.numerator.toLocaleString()} of those are still following.
-                  Read the bar as coverage, not churn.
+                  <b className="font-medium">This bar is not retention.</b> Only people who had
+                  to follow to unlock the guide get a 21-day reading.{" "}
+                  {due === 0 ? (
+                    "None of them in this cohort is 21 days past delivery yet."
+                  ) : (
+                    <>
+                      The follow-through worker has read {measuredD21.toLocaleString()} of the{" "}
+                      {due.toLocaleString()} who are, and{" "}
+                      {data.retention.numerator.toLocaleString()} of those are still following.
+                    </>
+                  )}
                 </Caveat>
               ) : null,
           }}

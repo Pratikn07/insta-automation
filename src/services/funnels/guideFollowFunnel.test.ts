@@ -24,6 +24,7 @@ function row(over: Partial<GuideFollowRow> = {}): GuideFollowRow {
     rechecked: false,
     followsNow: null,
     followThrough: null,
+    followThroughDue: false,
     ...over,
   };
 }
@@ -149,6 +150,21 @@ describe("summarizeGuideFollow", () => {
     expect(s.retention.denominator).toBe(7);
     expect(s.retention.numerator).toBe(6);
     expect(s.retention.pct).toBe(85.7);
+  });
+
+  it("measures follow-through progress against the converts owed a reading, not everyone following", () => {
+    // The page once read "re-measured 0 of 3,942 eligible": 3,942 was everyone
+    // following after delivery, most of whom were already following and are never read.
+    const rows = [
+      ...Array.from({ length: 3 }, () =>
+        row({ guideDelivered: true, followRequiredCount: 1, followThroughDue: true, followThrough: true }),
+      ),
+      ...Array.from({ length: 2 }, () => row({ guideDelivered: true, followRequiredCount: 1, followThroughDue: true })),
+      ...Array.from({ length: 9 }, () => row({ guideDelivered: true, rechecked: true, followsNow: true })),
+    ];
+    const s = summarize(rows);
+    expect(s.followThroughDue).toBe(5);
+    expect(s.retention.denominator).toBe(3);
   });
 
   it("splits by entry path so the DM express lane cannot hide the comment funnel", () => {

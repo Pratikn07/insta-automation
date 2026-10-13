@@ -24,6 +24,7 @@
 //   a row count. "How many asks before they gave up" is a separate metric, not
 //   an accidental inflation of the denominator.
 
+import { FOLLOW_THROUGH_MIN_DAYS } from "../followThroughCore.js";
 import {
   type FunnelDef,
   type FunnelHeadline,
@@ -61,12 +62,17 @@ export const guideFollowDef: FunnelDef = {
   // received the unlock DM and never answered, against 68 stuck at the follow
   // wall — a 26x difference. The follow gate converts at ~75%, which is in line
   // with published follow-gate numbers and is not where the losses are.
+  //
+  // Re-measured on the V2 card gate (cohort 2026-09-13..10-13): 11,552 got the
+  // opening card, 5,773 answered it, 2,762 hit the follow wall and 1,170 cleared
+  // it. The wall now loses real people (~1,600), but the unanswered card still
+  // loses more than three times as many, so the headline stays here.
   headline: {
     fromStage: "gateSent",
     toStage: "replied",
     label: "Reply rate",
     rationale:
-      "Everyone who answers the unlock DM gets the guide almost without exception, so this step is where the funnel actually loses people. The follow gate downstream converts fine and sees a fraction of the volume.",
+      "More people stop at the unlock DM than anywhere else in the funnel, so this step moves the total most. The follow wall downstream loses people too, but fewer of them.",
   },
   minSample: GUIDE_FOLLOW_MIN_SAMPLE,
   stages: [
@@ -80,14 +86,14 @@ export const guideFollowDef: FunnelDef = {
       key: "gateSent",
       label: "Got the unlock DM",
       definition:
-        "We delivered the gate DM asking them to reply. People who were already following, or who already completed this keyword, skip this step entirely — they get the guide immediately, so a gap here is not necessarily a loss.",
+        "We delivered the DM asking them to answer: the opening card on a comment, or the old text gate. People who DM'd the keyword skip this step — their DM was the request — so a gap here is not necessarily a loss.",
       bypassable: true,
     },
     {
       key: "replied",
       label: "Replied",
       definition:
-        "They answered the gate — either passing it (done_received) or hitting the follow wall (follow_required). Silence here means the DM landed and did nothing.",
+        "They answered: tapped the card, typed a reply, sent DONE, or were bounced by the follow wall. Silence here means the DM landed and did nothing.",
     },
     {
       key: "guideDelivered",
@@ -109,7 +115,7 @@ export const guideFollowDef: FunnelDef = {
       key: "followingD21",
       label: "Still following (21 days)",
       definition:
-        "Read a SECOND time ~21 days later and still following. This is the only stage that can distinguish a real follower from someone who followed to unlock a freebie and left.",
+        "Read a SECOND time ~21 days later and still following. Only people who had to follow to unlock the guide get this reading. This is the only stage that can distinguish a real follower from someone who followed to unlock a freebie and left.",
       // Almost entirely worker backlog: 5 of 1,400 eligible measured so far.
       coverageOnly: true,
     },
@@ -125,8 +131,12 @@ export interface GuideFollowRow {
   entryPath: string;
   state: string;
   gateSent: boolean;
+  /** Answered the gate: DONE on the V1 path, a tap or typed reply on the V2 card. */
   doneReceived: boolean;
-  /** How many times we asked them to follow. >1 means repeated asks. */
+  /**
+   * How many times we asked them to follow. >1 means repeated asks. V1
+   * follow_required events plus V2 check_follow tokens (one per gate or re-ask).
+   */
   followRequiredCount: number;
   guideDelivered: boolean;
   /** A delivery carrying followerAtDelivery=false — post-gate, only redeliveries. */
@@ -137,7 +147,63 @@ export interface GuideFollowRow {
   followsNow: boolean | null;
   /** Second reading ~21 days out. Null = not yet measured. */
   followThrough: boolean | null;
+  /**
+   * The follow-through worker owes (or already took) this conversation its 21-day
+   * reading: it had to follow to get the guide, was rechecked, and completed at least
+   * FOLLOW_THROUGH_MIN_DAYS ago. Mirrors FOLLOW_THROUGH_DUE_SQL, which picks the work.
+   */
+  followThroughDue: boolean;
 }
+
+/**
+ * The V2 guide journey, at most one row per conversation, as a CTE named
+ * `access_journey`. Shared by this funnel and the drop-off lists so the two cannot
+ * disagree about who got the DM. Expects a `cohort` CTE and the $1/$3 parameters.
+ *
+ * WHY. Since the card gate went to every guide (2026-08-24) a journey is recorded in
+ * guide_access_attempt and guide_action_token, and nothing writes the V1 events this
+ * funnel was built on (dm_sent kind=gate, done_received, follow_required). Read alone,
+ * those events showed 11,590 people asking for a guide and 1 getting the unlock DM.
+ * Both readers stay: a V1 journey inside the lookback still counts.
+ *
+ * - A comment-path attempt is the unlock DM. It is created in the same step that sends
+ *   the opening card, and 10 of 11,566 openings failed over 2026-09-13..10-13. A DM
+ *   entry also opens an attempt but gets no card, so `gateSent` scopes it to comments.
+ * - `replied`: a tap or a typed reply, both of which consume the request_guide token.
+ *   follow_check_count also counts, because an owner reset cancels tokens.
+ * - `follow_asks`: one check_follow token is issued per gate or re-ask.
+ */
+const ACCESS_JOURNEY_CTE = `
+access_journey AS (
+  SELECT
+    a.conversation_id,
+    COALESCE(bool_or(a.follow_check_count > 0
+      OR (t.action = 'request_guide' AND t.status = 'consumed')), false) AS replied,
+    (COUNT(DISTINCT t.id) FILTER (WHERE t.action = 'check_follow'))::int AS follow_asks
+  FROM guide_access_attempt a
+  LEFT JOIN guide_action_token t ON t.attempt_id = a.id
+  WHERE a.created_at >= $1::timestamptz - $3::interval
+    AND a.conversation_id IN (SELECT conversation_id FROM cohort)
+  GROUP BY a.conversation_id
+)`;
+
+/**
+ * Per-conversation signals over V1 events and the V2 journey, for queries that group
+ * by conversation with aliases `co` (cohort, with entry_path), `ev` (events) and `aj`
+ * (access_journey). `aj` has at most one row per conversation, so wrapping it in an
+ * aggregate is exact and keeps it out of each caller's GROUP BY.
+ */
+export const JOURNEY_SIGNALS = {
+  ctes: ACCESS_JOURNEY_CTE,
+  join: "LEFT JOIN access_journey aj ON aj.conversation_id = co.conversation_id",
+  gateSent: `(COALESCE(bool_or(ev.kind = 'dm_sent' AND ev.payload->>'kind' = 'gate'), false)
+    OR (co.entry_path = 'comment' AND COALESCE(bool_or(aj.conversation_id IS NOT NULL), false)))`,
+  answered: `(COALESCE(bool_or(ev.kind = 'done_received'), false)
+    OR COALESCE(bool_or(aj.replied), false))`,
+  followAsks: `((COUNT(*) FILTER (WHERE ev.kind = 'follow_required'))::int
+    + COALESCE(MAX(aj.follow_asks), 0))`,
+  delivered: `COALESCE(bool_or(ev.kind = 'sequence_completed'), false)`,
+} as const;
 
 /**
  * The cohort query. Parameters, in order:
@@ -173,7 +239,8 @@ ev AS (
   WHERE kind IN ('dm_sent', 'follow_required', 'done_received', 'sequence_completed')
     AND created_at >= $1::timestamptz - $3::interval
     AND payload->>'conversationId' IS NOT NULL
-)
+),
+${JOURNEY_SIGNALS.ctes}
 SELECT
   co.conversation_id::text                     AS "conversationId",
   c.ig_user_id                                 AS "igUserId",
@@ -183,27 +250,36 @@ SELECT
   (c.follow_rechecked_at IS NOT NULL)          AS "rechecked",
   u.is_follower                                AS "followsNow",
   c.follow_through_is_follower                 AS "followThrough",
-  COALESCE(bool_or(ev.kind = 'dm_sent' AND ev.payload->>'kind' = 'gate'), false)
-                                               AS "gateSent",
-  COALESCE(bool_or(ev.kind = 'done_received'), false)
-                                               AS "doneReceived",
-  (COUNT(*) FILTER (WHERE ev.kind = 'follow_required'))::int
-                                               AS "followRequiredCount",
-  COALESCE(bool_or(ev.kind = 'sequence_completed'), false)
-                                               AS "guideDelivered",
+  ${JOURNEY_SIGNALS.gateSent}                  AS "gateSent",
+  ${JOURNEY_SIGNALS.answered}                  AS "doneReceived",
+  ${JOURNEY_SIGNALS.followAsks}                AS "followRequiredCount",
+  ${JOURNEY_SIGNALS.delivered}                 AS "guideDelivered",
   COALESCE(bool_or(ev.kind = 'sequence_completed'
     AND (ev.payload->>'followerAtDelivery')::boolean IS FALSE), false)
                                                AS "deliveredToNonFollower",
   COALESCE(bool_or(ev.kind = 'sequence_completed'
     AND (ev.payload->>'redelivery')::boolean IS TRUE), false)
-                                               AS "wasRedelivery"
+                                               AS "wasRedelivery",
+  -- Same pool FOLLOW_THROUGH_DUE_SQL hands the worker, plus the ones it already read.
+  COALESCE(
+    c.follow_rechecked_at IS NOT NULL
+    AND c.completed_at <= now() - interval '${FOLLOW_THROUGH_MIN_DAYS} days'
+    AND (c.follow_through_at IS NOT NULL OR u.is_follower IS TRUE)
+    AND (
+      COALESCE(bool_or(ev.kind = 'sequence_completed'
+        AND (ev.payload->>'followerAtDelivery')::boolean IS FALSE), false)
+      OR ${JOURNEY_SIGNALS.followAsks} > 0
+    ),
+    false)                                     AS "followThroughDue"
 FROM cohort co
 JOIN conversations c ON c.id = co.conversation_id
 LEFT JOIN ig_users  u ON u.id = c.ig_user_id
 LEFT JOIN ev          ON ev.conversation_id = co.conversation_id
+${JOURNEY_SIGNALS.join}
 GROUP BY
   co.conversation_id, c.ig_user_id, co.entered_at, co.entry_path,
-  c.state, c.follow_rechecked_at, u.is_follower, c.follow_through_is_follower
+  c.state, c.follow_rechecked_at, u.is_follower, c.follow_through_is_follower,
+  c.completed_at, c.follow_through_at
 ORDER BY co.entered_at
 `.trim();
 
@@ -242,6 +318,12 @@ export interface GuideFollowResult {
   byEntryPath: EntryPathBreakdown[];
   /** Durability of the converts, matching the Home tile's second reading. */
   retention: GuardedRate;
+  /**
+   * Conversations owed a 21-day reading (measured or not). The denominator for
+   * "how far has the worker got", which `retention.denominator` is the numerator of.
+   * Not the following count: people already following never get the reading.
+   */
+  followThroughDue: number;
   /**
    * Deliveries carrying followerAtDelivery=false — what the Home tile counts.
    * Reported here to make the redelivery composition visible.
@@ -325,6 +407,7 @@ export function summarizeGuideFollow(
       measuredD21.length,
       minSample,
     ),
+    followThroughDue: rows.filter((r) => r.followThroughDue).length,
     homeTileCohort: {
       deliveredToNonFollower: rows.filter((r) => r.deliveredToNonFollower).length,
       ofWhichRedelivery: rows.filter((r) => r.deliveredToNonFollower && r.wasRedelivery).length,

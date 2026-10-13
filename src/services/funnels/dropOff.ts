@@ -13,6 +13,7 @@
 // "tracked but never confirmed" and "no read data" instead of collapsing them
 // into a single misleading "unseen" number.
 
+import { JOURNEY_SIGNALS } from "./guideFollowFunnel.js";
 import { guardedRate, type GuardedRate } from "./types.js";
 
 /** Which leak to inspect. */
@@ -22,7 +23,7 @@ export const DROP_OFF_BUCKETS: Record<DropOffBucket, { label: string; definition
   "no-reply": {
     label: "Got the DM, never answered",
     definition:
-      "The unlock DM was delivered and they never replied — no DONE, and they never hit the follow wall. The funnel's largest loss by an order of magnitude.",
+      "The unlock DM was delivered and they never replied — no tap, no typed reply or DONE, and they never hit the follow wall. The funnel's largest loss.",
   },
   "stuck-at-wall": {
     label: "Asked to follow, never did",
@@ -31,11 +32,16 @@ export const DROP_OFF_BUCKETS: Record<DropOffBucket, { label: string; definition
   },
 };
 
-/** Shared cohort CTEs. $1 from, $2 to, $3 event lookback margin. */
+/**
+ * Shared cohort CTEs. $1 from, $2 to, $3 event lookback margin. The per-conversation
+ * signals come from JOURNEY_SIGNALS, the same fragments the cohort funnel uses, so
+ * the leak lists cannot drift from the stage counts above them.
+ */
 const COHORT_CTES = `
 WITH cohort AS (
   SELECT (e.payload->>'conversationId')::uuid AS conversation_id,
-         MIN(e.created_at) AS entered_at
+         MIN(e.created_at) AS entered_at,
+         COALESCE(MIN(e.payload->>'source'), 'comment') AS entry_path
   FROM event_log e
   WHERE e.kind = 'keyword_matched'
     AND COALESCE(e.payload->>'deliveryMode', 'gated') <> 'link'
@@ -51,6 +57,7 @@ ev AS (
     AND created_at >= $1::timestamptz - $3::interval
     AND payload->>'conversationId' IS NOT NULL
 ),
+${JOURNEY_SIGNALS.ctes},
 rec AS (
   -- Most recent reminder per conversation. Read evidence (seen_at) only exists
   -- where the recovery system tracked the gate at all, which is why absence is
@@ -63,13 +70,14 @@ rec AS (
 ),
 agg AS (
   SELECT co.conversation_id, co.entered_at,
-    COALESCE(bool_or(ev.kind = 'dm_sent' AND ev.payload->>'kind' = 'gate'), false) AS gate_sent,
-    COALESCE(bool_or(ev.kind = 'done_received'), false) AS done_received,
-    (COUNT(*) FILTER (WHERE ev.kind = 'follow_required'))::int AS wall_asks,
-    COALESCE(bool_or(ev.kind = 'sequence_completed'), false) AS delivered
+    ${JOURNEY_SIGNALS.gateSent} AS gate_sent,
+    ${JOURNEY_SIGNALS.answered} AS done_received,
+    ${JOURNEY_SIGNALS.followAsks} AS wall_asks,
+    ${JOURNEY_SIGNALS.delivered} AS delivered
   FROM cohort co
   LEFT JOIN ev ON ev.conversation_id = co.conversation_id
-  GROUP BY co.conversation_id, co.entered_at
+  ${JOURNEY_SIGNALS.join}
+  GROUP BY co.conversation_id, co.entered_at, co.entry_path
 )`;
 
 /** $4 = bucket. Parameterized, so the bucket never reaches SQL as text. */

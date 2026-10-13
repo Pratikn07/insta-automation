@@ -3,7 +3,7 @@ import { logger } from "../lib/logger.js";
 import { env } from "../config/env.js";
 import { resolveUsername } from "./igUserService.js";
 import { logEvent } from "./eventLogger.js";
-import { FOLLOW_THROUGH_MIN_DAYS } from "./followThroughCore.js";
+import { FOLLOW_THROUGH_DUE_SQL, FOLLOW_THROUGH_MIN_DAYS } from "./followThroughCore.js";
 
 // Second follow reading for guide recipients who converted: are they STILL
 // following ~3 weeks later, or did they take the freebie and leave?
@@ -16,9 +16,10 @@ import { FOLLOW_THROUGH_MIN_DAYS } from "./followThroughCore.js";
 // metric would report ~100% retention no matter what actually happened. This
 // worker therefore ALWAYS calls resolveUsername.
 //
-// Cost is small: ~59 users qualify today, then a trickle as new conversions age
-// past the window. At 1.5s spacing against an account currently using 0% of its
-// rate limit, this is noise.
+// Cost is small. Counting V2 card-gate converts left ~1,500 users due at once on
+// 2026-10-12; at FOLLOW_RECHECK_BATCH (20) per hourly tick that clears in about three
+// days, then a trickle as new conversions age past the window. At 1.5s spacing that
+// is 30s of Graph calls an hour.
 
 const PER_CALL_GAP_MS = 1500; // matches followRecheckWorker's pacing
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -31,30 +32,21 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  *
  * Scope: conversations that completed at least FOLLOW_THROUGH_MIN_DAYS ago, were
  * already rechecked once, have no follow-through reading yet, and whose user was
- * counted as a CONVERT (non-follower at delivery who later followed). Anyone who
- * never followed is skipped — there is nothing to un-follow.
+ * counted as a CONVERT (had to follow to get the guide — see FOLLOW_THROUGH_DUE_SQL).
+ * Anyone who never followed is skipped — there is nothing to un-follow.
  */
 export async function runFollowThroughTick(): Promise<void> {
   try {
     const dueBefore = new Date(Date.now() - FOLLOW_THROUGH_MIN_DAYS * DAY_MS);
 
     // The convert pool, resolved in SQL for the same reason getFollowConversion
-    // does it there: "was a non-follower at delivery" lives in event_log payloads,
-    // not on the conversation row.
-    const due = await prisma.$queryRaw<{ ig_user_id: string }[]>`
-      SELECT DISTINCT c.ig_user_id
-      FROM event_log e
-      JOIN conversations c ON c.id = (e.payload->>'conversationId')::uuid
-      JOIN ig_users u ON u.id = c.ig_user_id
-      WHERE e.kind = 'sequence_completed'
-        AND (e.payload->>'followerAtDelivery')::boolean IS FALSE
-        AND c.follow_rechecked_at IS NOT NULL
-        AND c.follow_through_at IS NULL
-        AND c.completed_at <= ${dueBefore}
-        AND u.is_follower IS TRUE
-      ORDER BY c.ig_user_id
-      LIMIT ${env.FOLLOW_RECHECK_BATCH}
-    `;
+    // does it there: "had to follow first" lives in event_log payloads and the
+    // guide-access tables, not on the conversation row.
+    const due = await prisma.$queryRawUnsafe<{ ig_user_id: string }[]>(
+      FOLLOW_THROUGH_DUE_SQL,
+      dueBefore,
+      env.FOLLOW_RECHECK_BATCH,
+    );
     if (due.length === 0) return;
 
     let stillFollowing = 0;
