@@ -7,6 +7,7 @@ import type {
 } from "@prisma/client";
 import { isAxiosError } from "axios";
 import { env } from "../config/env.js";
+import { isTestAccount } from "../config/testAccounts.js";
 import { geminiEnabled } from "../meta/geminiClient.js";
 import { flags } from "./flagService.js";
 import {
@@ -56,6 +57,8 @@ export type GuideAudienceAuthorizationServiceDependencies = {
   classifierEnabled: boolean;
   timeoutMs: number;
   now?: () => Date;
+  /** The owner's test accounts are never filtered, and leave no audit row. */
+  isTestAccount?: (igUserId: string) => boolean;
 };
 
 const ALLOW: GuideAudienceAuthorization = { kind: "allow" };
@@ -152,6 +155,7 @@ export function createGuideAudienceAuthorizationService(
     ): Promise<GuideAudienceAuthorization> {
       try {
         if (!dependencies.isEnabled()) return ALLOW;
+        if (dependencies.isTestAccount?.(input.igUserId)) return ALLOW;
       } catch {
         return ALLOW;
       }
@@ -229,4 +233,5 @@ export const guideAudienceAuthorization = createGuideAudienceAuthorizationServic
   isEnabled: () => flags.bool("GUIDE_AUDIENCE_BLOCK_ENABLED"),
   classifierEnabled: geminiEnabled,
   timeoutMs: env.GUIDE_AUDIENCE_TIMEOUT_MS,
+  isTestAccount,
 });

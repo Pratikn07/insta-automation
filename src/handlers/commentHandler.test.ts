@@ -88,6 +88,7 @@ vi.mock("../config/env.js", () => ({
   env: {
     IG_USER_ID: "ig-account-owner",
     DM_RECOVERY_SETTINGS_BLOCKED_SIGNATURES: "10:12345",
+    TEST_IG_USER_IDS: "ig-test-account",
   },
 }));
 vi.mock("../services/dmRecoveryService.js", () => ({
@@ -1211,5 +1212,19 @@ describe("link guides — comment path", () => {
 
     expect(replyToComment).toHaveBeenCalledTimes(1);
     expect(runCommentLinkGuide).not.toHaveBeenCalled();
+  });
+
+  it("sends again on every comment from a listed test account", async () => {
+    resolveJourneyIntent.mockResolvedValue({
+      disposition: "already_completed_recently",
+      intentId: "intent-1",
+      conversationId: "conversation-1",
+      maySendGate: false,
+    });
+
+    await handleComment({ ...COMMENT, from: { id: "ig-test-account", username: "tester" } });
+
+    expect(runCommentLinkGuide).toHaveBeenCalledWith(expect.objectContaining({ igUserId: "ig-test-account" }));
+    expect(logEvent).not.toHaveBeenCalledWith("gate_withheld_duplicate_journey", expect.anything());
   });
 });

@@ -244,6 +244,9 @@ export const envSchema = z.object({
   // trimmed set; config validates the enablement precondition without exposing
   // recipient identifiers in startup logs.
   GUIDE_DELIVERY_COHORT_IG_USER_IDS: z.string().default(""),
+  // Owner's test Instagram accounts (comma-separated IG user ids). They skip the audience
+  // filter and the one-DM-per-journey rule; see src/config/testAccounts.ts.
+  TEST_IG_USER_IDS: z.string().default(""),
 
   // --- DM Recovery Reminders ---
   DM_RECOVERY_ENABLED: booleanFlag(false),

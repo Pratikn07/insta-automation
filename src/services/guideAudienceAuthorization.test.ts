@@ -41,6 +41,18 @@ function harness(over: Partial<GuideAudienceAuthorizationServiceDependencies> = 
 
 const ACTION = { igUserId: "ig-1", source: "comment" as const, commentId: "c-1" };
 
+describe("test accounts", () => {
+  it("lets a listed test account through without reading or classifying it", async () => {
+    const { service, findAudienceSubject, classify, createDecision } = harness({
+      isTestAccount: (igUserId) => igUserId === "ig-1",
+    });
+    await expect(service.authorizeNewGuideAction(ACTION)).resolves.toEqual({ kind: "allow" });
+    expect(findAudienceSubject).not.toHaveBeenCalled();
+    expect(classify).not.toHaveBeenCalled();
+    expect(createDecision).not.toHaveBeenCalled();
+  });
+});
+
 describe("guide audience authorization", () => {
   it.each([
     ["south_asian", "high", "block"],
