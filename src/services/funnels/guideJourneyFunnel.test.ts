@@ -93,6 +93,19 @@ describe("summarizeGuideJourney", () => {
     });
   });
 
+  it("gives each leak reason its share of the leak, guarded like every other rate", () => {
+    expect(s.leaks.neverSaidYes.shares.cannot_tell).toMatchObject({ numerator: 4, denominator: 6, pct: 66.7 });
+    expect(s.leaks.neverSaidYes.shares.still_has_time).toMatchObject({ numerator: 2, denominator: 6, pct: 33.3 });
+    expect(s.leaks.neverSaidYes.shares.wrote_not_yes).toMatchObject({ numerator: 0, denominator: 6, pct: 0 });
+    // Four people stuck: below the minimum sample, so counts only and no percentage.
+    expect(s.leaks.stuckAtWall.shares.said_followed).toMatchObject({
+      numerator: 1,
+      denominator: 4,
+      pct: null,
+      belowMinSample: true,
+    });
+  });
+
   it("reports retention over new followers who were read, never over everyone", () => {
     // The old page drew this against the whole cohort and printed "2%" while 67 of
     // 69 converts were still following.

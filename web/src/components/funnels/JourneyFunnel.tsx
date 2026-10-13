@@ -35,14 +35,21 @@ function laneStage(
 }
 
 function HeadlineCount({ rate, label, of }: { rate: GuardedRate; label: string; of: string }) {
+  // The rate sits beside the count at the same size. Below the minimum sample there is
+  // no rate to show, and the small line says so instead of printing a thin percentage.
   return (
     <div>
-      <div className="figure-lead text-funnel-mark">{nf(rate.numerator)}</div>
+      <div className="flex flex-wrap items-baseline gap-x-4">
+        <span className="figure-lead text-funnel-mark">{nf(rate.numerator)}</span>
+        {rate.pct === null ? null : (
+          <span className="figure-lead text-muted-foreground">{`${rate.pct}%`}</span>
+        )}
+      </div>
       <p className="mt-1 text-sm font-medium text-foreground">{label}</p>
       <p className="mt-1 max-w-[40ch] text-[13px] text-muted-foreground">
         {rate.pct === null
           ? `of the ${nf(rate.denominator)} ${of} · too few to rate`
-          : `${rate.pct}% of the ${nf(rate.denominator)} ${of}`}
+          : `of the ${nf(rate.denominator)} ${of}`}
       </p>
     </div>
   );
@@ -57,7 +64,8 @@ function LeakBlock({
 }: {
   label: string;
   total: number;
-  buckets: [string, number][];
+  /** Label, count, and the bucket's share of the leak when the API sends one. */
+  buckets: [string, number, GuardedRate | undefined][];
   list: GuideJourneyLeakList | undefined;
   kind: "quiet" | "wall";
 }) {
@@ -82,10 +90,17 @@ function LeakBlock({
         </button>
       </div>
       <ul className="mt-2 grid max-w-[60ch] gap-1 text-[12.5px]">
-        {buckets.map(([bucketLabel, count]) => (
+        {buckets.map(([bucketLabel, count, bucketShare]) => (
           <li key={bucketLabel} className="flex items-baseline justify-between gap-4">
             <span className="text-muted-foreground">{bucketLabel}</span>
-            <span className="tabular-nums text-foreground">{nf(count)}</span>
+            <span className="flex shrink-0 items-baseline gap-3 tabular-nums">
+              <span className="text-foreground">{nf(count)}</span>
+              {bucketShare?.pct == null ? null : (
+                <span className="min-w-[3.25rem] text-right text-muted-foreground">
+                  {`${bucketShare.pct}%`}
+                </span>
+              )}
+            </span>
           </li>
         ))}
       </ul>
@@ -194,6 +209,7 @@ export function JourneyFunnel({ data, neverSaidYes, stuckAtWall }: JourneyFunnel
         <FunnelStages
           stages={data.stages}
           cohortSize={data.cohortSize}
+          showShareOfEntry
           renderLoss={(stage, lost) =>
             stage.key === "saidYes" ? (
               <LeakBlock
@@ -202,6 +218,7 @@ export function JourneyFunnel({ data, neverSaidYes, stuckAtWall }: JourneyFunnel
                 buckets={QUIET_BUCKET_ORDER.map((bucket) => [
                   QUIET_BUCKET_LABELS[bucket],
                   leaks.neverSaidYes.buckets[bucket],
+                  leaks.neverSaidYes.shares?.[bucket],
                 ])}
                 list={neverSaidYes}
                 kind="quiet"
@@ -247,6 +264,7 @@ export function JourneyFunnel({ data, neverSaidYes, stuckAtWall }: JourneyFunnel
                 buckets={WALL_BUCKET_ORDER.map((bucket) => [
                   WALL_BUCKET_LABELS[bucket],
                   leaks.stuckAtWall.buckets[bucket],
+                  leaks.stuckAtWall.shares?.[bucket],
                 ])}
                 list={stuckAtWall}
                 kind="wall"

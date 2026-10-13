@@ -44,9 +44,18 @@ const EMPTY_COVER_RATES = {
   },
 };
 
-function stage(key: string, label: string, count: number, ofPrevPct: number | null) {
-  return { key, label, definition: label, count, ofEntryPct: null, ofPrevPct };
+function stage(
+  key: string,
+  label: string,
+  count: number,
+  ofPrevPct: number | null,
+  ofEntryPct: number | null = null,
+) {
+  return { key, label, definition: label, count, ofEntryPct, ofPrevPct };
 }
+
+const pct = (n: number, d: number) => Math.round((n / d) * 1000) / 10;
+const share = (n: number, d: number) => rate(n, d, pct(n, d));
 
 // Numbers shaped like production for Sep 14 – Oct 13, internally consistent: every leak is
 // the exact gap it explains.
@@ -57,9 +66,9 @@ const JOURNEY = {
   window: { from: "2026-09-14T00:00:00.000Z", to: "2026-10-14T00:00:00.000Z" },
   cohortSize: 9439,
   stages: [
-    stage("asked", "Asked for a guide", 9439, null),
-    stage("reached", "Got the card", 9438, 100),
-    stage("saidYes", "Said yes", 4834, 51.2),
+    stage("asked", "Asked for a guide", 9439, null, 100),
+    stage("reached", "Got the card", 9438, 100, 100),
+    stage("saidYes", "Said yes", 4834, 51.2, 51.2),
   ],
   headline: {
     fromStage: "reached",
@@ -84,10 +93,22 @@ const JOURNEY = {
         no_sign_opened: 754,
         cannot_tell: 3447,
       },
+      shares: {
+        still_has_time: share(191, 4604),
+        wrote_not_yes: share(150, 4604),
+        opened_ignored: share(62, 4604),
+        no_sign_opened: share(754, 4604),
+        cannot_tell: share(3447, 4604),
+      },
     },
     stuckAtWall: {
       total: 1525,
       buckets: { still_has_time: 42, said_followed: 63, never_came_back: 1420 },
+      shares: {
+        still_has_time: share(42, 1525),
+        said_followed: share(63, 1525),
+        never_came_back: share(1420, 1525),
+      },
     },
   },
   retention: { due: 449, rate: rate(67, 69, 97.1) },
@@ -427,11 +448,14 @@ describe("Funnels guide journey", () => {
     const headline = await screen.findByRole("region", { name: /headline/i });
     expect(within(headline).getByText("1,140")).toBeInTheDocument();
     expect(within(headline).getByText("new followers")).toBeInTheDocument();
+    // The rate sits beside the count at the same size, not only in the small print.
+    expect(within(headline).getByText("42.8%")).toBeInTheDocument();
     expect(
-      within(headline).getByText(/42.8% of the 2,665 who weren't following when they said yes/),
+      within(headline).getByText(/of the 2,665 who weren't following when they said yes/),
     ).toBeInTheDocument();
     expect(within(headline).getByText("3,292")).toBeInTheDocument();
-    expect(within(headline).getByText(/34.9% of the 9,439 who asked/)).toBeInTheDocument();
+    expect(within(headline).getByText("34.9%")).toBeInTheDocument();
+    expect(within(headline).getByText(/of the 9,439 who asked/)).toBeInTheDocument();
     // The old hero was the reply rate; it now lives in the trunk, not above it.
     expect(within(headline).queryByText(/reply rate/i)).not.toBeInTheDocument();
   });
@@ -446,6 +470,11 @@ describe("Funnels guide journey", () => {
     expect(within(trunk).getByText("Got the card")).toBeInTheDocument();
     expect(within(trunk).getByText("Said yes")).toBeInTheDocument();
     expect(within(trunk).getByText("4,834")).toBeInTheDocument();
+    // Each later stage also carries its share of everyone who asked.
+    expect(within(trunk).getByText("51.2% of all")).toBeInTheDocument();
+    expect(within(trunk).getByText("100% of all")).toBeInTheDocument();
+    // The first stage IS everyone, so it says nothing extra.
+    expect(within(trunk).getAllByText(/of all/)).toHaveLength(2);
   });
 
   it("explains every person who never said yes", async () => {
@@ -454,15 +483,16 @@ describe("Funnels guide journey", () => {
 
     const leak = await screen.findByRole("region", { name: /never said yes/i });
     expect(within(leak).getByText(/4,604 never said yes/)).toBeInTheDocument();
-    for (const [label, count] of [
-      [/still has time/i, "191"],
-      [/wrote to us, but not as a yes/i, "150"],
-      [/opened the card and ignored it/i, "62"],
-      [/no sign they opened it/i, "754"],
-      [/can't tell/i, "3,447"],
+    for (const [label, count, percent] of [
+      [/still has time/i, "191", "4.1%"],
+      [/wrote to us, but not as a yes/i, "150", "3.3%"],
+      [/opened the card and ignored it/i, "62", "1.3%"],
+      [/no sign they opened it/i, "754", "16.4%"],
+      [/can't tell/i, "3,447", "74.9%"],
     ] as const) {
       const row = within(leak).getByText(label).closest("li")!;
       expect(within(row).getByText(count)).toBeInTheDocument();
+      expect(within(row).getByText(percent)).toBeInTheDocument();
     }
   });
 
@@ -485,13 +515,14 @@ describe("Funnels guide journey", () => {
 
     const leak = await screen.findByRole("region", { name: /stuck at the wall/i });
     expect(within(leak).getByText(/1,525 stuck at the wall/)).toBeInTheDocument();
-    for (const [label, count] of [
-      [/still has time/i, "42"],
-      [/said they followed, instagram says no/i, "63"],
-      [/never came back/i, "1,420"],
+    for (const [label, count, percent] of [
+      [/still has time/i, "42", "2.8%"],
+      [/said they followed, instagram says no/i, "63", "4.1%"],
+      [/never came back/i, "1,420", "93.1%"],
     ] as const) {
       const row = within(leak).getByText(label).closest("li")!;
       expect(within(row).getByText(count)).toBeInTheDocument();
+      expect(within(row).getByText(percent)).toBeInTheDocument();
     }
   });
 
