@@ -55,7 +55,8 @@ decision: they are not literally a yes).
 
 ### 2. DM that mentions a keyword
 
-Today's rule stays. New first check: more than 30 distinct words (the same
+Today's rule stays. New check, right after the no-keyword case (so a long DM with no
+keyword still logs as `no_keyword`): more than 30 distinct words (the same
 `meaningfulTokens` count the guard already logs as `meaningfulTokenCount`) returns a new
 kind, `rejected_long`, and goes to owner review. It is logged in `dm_guide_intent_evaluated`
 like the other kinds, so the number of pitches stopped is visible.
