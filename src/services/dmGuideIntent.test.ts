@@ -149,6 +149,35 @@ describe("classifyDmKeywordIntent", () => {
       .toMatchObject({ keywordHitCount: 2, distinctGuideCount: 1 });
   });
 
+  // Brand pitches (43-84 distinct words) started guide flows because they mentioned a
+  // keyword next to "get" or "send". Every real ask but one was 20 words or fewer.
+  function longAsk(words: number): string[] {
+    const head = ["CAN", "YOU", "SEND", "ME", "THE", "WAFFLE"];
+    return [...head, ...Array.from({ length: words - head.length }, (_, i) => `W${i}`)];
+  }
+
+  it("sends a keyword DM over 30 distinct words to owner review", () => {
+    const tokens = longAsk(31);
+    expect(classifyDmKeywordIntent(tokens, [resolved("WAFFLE", 5)])).toEqual({
+      kind: "rejected_long",
+      meaningfulTokenCount: 31,
+      keywordHitCount: 1,
+      distinctGuideCount: 1,
+    });
+  });
+
+  it("keeps today's answer for a keyword DM of exactly 30 distinct words", () => {
+    const waffle = resolved("WAFFLE", 5);
+    expect(classifyDmKeywordIntent(longAsk(30), [waffle])).toMatchObject({
+      kind: "accepted_explicit",
+      selected: waffle,
+    });
+  });
+
+  it("still reports no_keyword for a long DM with no keyword", () => {
+    expect(classifyDmKeywordIntent(longAsk(40), [])).toMatchObject({ kind: "no_keyword" });
+  });
+
   it("returns no_keyword without a resolved hit", () => {
     expect(classifyDmKeywordIntent(["HELLO", "THERE"], [])).toEqual({
       kind: "no_keyword",

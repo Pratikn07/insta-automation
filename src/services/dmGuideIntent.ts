@@ -19,12 +19,19 @@ export type DmKeywordIntent<T> =
       selected: ResolvedDmKeyword<T>;
     })
   | (IntentCounts & {
-      kind: "rejected_negative" | "rejected_conversational" | "no_keyword";
+      kind: "rejected_negative" | "rejected_conversational" | "rejected_long" | "no_keyword";
     });
 
 export type OpenRequestReplyIntent =
   | { kind: "accepted_confirmation" }
   | { kind: "rejected_reply"; reason: "non_text" | "blank_text" | "unrecognized_text" };
+
+/**
+ * Above this many distinct words a keyword DM goes to owner review. In the 30 days to
+ * 2026-10-13, 10 of the 11 keyword DMs over 40 words that started a guide were brand
+ * pitches; every real ask but one was 20 words or fewer.
+ */
+export const MAX_KEYWORD_DM_TOKENS = 30;
 
 const REQUEST_SIGNALS = new Set(["SEND", "SHARE", "GET", "GIVE", "WANT", "NEED"]);
 
@@ -96,6 +103,7 @@ export function classifyDmKeywordIntent<T extends { resource: { id: string } }>(
 ): DmKeywordIntent<T> {
   const counts = intentCounts(meaningfulTokens, matches);
   if (matches.length === 0) return { kind: "no_keyword", ...counts };
+  if (meaningfulTokens.length > MAX_KEYWORD_DM_TOKENS) return { kind: "rejected_long", ...counts };
 
   if (NEGATIVE_PHRASES.some((phrase) => containsPhrase(meaningfulTokens, phrase))) {
     return { kind: "rejected_negative", ...counts };
