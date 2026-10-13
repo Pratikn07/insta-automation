@@ -14,7 +14,13 @@ vi.mock("../services/experimentService.js", () => ({
   getGeoWindowTrend: vi.fn(),
 }));
 
-const { insightsRouter } = await import("./insights.routes.js");
+const getLeaderboard = vi.fn();
+vi.mock("../services/insightsService.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/insightsService.js")>()),
+  getLeaderboard: (...a: unknown[]) => getLeaderboard(...a),
+}));
+
+const { insightsRouter, leaderboardCache } = await import("./insights.routes.js");
 
 const EXPERIMENT_ID = "40000000-0000-4000-8000-000000000001";
 
@@ -37,6 +43,19 @@ const experiment = { id: EXPERIMENT_ID, baselineUsPct: 41 };
 
 beforeEach(() => {
   createExperiment.mockReset().mockResolvedValue({ status: "created", experiment });
+  getLeaderboard.mockReset().mockResolvedValue([{ mediaId: "reel-1" }]);
+  leaderboardCache.invalidate();
+});
+
+describe("GET /api/insights/leaderboard", () => {
+  it("serves a repeat read from cache instead of rebuilding every reel's numbers", async () => {
+    const app = makeApp();
+    await request(app).get("/api/insights/leaderboard").expect(200);
+    const again = await request(app).get("/api/insights/leaderboard").expect(200);
+
+    expect(again.body).toEqual({ items: [{ mediaId: "reel-1" }] });
+    expect(getLeaderboard).toHaveBeenCalledOnce();
+  });
 });
 
 describe("manual experiment create replay", () => {

@@ -26,9 +26,22 @@ import { asyncRouter } from "./asyncRouter.js";
 
 export const insightsRouter = asyncRouter();
 
+/**
+ * The leaderboard rebuilds every reel's numbers from snapshots and event_log, and
+ * it is the default Insights tab. Fresh for a minute; after that the last board
+ * is served for up to half an hour while one refresh runs behind it.
+ *
+ * Exported so tests can start from a cold cache.
+ */
+export const leaderboardCache = createReadThroughCache<Awaited<ReturnType<typeof getLeaderboard>>>({
+  ttlMs: 60_000,
+  staleMs: 30 * 60_000,
+  maxEntries: 1,
+});
+
 // GET /api/insights/leaderboard — every reel, US-fit scored reels first.
 insightsRouter.get("/leaderboard", async (_req, res) => {
-  res.json({ items: await getLeaderboard() });
+  res.json({ items: await leaderboardCache.get("default", getLeaderboard) });
 });
 
 // GET /api/insights/geo — latest account-level country split (3 stages).
