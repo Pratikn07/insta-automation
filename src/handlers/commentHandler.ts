@@ -28,6 +28,7 @@ import { selectCommentGate } from "../services/commentGateCopy.js";
 import { enqueueGate } from "../services/gateQueueService.js";
 import { claimComment } from "../services/commentClaimService.js";
 import { env } from "../config/env.js";
+import { isTestAccount } from "../config/testAccounts.js";
 import {
   classifyPrivateGateFailure,
   parseGraphSignatures,
@@ -418,7 +419,8 @@ export async function handleComment(comment: CommentValue): Promise<void> {
   // Nothing below runs for a reused journey: no second DM, no second queue row,
   // and no second recovery reminder. The first journey already owns all three,
   // and its gate is either delivered or being retried.
-  if (!journey.maySendGate) {
+  // The owner's test accounts get a fresh DM on every comment, so a flow can be re-tested.
+  if (!journey.maySendGate && !isTestAccount(senderId)) {
     log.info(
       { conversationId: convo.id, disposition: journey.disposition },
       "Gate DM withheld — this journey already has one",
