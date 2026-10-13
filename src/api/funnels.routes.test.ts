@@ -8,7 +8,14 @@ vi.mock("../lib/prisma.js", () => ({
   prisma: { $queryRawUnsafe: queryRawUnsafe },
 }));
 
-const { funnelsRouter, funnelCache } = await import("./funnels.routes.js");
+const {
+  funnelsRouter,
+  funnelCache,
+  linkClickCache,
+  dropOffCache,
+  guideAccessMetricsCache,
+  FUNNEL_CACHE_TTL_MS,
+} = await import("./funnels.routes.js");
 
 function makeApp() {
   const app = express();
@@ -21,6 +28,9 @@ beforeEach(() => {
   // The route cache is module state, so without this a test's query-count
   // assertion would depend on which earlier test warmed which window.
   funnelCache.invalidate();
+  linkClickCache.invalidate();
+  dropOffCache.invalidate();
+  guideAccessMetricsCache.invalidate();
 });
 
 describe("GET /api/funnels", () => {
@@ -215,6 +225,31 @@ describe("GET /api/funnels/:key caching", () => {
     expect(queryRawUnsafe).toHaveBeenCalledTimes(2);
   });
 
+  /**
+   * Home's reply-rate panel must not wait on the cohort query just because a
+   * minute has passed since the last visit. Past the TTL the last report is
+   * served while exactly one refresh runs behind it.
+   */
+  it("keeps serving the default window past the TTL while one refresh runs", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const app = makeApp();
+      await request(app).get("/api/funnels/guide-follow").expect(200);
+
+      vi.setSystemTime(Date.now() + FUNNEL_CACHE_TTL_MS + 60_000);
+      let finish!: (rows: unknown[]) => void;
+      queryRawUnsafe.mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+
+      const stale = await request(app).get("/api/funnels/guide-follow");
+      expect(stale.status).toBe(200);
+      expect(stale.body.key).toBe("guide-follow");
+      expect(queryRawUnsafe).toHaveBeenCalledTimes(2);
+      finish([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("retries rather than caching a failed cohort query", async () => {
     const app = makeApp();
     queryRawUnsafe.mockRejectedValueOnce(new Error("db unavailable"));
@@ -225,6 +260,40 @@ describe("GET /api/funnels/:key caching", () => {
     const recovered = await request(app).get("/api/funnels/guide-follow");
 
     expect(recovered.status).toBe(200);
+    expect(queryRawUnsafe).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("GET /api/funnels/:key/drop-off/:bucket caching", () => {
+  const window = { from: "2026-09-01", to: "2026-10-01" };
+
+  it("serves a repeat read of the same list without re-running its two queries", async () => {
+    const app = makeApp();
+    await request(app).get("/api/funnels/guide-follow/drop-off/no-reply").query(window).expect(200);
+    await request(app).get("/api/funnels/guide-follow/drop-off/no-reply").query(window).expect(200);
+
+    expect(queryRawUnsafe).toHaveBeenCalledTimes(2);
+  });
+
+  it("keys on the limit, so a longer list is never cut to a cached shorter one", async () => {
+    const app = makeApp();
+    await request(app).get("/api/funnels/guide-follow/drop-off/no-reply").query(window).expect(200);
+    await request(app)
+      .get("/api/funnels/guide-follow/drop-off/no-reply")
+      .query({ ...window, limit: 500 })
+      .expect(200);
+
+    expect(queryRawUnsafe).toHaveBeenCalledTimes(4);
+  });
+});
+
+describe("GET /api/funnels/guide-access-metrics caching", () => {
+  it("serves a repeat read of the same window without re-running its queries", async () => {
+    const app = makeApp();
+    const window = { from: "2026-09-01", to: "2026-10-01" };
+    await request(app).get("/api/funnels/guide-access-metrics").query(window).expect(200);
+    await request(app).get("/api/funnels/guide-access-metrics").query(window).expect(200);
+
     expect(queryRawUnsafe).toHaveBeenCalledTimes(2);
   });
 });

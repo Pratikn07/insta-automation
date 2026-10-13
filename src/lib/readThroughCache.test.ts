@@ -109,6 +109,85 @@ describe("createReadThroughCache", () => {
     expect(reloadC).not.toHaveBeenCalled();
   });
 
+  describe("with staleMs (stale-while-revalidate)", () => {
+    function deferred<T>() {
+      let resolve!: (v: T) => void;
+      let reject!: (e: unknown) => void;
+      const promise = new Promise<T>((res, rej) => ((resolve = res), (reject = rej)));
+      return { promise, resolve, reject };
+    }
+
+    /**
+     * The point of the option. A report that takes seconds must not make the page
+     * wait just because a minute has passed since someone last looked.
+     */
+    it("serves the stale value after the TTL while one refresh runs in the background", async () => {
+      const clock = fakeClock();
+      const cache = createReadThroughCache<number>({ ttlMs: 1000, staleMs: 10_000, now: clock.now });
+      const refresh = deferred<number>();
+      const load = vi.fn().mockResolvedValueOnce(7).mockReturnValueOnce(refresh.promise);
+
+      await cache.get("k", load);
+      clock.advance(1500);
+
+      await expect(cache.get("k", load)).resolves.toBe(7);
+      expect(load).toHaveBeenCalledTimes(2);
+
+      refresh.resolve(8);
+      await refresh.promise;
+      await expect(cache.get("k", load)).resolves.toBe(8);
+      expect(load).toHaveBeenCalledTimes(2);
+    });
+
+    it("collapses stale reads onto a single background refresh", async () => {
+      const clock = fakeClock();
+      const cache = createReadThroughCache<number>({ ttlMs: 1000, staleMs: 10_000, now: clock.now });
+      const refresh = deferred<number>();
+      const load = vi.fn().mockResolvedValueOnce(7).mockReturnValueOnce(refresh.promise);
+
+      await cache.get("k", load);
+      clock.advance(1500);
+
+      await expect(
+        Promise.all([cache.get("k", load), cache.get("k", load), cache.get("k", load)]),
+      ).resolves.toEqual([7, 7, 7]);
+      expect(load).toHaveBeenCalledTimes(2);
+      refresh.resolve(8);
+    });
+
+    it("keeps serving the stale value when a refresh fails, and retries on the next read", async () => {
+      const clock = fakeClock();
+      const cache = createReadThroughCache<number>({ ttlMs: 1000, staleMs: 10_000, now: clock.now });
+      const failed = deferred<number>();
+      const load = vi
+        .fn()
+        .mockResolvedValueOnce(7)
+        .mockReturnValueOnce(failed.promise)
+        .mockResolvedValueOnce(9);
+
+      await cache.get("k", load);
+      clock.advance(1500);
+      await expect(cache.get("k", load)).resolves.toBe(7);
+
+      failed.reject(new Error("db unavailable"));
+      await failed.promise.catch(() => undefined);
+
+      await expect(cache.get("k", load)).resolves.toBe(7);
+      expect(load).toHaveBeenCalledTimes(3);
+    });
+
+    it("waits for a fresh load once the value is older than ttlMs + staleMs", async () => {
+      const clock = fakeClock();
+      const cache = createReadThroughCache<number>({ ttlMs: 1000, staleMs: 10_000, now: clock.now });
+      const load = vi.fn().mockResolvedValueOnce(7).mockResolvedValueOnce(8);
+
+      await cache.get("k", load);
+      clock.advance(11_000);
+
+      await expect(cache.get("k", load)).resolves.toBe(8);
+    });
+  });
+
   it("invalidate() clears a single key", async () => {
     const cache = createReadThroughCache<number>({ ttlMs: 60_000 });
     const load = vi.fn().mockResolvedValueOnce(7).mockResolvedValueOnce(8);
