@@ -1,5 +1,5 @@
 import type { ComparableWeek, ComparableWeekResult } from "./followerFlow";
-import type { GuideFollowResult } from "./types";
+import type { FunnelReport } from "./types";
 
 /**
  * Today's read: the one sentence Home opens with.
@@ -62,7 +62,7 @@ export interface FunnelLoss {
   lost: number;
 }
 
-export function largestMeasuredFunnelLoss(funnel: GuideFollowResult): FunnelLoss | null {
+export function largestMeasuredFunnelLoss(funnel: FunnelReport): FunnelLoss | null {
   let largest: FunnelLoss | null = null;
   for (let index = 1; index < funnel.stages.length; index += 1) {
     const previous = funnel.stages[index - 1]!;
@@ -103,7 +103,7 @@ function formatWindow(window: ComparableWeek): string {
 
 export function composeTodaysRead(
   comparison: ComparableWeekResult,
-  funnel: GuideFollowResult | undefined,
+  funnel: FunnelReport | undefined,
 ): TodaysRead | null {
   if (comparison.status !== "ready") return null;
 

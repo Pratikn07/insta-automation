@@ -1,5 +1,5 @@
 import { ArrowDownRight, ArrowRight, ArrowUpRight, MessageSquareReply, Trophy, Users } from "lucide-react";
-import type { FollowerDailyAddsPoint, FollowerStock, GuideFollowResult, Stats } from "@/lib/types";
+import type { FollowerDailyAddsPoint, FollowerStock, FunnelReport, Stats } from "@/lib/types";
 import {
   describeStockVsFlow,
   trailingUsSlots,
@@ -52,7 +52,7 @@ interface FollowerKpiRowProps {
   avgPerDay7: number | null;
   stats: Stats | undefined;
   /** Guide → follow funnel. Feeds the third tile; see the note on it below. */
-  funnel: GuideFollowResult | undefined;
+  funnel: FunnelReport | undefined;
   /**
    * The daily series. Home already holds it for the chart; the score cell needs
    * it because a week that cannot be COMPARED still has days that were MEASURED,

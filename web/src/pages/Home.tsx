@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { apiRead } from "@/lib/api";
-import type { GuideFollowResult, Stats } from "@/lib/types";
+import type { GuideJourneyResult, Stats } from "@/lib/types";
 import { deriveHomeAttentionState, type HomeAttentionState, type HomeSource, type SourceState } from "@/lib/homeAttention";
 import { AutomationKpiRow } from "@/components/home/AutomationKpiRow";
 import { cn } from "@/lib/utils";
@@ -36,11 +36,12 @@ export function Home() {
     queryKey: ["stats"],
     queryFn: ({ signal }) => apiRead<Stats>("/stats", { signal }),
   });
-  // Default window (30 days) — no params, so this shares a cache key with the
-  // Funnels page's default view rather than re-running the cohort scan.
-  const funnelQ = useQuery<GuideFollowResult>({
-    queryKey: ["funnels", "guide-follow", "default"],
-    queryFn: ({ signal }) => apiRead<GuideFollowResult>("/funnels/guide-follow", { signal }),
+  // Default window (30 days) — no params, so the server's report cache answers it.
+  // The per-person journey, the same report the Funnels page draws, so Home's reply
+  // rate and the Funnels trunk can never show two different numbers.
+  const funnelQ = useQuery<GuideJourneyResult>({
+    queryKey: ["funnels", "guide-journey", "default"],
+    queryFn: ({ signal }) => apiRead<GuideJourneyResult>("/funnels/guide-journey", { signal }),
   });
   const attentionState = deriveHomeAttentionState({
     stats: queryState(statsQ),

@@ -1,5 +1,5 @@
 import { largestMeasuredFunnelLoss } from "./todaysRead";
-import type { GuideFollowResult, Stats } from "./types";
+import type { FunnelReport, Stats } from "./types";
 
 const nf = new Intl.NumberFormat("en-US");
 
@@ -34,12 +34,12 @@ export type HomeAttentionState =
 
 export interface HomeSources {
   stats: SourceState<Stats>;
-  funnel: SourceState<GuideFollowResult>;
+  funnel: SourceState<FunnelReport>;
 }
 
 export function deriveAttentionItems(
   stats: Stats | undefined,
-  funnel: GuideFollowResult | undefined,
+  funnel: FunnelReport | undefined,
 ): AttentionItem[] {
   const items: AttentionItem[] = [];
 
