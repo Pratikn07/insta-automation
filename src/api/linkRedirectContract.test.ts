@@ -111,7 +111,7 @@ describeWithDatabase("link redirect against the real database", () => {
       .expect(302);
 
     expect(response.headers.location).toBe(
-      `https://mycuratedhaven.com/halloween?utm_source=instagram&utm_medium=dm&utm_campaign=redirect-link-${suffix.toLowerCase()}&utm_content=reel-${suffix}`,
+      `https://mycuratedhaven.com/halloween?utm_source=instagram&utm_medium=organic_social&utm_campaign=comment_dm&utm_content=reel-${suffix.toLowerCase()}`,
     );
     await vi.waitFor(async () => {
       const conversation = await db.conversation.findUniqueOrThrow({ where: { id: ids.human } });

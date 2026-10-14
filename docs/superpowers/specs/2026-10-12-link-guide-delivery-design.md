@@ -226,9 +226,14 @@ apply unchanged.
 2. Read the guide's **current** `link_url`, so a fixed URL also reaches DMs already sent.
 3. Append UTM tags:
    - `utm_source=instagram`
-   - `utm_medium=dm`
-   - `utm_campaign=<guide slug>` (lowercased, hyphenated guide name)
-   - `utm_content=<media_id>`
+   - `utm_medium=organic_social`
+   - `utm_campaign=comment_dm`
+   - `utm_content=<media_id>` (lowercased; left out when it isn't a valid site label)
+
+   Changed 2026-10-14: the first version sent `utm_medium=dm` and the guide's slug as the
+   campaign. mycuratedhaven.com keeps a campaign only from its own list (`bio_link`,
+   `story_link`, `instagram_dm`, `comment_dm` with medium `organic_social`) and dropped every
+   DM visit's tags, so the redirect now sends the site's `comment_dm` set.
 4. Insert a `guide_link_click` row with the bot flag. A failed insert never blocks the redirect.
 5. `302` to the destination.
 
@@ -314,7 +319,7 @@ the existing guide outbound flags.
 - **Unit tests:**
   - `guideOwnerFor`;
   - URL and label validation;
-  - UTM building, including the slug;
+  - UTM building with the site's fixed tags;
   - bot detection;
   - card and text payload builders.
 - **Metrics:** every new funnel stage has a writer.

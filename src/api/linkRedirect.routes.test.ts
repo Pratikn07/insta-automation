@@ -15,7 +15,7 @@ const SEND = {
   resource: { name: "Halloween collection", linkUrl: "https://mycuratedhaven.com/halloween" },
 };
 const DESTINATION =
-  "https://mycuratedhaven.com/halloween?utm_source=instagram&utm_medium=dm&utm_campaign=halloween-collection&utm_content=reel-9";
+  "https://mycuratedhaven.com/halloween?utm_source=instagram&utm_medium=organic_social&utm_campaign=comment_dm&utm_content=reel-9";
 const NOW = new Date("2026-10-20T12:00:00.000Z");
 
 function makeApp(overrides: Partial<LinkRedirectDeps> = {}) {

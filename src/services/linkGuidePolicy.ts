@@ -130,28 +130,23 @@ export function validateLinkGuideFields(
   return null;
 }
 
-export function campaignSlug(name: string): string {
-  const slug = name
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/gu, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/gu, "-")
-    .replace(/^-|-$/gu, "")
-    .slice(0, 64)
-    .replace(/-$/u, "");
-  return slug.length > 0 ? slug : "guide";
-}
+/**
+ * mycuratedhaven.com keeps a visit's campaign only when every tag is on its list (source
+ * `instagram`, medium `organic_social`, campaign `comment_dm` for the automatic DM) and a
+ * `utm_content` label is lowercase letters, digits, `-` or `_`, up to 40 characters; any other
+ * tag makes it drop the whole set. So the tags are fixed, and the guide's name, which the
+ * owner can mistype or rename, never becomes a campaign.
+ */
+const SITE_CONTENT_LABEL = /^[a-z0-9][a-z0-9_-]{0,39}$/u;
 
-export function buildDestinationUrl(input: {
-  linkUrl: string;
-  guideName: string;
-  mediaId: string | null;
-}): string {
+export function buildDestinationUrl(input: { linkUrl: string; mediaId: string | null }): string {
   const url = new URL(input.linkUrl);
   url.searchParams.set("utm_source", "instagram");
-  url.searchParams.set("utm_medium", "dm");
-  url.searchParams.set("utm_campaign", campaignSlug(input.guideName));
-  if (input.mediaId) url.searchParams.set("utm_content", input.mediaId);
+  url.searchParams.set("utm_medium", "organic_social");
+  url.searchParams.set("utm_campaign", "comment_dm");
+  // The reel, so a visit can be traced to its post; left out when it would fail the site's label rule.
+  const content = input.mediaId?.toLowerCase() ?? "";
+  if (SITE_CONTENT_LABEL.test(content)) url.searchParams.set("utm_content", content);
   else url.searchParams.delete("utm_content");
   return url.toString();
 }

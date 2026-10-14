@@ -53,11 +53,7 @@ export function createLinkRedirectHandler(deps: LinkRedirectDeps) {
       return;
     }
 
-    const destination = buildDestinationUrl({
-      linkUrl: send.resource.linkUrl,
-      guideName: send.resource.name,
-      mediaId: send.mediaId,
-    });
+    const destination = buildDestinationUrl({ linkUrl: send.resource.linkUrl, mediaId: send.mediaId });
     res.redirect(302, destination);
 
     // Railway's edge puts the visitor's address in X-Real-IP.
