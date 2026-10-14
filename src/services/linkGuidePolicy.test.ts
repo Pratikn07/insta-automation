@@ -2,7 +2,6 @@
 import { describe, expect, it } from "vitest";
 import {
   buildDestinationUrl,
-  campaignSlug,
   classifyClick,
   codePoints,
   fallbackRedirectUrl,
@@ -107,51 +106,41 @@ describe("isAllowedLinkUrl", () => {
   });
 });
 
-describe("campaignSlug", () => {
-  it.each([
-    ["Halloween collection", "halloween-collection"],
-    ["Café Crème 👻!!", "cafe-creme"],
-    ["👻", "guide"],
-  ])("%s → %s", (name, slug) => {
-    expect(campaignSlug(name)).toBe(slug);
-  });
-});
-
 describe("buildDestinationUrl", () => {
-  it("adds the UTM tags for the reel", () => {
+  it("adds the tags mycuratedhaven.com keeps for an automatic DM, with the reel", () => {
     expect(
-      buildDestinationUrl({
-        linkUrl: "https://mycuratedhaven.com/halloween",
-        guideName: "Halloween collection",
-        mediaId: "reel-9",
-      }),
+      buildDestinationUrl({ linkUrl: "https://mycuratedhaven.com/halloween", mediaId: "17912345678901234" }),
     ).toBe(
-      "https://mycuratedhaven.com/halloween?utm_source=instagram&utm_medium=dm&utm_campaign=halloween-collection&utm_content=reel-9",
+      "https://mycuratedhaven.com/halloween?utm_source=instagram&utm_medium=organic_social&utm_campaign=comment_dm&utm_content=17912345678901234",
     );
   });
 
   it("keeps the page's own query and overwrites stale UTM tags", () => {
     expect(
       buildDestinationUrl({
-        linkUrl: "https://mycuratedhaven.com/halloween?ref=x&utm_source=old",
-        guideName: "Halloween",
+        linkUrl: "https://mycuratedhaven.com/halloween?ref=x&utm_source=old&utm_medium=dm&utm_campaign=hallowen",
         mediaId: "reel-1",
       }),
     ).toBe(
-      "https://mycuratedhaven.com/halloween?ref=x&utm_source=instagram&utm_medium=dm&utm_campaign=halloween&utm_content=reel-1",
+      "https://mycuratedhaven.com/halloween?ref=x&utm_source=instagram&utm_medium=organic_social&utm_campaign=comment_dm&utm_content=reel-1",
     );
   });
 
   it("omits utm_content when the reel is unknown", () => {
     expect(
-      buildDestinationUrl({
-        linkUrl: "https://mycuratedhaven.com/halloween",
-        guideName: "Halloween",
-        mediaId: null,
-      }),
-    ).toBe(
-      "https://mycuratedhaven.com/halloween?utm_source=instagram&utm_medium=dm&utm_campaign=halloween",
+      buildDestinationUrl({ linkUrl: "https://mycuratedhaven.com/halloween?utm_content=old", mediaId: null }),
+    ).toBe("https://mycuratedhaven.com/halloween?utm_source=instagram&utm_medium=organic_social&utm_campaign=comment_dm");
+  });
+
+  it("lowercases the reel, and leaves out one the site would reject", () => {
+    expect(buildDestinationUrl({ linkUrl: "https://mycuratedhaven.com/", mediaId: "REEL-9" })).toBe(
+      "https://mycuratedhaven.com/?utm_source=instagram&utm_medium=organic_social&utm_campaign=comment_dm&utm_content=reel-9",
     );
+    for (const mediaId of ["reel 9", "reel.9", "-reel", "x".repeat(41)]) {
+      expect(buildDestinationUrl({ linkUrl: "https://mycuratedhaven.com/", mediaId })).toBe(
+        "https://mycuratedhaven.com/?utm_source=instagram&utm_medium=organic_social&utm_campaign=comment_dm",
+      );
+    }
   });
 });
 
